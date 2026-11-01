@@ -92,6 +92,9 @@ jobs:
           "VCTOOLS_VERSION=$toolVersion" >> $env:GITHUB_ENV
           "WINDOWS_SDK_VERSION=$sdkVersion" >> $env:GITHUB_ENV
           "MANIFEST_TOOL=$(Join-Path $kits "bin\$sdkVersion\x64\mt.exe")" >> $env:GITHUB_ENV
+          $diagnostics = Join-Path $env:RUNNER_TEMP 'TELIPHONES-startup-diagnostics'
+          New-Item -ItemType Directory -Path $diagnostics -Force | Out-Null
+          "STARTUP_DIAGNOSTICS=$diagnostics" >> $env:GITHUB_ENV
 
       - name: Validate native project and resource layout
         run: |
@@ -151,20 +154,37 @@ jobs:
             throw "dumpbin failed with exit code $LASTEXITCODE."
           }
           $dependencies | Write-Host
+          $dependencies | Set-Content -LiteralPath (Join-Path $env:STARTUP_DIAGNOSTICS 'dependents.txt')
           if (($dependencies -join "`n") -match '(?im)^\s*(mfc\d+\w*|vcruntime\d+\w*|msvcp\d+\w*|ucrtbase|api-ms-win-crt-[\w-]+)\.dll\s*$') {
             throw 'Unexpected dynamic MFC/MSVC runtime dependency: the application must use static MFC and /MT.'
           }
-          $manifestFile = Join-Path $env:RUNNER_TEMP 'TELIPHONES.exe.manifest'
+          $manifestFile = Join-Path $env:STARTUP_DIAGNOSTICS 'TELIPHONES.exe.manifest'
           & $env:MANIFEST_TOOL "-inputresource:$exe;#1" "-out:$manifestFile"
           if ($LASTEXITCODE -ne 0) {
             throw "Could not extract the embedded application manifest: exit code $LASTEXITCODE."
           }
+          Get-Content -LiteralPath $manifestFile | Write-Host
+          & $env:MANIFEST_TOOL "-manifest:$manifestFile" -validate_manifest
+          if ($LASTEXITCODE -ne 0) {
+            throw "Windows SDK validation of the embedded manifest failed: exit code $LASTEXITCODE."
+          }
           [xml]$manifest = Get-Content -LiteralPath $manifestFile -Raw
           $privileges = $manifest.SelectSingleNode("//*[local-name()='requestedExecutionLevel']")
-          $controls = $manifest.SelectSingleNode("//*[local-name()='assemblyIdentity' and @name='Microsoft.Windows.Common-Controls']")
+          $identity = $manifest.SelectSingleNode("/*[local-name()='assembly']/*[local-name()='assemblyIdentity']")
+          $controls = $manifest.SelectNodes("//*[local-name()='dependentAssembly']/*[local-name()='assemblyIdentity' and @name='Microsoft.Windows.Common-Controls']")
           $dpi = $manifest.SelectSingleNode("//*[local-name()='dpiAwareness']")
-          if (-not $privileges -or $privileges.level -ne 'asInvoker' -or $privileges.uiAccess -ne 'false' -or -not $controls -or -not $dpi -or $dpi.InnerText -ne 'PerMonitorV2') {
+          if (-not $privileges -or $privileges.level -ne 'asInvoker' -or $privileges.uiAccess -ne 'false' -or -not $dpi -or $dpi.InnerText -ne 'PerMonitorV2') {
             throw 'The embedded application manifest is missing expected UAC, Common Controls or DPI settings.'
+          }
+          if (-not $identity -or $identity.processorArchitecture -ne 'amd64') {
+            throw 'The embedded application assembly identity must match the amd64 executable.'
+          }
+          if ($controls.Count -ne 1) {
+            throw "Expected exactly one merged Common Controls dependency; found $($controls.Count). See the extracted manifest for conflicting identities."
+          }
+          $control = $controls.Item(0)
+          if ($control.type -ne 'win32' -or $control.processorArchitecture -ne 'amd64' -or $control.version -ne '6.0.0.0' -or $control.publicKeyToken -ne '6595b64144ccf1df' -or $control.language -ne '*') {
+            throw 'The embedded Common Controls dependency does not match the standard Windows amd64 version 6 assembly.'
           }
           Get-FileHash -LiteralPath $exe -Algorithm SHA256 | Format-List
 
@@ -172,27 +192,79 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $exe = Join-Path $env:GITHUB_WORKSPACE 'desktop\windows\build\Release\TELIPHONES.exe'
-          foreach ($argument in @('/tunnel-up', '/tunnel-down')) {
-            $startInfo = [Diagnostics.ProcessStartInfo]::new($exe, $argument)
-            $startInfo.UseShellExecute = $false
-            $startInfo.CreateNoWindow = $true
-            $process = [Diagnostics.Process]::Start($startInfo)
-            if (-not $process) {
-              throw "Could not start TELIPHONES for smoke test: $argument"
+          $trace = Join-Path $env:STARTUP_DIAGNOSTICS 'sxstrace.etl'
+          $traceText = Join-Path $env:STARTUP_DIAGNOSTICS 'sxstrace.txt'
+          $sxstrace = Join-Path $env:SystemRoot 'System32\sxstrace.exe'
+          $startedAt = Get-Date
+          $tracing = $false
+          try {
+            if (Test-Path -LiteralPath $sxstrace -PathType Leaf) {
+              & $sxstrace Trace "-logfile:$trace" -nostop
+              $tracing = $LASTEXITCODE -eq 0
+              if (-not $tracing) {
+                Write-Warning "sxstrace could not start (exit code $LASTEXITCODE); the startup test will still run and SideBySide events will be collected."
+              }
+            } else {
+              Write-Warning "SideBySide diagnostic tool not found: $sxstrace"
             }
-            try {
-              if (-not $process.WaitForExit(15000)) {
-                $process.Kill()
-                $process.WaitForExit()
-                throw "TELIPHONES malformed helper smoke test timed out: $argument"
+            foreach ($argument in @('/tunnel-up', '/tunnel-down')) {
+              $startInfo = [Diagnostics.ProcessStartInfo]::new($exe, $argument)
+              $startInfo.UseShellExecute = $false
+              $startInfo.CreateNoWindow = $true
+              $process = [Diagnostics.Process]::Start($startInfo)
+              if (-not $process) {
+                throw "Could not start TELIPHONES for smoke test: $argument"
               }
-              if ($process.ExitCode -ne 2) {
-                throw "TELIPHONES did not reject malformed $argument arguments before elevation: exit code $($process.ExitCode), expected 2."
+              try {
+                if (-not $process.WaitForExit(15000)) {
+                  $process.Kill()
+                  $process.WaitForExit()
+                  throw "TELIPHONES malformed helper smoke test timed out: $argument"
+                }
+                if ($process.ExitCode -ne 2) {
+                  throw "TELIPHONES did not reject malformed $argument arguments before elevation: exit code $($process.ExitCode), expected 2."
+                }
+                Write-Host "TELIPHONES started and exited as expected for $argument (exit 2: invalid helper arguments, before UAC or networking)."
+              } finally {
+                $process.Dispose()
               }
-            } finally {
-              $process.Dispose()
+            }
+          } catch {
+            $_ | Format-List * -Force | Out-String | Tee-Object -FilePath (Join-Path $env:STARTUP_DIAGNOSTICS 'startup-error.txt') | Write-Host
+            Write-Host "Underlying startup error: $($_.Exception.GetBaseException())"
+            throw
+          } finally {
+            if ($tracing) {
+              & $sxstrace StopTrace
+              if ($LASTEXITCODE -ne 0) {
+                Write-Warning "sxstrace StopTrace failed with exit code $LASTEXITCODE."
+              }
+              & $sxstrace Parse "-logfile:$trace" "-outfile:$traceText" -filter:TELIPHONES.exe
+              if ($LASTEXITCODE -ne 0) {
+                Write-Warning "sxstrace parsing failed with exit code $LASTEXITCODE."
+              } elseif (Test-Path -LiteralPath $traceText -PathType Leaf) {
+                Get-Content -LiteralPath $traceText | Write-Host
+              }
+            }
+            $eventErrors = @()
+            $events = @(Get-WinEvent -FilterHashtable @{ LogName = 'Application'; ProviderName = 'SideBySide'; StartTime = $startedAt } -ErrorAction SilentlyContinue -ErrorVariable eventErrors)
+            if ($events.Count -gt 0) {
+              $events | Format-List TimeCreated, Id, LevelDisplayName, Message | Out-String |
+                Tee-Object -FilePath (Join-Path $env:STARTUP_DIAGNOSTICS 'SideBySide-events.txt') | Write-Host
+            } else {
+              Write-Host 'No SideBySide Application events returned for the smoke-test interval.'
+              $eventErrors | Out-String | Set-Content -LiteralPath (Join-Path $env:STARTUP_DIAGNOSTICS 'SideBySide-query.txt')
             }
           }
+
+      - name: Upload startup diagnostics on failure
+        if: failure() && env.STARTUP_DIAGNOSTICS != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: TELIPHONES-Windows-startup-diagnostics
+          path: ${{ env.STARTUP_DIAGNOSTICS }}
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Prepare application artifact
         run: |

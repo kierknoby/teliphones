@@ -75,6 +75,25 @@ class BuildLayoutTests(unittest.TestCase):
         self.assertEqual(privileges.get("level"), "asInvoker")
         self.assertEqual(privileges.get("uiAccess"), "false")
 
+    def test_manifest_identities_match_x64_and_preserve_visual_styles(self):
+        ns = {"asm": "urn:schemas-microsoft-com:asm.v1"}
+        manifest = ET.parse(ROOT / "src/app/TELIPHONES.manifest").getroot()
+        identity = manifest.find("asm:assemblyIdentity", ns)
+        self.assertEqual(identity.get("processorArchitecture"), "amd64")
+        self.assertEqual(identity.get("type"), "win32")
+        controls = manifest.findall("asm:dependency/asm:dependentAssembly/asm:assemblyIdentity", ns)
+        self.assertEqual(len(controls), 1)
+        self.assertEqual(controls[0].attrib, {
+            "type": "win32",
+            "name": "Microsoft.Windows.Common-Controls",
+            "version": "6.0.0.0",
+            "processorArchitecture": "amd64",
+            "publicKeyToken": "6595b64144ccf1df",
+            "language": "*",
+        })
+        dpi = manifest.find(".//{http://schemas.microsoft.com/SMI/2016/WindowsSettings}dpiAwareness")
+        self.assertEqual(dpi.text, "PerMonitorV2")
+
 
 if __name__ == "__main__":
     unittest.main()
