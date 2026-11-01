@@ -5,7 +5,7 @@ if (!is_dir($dir)) @mkdir($dir, 0700, true);
 @chmod($dir, 0700);
 $config = '/etc/teliphones.conf';
 if (!file_exists($config)) {
-    @file_put_contents($config, "; TELIPHONES 0.0.1 development configuration\n; Support transport is temporary and session-scoped.\n; On-PBX uses local ephemeral WireGuard. On-net/Off-net require an external Connect implementation.\n");
+    @file_put_contents($config, "; TELIPHONES 0.0.2 development configuration\n; Support transport is temporary and session-scoped.\n; On-PBX uses local ephemeral WireGuard. On-net/Off-net require an external Connect implementation.\n");
     @chmod($config, 0600);
 }
 

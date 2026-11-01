@@ -88,7 +88,7 @@ class Teliphones extends Command
 
     private function authorise(InputInterface $input, OutputInterface $output): int
     {
-        if (!$this->isEnabled()) {
+        if (!$this->isTeliphonesEnabled()) {
             $output->writeln('<error>TELIPHONES is disabled. Enable it first with: fwconsole teliphones enable</error>');
             return Command::FAILURE;
         }
@@ -317,7 +317,7 @@ class Teliphones extends Command
     private function peer(InputInterface $input, OutputInterface $output): int
     {
         $current=$this->readState(); if($current && ($current['topology']??Topology::ON_PBX)!==Topology::ON_PBX){ $output->writeln('<error>Manual peer injection applies only to On-PBX topology.</error>'); return Command::FAILURE; }
-        if (!$this->isEnabled()) { $output->writeln('<error>TELIPHONES is disabled.</error>'); return Command::FAILURE; }
+        if (!$this->isTeliphonesEnabled()) { $output->writeln('<error>TELIPHONES is disabled.</error>'); return Command::FAILURE; }
         $state = $this->readState();
         if (!$state || time() >= (int)($state['expires_at'] ?? 0)) {
             $output->writeln('<error>No current TELIPHONES authorisation exists.</error>');
@@ -410,7 +410,7 @@ class Teliphones extends Command
             'captured_at' => time(),
             'hostname' => gethostname() ?: null,
             'teliphones' => [
-                'enabled' => $this->isEnabled(),
+                'enabled' => $this->isTeliphonesEnabled(),
                 'active_session' => $state !== null,
                 'session_state' => $state['state'] ?? null,
                 'topology' => $state['topology'] ?? null,
@@ -435,7 +435,7 @@ class Teliphones extends Command
 
     private function status(OutputInterface $output): int
     {
-        $output->writeln('TELIPHONES module: ' . ($this->isEnabled() ? 'enabled' : 'disabled'));
+        $output->writeln('TELIPHONES module: ' . ($this->isTeliphonesEnabled() ? 'enabled' : 'disabled'));
         if (is_readable(self::QUARANTINE_FILE)) $output->writeln('Support quarantine: PRESENT - fresh root authorisation required');
         $remoteState = (new ConnectClient())->state();
         $output->writeln('Connect environment: ' . ($remoteState ? 'provisioned' : 'none'));
@@ -505,7 +505,7 @@ class Teliphones extends Command
 
     private function reconcile(OutputInterface $output): int
     {
-        if (!$this->isEnabled()) {
+        if (!$this->isTeliphonesEnabled()) {
             $state = $this->readState();
             $localCleanup = $state ? $this->cleanupLocal($state) : $this->cleanupOrphanedLocalState();
             $remoteCleanup = $state ? $this->cleanupRemote($state) : $this->cleanupOrphanedRemoteState();
@@ -559,7 +559,7 @@ class Teliphones extends Command
         return Command::SUCCESS;
     }
 
-    private function isEnabled(): bool
+    private function isTeliphonesEnabled(): bool
     {
         return !is_file(self::DISABLED_FILE);
     }

@@ -1,4 +1,4 @@
-# TELIPHONES 0.0.1 for FreePBX 17
+# TELIPHONES 0.0.2 for FreePBX 17
 
 TELIPHONES (`teliphones`) provides temporary, root-authorised support access for FreePBX 17. It manages the local lifecycle of a support session, including authorisation, absolute expiry, temporary network and SSH state, verification and revocation.
 
@@ -6,11 +6,11 @@ The module separates external support functions into three integration contracts
 
 ## ⚠️ Not Currently Suitable for Production
 
-TELIPHONES 0.0.1 is an initial testing release.
+TELIPHONES 0.0.2 is a FreePBX 17 compatibility update for the existing testing release.
 
 It has not yet completed live installation, end-to-end integration, failure-recovery or adversarial security testing on FreePBX 17.
 
-**Do not install TELIPHONES 0.0.1 on a production PBX.**
+**Do not install TELIPHONES 0.0.2 on a production PBX.**
 
 Testing should be performed only on a disposable FreePBX 17 system where unexpected network, SSH or service behaviour can be investigated without affecting live communications.
 
@@ -18,11 +18,11 @@ The security controls documented below describe the behaviour TELIPHONES is desi
 
 ## Release Status
 
-TELIPHONES 0.0.1 is the current testing release for FreePBX 17.
+TELIPHONES 0.0.2 is the current testing release for FreePBX 17.
 
 The complete executable local implementation currently targets the **On-PBX** topology. On-net and Off-net are defined integration topologies and require external Connect implementations.
 
-0.0.1 is intended for development, review and controlled testing rather than production deployment.
+0.0.2 is intended for development, review and controlled testing rather than production deployment.
 
 ## Compatibility
 
@@ -32,7 +32,7 @@ FreePBX 16 is not currently supported.
 
 ## Requirements
 
-For local 0.0.1 testing:
+For local 0.0.2 testing:
 
 - FreePBX 17 on Debian 12
 - root access for installation and support authorisation
@@ -57,7 +57,7 @@ TELIPHONES defines three topology names.
 
 The private support connection terminates directly on the FreePBX server.
 
-This is the locally implemented topology in 0.0.1. TELIPHONES creates an ephemeral WireGuard interface named `wg-teliphones`.
+This is the locally implemented topology in 0.0.2. TELIPHONES creates an ephemeral WireGuard interface named `wg-teliphones`.
 
 For FreePBX 17, the preferred private allocation pool is `10.20.17.0/24`. This is an allocation pool, not a route. Each session uses only the address space required for that connection.
 
@@ -208,7 +208,7 @@ fwconsole ma list | grep -i teliphones
 fwconsole teliphones check
 ```
 
-For 0.0.1, perform this only on a disposable FreePBX 17 test system.
+For 0.0.2, perform this only on a disposable FreePBX 17 test system.
 
 A repository installation option can be documented when a public TELIPHONES repository and supported branch structure are published.
 
@@ -313,11 +313,11 @@ The current FreePBX page is status-only. A FreePBX web session cannot create a r
 
 For On-PBX, TELIPHONES also avoids using the normal PBX SSH listener as its temporary support service. Temporary network and authentication material is scoped to the support session and removed during local cleanup.
 
-These are design properties of 0.0.1. They require live and adversarial testing before they should be treated as validated security guarantees.
+These are design properties of 0.0.2. They require live and adversarial testing before they should be treated as validated security guarantees.
 
 ## Current Limitations
 
-TELIPHONES 0.0.1 is an initial testing release. Current limitations include:
+TELIPHONES 0.0.2 is a compatibility update, and current limitations include:
 
 - live FreePBX 17 installation validation is pending;
 - end-to-end integration testing is pending;
@@ -414,7 +414,7 @@ For installation help, testing feedback, troubleshooting or general support, con
 
 https://freepbx.uk/support/
 
-When requesting support during the 0.0.1 testing phase, include the following where relevant:
+When requesting support during the 0.0.2 testing phase, include the following where relevant:
 
 - FreePBX version;
 - Debian version;

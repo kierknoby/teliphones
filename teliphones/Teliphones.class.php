@@ -2,13 +2,28 @@
 namespace FreePBX\modules;
 
 use BMO;
+use FreePBX_Helpers;
 
-class Teliphones extends BMO
+class Teliphones extends FreePBX_Helpers implements BMO
 {
     private const STATE_FILE = '/var/lib/teliphones/session.json';
     private const DISABLED_FILE = '/var/lib/teliphones/disabled';
 
     public function __construct($freepbx = null) { parent::__construct($freepbx); }
+
+    public function install()
+    {
+        require_once __DIR__ . '/install.php';
+    }
+
+    public function uninstall()
+    {
+        require_once __DIR__ . '/uninstall.php';
+    }
+
+    public function doConfigPageInit($page): void
+    {
+    }
 
     public function getState(): array
     {

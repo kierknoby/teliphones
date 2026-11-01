@@ -1,6 +1,6 @@
-# TELIPHONES 0.0.1 testing
+# TELIPHONES 0.0.2 testing
 
-0.0.1 is an early test release for a **disposable FreePBX 17 / Debian 12 PBX**. Do not begin on a production PBX.
+0.0.2 is a compatibility update for testing on a **disposable FreePBX 17 / Debian 12 PBX**. Do not begin on a production PBX.
 
 The first objective is to prove TELIPHONES independently of any hosted integration. Test the local module with a disposable WireGuard peer, manual Checker evidence and a throw-away Console SSH key. Only after that passes should Connect, Checker and Console implementations be integrated.
 
