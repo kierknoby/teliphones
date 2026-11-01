@@ -1,0 +1,53 @@
+# Private credentials and certificate material
+*.key
+*.pem
+*.p12
+*.pfx
+*.p7b
+*.crt
+*.cer
+*.der
+!*.example.pem
+!*.example.crt
+.env
+.env.*
+!.env.example
+*.env
+*credentials*
+*secret*
+*token*
+
+# Runtime state, databases and logs
+*.sqlite
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*
+session.json
+adapter.json
+connect.json
+checker.json
+checker-challenge.json
+local-verification.json
+checker-probe.json
+wireguard/state.json
+access/
+logs/
+*.log
+*.jsonl
+
+# Generated security evidence and temporary artifacts
+*-evidence.json
+*-evidence-*.json
+teliphones-lab-evidence*.json
+*evidence*.json
+*.tmp
+*.tmp.*
+teliphones-*-dev.zip
+*-dev*.zip
+*.dev.zip
+*.tmp.zip
+
+# Language/runtime output
+__pycache__/
+*.py[cod]

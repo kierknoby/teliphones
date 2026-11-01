@@ -1,0 +1,25 @@
+<module>
+  <rawname>teliphones</rawname>
+  <name>TELIPHONES</name>
+  <version>0.0.1</version>
+  <publisher>FreePBX UK</publisher>
+  <license>GPLv3+</license>
+  <licenselink>https://www.gnu.org/licenses/gpl-3.0.txt</licenselink>
+  <category>Connectivity</category>
+  <description>Temporary, root-authorised remote support for FreePBX using a temporary support path with independent Connect, Checker and Console contracts.</description>
+  <menuitems>
+    <teliphones>TELIPHONES</teliphones>
+  </menuitems>
+  <depends>
+    <version>17.0.1</version>
+  </depends>
+  <supported>
+    <version>17.0</version>
+  </supported>
+  <console>
+    <command>
+      <name>teliphones</name>
+      <class>Teliphones</class>
+    </command>
+  </console>
+</module>

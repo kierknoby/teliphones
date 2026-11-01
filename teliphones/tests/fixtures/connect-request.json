@@ -1,0 +1,1 @@
+{"protocol":"teliphones-connect/1","session_id":"REPLACE_WITH_SESSION_ID","expires_at":1790003600,"topology":"on-pbx","pbx":{"freepbx_major":17,"wireguard_public_key":"REPLACE_WITH_PBX_WG_PUBLIC_KEY"},"network":{"preferred_pool":"10.20.17.0/24"}}

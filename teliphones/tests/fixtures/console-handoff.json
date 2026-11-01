@@ -1,0 +1,1 @@
+{"protocol":"teliphones-console/1","session_id":"REPLACE_WITH_SESSION_ID","expires_at":1790003600,"topology":"on-pbx","target":{"address":"10.20.17.1","port":22222,"username":"root"},"restrictions":{"session_only":true,"may_extend_grant":false,"may_authorise":false,"may_verify":false}}

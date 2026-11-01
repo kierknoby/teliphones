@@ -1,0 +1,46 @@
+{
+  "deployment_mode": "reference-lab",
+  "interface": "wg-teliphones",
+  "endpoint": "REPLACE_WITH_CONFIGURED_GATEWAY_HOST:51820",
+  "listen_port": 51820,
+  "public_key": "REPLACE_WITH_GENERATED_GATEWAY_WIREGUARD_PUBLIC_KEY",
+  "private_key_file": "/etc/wireguard/wg-teliphones-gateway.key",
+  "support_pool": "10.20.17.0/24",
+  "engineer_pool": "10.77.0.0/24",
+  "api_bind": "REPLACE_WITH_PRIVATE_CONTROL_API_BIND_ADDRESS",
+  "api_port": 9443,
+  "tls_certificate": "/etc/teliphones-gateway/api.crt",
+  "tls_private_key": "/etc/teliphones-gateway/api.key",
+  "client_ca": "/etc/teliphones-gateway/customer-ca.crt",
+  "checker": {
+    "wireguard_public_key": "REPLACE_WITH_CHECKER_PUBLIC_KEY",
+    "address": "10.77.0.254",
+    "probe_port": 22221
+  },
+  "engineers": {
+    "engineer-a": {
+      "wireguard_public_key": "REPLACE_WITH_INDIVIDUAL_ENGINEER_A_PUBLIC_KEY",
+      "address": "10.77.0.10",
+      "ssh_public_key": "REPLACE_WITH_INDIVIDUAL_ENGINEER_A_SSH_PUBLIC_KEY"
+    },
+    "engineer-b": {
+      "wireguard_public_key": "REPLACE_WITH_INDIVIDUAL_ENGINEER_B_PUBLIC_KEY",
+      "address": "10.77.0.11",
+      "ssh_public_key": "REPLACE_WITH_INDIVIDUAL_ENGINEER_B_SSH_PUBLIC_KEY"
+    }
+  },
+  "customers": {
+    "customer-a": {
+      "certificate_sha256": "REPLACE_WITH_CUSTOMER_A_MTLS_CERTIFICATE_SHA256_FINGERPRINT",
+      "engineers": ["engineer-a"],
+      "ssh_engineer": "engineer-a",
+      "services": [80, 443, 22222]
+    },
+    "customer-b": {
+      "certificate_sha256": "REPLACE_WITH_CUSTOMER_B_MTLS_CERTIFICATE_SHA256_FINGERPRINT",
+      "engineers": ["engineer-b"],
+      "ssh_engineer": "engineer-b",
+      "services": [80, 443, 22222]
+    }
+  }
+}

@@ -1,0 +1,1 @@
+{"protocol":"teliphones-checker/1","session_id":"REPLACE_WITH_SESSION_ID","topology":"on-pbx","nonce":"REPLACE_WITH_NONCE","observed_at":1790000050,"observations":{"authorised_source":{"support_service":"reachable"},"negative_source":{"support_service":"blocked"},"public_address":{"support_service":"reachable"},"unexpected_services":[]}}
