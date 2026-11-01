@@ -1,4 +1,4 @@
-# TELIPHONES 0.1.3 for FreePBX 17
+# TELIPHONES 0.2.0 for FreePBX 17
 
 ## Complete Installation on FreePBX 17
 
@@ -51,7 +51,7 @@ It does **not** authorise a remote support session, install packages, or change 
 
 ### After upgrading TELIPHONES
 
-A Module Admin upgrade updates the FreePBX module files but does not necessarily update the separately installed, root-owned broker (`/usr/local/lib/teliphones-broker/support_broker.py`), because Module Admin runs as the web service account. After every TELIPHONES upgrade, confirm that no support session is active (as root: `fwconsole teliphones status`), then rerun the root bootstrap procedure from an existing root shell and refresh Connectivity > TELIPHONES. TELIPHONES 0.1.3 requires the updated broker for live status and progress monitoring; until it is updated, the page reports **Root broker update required** and actions fall back to ordinary page submission without automatic progress updates.
+A Module Admin upgrade updates the FreePBX module files but does not necessarily update the separately installed, root-owned broker (`/usr/local/lib/teliphones-broker/support_broker.py`), because Module Admin runs as the web service account. After every TELIPHONES upgrade, confirm that no support session is active (as root: `fwconsole teliphones status`), then rerun the root bootstrap procedure from an existing root shell and refresh Connectivity > TELIPHONES. TELIPHONES 0.2.0 requires broker protocol 3 with valid workstation pairing status for Windows workstation operations and automatic monitoring; the 0.1.3 package supplied protocol 2. Until the broker is updated, the page reports **Root broker update required**, workstation operations are refused, and remote support actions fall back to ordinary page submission without automatic progress updates. Disconnect Windows tunnels before the bootstrap; valid pairings are restored when the broker restarts, without extending temporary expiry.
 
 ### Verify the broker
 
@@ -70,7 +70,20 @@ Successful results: `systemctl status` shows `Loaded: loaded (/etc/systemd/syste
 
 Do not change the socket's ownership or mode, the state directory permissions, or any security control to make the page work: the broker deliberately accepts only the FreePBX `asterisk` account. If a support session may be active while the broker is unavailable, revoke it as root with `fwconsole teliphones revoke`.
 
-## Browser support workflow (0.1.3)
+## Windows workstations: install, pair and connect
+
+1. Verify the supplied SHA-256 and upload `TELIPHONES-0.2.0.tgz` through **Admin > Module Admin**, then install/update TELIPHONES in place. This module-only package does not contain the Windows executable; retain the existing tested Windows application.
+2. With no active support session and Windows tunnels disconnected, rerun [Complete Installation on FreePBX 17](#complete-installation-on-freepbx-17) from an existing root shell. Open **Connectivity > TELIPHONES** as a full administrator over HTTPS. **Windows workstations** must be visible and **Root broker update required** must no longer appear. Pairing requires `wg`, `ip` and `nft` plus kernel WireGuard support. The existing **Approve installation of WireGuard tools** action installs `wg`; if iproute2 or nftables is missing, a root administrator must supply those system prerequisites separately.
+3. Install the official WireGuard for Windows separately with administrator approval. In the existing TELIPHONES Windows application choose **Add my PBX...**, enter a workstation name, choose **Generate request**, then **Copy request**. Keep this dialog open: the response is bound to this request and locally stored key.
+4. In **Windows workstations**, expand **Pair a workstation** and paste the request. Enter the PBX's genuinely reachable WireGuard hostname/IP and UDP port (default `51821`). The external UDP port must forward to that same PBX listener port. Permit the listener through the router, host firewall and FreePBX Firewall as required; TELIPHONES does not configure these policies. Do not publish TCP 22, 80 or 443 as part of this pairing.
+5. Select **Temporary** and a duration, or explicitly select **Persistent trusted workstation (until revoked)**. Pairing approves the PBX web interface; leave SSH **Not permitted** unless it is needed, then independently select **Permit SSH (TCP 22) with existing PBX credentials**. Click **Pair workstation** and compare the displayed key fingerprint with the Windows request dialog.
+6. Click **Copy pairing response** and paste it into the still-open Windows dialog. If SSH was approved, enter the authorised existing Linux account; otherwise leave it blank. Click **Save connection**. No SSH account, root password or SSH key is created or granted by pairing.
+7. Select the saved connection and click **Connect**. Approve the Windows tunnel-service UAC request. Wait for a genuine handshake/reachability result, then use **Open FreePBX** or, only if approved, **Open SSH**. The client routes only this PBX's `/32`. Sign in with existing credentials. The response currently opens `http://<paired-PBX-address>/admin/` inside WireGuard; it does not disable or bypass FreePBX authentication.
+8. Click **Disconnect** to stop/remove the Windows tunnel service. To remove PBX authority, open **Windows workstations** and click that workstation's **Revoke** (or **Revoke all workstations** when multiple are listed). This removes temporary or persistent pairing authority. If cleanup fails, the page reports an error and exposes **Revoke all workstations** for retry even if no pairing remains listed; do not treat a failed operation as verified revocation. If interface deletion fails, the broker attempts to disable it and retains the restrictive firewall instead of opening its traffic. Inspect the broker as root if retry fails. Removing the local Windows profile alone does not revoke the PBX peer. After verified PBX revocation the saved profile cannot reconnect without a fresh PBX approval.
+
+The table reports pairing permissions/expiry and the last WireGuard handshake, not a fabricated connected state. A handshake timestamp does not prove present GUI/SSH reachability; refresh the page for a fresh workstation snapshot. A missing handshake can mean a disconnected workstation, incorrect endpoint, firewall/NAT limitation or unavailable kernel WireGuard. Temporary expiry is reconciled by the broker approximately every 15 seconds. PBX-side revocation removes access during the revoke operation; Windows detects lost reachability through its existing polling, not server push. Perform the first real Windows/PBX traffic test on the disposable test system before claiming end-to-end connectivity. Direct **My PBX** pairing does not require the reference gateway or Checker; **Remote Support** retains its separate, time-limited engineer, Connect and independent Checker requirements.
+
+## Browser support workflow (0.2.0)
 
 Connectivity > TELIPHONES provides administrator-only enrollment, dependency approval, authorisation, session status, signed Checker evidence submission and revocation. The established `defined('FREEPBX_IS_AUTH')` guard prevents direct script access; the constant's value is not an authentication credential. Administrator identity comes from the server-side `AMP_user` session and administrator context. Resolution prefers the framework-provided `$ampuser`, otherwise uses the session object or constructs the available `ampuser` class from a scalar session username. Full access requires `checkSection('*')` to return boolean `true` or integer `1`; arbitrary truthy strings, missing/malformed sessions, restricted users and unavailable permission APIs fail closed. The same gate precedes every GET and privileged POST, and POST actions still require CSRF validation. Successful authorization proceeds to broker readiness; authentication/permission errors are distinct from broker availability errors.
 
@@ -96,7 +109,7 @@ The reference gateway has **no automatic signed Checker service**, so evidence d
 
 ### Disposable PBX test procedure
 
-1. Upload `TELIPHONES-0.1.3.tgz` through Module Admin and install/update in place.
+1. Upload `TELIPHONES-0.2.0.tgz` through Module Admin and install/update in place.
 2. Open Connectivity > TELIPHONES as a full administrator; confirm a delegated user cannot access it. If the page reports **Root broker not installed**, confirm all broker actions are disabled and that submitting them is refused, then follow [Complete Installation on FreePBX 17](#complete-installation-on-freepbx-17) from a root shell and refresh; the broker must then show as operational. Also stop the service to confirm the **stopped** guidance and recovery.
 3. Approve WireGuard tools installation and confirm that the **WireGuard wg** row shows a spinner, then the verified result, without refreshing; the install button must then be disabled. Check all prerequisites; missing components must keep authorisation disabled.
 4. Deploy/enroll the external gateway and independent Checker; save their enrollment material over HTTPS. Never reuse production keys.
@@ -111,11 +124,11 @@ The module separates external support functions into three integration contracts
 
 ## ⚠️ Not Currently Suitable for Production
 
-TELIPHONES 0.1.3 adds live status and progress monitoring to the browser workflow while preserving the 0.1.2 direct-access guard correction, administrator permission enforcement, the 0.1.0 milestone's browser workflow and FreePBX 17 compatibility corrections.
+TELIPHONES 0.2.0 integrates administrator-approved Windows workstations and direct WireGuard PBX access alongside the 0.1.3 live-status remote support workflow, preserving earlier authentication and FreePBX 17 compatibility corrections.
 
-It has not yet completed live installation, end-to-end integration, failure-recovery or adversarial security testing on FreePBX 17.
+The earlier module installation/bootstrap has been tested on FreePBX 17, but 0.2.0 workstation pairing has not completed live installation, end-to-end traffic, failure-recovery or adversarial security testing.
 
-**Do not install TELIPHONES 0.1.3 on a production PBX.**
+**Do not install TELIPHONES 0.2.0 on a production PBX.**
 
 Testing should be performed only on a disposable FreePBX 17 system where unexpected network, SSH or service behaviour can be investigated without affecting live communications.
 
@@ -123,21 +136,21 @@ The security controls documented below describe the behaviour TELIPHONES is desi
 
 ## Release Status
 
-TELIPHONES 0.1.3 is the current repository development milestone for FreePBX 17.
+TELIPHONES 0.2.0 is the current repository development milestone for FreePBX 17. The native Windows executable has successfully compiled and launched in user-run Windows testing; the complete workstation-to-PBX network flow still requires real integration testing.
 
 The complete executable local implementation currently targets the **On-PBX** topology. On-net and Off-net are defined integration topologies and require external Connect implementations.
 
-0.1.3 is intended for development, review and controlled testing rather than production deployment.
+0.2.0 is intended for development, review and controlled testing rather than production deployment.
 
 ## Compatibility
 
-Primary target: FreePBX 17 on Debian 12. Installation and end-to-end compatibility have not yet been validated on that platform. No compatibility claim is made for FreePBX 16 or PBXact.
+Primary target: FreePBX 17 on Debian 12. Earlier module installation and root bootstrap were verified there; 0.2.0 workstation pairing and end-to-end compatibility remain unvalidated on a real PBX. No compatibility claim is made for FreePBX 16 or PBXact.
 
 FreePBX 16 is not currently supported.
 
 ## Requirements
 
-For local 0.1.3 testing:
+For local 0.2.0 testing:
 
 - FreePBX 17 on Debian 12
 - root access for installation and support authorisation
@@ -162,7 +175,7 @@ TELIPHONES defines three topology names.
 
 The private support connection terminates directly on the FreePBX server.
 
-This is the locally implemented topology in 0.1.3. TELIPHONES creates an ephemeral WireGuard interface named `wg-teliphones`.
+This is the locally implemented support topology in 0.2.0. TELIPHONES creates an ephemeral WireGuard interface named `wg-teliphones`; administrator workstation pairing uses the separate `tlp-admin` interface.
 
 For FreePBX 17, the preferred private allocation pool is `10.20.17.0/24`. This is an allocation pool, not a route. Each session uses only the address space required for that connection.
 
@@ -203,7 +216,7 @@ In short:
 
 A reboot does not reset or extend the original expiry. If a grant remains valid after reboot, TELIPHONES can reconcile the still-valid session state, but the privileged temporary SSH service is not silently reopened.
 
-Disabling TELIPHONES revokes active local access and prevents new grants until the module is enabled again.
+Disabling TELIPHONES revokes active local support access and prevents new grants until the module is enabled again. The broker also removes workstation network access on its approximately 15-second reconciliation cycle and refuses to restore it while disabled. Pairing metadata is retained; re-enabling followed by broker restart or fresh approved pairing reapplies still-valid entries without extending temporary expiry.
 
 ## Connect
 
@@ -313,7 +326,7 @@ fwconsole ma list | grep -i teliphones
 fwconsole teliphones check
 ```
 
-For 0.1.3, perform this only on a disposable FreePBX 17 test system.
+For 0.2.0, perform this only on a disposable FreePBX 17 test system.
 
 A repository installation option can be documented when a public TELIPHONES repository and supported branch structure are published.
 
@@ -418,11 +431,11 @@ The FreePBX page now offers an administrator-approved workflow through the restr
 
 For On-PBX, TELIPHONES also avoids using the normal PBX SSH listener as its temporary support service. Temporary network and authentication material is scoped to the support session and removed during local cleanup.
 
-These are design properties of 0.1.3. They require live and adversarial testing before they should be treated as validated security guarantees.
+These are design properties of 0.2.0. They require live and adversarial testing before they should be treated as validated security guarantees.
 
 ## Current Limitations
 
-TELIPHONES 0.1.3 is a development milestone, and current limitations include:
+TELIPHONES 0.2.0 is a development milestone, and current limitations include:
 
 - live FreePBX 17 installation validation is pending;
 - end-to-end integration testing is pending;
@@ -519,7 +532,7 @@ For installation help, testing feedback, troubleshooting or general support, con
 
 https://freepbx.uk/support/
 
-When requesting support during the 0.1.3 testing phase, include the following where relevant:
+When requesting support during the 0.2.0 testing phase, include the following where relevant:
 
 - FreePBX version;
 - Debian version;
@@ -554,7 +567,7 @@ The human contributor remains solely responsible for the contribution. AI tools 
 
 ## Experimental Windows desktop client
 
-The native C++17 Win32/MFC client is under [`../desktop/windows/`](../desktop/windows/README.md). It supports administrator-owned workstation pairing and imported, customer-authorised Remote Support grants. It uses the official WireGuard for Windows installation and requires explicit Windows administrator approval for tunnel service setup. The client is experimental and has not been built or tested on Windows in this development environment.
+The native C++17 Win32/MFC client is under [`../desktop/windows/`](../desktop/windows/README.md). It supports administrator-owned workstation pairing and imported, customer-authorised Remote Support grants. It uses the official WireGuard for Windows installation and requires explicit Windows administrator approval for tunnel service setup. The client has compiled and launched in user-run Windows testing; this Linux development environment cannot validate Win32 APIs or real Windows/PBX traffic.
 
 Administrator workstation pairing is separate from MSP session authorization. It is explicitly approved and revocable in **Connectivity > TELIPHONES > Windows workstations**. Persistent pairing lasts until revoked; temporary pairing expires on the PBX. Revoke a workstation on the PBX before deleting its local Windows profile. See [the workstation pairing contract](docs/WORKSTATION-PAIRING.md).
 

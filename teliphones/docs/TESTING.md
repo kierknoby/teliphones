@@ -1,8 +1,8 @@
-# TELIPHONES 0.1.3 testing
+# TELIPHONES 0.2.0 testing
 
-0.1.3 is a development milestone for testing on a **disposable FreePBX 17 / Debian 12 PBX**. Do not begin on a production PBX.
+0.2.0 is a development milestone for testing on a **disposable FreePBX 17 / Debian 12 PBX**. Do not begin on a production PBX.
 
-For the administrator-operated browser workflow, start with the [module README](../README.md#browser-support-workflow-012). The CLI steps below remain platform recovery and direct integration tests, not required browser operations. Local regression tests use framework stubs and mocked privileged broker calls; they do not prove real systemd, apt, SSH or FreePBX administrator permissions.
+For workstation pairing, start with [install, pair and connect](../README.md#windows-workstations-install-pair-and-connect); for remote support use the [browser workflow](../README.md#browser-support-workflow-020). The CLI steps below remain platform recovery and direct integration tests, not required browser operations. Local regression tests use framework stubs and mocked privileged broker calls; they do not prove real systemd, apt, SSH or FreePBX administrator permissions.
 
 The first objective is to prove TELIPHONES independently of any hosted integration. Test the local module with a disposable WireGuard peer, manual Checker evidence and a throw-away Console SSH key. Only after that passes should Connect, Checker and Console implementations be integrated.
 
@@ -35,7 +35,13 @@ fwconsole teliphones check
 fwconsole teliphones status
 ```
 
-Confirm the module is enabled but support is off. Confirm the GUI is observational: it must not be able to create privileged authority.
+Confirm the module is enabled but support is off. A read-only page/status request must not create authority. Explicit full-administrator, CSRF-protected approval is required for privileged broker actions.
+
+### Windows pairing validation
+
+Run the documented Windows pairing steps with a genuinely reachable UDP endpoint. Test temporary web-only and explicitly persistent web-plus-SSH approval. Compare fingerprints; verify only the PBX `/32` is routed and ordinary credentials remain necessary. Check the last-handshake table, **Disconnect**, individual **Revoke**, persistent removal and automatic expiry. A revoked saved profile must not regain access without fresh approval. Confirm a protocol-2 or malformed protocol-3 broker displays **Root broker update required** and refuses pairing server-side while the existing remote support workflow remains available.
+
+Portable CTest executes the actual Python broker approval/revocation with only OS network calls doubled, and feeds its generated responses into the actual C++ parser, profile serialization/reload and tunnel renderer. It covers temporary/persistent expiry, SSH scope, request key/nonce binding and reference-gateway support configuration; this is not a real tunnel or Windows Credential Manager/systemd test.
 
 Run a management command as a non-root user. It must be refused.
 

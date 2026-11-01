@@ -45,6 +45,7 @@ namespace {
     $GLOBALS['brokerRequests'] = 0;
     $GLOBALS['brokerPeers'] = [];
     $readyStatus = ['ok' => true, 'error' => null, 'status' => ['protocol' => 3, 'phase' => 'Missing dependency', 'enabled' => true, 'can_authorise' => true,
+        'workstations' => ['ready' => false, 'requirements' => ['wg' => false, 'ip' => true, 'nft' => true], 'items' => []],
         'readiness' => ['WireGuard wg' => false, 'Temporary SSH server' => true, 'Gateway enrollment' => true, 'Checker trusted public key' => false]]];
     $GLOBALS['brokerResponses'] = [];
     if ($scenario === 'invalid-status-authorise-post') $GLOBALS['brokerResponses'] = [['ok' => false, 'error' => 'Broker internal failure.']];

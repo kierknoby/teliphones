@@ -1,12 +1,12 @@
 <module>
   <rawname>teliphones</rawname>
   <name>TELIPHONES</name>
-  <version>0.1.3</version>
+  <version>0.2.0</version>
   <publisher>FreePBX UK</publisher>
   <license>GPLv3+</license>
   <licenselink>https://www.gnu.org/licenses/gpl-3.0.txt</licenselink>
   <category>Connectivity</category>
-  <description>Temporary, root-authorised remote support for FreePBX using a temporary support path with independent Connect, Checker and Console contracts.</description>
+  <description>Administrator-approved Windows workstation pairing and direct WireGuard PBX access alongside temporary remote support with independent Connect, Checker and Console contracts.</description>
   <menuitems>
     <teliphones>TELIPHONES</teliphones>
   </menuitems>

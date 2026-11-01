@@ -364,20 +364,31 @@ class Broker:
         return public
 
     def teardown_workstations(self):
-        for name in ("ip", "nft"):
-            try:
-                self.tool(name)
-            except BrokerError:
-                continue
-            if name == "ip":
-                self.run([self.tool("ip"), "link", "del", "dev", WORKSTATION_IFACE], check=False)
-            else:
-                self.run([self.tool("nft"), "delete", "table", "inet", WORKSTATION_TABLE], check=False)
+        try:
+            ip = self.tool("ip")
+        except BrokerError:
+            if (STATE / "workstations.json").exists():
+                raise BrokerError("Workstation teardown cannot be verified without iproute2. Restore iproute2 and retry revocation.")
+            return
+        self.run([ip, "link", "del", "dev", WORKSTATION_IFACE], check=False)
+        if self.run([ip, "link", "show", "dev", WORKSTATION_IFACE], check=False) is not None:
+            # Keep the restrictive firewall if deletion failed, and stop traffic before reporting failure.
+            self.run([ip, "link", "set", "down", "dev", WORKSTATION_IFACE])
+            raise BrokerError("Workstation interface could not be removed and was disabled. Retry revocation and inspect the broker.")
+        try:
+            nft = self.tool("nft")
+        except BrokerError:
+            if (STATE / "workstations.json").exists():
+                raise BrokerError("Workstation interface was removed, but firewall cleanup cannot be verified without nftables.")
+            return
+        self.run([nft, "delete", "table", "inet", WORKSTATION_TABLE], check=False)
+        if self.run([nft, "list", "table", "inet", WORKSTATION_TABLE], check=False) is not None:
+            raise BrokerError("Workstation interface was removed, but firewall cleanup is incomplete. Retry revocation.")
 
     def apply_workstations(self, state):
         """Make the kernel match the state. Fails closed: any error removes all workstation access."""
         try:
-            if not state["workstations"]:
+            if not state["workstations"] or (STATE / "disabled").exists():
                 self.teardown_workstations()
                 self.workstation_error = ""
                 return
@@ -400,7 +411,11 @@ class Broker:
             self.run([ip, "link", "set", "up", "dev", WORKSTATION_IFACE])
             self.workstation_error = ""
         except (BrokerError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
-            self.teardown_workstations()
+            try:
+                self.teardown_workstations()
+            except (BrokerError, OSError, subprocess.SubprocessError) as cleanup_error:
+                self.workstation_error = "Workstation cleanup could not be confirmed: " + (str(cleanup_error) if isinstance(cleanup_error, BrokerError) else "network operation failed.")
+                raise BrokerError(self.workstation_error) from error
             self.workstation_error = "Workstation access could not be applied and was removed: " + (str(error) if isinstance(error, BrokerError) else "network configuration failed.")
             raise BrokerError(self.workstation_error) from error
 
@@ -421,6 +436,7 @@ class Broker:
             if changed:
                 self.save_workstations(state)
                 self.audit("workstation-expired", 0, "completed")
+            if changed or (STATE / "disabled").exists():
                 try:
                     self.apply_workstations(state)
                 except BrokerError:
@@ -483,21 +499,30 @@ class Broker:
         if len(state["workstations"]) == before and request["workstation_id"] != "all":
             raise BrokerError("Unknown workstation; it may already have been revoked or expired.")
         self.save_workstations(state)
-        try:
-            self.apply_workstations(state)
-        except BrokerError:
-            # apply_workstations has already removed all workstation access, so revocation still holds.
-            pass
+        self.apply_workstations(state)
         self.audit("unpair", uid, "completed")
 
     def workstation_status(self):
         state, _ = self.workstation_state()
         requirements = {name: any(os.access(path, os.X_OK) for path in paths) for name, paths in TOOLS.items()}
-        return {"ready": all(requirements.values()), "requirements": requirements, "error": self.workstation_error,
+        handshakes = {}
+        error = self.workstation_error
+        if state["workstations"] and not error:
+            try:
+                output = self.run([self.tool("wg"), "show", WORKSTATION_IFACE, "latest-handshakes"])
+                for line in output.splitlines():
+                    key, timestamp = line.split()
+                    if not WG_PUBLIC_KEY.fullmatch(key) or not timestamp.isdigit():
+                        raise ValueError("Invalid WireGuard handshake status.")
+                    handshakes[key] = int(timestamp)
+            except (BrokerError, OSError, ValueError, subprocess.SubprocessError):
+                error = "Workstation connection status could not be read. Check the broker and tlp-admin interface; pairing is not proof of connectivity."
+        return {"ready": all(requirements.values()) and not (STATE / "disabled").exists(), "requirements": requirements, "error": error,
                 "listen_port": state["listen_port"],
                 "pbx_address": str(ipaddress.IPv4Network(state["subnet"])[1]) if state["subnet"] and state["workstations"] else None,
                 "items": [{"id": item["id"], "name": item["name"], "address": item["address"], "mode": item["mode"],
                            "ssh": item.get("ssh") is True, "created_at": item.get("created_at"), "expires_at": item.get("expires_at"),
+                           "last_handshake": handshakes.get(item["public_key"]),
                            "fingerprint": key_fingerprint(item["public_key"])} for item in state["workstations"]]}
 
     def configure(self, request):

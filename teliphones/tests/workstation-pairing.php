@@ -11,12 +11,13 @@ $recorder = new class extends WebSupport {
     public array $reply = ['ok' => true, 'message' => 'paired', 'pairing_response' => 'TELIPHONES-PAIR-RESPONSE-1:eyJzY2hlbWEiOiJ0ZWxpcGhvbmVzIn0'];
     public function request(array $request): array
     {
-        if ($request['action'] === 'status') return ['ok' => true, 'status' => ['protocol' => 3, 'phase' => 'Ready']];
+        if ($request['action'] === 'status') return ['ok' => true, 'status' => ['protocol' => 3, 'phase' => 'Ready',
+            'workstations' => ['ready' => true, 'requirements' => ['wg' => true, 'ip' => true, 'nft' => true], 'items' => []]]];
         $this->sent[] = $request;
         return $this->reply;
     }
 };
-$operational = ['ok' => true, 'status' => ['protocol' => 3, 'phase' => 'Ready']];
+$operational = $recorder->request(['action' => 'status']);
 $https = ['HTTPS' => 'on', 'SERVER_PORT' => '443'];
 $post = ['token' => 'known', 'action' => 'pair', 'request' => 'TELIPHONES-PAIR-REQUEST-1:abc', 'endpoint_host' => 'pbx.example.net',
     'listen_port' => '51821', 'mode' => 'temporary', 'minutes' => '60', 'ssh' => '1',
@@ -46,6 +47,18 @@ foreach ([['token' => 'wrong'] + $post, ['action' => 'pair'] + array_diff_key($p
 $result = WebSupport::handleAction($recorder, $post, 'known', ['ok' => false, 'unavailable' => true], $https);
 $assert(!$result['dispatched'] && !empty($result['notice']['unavailable']), 'Pairing must be refused when the broker is unavailable.');
 $assert($recorder->sent === [], 'Refused pairing requests must never reach the broker.');
+foreach ([
+    ['ok' => true, 'status' => ['protocol' => 2]],
+    ['ok' => true, 'status' => ['protocol' => 3]],
+    ['ok' => true, 'status' => ['protocol' => 3, 'workstations' => ['ready' => true, 'items' => [], 'requirements' => ['wg' => true]]]],
+] as $incompatible) {
+    $assert(!WebSupport::publicStatus($incompatible, ['available' => true])['broker_current'], 'A version number must not conceal missing pairing capabilities.');
+    foreach (['pair', 'unpair'] as $action) {
+        $result = WebSupport::handleAction($recorder, ['action' => $action, 'workstation_id' => 'all'] + $post, 'known', $incompatible, $https);
+        $assert(!$result['dispatched'] && !empty($result['notice']['action_failed']), 'Incompatible workstation operations must fail before broker dispatch.');
+    }
+}
+$assert($recorder->sent === [], 'Incompatible pairing requests must never reach the broker.');
 
 // AJAX action route: pairing response is passed through only when well-formed.
 $session = ['AMP_user' => 'admin', 'teliphones_token' => 'known'];
@@ -62,7 +75,7 @@ $assert($ajax['code'] === 403 && $recorder->sent === [], 'Restricted administrat
 
 // Status sanitisation.
 $item = ['id' => '0123456789abcdef', 'name' => 'ADMIN-PC', 'address' => '100.70.1.2/32', 'mode' => 'temporary', 'ssh' => true,
-    'created_at' => 1, 'expires_at' => 2000000000, 'fingerprint' => 'SHA256:abcdefghijklmnop', 'public_key' => 'LEAKED-PUBLIC-KEY'];
+    'created_at' => 1, 'expires_at' => 2000000000, 'last_handshake' => 0, 'fingerprint' => 'SHA256:abcdefghijklmnop', 'public_key' => 'LEAKED-PUBLIC-KEY'];
 $status = ['ok' => true, 'status' => ['protocol' => 3, 'phase' => 'Ready', 'workstations' => ['ready' => true, 'requirements' => ['wg' => true, 'ip' => true, 'nft' => true],
     'error' => '', 'listen_port' => 51821, 'pbx_address' => '100.70.1.1', 'items' => [$item, ['id' => '../../x', 'name' => 'bad']]]]];
 $workstations = WebSupport::workstations($status);
@@ -89,6 +102,12 @@ $assert(strpos($html, '<h3 id="teliphones-workstations">Windows workstations</h3
     && strpos($html, 'LEAKED-PUBLIC-KEY') === false && strpos($html, '../../x') === false, 'Paired workstations must be listed without keys.');
 $assert(!$buttonDisabled($html, 'pair') && !$buttonDisabled($html, 'unpair') && strpos($html, 'value="pbx.example.net"') !== false
     && strpos($html, 'value="51821"') !== false, 'Ready broker must enable pairing and prefill the endpoint.');
+$assert(strpos($html, 'Authorised; no handshake yet') !== false && strpos($html, 'Add my PBX...') !== false, 'Pairing status must not claim connectivity and must name actual Windows controls.');
+$handshake = $status;
+$handshake['status']['workstations']['items'][0]['last_handshake'] = 1790000000;
+$assert(strpos($render($handshake), 'Last handshake ') !== false, 'Verified handshake timestamp must be rendered.');
+$handshake['status']['workstations']['items'][0]['last_handshake'] = 'secret';
+$assert(strpos($render($handshake), 'Not verified (status unavailable)') !== false, 'Malformed handshake must not imply connectivity.');
 $assert(strpos($html, 'teliphones-pairing-response') === false, 'No pairing response is shown unless pairing just succeeded.');
 $assert(preg_match('/<form method="post" autocomplete="off">\s*<input type="hidden" name="token" value="test-token">\s*<fieldset id="teliphones-pair-fields">/', $html) === 1,
     'Pairing form must carry the CSRF token and must not be intercepted by the live-status script.');
@@ -103,6 +122,12 @@ $assert(strpos($html, 'teliphones-pairing-response') === false && strpos($html, 
 $notReady = $status;
 $notReady['status']['workstations']['ready'] = false;
 $notReady['status']['workstations']['requirements']['nft'] = false;
+$recorder->sent = [];
+$result = WebSupport::handleAction($recorder, $post, 'known', $notReady, $https);
+$assert(!$result['dispatched'] && $recorder->sent === [], 'Missing dependencies must block pairing server-side.');
+$disabled = $status;
+$disabled['status']['enabled'] = false;
+$assert(!WebSupport::workstations($disabled)['ready'], 'Disabled TELIPHONES must not allow new pairings.');
 $html = $render($notReady);
 $assert($buttonDisabled($html, 'pair') && strpos($html, 'Missing: nft') !== false, 'Missing nftables must disable pairing with an explanation.');
 
@@ -119,5 +144,10 @@ $many['status']['workstations']['items'][] = ['id' => 'fedcba9876543210', 'name'
 $html = $render($many);
 $assert(strpos($html, 'Revoke all workstations') !== false && strpos($html, 'Persistent (until revoked)') !== false && strpos($html, 'Web interface only') !== false,
     'Multiple workstations must be individually and collectively revocable.');
+$cleanup = $status;
+$cleanup['status']['workstations']['items'] = [];
+$cleanup['status']['workstations']['error'] = 'Workstation cleanup could not be confirmed.';
+$html = $render($cleanup);
+$assert(strpos($html, 'Revoke all workstations') !== false && !$buttonDisabled($html, 'unpair'), 'Failed cleanup must remain retryable even when saved pairing authority is already removed.');
 
 echo "Workstation pairing tests: PASS (field allowlist, HTTPS/CSRF, restricted admins, sanitised status, GUI states, revocation)\n";

@@ -321,9 +321,11 @@ class FakeNetwork:
     def __init__(self):
         self.calls = []
         self.link = False
+        self.up = False
         self.peers = {}
         self.ruleset = None
         self.fail = None
+        self.handshakes = {}
 
     def run(self, arguments, stdin=None, check=True):
         name, rest = arguments[0], arguments[1:]
@@ -337,7 +339,9 @@ class FakeNetwork:
         if name == "ip" and rest[:2] == ["link", "add"]:
             self.link = True
         if name == "ip" and rest[:2] == ["link", "del"]:
-            self.link, self.peers = False, {}
+            self.link, self.up, self.peers = False, False, {}
+        if name == "ip" and rest[:2] == ["link", "set"]:
+            self.up = "up" in rest
         if name == "ip" and rest[:2] == ["-4", "-o"]:
             return "2: eth0    inet 192.168.1.10/24 brd 192.168.1.255 scope global eth0\n"
         if name == "ip" and rest[:2] == ["-4", "route"]:
@@ -348,6 +352,8 @@ class FakeNetwork:
             return "P" * 42 + "A=\n"
         if name == "wg" and rest[:3] == ["show", broker_module.WORKSTATION_IFACE, "peers"]:
             return "\n".join(self.peers)
+        if name == "wg" and rest == ["show", broker_module.WORKSTATION_IFACE, "latest-handshakes"]:
+            return "\n".join("%s\t%d" % (key, self.handshakes.get(key, 0)) for key in self.peers)
         if name == "wg" and rest[:1] == ["set"] and "peer" in rest:
             key = rest[rest.index("peer") + 1]
             if "remove" in rest:
@@ -358,6 +364,8 @@ class FakeNetwork:
             self.ruleset = stdin
         if name == "nft" and rest[:1] == ["delete"]:
             self.ruleset = None
+        if name == "nft" and rest[:1] == ["list"]:
+            return self.ruleset
         return ""
 
 
@@ -480,10 +488,33 @@ class WorkstationPairingTests(unittest.TestCase):
 
     def test_revocation_holds_even_when_network_update_fails(self):
         _, first = self.pair()
+        self.pair(public_key="B" * 42 + "E=")
         self.net.fail = lambda name, rest: name == "nft" and rest == ["-f", "-"]
-        self.broker.dispatch({"action": "unpair", "workstation_id": first["workstation_id"]}, 1000)
+        with self.assertRaises(broker_module.BrokerError):
+            self.broker.dispatch({"action": "unpair", "workstation_id": first["workstation_id"]}, 1000)
         self.assertFalse(self.net.link)
-        self.assertEqual(json.loads((self.state / "workstations.json").read_text())["workstations"], [])
+        self.assertNotIn(first["workstation_id"], [item["id"] for item in json.loads((self.state / "workstations.json").read_text())["workstations"]])
+
+    def test_failed_interface_deletion_disables_traffic_and_preserves_firewall(self):
+        self.pair()
+        self.net.fail = lambda name, rest: name == "ip" and rest[:2] == ["link", "del"]
+        with self.assertRaisesRegex(broker_module.BrokerError, "disabled"):
+            self.broker.dispatch({"action": "unpair", "workstation_id": "all"}, 1000)
+        self.assertTrue(self.net.link)
+        self.assertFalse(self.net.up)
+        self.assertIsNotNone(self.net.ruleset)
+        self.assertIn("could not be confirmed", self.broker.workstation_error)
+        self.net.fail = None
+        self.assertTrue(self.broker.dispatch({"action": "unpair", "workstation_id": "all"}, 1000)["ok"])
+        self.assertFalse(self.net.link)
+
+    def test_failed_firewall_cleanup_is_not_reported_as_success(self):
+        self.pair()
+        self.net.fail = lambda name, rest: name == "nft" and rest[:1] == ["delete"]
+        with self.assertRaisesRegex(broker_module.BrokerError, "cleanup"):
+            self.broker.dispatch({"action": "unpair", "workstation_id": "all"}, 1000)
+        self.assertFalse(self.net.link)
+        self.assertIsNotNone(self.net.ruleset)
 
     def test_failed_pairing_fails_closed_and_restores_previous_state(self):
         self.net.fail = lambda name, rest: name == "wg" and "allowed-ips" in rest
@@ -506,15 +537,44 @@ class WorkstationPairingTests(unittest.TestCase):
         status = self.broker.status()["workstations"]
         self.assertEqual(set(status), {"ready", "requirements", "error", "listen_port", "pbx_address", "items"})
         item = status["items"][0]
-        self.assertEqual(set(item), {"id", "name", "address", "mode", "ssh", "created_at", "expires_at", "fingerprint"})
+        self.assertEqual(set(item), {"id", "name", "address", "mode", "ssh", "created_at", "expires_at", "fingerprint", "last_handshake"})
         self.assertTrue(item["fingerprint"].startswith("SHA256:"))
+        self.assertEqual(item["last_handshake"], 0)
         self.assertNotIn("A" * 42, json.dumps(status))
+
+    def test_handshake_status_is_read_only_and_does_not_claim_reachability(self):
+        self.pair()
+        self.net.handshakes["A" * 42 + "E="] = 1790000000
+        self.net.calls = []
+        status = self.broker.status()
+        self.assertEqual(status["protocol"], 3)
+        self.assertEqual(status["workstations"]["items"][0]["last_handshake"], 1790000000)
+        self.assertEqual(self.net.calls, [("wg", ("show", broker_module.WORKSTATION_IFACE, "latest-handshakes"))])
+        self.assertNotIn("A" * 42, json.dumps(status))
+
+    def test_handshake_query_failure_reports_unverified_status(self):
+        self.pair()
+        self.net.fail = lambda name, rest: name == "wg" and "latest-handshakes" in rest
+        status = self.broker.status()["workstations"]
+        self.assertIsNone(status["items"][0]["last_handshake"])
+        self.assertIn("could not be read", status["error"])
+        self.assertTrue(self.net.link)
 
     def test_disabled_teliphones_refuses_pairing(self):
         (self.state / "disabled").write_text("")
         with self.assertRaises(broker_module.BrokerError):
             self.pair()
         self.assertEqual(self.net.calls, [])
+
+    def test_disabled_teliphones_removes_workstation_access_and_prevents_restore(self):
+        self.pair()
+        (self.state / "disabled").write_text("")
+        self.broker.expire_workstations()
+        self.assertFalse(self.net.link)
+        self.assertIsNone(self.net.ruleset)
+        self.broker.restore_workstations()
+        self.assertFalse(self.net.link)
+        self.assertFalse(self.broker.workstation_status()["ready"])
 
     def test_broker_restart_restores_only_unexpired_pairings(self):
         self.pair(mode="temporary")

@@ -147,6 +147,7 @@ try {
     $html = $renderBroker(['available' => false, 'condition' => 'stopped', 'service' => '<script>']);
     $assert(strpos($html, '"<script>"') === false && strpos($html, '&lt;script&gt;') !== false, 'Service state must be escaped.');
     $html = $renderBroker(['available' => true, 'condition' => 'operational'], ['ok' => true, 'error' => null, 'status' => ['protocol' => 3, 'phase' => 'Ready', 'enabled' => true, 'can_authorise' => true,
+        'workstations' => ['ready' => true, 'requirements' => ['wg' => true, 'ip' => true, 'nft' => true], 'items' => []],
         'readiness' => ['WireGuard wg' => true, 'Gateway enrollment' => true]]]);
     $assert(strpos($html, 'Operational (control socket verified)') !== false && strpos($html, 'missing') === false
         && strpos($html, 'teliphones-install') === false && strpos($html, 'teliphones-troubleshooting') === false

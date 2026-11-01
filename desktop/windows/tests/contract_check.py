@@ -8,8 +8,10 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[3]
 TOOL = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("TELIPHONES_CONTRACT_TOOL", "")
@@ -31,7 +33,8 @@ def main():
     if not TOOL:
         print("usage: contract_check.py <path-to-contract_tool>")
         return 2
-    broker = load("support_broker", ROOT / "teliphones" / "support_broker.py")
+    broker_tests = load("broker_tests", ROOT / "gateway" / "tests" / "test_support_broker.py")
+    broker = broker_tests.broker_module
     engineer = load("engineer_config", ROOT / "gateway" / "engineer_config.py")
     key = base64.b64encode(hashlib.sha256(b"workstation").digest()).decode()
     pbx_key = base64.b64encode(hashlib.sha256(b"pbx").digest()).decode()
@@ -44,21 +47,42 @@ def main():
     if not parsed or parsed["public_key"] != key or parsed["nonce"] != nonce or parsed["workstation"] != "ADMIN-PC (Office)":
         failures.append("broker did not accept the C++ pairing request: %s" % request)
 
-    # Same construction as Broker.pair() in support_broker.py.
-    response = {"schema": "teliphones-pair-response/1", "nonce": nonce, "workstation_id": "0123456789abcdef", "workstation_public_key": key,
-                "address": "100.83.17.2/32", "pbx_address": "100.83.17.1", "pbx_name": "freepbx", "pbx_public_key": pbx_key,
-                "endpoint": broker.endpoint_host("PBX.Example.NET") + ":51821", "mode": "temporary", "expires_at": 2000000000, "ssh": True,
-                "gui_url": "http://100.83.17.1/admin/"}
-    code = broker.PAIR_RESPONSE_PREFIX + broker.b64url_encode(json.dumps(response, separators=(",", ":"), sort_keys=True).encode())
-    status, output = tool("response", code, nonce, key)
-    if status != 0 or output != "0123456789abcdef 100.83.17.2/32 100.83.17.1 pbx.example.net:51821 temporary 2000000000 ssh":
-        failures.append("C++ core rejected a broker pairing response: %s" % output)
-    persistent = dict(response, mode="persistent", expires_at=None, ssh=False)
-    code = broker.PAIR_RESPONSE_PREFIX + broker.b64url_encode(json.dumps(persistent, separators=(",", ":"), sort_keys=True).encode())
-    if tool("response", code, nonce, key)[1].split()[-3:] != ["persistent", "0", "nossh"]:
-        failures.append("C++ core misread a persistent broker pairing response")
-    if tool("response", code, broker.b64url_encode(os.urandom(16)), key)[0] == 0:
-        failures.append("C++ core accepted a response bound to another nonce")
+    # Execute the real broker approval/revocation and C++ import/store/render logic.
+    # Only privileged OS/network calls are doubled; no response schema is invented here.
+    with tempfile.TemporaryDirectory() as directory:
+        state, enrollment = Path(directory) / "state", Path(directory) / "enrollment"
+        state.mkdir(mode=0o700)
+        network = broker_tests.FakeNetwork()
+        with patch.object(broker, "STATE", state), patch.object(broker, "ENROLLMENT", enrollment):
+            instance = broker.Broker()
+            instance.run, instance.tool = network.run, lambda name: name
+            instance.audit = lambda *args: None
+            for mode, ssh in (("temporary", "1"), ("persistent", "0")):
+                reply = instance.dispatch({"action": "pair", "request": request, "endpoint_host": "PBX.Example.NET",
+                                           "listen_port": "51821", "mode": mode, "minutes": "60", "ssh": ssh}, 1000)
+                code = reply["pairing_response"]
+                response = broker_tests.decode_response(code)
+                expected = "%s %s %s pbx.example.net:51821 %s %s %s" % (
+                    response["workstation_id"], response["address"], response["pbx_address"], mode,
+                    response["expires_at"] or 0, "ssh" if ssh == "1" else "nossh")
+                status, output = tool("response", code, nonce, key)
+                if status != 0 or output != expected:
+                    failures.append("C++ core rejected real %s broker response: %s" % (mode, output))
+                status, rendered = tool("administrator", code, nonce, key, private)
+                expected_config = ("[Interface]\nPrivateKey = %s\nAddress = %s\n\n[Peer]\nPublicKey = %s\nEndpoint = %s\n"
+                                   "AllowedIPs = %s/32\nPersistentKeepalive = 25" %
+                                   (private, response["address"], response["pbx_public_key"], response["endpoint"], response["pbx_address"]))
+                if status != 0 or rendered.replace("\r\n", "\n") != expected_config:
+                    failures.append("C++ saved profile/tunnel differs from actual broker admission: %s" % rendered)
+                if network.peers.get(key) != response["address"] or (("tcp dport 22 accept" in network.ruleset) != (ssh == "1")):
+                    failures.append("Broker peer/firewall differs from the returned pairing permissions")
+                if tool("response", code, broker.b64url_encode(os.urandom(16)), key)[0] == 0:
+                    failures.append("C++ core accepted a response bound to another nonce")
+                if tool("response", code, nonce, pbx_key)[0] == 0:
+                    failures.append("C++ core accepted a response bound to another workstation key")
+                instance.dispatch({"action": "unpair", "workstation_id": response["workstation_id"]}, 1000)
+                if network.peers or network.link or network.ruleset is not None:
+                    failures.append("Broker revocation left workstation network authority")
 
     for public in (key, pbx_key):
         if tool("fingerprint", public)[1] != broker.key_fingerprint(public):
@@ -78,7 +102,7 @@ def main():
         for failure in failures:
             print(" -", failure)
         return 1
-    print("Desktop contract checks: PASS (broker accepts C++ requests, C++ accepts broker responses, fingerprints and engineer config match)")
+    print("Desktop contract checks: PASS (real broker approval/revocation, C++ request/import/profile/tunnel compatibility, fingerprints and support config; OS networking doubled)")
     return 0
 
 

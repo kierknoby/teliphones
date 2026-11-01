@@ -62,7 +62,7 @@ $markdown = static function (string $text) use ($escape): string {
 </style>
 <div class="container-fluid" id="teliphones-root" data-teliphones-ajax="ajax.php?module=teliphones">
 <h2>TELIPHONES</h2>
-<p>Temporary, administrator-authorised remote support. Installation and module enablement do not imply dependency readiness or engineer access.</p>
+<p>Administrator-owned PBX connections and temporary, administrator-authorised remote support. Installation and module enablement do not authorise workstation or engineer access.</p>
 <?php if (!$available): ?>
 <div class="alert alert-danger teliphones-system-warning">
 <?php if ($condition === 'not_installed'): ?>
@@ -77,7 +77,7 @@ $markdown = static function (string $text) use ($escape): string {
 <?php endif; ?>
 <?php if ($outdated): ?>
 <div class="alert alert-warning teliphones-broker-outdated"><h4>Root broker update required</h4>
-<p>The FreePBX module has been upgraded, but the separately installed root broker is an earlier version that does not support every feature of this module (live operation progress and Windows workstation pairing). Remote support actions still work through ordinary page submission, but the page cannot monitor their progress automatically, and workstations cannot be paired. When no support session is active, rerun <strong>Complete Installation</strong> below from a root shell, then refresh this page.</p></div>
+<p>The separately installed root broker is outdated or does not report compatible workstation pairing capabilities. Remote support actions still work through ordinary page submission, but automatic progress monitoring and workstation operations are unavailable. When no support session is active, rerun <strong>Complete Installation</strong> below from a root shell, then refresh this page.</p></div>
 <?php endif; ?>
 <?php if (isset($notice) && is_array($notice)): ?>
 <?php if (!empty($notice['action_failed'])): ?>
@@ -262,25 +262,30 @@ $defaultHost = preg_replace('/:[0-9]+$/', '', (string)($_SERVER['HTTP_HOST'] ?? 
 <?php if (!$workstations['supported']): ?>
 <p class="help-block teliphones-pairing-unavailable"><?=!$available ? $escape($unavailableReason) : ($live['broker_current'] ? 'Workstation pairing status was not reported by the root broker; pairing is unavailable.' : 'Workstation pairing requires the updated root broker; see Root broker update required above.')?></p>
 <?php elseif (!$workstations['ready']): ?>
+<?php if (($status['enabled'] ?? true) === false): ?>
+<div class="alert alert-warning teliphones-pairing-requirements">TELIPHONES is disabled. Workstation pairing is unavailable; revocation remains available.</div>
+<?php else: ?>
 <div class="alert alert-warning teliphones-pairing-requirements">Workstation pairing requires WireGuard tools, iproute2 and nftables on the PBX. Missing: <?=$escape(implode(', ', array_keys(array_filter($workstations['requirements'], static function ($value) { return $value !== true; }))))?>.</div>
 <?php endif; ?>
+<?php endif; ?>
 <?php if ($workstations['error'] !== ''): ?><div class="alert alert-danger teliphones-pairing-error"><?=$escape($workstations['error'])?></div><?php endif; ?>
-<table class="table table-striped teliphones-workstations"><thead><tr><th>Workstation</th><th>Key fingerprint</th><th>Address</th><th>Access</th><th>Pairing</th><th></th></tr></thead><tbody>
-<?php if (!$workstations['items']): ?><tr><td colspan="6">No workstations are paired.</td></tr><?php endif; ?>
+<table class="table table-striped teliphones-workstations"><thead><tr><th>Workstation</th><th>Key fingerprint</th><th>Address</th><th>Access</th><th>Pairing</th><th>WireGuard status</th><th></th></tr></thead><tbody>
+<?php if (!$workstations['items']): ?><tr><td colspan="7">No workstations are paired.</td></tr><?php endif; ?>
 <?php foreach ($workstations['items'] as $item): ?>
 <tr><td><?=$escape($item['name'])?></td><td><code><?=$escape($item['fingerprint'])?></code></td><td><?=$escape($item['address'])?></td>
 <td><?=$item['ssh'] ? 'Web interface and SSH' : 'Web interface only'?></td>
 <td><?=$item['mode'] === 'persistent' ? 'Persistent (until revoked)' : 'Temporary, expires ' . $escape(gmdate('Y-m-d H:i', (int)$item['expires_at'])) . ' UTC'?></td>
+<td><?=$item['last_handshake'] === null ? 'Not verified (status unavailable)' : ($item['last_handshake'] === 0 ? 'Authorised; no handshake yet' : 'Last handshake ' . $escape(gmdate('Y-m-d H:i:s', $item['last_handshake'])) . ' UTC')?></td>
 <td><form method="post"><input type="hidden" name="token" value="<?=$escape($token ?? '')?>"><input type="hidden" name="workstation_id" value="<?=$escape($item['id'])?>">
 <button class="btn btn-danger btn-sm" type="submit" name="action" value="unpair"<?=$unpairOff?>>Revoke</button></form></td></tr>
 <?php endforeach; ?>
 </tbody></table>
-<?php if (count($workstations['items']) > 1): ?>
+<?php if (count($workstations['items']) > 1 || $workstations['error'] !== ''): ?>
 <form method="post"><input type="hidden" name="token" value="<?=$escape($token ?? '')?>"><input type="hidden" name="workstation_id" value="all">
 <button class="btn btn-danger" type="submit" name="action" value="unpair"<?=$unpairOff?>>Revoke all workstations</button></form>
 <?php endif; ?>
 <details class="teliphones-pair"><summary><strong>Pair a workstation</strong></summary>
-<p>In the TELIPHONES Windows application, choose <strong>Add PBX</strong> and copy its pairing request. Check that the key fingerprint shown in the application matches the fingerprint listed above after pairing. Pairing must be performed over HTTPS.</p>
+<p>In the TELIPHONES Windows application, choose <strong>Add my PBX...</strong>, then <strong>Generate request</strong> and <strong>Copy request</strong>. Pairing explicitly authorises access to this PBX's web administration interface; SSH is a separate choice below and is not permitted by default. Check that the key fingerprint shown in the application matches the fingerprint listed above after pairing. Pairing must be performed over HTTPS.</p>
 <form method="post" autocomplete="off">
 <input type="hidden" name="token" value="<?=$escape($token ?? '')?>">
 <fieldset<?=$pairOff?> id="teliphones-pair-fields">

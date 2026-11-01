@@ -1,6 +1,8 @@
-# TELIPHONES workstation pairing contract
+# TELIPHONES 0.2.0 workstation pairing contract
 
 Workstation pairing is for an administrator's own Windows workstation. It is separate from the customer-authorised Remote Support session workflow. The FreePBX module and root broker remain authoritative for peer enrollment, allowed traffic, expiry and revocation.
+
+The module requires broker status protocol 3 and a well-formed `workstations` block with boolean readiness/tool requirements and an items array. A protocol number alone is not sufficient. The packaged 0.1.3 broker used protocol 2; rerun the documented root bootstrap after Module Admin upgrade. Pairing and revocation are refused before dispatch when capability status is missing or malformed; missing tools or module disablement block new pairing, not revocation.
 
 ## User flow
 
@@ -24,8 +26,11 @@ The response is a copyable enrollment artifact, not proof that arbitrary access 
 - SSH TCP 22 is included only when the administrator explicitly selects it.
 - The workstation interface is not forwarded to other networks.
 - Temporary pairing expires at its PBX-side deadline. Persistent pairing remains until revoked.
+- The broker's approximately 15-second reconciliation loop also removes workstation network access while TELIPHONES is disabled, and startup cannot restore access while disabled. Pairing metadata is retained; after re-enabling, a broker restart or fresh approved pairing reapplies valid entries without extending expiry.
 - An administrator can revoke one workstation or all workstations in the FreePBX TELIPHONES page. Removing a local Windows profile only deletes the local key; it does not revoke the PBX peer.
+- Cleanup verifies interface/table removal. Failed interface deletion attempts to take the interface down and retains its restrictive firewall. Failures are reported, not acknowledged as successful revocation; **Revoke all workstations** remains available for retry after pairing metadata is removed.
 - Windows disconnection after revocation is detected through tunnel service and PBX reachability monitoring. There is no server-pushed Windows revocation channel in this version, so instantaneous client-side disconnect is not guaranteed. The PBX-side broker/firewall remains authoritative for access.
+- The GUI displays the last WireGuard handshake from a fixed read-only `wg show tlp-admin latest-handshakes` query, without peer keys. Zero means no handshake; an unavailable query is explicitly unverified. A past handshake is not proof of current GUI/SSH reachability. Workstation status is a page-load snapshot, separate from remote support operation polling.
 
 ## Network requirements
 

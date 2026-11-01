@@ -95,6 +95,15 @@ class WebSupport
                     ? 'Revocation was NOT performed: the privileged TELIPHONES broker is unavailable (see the system warning above). Use the emergency root revocation below if a session may be active, then follow the recovery steps above and refresh.'
                     : 'The operation was not attempted: the privileged TELIPHONES broker is unavailable (see the system warning above). Follow the installation or recovery steps above, then refresh this page and retry.']];
         }
+        if (in_array($request['action'], ['pair', 'unpair'], true)) {
+            $workstations = self::workstations($support);
+            if (!$workstations['supported'] || ($request['action'] === 'pair' && !$workstations['ready'])) {
+                return ['code' => 200, 'dispatched' => false, 'notice' => ['ok' => false, 'action_failed' => true, 'action' => $request['action'], 'operation' => $operation,
+                    'error' => !$workstations['supported']
+                        ? 'Workstation operation was not attempted: the root broker does not report compatible pairing capabilities. Rerun Complete Installation from a root shell after upgrading, with no active support session.'
+                        : 'Workstation pairing was not attempted: WireGuard tools, iproute2 and nftables must be available and TELIPHONES must be enabled.']];
+            }
+        }
         if ($request['action'] === 'configure' && strtolower((string)($server['HTTPS'] ?? '')) !== 'on' && (string)($server['SERVER_PORT'] ?? '') !== '443') {
             return ['code' => 200, 'dispatched' => false, 'notice' => ['ok' => false, 'action_failed' => true, 'action' => 'configure', 'operation' => $operation, 'error' => 'Gateway credentials may only be submitted over HTTPS. Configure FreePBX HTTPS before enrollment.']];
         }
@@ -144,7 +153,7 @@ class WebSupport
         $available = !empty($broker['available']);
         return [
             'available' => $available,
-            'broker_current' => $available && is_int($status['protocol'] ?? null) && $status['protocol'] >= self::BROKER_PROTOCOL,
+            'broker_current' => $available && self::supportsWorkstations($support),
             'condition' => $available ? 'operational' : (string)($broker['condition'] ?? 'unverified'),
             'phase' => $available ? ($text($status['phase'] ?? null, 200) ?? 'Not configured') : null,
             'enabled' => ($status['enabled'] ?? false) === true,
@@ -263,25 +272,39 @@ class WebSupport
         return in_array($request['action'], self::BROKER_ACTIONS, true);
     }
 
+    /** Protocol 3 must actually report the complete workstation capability status. */
+    private static function supportsWorkstations(array $support): bool
+    {
+        $status = $support['status'] ?? null;
+        if (!self::brokerOperational($support) || !is_int($status['protocol'] ?? null) || $status['protocol'] < self::BROKER_PROTOCOL) return false;
+        $raw = $status['workstations'] ?? null;
+        if (!is_array($raw) || !is_bool($raw['ready'] ?? null) || !is_array($raw['items'] ?? null) || !is_array($raw['requirements'] ?? null)) return false;
+        foreach (['wg', 'ip', 'nft'] as $tool) {
+            if (!is_bool($raw['requirements'][$tool] ?? null)) return false;
+        }
+        return true;
+    }
+
     /** Validated workstation pairing status for server-side rendering; never contains WireGuard keys. */
     public static function workstations(array $support): array
     {
         $status = is_array($support['status'] ?? null) ? $support['status'] : [];
         $raw = is_array($status['workstations'] ?? null) ? $status['workstations'] : null;
-        $supported = $raw !== null && is_int($status['protocol'] ?? null) && $status['protocol'] >= self::BROKER_PROTOCOL;
+        $supported = self::supportsWorkstations($support);
         $items = [];
         foreach ($supported && is_array($raw['items'] ?? null) ? $raw['items'] : [] as $item) {
             if (!is_array($item) || !is_string($item['id'] ?? null) || !preg_match('/^[a-f0-9]{16}$/', $item['id'])) continue;
             $items[] = ['id' => $item['id'], 'name' => substr((string)($item['name'] ?? ''), 0, 64), 'address' => substr((string)($item['address'] ?? ''), 0, 18),
                 'mode' => ($item['mode'] ?? '') === 'persistent' ? 'persistent' : 'temporary', 'ssh' => ($item['ssh'] ?? false) === true,
                 'expires_at' => is_int($item['expires_at'] ?? null) ? $item['expires_at'] : null,
+                'last_handshake' => is_int($item['last_handshake'] ?? null) && $item['last_handshake'] >= 0 ? $item['last_handshake'] : null,
                 'fingerprint' => substr((string)($item['fingerprint'] ?? ''), 0, 40)];
         }
         $requirements = [];
         foreach ($supported && is_array($raw['requirements'] ?? null) ? $raw['requirements'] : [] as $name => $value) {
             if (is_string($name)) $requirements[substr($name, 0, 20)] = $value === true;
         }
-        return ['supported' => $supported, 'ready' => $supported && ($raw['ready'] ?? false) === true, 'requirements' => $requirements,
+        return ['supported' => $supported, 'ready' => $supported && $raw['ready'] === true && !in_array(false, $requirements, true) && ($status['enabled'] ?? true) === true, 'requirements' => $requirements,
             'error' => $supported && is_string($raw['error'] ?? null) ? substr($raw['error'], 0, 500) : '',
             'listen_port' => $supported && is_int($raw['listen_port'] ?? null) ? $raw['listen_port'] : null, 'items' => $items];
     }

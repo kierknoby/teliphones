@@ -33,6 +33,7 @@ namespace {
     $operation = ['id' => 'abc123', 'action' => 'dependencies', 'state' => 'running', 'stage' => 'Installing WireGuard tools',
         'message' => '', 'started_at' => 1000, 'finished_at' => null];
     $ready = ['ok' => true, 'error' => null, 'status' => ['protocol' => 3, 'phase' => 'Missing dependency', 'enabled' => true, 'can_authorise' => false,
+        'workstations' => ['ready' => false, 'requirements' => ['wg' => false, 'ip' => true, 'nft' => true], 'items' => []],
         'readiness' => ['WireGuard wg' => false, 'Gateway enrollment' => true], 'session' => null, 'server_time' => 1010, 'operation' => $operation,
         'private_key' => '-----BEGIN PRIVATE KEY-----secret', 'gateway' => ['certificate' => 'secret-cert']]];
     $client = new WebSupport('/nonexistent/control.sock', '/nonexistent/unit', static function () { return null; });

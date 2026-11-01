@@ -1,6 +1,6 @@
-# TELIPHONES for Windows (experimental)
+# TELIPHONES 0.2.0 for Windows (experimental)
 
-The native Windows client is under active development. It is a compact C++17 Win32/MFC application, not a .NET application. It has two profile types:
+The native Windows client is under active development as part of the TELIPHONES 0.2.0 milestone. Its executable has successfully compiled and launched in user-run Windows testing; genuine PBX tunnel/service integration still needs testing. It is a compact C++17 Win32/MFC application, not a .NET application. It has two profile types:
 
 - **My PBX** pairs a workstation with a PBX using an approval in the PBX's TELIPHONES page. Persistent pairing remains revocable from that page. Temporary pairings expire on the PBX.
 - **Remote Support** keeps a locally generated engineer key and imports an operator-issued `teliphones-engineer-grant/1` JSON file. The grant must name that exact engineer public key.
@@ -46,11 +46,11 @@ Extract the artifact and run `TELIPHONES.exe` on Windows 10/11 x64. Release buil
 
 ## Pair an administrator workstation
 
-1. Install the FreePBX module and complete its documented root broker bootstrap. After upgrading the module, rerun the bootstrap with no active support session so the separately installed broker is current.
+1. Install `TELIPHONES-0.2.0.tgz` through FreePBX Module Admin and complete its [documented root broker bootstrap](../../teliphones/README.md#complete-installation-on-freepbx-17). After upgrading the module, rerun the bootstrap with no active support session and Windows tunnels disconnected so the separately installed broker is current. The module validates protocol 3 and the actual workstation status contract; a stale 0.1.3 broker cannot pass by only reporting a version.
 2. In TELIPHONES for Windows, select **Add my PBX...**, enter a workstation name, and choose **Generate request**. Copy the request.
 3. In the PBX web interface, open **Connectivity > TELIPHONES > Windows workstations**, paste the request, provide the PBX's externally reachable WireGuard hostname/IP and UDP port, select temporary or persistent access, and explicitly choose whether SSH is allowed. The pairing operation requires HTTPS.
-4. Copy the response into the Windows application. The client verifies the response nonce and workstation public key before saving it.
-5. Connect. Windows requests administrative approval to install/start the individual tunnel service. Open the PBX GUI through the tunnel. SSH is offered only when the PBX administrator approved it and an SSH account was supplied.
+4. Click **Copy pairing response**, paste it into the still-open Windows pairing dialog, enter an existing authorised Linux account only if SSH was approved, and click **Save connection**. The client verifies the response nonce and workstation public key before saving it.
+5. Select the saved profile and click **Connect**. Windows requests administrative approval to install/start the individual tunnel service. Use **Open FreePBX** through the tunnel after connectivity verification. **Open SSH** is offered only when the PBX administrator approved it and an SSH account was supplied. Click **Disconnect** to stop/remove the tunnel service.
 6. To revoke access, use **Revoke** in the PBX's Windows workstations table. Persistent pairings do not expire automatically. Removing the local profile deletes its local private key but does **not** revoke the PBX-side pairing.
 
 The PBX's WireGuard UDP listener must be reachable from the workstation. The pairing firewall rules restrict the paired peer to the PBX web interface and optionally SSH; they do not enable forwarding. Review the FreePBX Firewall and router policy for the selected UDP port. The client does not alter network routes beyond the per-PBX host route.
@@ -89,4 +89,4 @@ The following require real Windows and a disposable FreePBX/gateway environment:
 6. Test Remote Support only with an explicitly enrolled test engineer key, a current grant and an authorised disposable session. Confirm gateway policy blocks access after expiry/revocation.
 7. Test direct connectivity across representative NAT/firewall configurations. No universal NAT traversal or relay is implemented.
 
-No Windows executable is included in this repository. The local development environment does not have MSVC, MFC, or a Windows SDK. A Windows build is not verified until the first GitHub Actions run successfully completes the actual MSVC/MFC solution build and validation steps. Even after that build passes, UAC, Credential Manager, WireGuard driver/service behavior, visual layout and real PBX connectivity still require interactive Windows/disposable-PBX testing.
+No Windows executable is included in the module package. The existing executable has compiled and launched in user-run Windows testing and is available from the successful Actions artifact. The local Linux development environment does not have MSVC, MFC, or a Windows SDK. UAC, Credential Manager, WireGuard driver/service behavior, visual layout and real PBX connectivity still require interactive Windows/disposable-PBX testing.
