@@ -3,11 +3,33 @@ namespace FreePBX\modules\Teliphones;
 
 class WebSupport
 {
-    public static function authorised(bool $authenticated, $administrator): bool
+    public static function authorised($sessionUser, $frameworkUser = null): bool
     {
-        return $authenticated && is_object($administrator)
-            && is_callable([$administrator, 'checkSection'])
-            && $administrator->checkSection('*') === true;
+        return self::accessError($sessionUser, $frameworkUser) === null;
+    }
+
+    public static function accessError($sessionUser, $frameworkUser = null): ?string
+    {
+        if (!(is_object($sessionUser) && is_callable([$sessionUser, 'checkSection']))
+            && !(is_string($sessionUser) && trim($sessionUser) !== '') && !is_int($sessionUser)) {
+            return 'TELIPHONES authentication failed: the FreePBX administrator session is missing or malformed.';
+        }
+        $administrator = $frameworkUser;
+        if ($administrator === null) {
+            if (is_object($sessionUser)) {
+                $administrator = $sessionUser;
+            } elseif (class_exists('ampuser')) {
+                $administrator = new \ampuser((string)$sessionUser);
+            }
+        }
+        if (!is_object($administrator) || !is_callable([$administrator, 'checkSection'])) {
+            return 'TELIPHONES permission check unavailable: FreePBX administrator context could not be resolved.';
+        }
+        $permission = $administrator->checkSection('*');
+        if ($permission !== true && $permission !== 1) {
+            return 'TELIPHONES permission denied: full FreePBX administrator access is required.';
+        }
+        return null;
     }
 
     public static function validRequest(array $request, string $token): bool

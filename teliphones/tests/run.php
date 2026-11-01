@@ -8,4 +8,10 @@ foreach ($tests as $test) {
     }
 }
 
+foreach (['direct', 'full', 'false-constant', 'restricted', 'unauthenticated', 'missing', 'malformed', 'full-post', 'string-constant-post', 'restricted-post', 'csrf-post'] as $scenario) {
+    $command = escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg(__DIR__ . '/web-page.php') . ' ' . escapeshellarg($scenario);
+    passthru($command, $status);
+    if ($status !== 0) exit($status);
+}
+
 echo "TELIPHONES local regression suite: PASS\n";

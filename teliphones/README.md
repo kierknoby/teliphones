@@ -1,8 +1,10 @@
-# TELIPHONES 0.1.0 for FreePBX 17
+# TELIPHONES 0.1.2 for FreePBX 17
 
-## Browser support workflow (0.1.0)
+## Browser support workflow (0.1.2)
 
-Connectivity > TELIPHONES now provides administrator-only enrollment, dependency approval, authorisation, session status, signed Checker evidence submission and revocation. The page requires `FREEPBX_IS_AUTH === true` and the current `AMP_user->checkSection('*') === true`; unknown APIs, non-boolean permission results and delegated users fail closed. The framework itself is not present in this workspace, so these exact FreePBX 17 permission semantics require verification on the disposable PBX before granting GUI use.
+Connectivity > TELIPHONES provides administrator-only enrollment, dependency approval, authorisation, session status, signed Checker evidence submission and revocation. The established `defined('FREEPBX_IS_AUTH')` guard prevents direct script access; the constant's value is not an authentication credential. Administrator identity comes from the server-side `AMP_user` session and administrator context. Resolution prefers the framework-provided `$ampuser`, otherwise uses the session object or constructs the available `ampuser` class from a scalar session username. Full access requires `checkSection('*')` to return boolean `true` or integer `1`; arbitrary truthy strings, missing/malformed sessions, restricted users and unavailable permission APIs fail closed. The same gate precedes every GET and privileged POST, and POST actions still require CSRF validation. Successful authorization proceeds to broker readiness; authentication/permission errors are distinct from broker availability errors.
+
+The 0.1.1 correction addressed the 0.1.0 assumption that `AMP_user` was always a permission-bearing object and permission results were always boolean. The 0.1.2 correction removes the unsupported boolean/integer-value requirement on `FREEPBX_IS_AUTH`. The guard and scalar/object session conventions were supplied from working FreePBX modules; those modules and the FreePBX framework source are not installed in this workspace. Local tests reproduce non-boolean constant values and verify the resolver and controller with doubles, not genuine framework compatibility. The `ampuser` constructor and wildcard full-administrator permission semantics still require disposable FreePBX 17 validation.
 
 Module Admin must execute installation as root to create the root-owned broker service. Non-root installation logs the unavailable bootstrap and does not try sudo, install a setuid helper or elevate PHP. The broker accepts only the `asterisk` UID over a group-restricted Unix socket; the web application is the trusted administrator authentication boundary. Like existing root `fwconsole` services, this relies on the integrity of the FreePBX application/module code. Do not grant untrusted code execution to the FreePBX service account.
 
@@ -16,7 +18,7 @@ The reference gateway has **no automatic signed Checker service**, so evidence d
 
 ### Disposable PBX test procedure
 
-1. Upload `TELIPHONES-0.1.0.tgz` through Module Admin and install/update in place.
+1. Upload `TELIPHONES-0.1.2.tgz` through Module Admin and install/update in place.
 2. Open Connectivity > TELIPHONES as a full administrator; confirm a delegated user cannot access it. If the broker is unavailable, the installer did not have the required root/systemd/Python/account bootstrap; resolve that through the PBX platform's trusted installation mechanism, not sudo from the page.
 3. Approve WireGuard tools installation, then refresh. Check all prerequisites; missing components must keep authorisation disabled.
 4. Deploy/enroll the external gateway and independent Checker; save their enrollment material over HTTPS. Never reuse production keys.
@@ -31,11 +33,11 @@ The module separates external support functions into three integration contracts
 
 ## ⚠️ Not Currently Suitable for Production
 
-TELIPHONES 0.1.0 is the next repository development milestone, preserving the browser workflow and FreePBX 17 compatibility corrections from intermediate testing iterations.
+TELIPHONES 0.1.2 corrects the framework direct-access guard interpretation while preserving administrator permission enforcement, the 0.1.0 milestone's browser workflow and FreePBX 17 compatibility corrections.
 
 It has not yet completed live installation, end-to-end integration, failure-recovery or adversarial security testing on FreePBX 17.
 
-**Do not install TELIPHONES 0.1.0 on a production PBX.**
+**Do not install TELIPHONES 0.1.2 on a production PBX.**
 
 Testing should be performed only on a disposable FreePBX 17 system where unexpected network, SSH or service behaviour can be investigated without affecting live communications.
 
@@ -43,11 +45,11 @@ The security controls documented below describe the behaviour TELIPHONES is desi
 
 ## Release Status
 
-TELIPHONES 0.1.0 is the current repository development milestone for FreePBX 17.
+TELIPHONES 0.1.2 is the current repository development milestone for FreePBX 17.
 
 The complete executable local implementation currently targets the **On-PBX** topology. On-net and Off-net are defined integration topologies and require external Connect implementations.
 
-0.1.0 is intended for development, review and controlled testing rather than production deployment.
+0.1.2 is intended for development, review and controlled testing rather than production deployment.
 
 ## Compatibility
 
@@ -57,7 +59,7 @@ FreePBX 16 is not currently supported.
 
 ## Requirements
 
-For local 0.1.0 testing:
+For local 0.1.2 testing:
 
 - FreePBX 17 on Debian 12
 - root access for installation and support authorisation
@@ -82,7 +84,7 @@ TELIPHONES defines three topology names.
 
 The private support connection terminates directly on the FreePBX server.
 
-This is the locally implemented topology in 0.1.0. TELIPHONES creates an ephemeral WireGuard interface named `wg-teliphones`.
+This is the locally implemented topology in 0.1.2. TELIPHONES creates an ephemeral WireGuard interface named `wg-teliphones`.
 
 For FreePBX 17, the preferred private allocation pool is `10.20.17.0/24`. This is an allocation pool, not a route. Each session uses only the address space required for that connection.
 
@@ -233,7 +235,7 @@ fwconsole ma list | grep -i teliphones
 fwconsole teliphones check
 ```
 
-For 0.1.0, perform this only on a disposable FreePBX 17 test system.
+For 0.1.2, perform this only on a disposable FreePBX 17 test system.
 
 A repository installation option can be documented when a public TELIPHONES repository and supported branch structure are published.
 
@@ -338,11 +340,11 @@ The FreePBX page now offers an administrator-approved workflow through the restr
 
 For On-PBX, TELIPHONES also avoids using the normal PBX SSH listener as its temporary support service. Temporary network and authentication material is scoped to the support session and removed during local cleanup.
 
-These are design properties of 0.1.0. They require live and adversarial testing before they should be treated as validated security guarantees.
+These are design properties of 0.1.2. They require live and adversarial testing before they should be treated as validated security guarantees.
 
 ## Current Limitations
 
-TELIPHONES 0.1.0 is a development milestone, and current limitations include:
+TELIPHONES 0.1.2 is a development milestone, and current limitations include:
 
 - live FreePBX 17 installation validation is pending;
 - end-to-end integration testing is pending;
@@ -439,7 +441,7 @@ For installation help, testing feedback, troubleshooting or general support, con
 
 https://freepbx.uk/support/
 
-When requesting support during the 0.1.0 testing phase, include the following where relevant:
+When requesting support during the 0.1.2 testing phase, include the following where relevant:
 
 - FreePBX version;
 - Debian version;

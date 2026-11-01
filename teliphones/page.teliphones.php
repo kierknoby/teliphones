@@ -3,9 +3,10 @@ if (!defined('FREEPBX_IS_AUTH')) { die('No direct script access allowed'); }
 require_once __DIR__ . '/WebSupport.php';
 use FreePBX\modules\Teliphones\WebSupport;
 
-if (!WebSupport::authorised(FREEPBX_IS_AUTH === true, $_SESSION['AMP_user'] ?? null)) {
+$accessError = WebSupport::accessError($_SESSION['AMP_user'] ?? null, $ampuser ?? $GLOBALS['ampuser'] ?? null);
+if ($accessError !== null) {
     http_response_code(403);
-    echo '<div class="alert alert-danger">TELIPHONES remote support requires full FreePBX administrator permission. Access could not be established.</div>';
+    echo '<div class="alert alert-danger">' . htmlspecialchars($accessError, ENT_QUOTES, 'UTF-8') . '</div>';
     return;
 }
 if (empty($_SESSION['teliphones_token'])) $_SESSION['teliphones_token'] = bin2hex(random_bytes(32));

@@ -41,6 +41,6 @@ class Teliphones extends FreePBX_Helpers implements BMO
     public function isEnabled(): bool { return !is_file(self::DISABLED_FILE); }
     public function guiCanAuthorise(): bool
     {
-        return WebSupport::authorised(defined('FREEPBX_IS_AUTH') && FREEPBX_IS_AUTH === true, $_SESSION['AMP_user'] ?? null);
+        return defined('FREEPBX_IS_AUTH') && WebSupport::authorised($_SESSION['AMP_user'] ?? null, $GLOBALS['ampuser'] ?? null);
     }
 }

@@ -2,7 +2,7 @@
 
 Checker exists because a PBX cannot independently prove how it appears from outside itself.
 
-TELIPHONES deliberately performs no Internet/external reachability probes in 0.1.0. It verifies PBX-local invariants and asks an independent Checker for external observations.
+TELIPHONES deliberately performs no Internet/external reachability probes in 0.1.2. It verifies PBX-local invariants and asks an independent Checker for external observations.
 
 Example request:
 
@@ -53,6 +53,6 @@ For a disposable PBX, place the independently generated PEM public key at the pa
 
 Stable rejection reasons include `checker-required`, `checker-protocol-invalid`, `checker-session-mismatch`, `checker-nonce-mismatch`, `checker-topology-mismatch`, `checker-stale`, `checker-observation-stale`, `checker-signature-invalid`, `checker-replay`, `checker-authorised-source-failed`, `checker-negative-control-failed`, `checker-public-exposure-detected`, and `checker-unexpected-service`.
 
-The file-import command remains root-only in 0.1.0; the administrator GUI submits evidence through the restricted root broker. Signature verification authenticates the evidence content but does not itself prove that the configured Checker performed honest or independent network observations. A future network API must preserve the same session, nonce, signature and expiry semantics.
+The file-import command remains root-only in 0.1.2; the administrator GUI submits evidence through the restricted root broker. Signature verification authenticates the evidence content but does not itself prove that the configured Checker performed honest or independent network observations. A future network API must preserve the same session, nonce, signature and expiry semantics.
 
 A Checker challenge is single-use after successful acceptance. `observed_at` must fall within the challenge window; accepted evidence cannot be replayed to satisfy a later check.
