@@ -1,6 +1,8 @@
-# TELIPHONES
+# TELIPHONES 0.1.0
 
 TELIPHONES is an open-source FreePBX module for locally authorised, time-limited remote support. The module is located at `teliphones/` and is intended to appear under **Connectivity > TELIPHONES**.
+
+The current repository development milestone is **0.1.0**. The Module Admin package is `TELIPHONES-0.1.0.tgz`. This milestone preserves the FreePBX 17 compatibility corrections and browser support workflow from intermediate development iterations; it is not a production release or proof of end-to-end connectivity.
 
 ## ⚠️ Not Currently Suitable for Production
 

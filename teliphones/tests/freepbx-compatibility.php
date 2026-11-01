@@ -32,7 +32,7 @@ namespace {
     $assert(is_string($moduleSource), 'Unable to read the module class.');
     $assert(substr_count($moduleSource, "require_once __DIR__ . '/install.php';") === 1, 'Installation must delegate exactly once to the existing installer.');
     $assert(substr_count($moduleSource, "require_once __DIR__ . '/uninstall.php';") === 1, 'Uninstallation must delegate exactly once to the existing uninstaller.');
-    $assert(strpos($moduleSource, 'public function guiCanAuthorise(): bool { return false; }') !== false, 'GUI authorisation must remain disabled.');
+    $assert($moduleClass->getMethod('guiCanAuthorise')->invoke($moduleClass->newInstanceWithoutConstructor()) === false, 'GUI authorisation must fail closed without a framework administrator session.');
 
     $view = dirname(__DIR__) . '/views/main.php';
     $render = static function ($state, bool $provideState = true) use ($view): string {
@@ -78,7 +78,7 @@ namespace {
     }
 
     $pageSource = file_get_contents(dirname(__DIR__) . '/page.teliphones.php');
-    $assert(is_string($pageSource) && strpos($pageSource, "show_view(__DIR__ . '/views/main.php', ['state' => \$state]);") !== false, 'The page controller must pass state into the template.');
+    $assert(is_string($pageSource) && strpos($pageSource, "show_view(__DIR__ . '/views/support.php', compact('support', 'notice', 'token'));") !== false, 'The page controller must pass broker state into the support template.');
 
     $GLOBALS['teliphonesCompatibilityAssertions'] = $assert;
 }

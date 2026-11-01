@@ -3,6 +3,9 @@ namespace FreePBX\modules;
 
 use BMO;
 use FreePBX_Helpers;
+use FreePBX\modules\Teliphones\WebSupport;
+
+require_once __DIR__ . '/WebSupport.php';
 
 class Teliphones extends FreePBX_Helpers implements BMO
 {
@@ -36,5 +39,8 @@ class Teliphones extends FreePBX_Helpers implements BMO
     }
 
     public function isEnabled(): bool { return !is_file(self::DISABLED_FILE); }
-    public function guiCanAuthorise(): bool { return false; }
+    public function guiCanAuthorise(): bool
+    {
+        return WebSupport::authorised(defined('FREEPBX_IS_AUTH') && FREEPBX_IS_AUTH === true, $_SESSION['AMP_user'] ?? null);
+    }
 }

@@ -1,6 +1,16 @@
 <?php
 if (!defined('FREEPBX_IS_AUTH')) { die('No direct script access allowed'); }
 
+if (is_executable('/usr/bin/systemctl')) {
+    exec('/usr/bin/systemctl disable --now teliphones-broker.service 2>&1', $brokerOutput, $brokerResult);
+    if ($brokerResult !== 0 && is_file('/etc/systemd/system/teliphones-broker.service')) {
+        throw new RuntimeException('TELIPHONES broker could not be stopped; refusing concurrent uninstall cleanup.');
+    }
+}
+foreach (['/etc/systemd/system/teliphones-broker.service', '/usr/local/lib/teliphones-broker/support_broker.py', '/run/teliphones/control.sock'] as $brokerFile) {
+    if (file_exists($brokerFile) && !unlink($brokerFile)) throw new RuntimeException('Unable to remove TELIPHONES broker artifact.');
+}
+
 require_once __DIR__ . '/SupportAdapter.php';
 require_once __DIR__ . '/WireGuardAgent.php';
 require_once __DIR__ . '/LocalAttestor.php';

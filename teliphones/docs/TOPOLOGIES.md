@@ -1,6 +1,6 @@
 # TELIPHONES topologies
 
-TELIPHONES 0.0.2 uses three topology names. They describe where the private support network terminates; they do not prescribe who supplies that network.
+TELIPHONES 0.1.0 uses three topology names. They describe where the private support network terminates; they do not prescribe who supplies that network.
 
 ## On-PBX (`on-pbx`)
 

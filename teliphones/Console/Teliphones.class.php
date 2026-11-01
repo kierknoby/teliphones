@@ -248,7 +248,7 @@ class Teliphones extends Command
     private function checkerRequest(OutputInterface $output): int
     {
         $state=$this->readState(); $local=(new LocalAttestor())->state();
-        if(!$state||($state['state']??'')!=='connected'||!$local||empty($local['verified'])){ $output->writeln('<error>WireGuard transport and PBX-local verification must pass before the restricted Checker probe is enabled.</error>'); return Command::FAILURE; }
+        if(!$state||($state['state']??'')!=='locally_verified'||!$local||empty($local['verified'])||!hash_equals((string)$state['session_id'],(string)($local['session_id']??''))){ $output->writeln('<error>WireGuard transport and PBX-local verification must pass before the restricted Checker probe is enabled.</error>'); return Command::FAILURE; }
         $challenge=(new CheckerEvidence())->challenge($state);
         if(!(new VerificationProbe())->start($state,$challenge)){
             (new CheckerEvidence())->destroy();
@@ -360,7 +360,12 @@ class Teliphones extends Command
             $output->writeln('<error>PBX-local verification FAILED. Tunnel and support authority were destroyed.</error>');
             $output->writeln('A fresh local root authorisation is required.'); return Command::FAILURE;
         }
-        $state['state']='locally_verified'; $state['attested']=true; $state['attested_at']=time(); $this->writeState($state);
+        $state['state']='locally_verified'; $state['attested']=true; $state['attested_at']=time();
+        if (!$this->writeState($state)) {
+            $this->cleanupLocal($state); $this->cleanupRemote($state);
+            $output->writeln('<error>Unable to persist local verification; support authority removed.</error>');
+            return Command::FAILURE;
+        }
         $this->audit('local-verified',$state); $output->writeln('<info>PBX-local verification PASSED.</info>');
         $output->writeln('Support access remains closed until independent Checker evidence is accepted and root opens the Console adapter.'); return Command::SUCCESS;
     }
