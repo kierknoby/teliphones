@@ -94,6 +94,25 @@ class BuildLayoutTests(unittest.TestCase):
         dpi = manifest.find(".//{http://schemas.microsoft.com/SMI/2016/WindowsSettings}dpiAwareness")
         self.assertEqual(dpi.text, "PerMonitorV2")
 
+    def test_custom_manifest_is_the_only_dpi_configuration_source(self):
+        app = project("TELIPHONES.vcxproj")
+        settings = app.findall(".//ms:Manifest/ms:EnableDpiAwareness", NS)
+        self.assertEqual(len(settings), 1)
+        self.assertEqual(settings[0].text, "false")
+        manifest = ET.parse(ROOT / "src/app/TELIPHONES.manifest").getroot()
+        for name, namespace, value in (
+            ("dpiAware", "http://schemas.microsoft.com/SMI/2005/WindowsSettings", "true/pm"),
+            ("dpiAwareness", "http://schemas.microsoft.com/SMI/2016/WindowsSettings", "PerMonitorV2"),
+        ):
+            with self.subTest(declaration=name):
+                declarations = [
+                    node for node in manifest.iter()
+                    if node.tag.rsplit("}", 1)[-1] == name
+                ]
+                self.assertEqual(len(declarations), 1)
+                self.assertEqual(declarations[0].tag, f"{{{namespace}}}{name}")
+                self.assertEqual(declarations[0].text, value)
+
 
 if __name__ == "__main__":
     unittest.main()

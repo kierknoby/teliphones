@@ -172,8 +172,15 @@ jobs:
           $privileges = $manifest.SelectSingleNode("//*[local-name()='requestedExecutionLevel']")
           $identity = $manifest.SelectSingleNode("/*[local-name()='assembly']/*[local-name()='assemblyIdentity']")
           $controls = $manifest.SelectNodes("//*[local-name()='dependentAssembly']/*[local-name()='assemblyIdentity' and @name='Microsoft.Windows.Common-Controls']")
-          $dpi = $manifest.SelectSingleNode("//*[local-name()='dpiAwareness']")
-          if (-not $privileges -or $privileges.level -ne 'asInvoker' -or $privileges.uiAccess -ne 'false' -or -not $dpi -or $dpi.InnerText -ne 'PerMonitorV2') {
+          $legacyDpi = $manifest.SelectNodes("//*[local-name()='dpiAware']")
+          $dpi = $manifest.SelectNodes("//*[local-name()='dpiAwareness']")
+          if ($legacyDpi.Count -ne 1 -or $dpi.Count -ne 1) {
+            throw "Expected exactly one dpiAware and one dpiAwareness declaration; found $($legacyDpi.Count) and $($dpi.Count). See the extracted manifest for duplicate or missing DPI settings."
+          }
+          if ($legacyDpi.Item(0).NamespaceURI -ne 'http://schemas.microsoft.com/SMI/2005/WindowsSettings' -or $legacyDpi.Item(0).InnerText -ne 'true/pm' -or $dpi.Item(0).NamespaceURI -ne 'http://schemas.microsoft.com/SMI/2016/WindowsSettings' -or $dpi.Item(0).InnerText -ne 'PerMonitorV2') {
+            throw 'The embedded manifest must preserve true/pm compatibility and PerMonitorV2 DPI awareness.'
+          }
+          if (-not $privileges -or $privileges.level -ne 'asInvoker' -or $privileges.uiAccess -ne 'false') {
             throw 'The embedded application manifest is missing expected UAC, Common Controls or DPI settings.'
           }
           if (-not $identity -or $identity.processorArchitecture -ne 'amd64') {

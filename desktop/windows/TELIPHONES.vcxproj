@@ -31,7 +31,8 @@
   <ItemDefinitionGroup>
     <ClCompile><ExceptionHandling>Sync</ExceptionHandling></ClCompile>
     <Link><TargetMachine>MachineX64</TargetMachine><GenerateManifest>true</GenerateManifest></Link>
-    <Manifest><AdditionalManifestFiles>$(ProjectDir)src\app\TELIPHONES.manifest;%(AdditionalManifestFiles)</AdditionalManifestFiles></Manifest>
+    <!-- The custom manifest owns DPI settings; do not merge an automatically generated dpiAware declaration. -->
+    <Manifest><EnableDpiAwareness>false</EnableDpiAwareness><AdditionalManifestFiles>$(ProjectDir)src\app\TELIPHONES.manifest;%(AdditionalManifestFiles)</AdditionalManifestFiles></Manifest>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
