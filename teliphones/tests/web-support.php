@@ -146,7 +146,7 @@ try {
     $assert(strpos($html, 'Broker state not verified') !== false && strpos($html, 'Complete Installation') !== false, 'Unverified state must still offer installation guidance.');
     $html = $renderBroker(['available' => false, 'condition' => 'stopped', 'service' => '<script>']);
     $assert(strpos($html, '"<script>"') === false && strpos($html, '&lt;script&gt;') !== false, 'Service state must be escaped.');
-    $html = $renderBroker(['available' => true, 'condition' => 'operational'], ['ok' => true, 'error' => null, 'status' => ['protocol' => 2, 'phase' => 'Ready', 'enabled' => true, 'can_authorise' => true,
+    $html = $renderBroker(['available' => true, 'condition' => 'operational'], ['ok' => true, 'error' => null, 'status' => ['protocol' => 3, 'phase' => 'Ready', 'enabled' => true, 'can_authorise' => true,
         'readiness' => ['WireGuard wg' => true, 'Gateway enrollment' => true]]]);
     $assert(strpos($html, 'Operational (control socket verified)') !== false && strpos($html, 'missing') === false
         && strpos($html, 'teliphones-install') === false && strpos($html, 'teliphones-troubleshooting') === false
@@ -157,12 +157,12 @@ try {
     foreach (['authorise', 'revoke', 'configure'] as $action) {
         $assert(!$buttonDisabled($html, $action), "Operational broker must enable $action.");
     }
-    $assert(strpos($html, '<fieldset disabled') === false && strpos($html, 'Unavailable: the privileged') === false, 'Operational broker must not disable enrollment.');
+    $assert(strpos($html, '<fieldset disabled aria-disabled="true" id="teliphones-enrollment-fields"') === false && strpos($html, 'Unavailable: the privileged') === false, 'Operational broker must not disable enrollment.');
     $assert($buttonDisabled($html, 'dependencies') && strpos($html, '>WireGuard tools installed</button>') !== false
         && strpos($html, '>Approve installation of WireGuard tools</button>') === false && strpos($html, 'WireGuard tools are installed (wg executable detected by the broker).') !== false,
         'Verified WireGuard tools must disable and relabel the installation action.');
     $assert($buttonDisabled($html, 'evidence') && preg_match('/<div id="teliphones-evidence-section" hidden>/', $html) === 1, 'Evidence submission requires a Checker challenge.');
-    $html = $renderBroker(['available' => true, 'condition' => 'operational'], ['ok' => true, 'status' => ['protocol' => 2, 'phase' => 'Missing dependency', 'can_authorise' => false,
+    $html = $renderBroker(['available' => true, 'condition' => 'operational'], ['ok' => true, 'status' => ['protocol' => 3, 'phase' => 'Missing dependency', 'can_authorise' => false,
         'readiness' => ['WireGuard wg' => true, 'Required PHP functions / extensions' => false]]]);
     $assert(strpos($html, 'WireGuard tools missing') === false && strpos($html, 'Other dependencies missing: Required PHP functions / extensions') !== false
         && strpos($html, 'value="authorise" type="submit" disabled') !== false, 'Other missing dependencies must be distinguished and block authorisation.');

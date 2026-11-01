@@ -1,0 +1,66 @@
+#include <windows.h>
+#include <commctrl.h>
+#include "resource.h"
+
+IDD_MAIN DIALOGEX 0, 0, 560, 390
+STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX
+CAPTION "TELIPHONES"
+FONT 9, "Segoe UI"
+BEGIN
+    LTEXT           "WireGuard for Windows: checking...", IDC_WG_STATUS, 10, 10, 540, 25
+    CONTROL         "", IDC_PROFILES, WC_LISTVIEW, WS_TABSTOP | WS_BORDER | LVS_REPORT | LVS_SINGLESEL, 10, 40, 540, 135
+    PUSHBUTTON      "Add my PBX...", IDC_ADD_PBX, 10, 182, 90, 22
+    PUSHBUTTON      "Remote Support...", IDC_ADD_SUPPORT, 105, 182, 105, 22
+    PUSHBUTTON      "Import grant...", IDC_UPDATE_GRANT, 215, 182, 85, 22
+    PUSHBUTTON      "Remove", IDC_REMOVE, 305, 182, 65, 22
+    LTEXT           "Support session:", -1, 10, 212, 75, 14
+    COMBOBOX        IDC_SESSION, 88, 209, 250, 100, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "", IDC_DETAILS, 10, 234, 540, 58, SS_LEFT
+    LTEXT           "Not connected", IDC_STATE, 10, 298, 540, 20, SS_LEFT
+    LTEXT           "", IDC_GUIDANCE, 10, 318, 540, 32, SS_LEFT
+    PUSHBUTTON      "Connect", IDC_CONNECT, 10, 358, 75, 22
+    PUSHBUTTON      "Disconnect", IDC_DISCONNECT, 90, 358, 75, 22
+    PUSHBUTTON      "Open FreePBX", IDC_OPEN_GUI, 170, 358, 90, 22
+    PUSHBUTTON      "Open SSH", IDC_OPEN_SSH, 265, 358, 75, 22
+    DEFPUSHBUTTON   "Close", IDCANCEL, 475, 358, 75, 22
+END
+
+IDD_PAIR DIALOGEX 0, 0, 445, 330
+STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Pair my PBX"
+FONT 9, "Segoe UI"
+BEGIN
+    LTEXT           "Workstation name:", -1, 10, 12, 100, 14
+    EDITTEXT        IDC_PAIR_WORKSTATION, 115, 10, 230, 18, ES_AUTOHSCROLL
+    PUSHBUTTON      "Generate request", IDC_PAIR_GENERATE, 350, 9, 85, 22
+    LTEXT           "Copy this request to Connectivity > TELIPHONES > Windows workstations on your PBX:", -1, 10, 37, 425, 25
+    EDITTEXT        IDC_PAIR_REQUEST, 10, 63, 425, 82, ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY | WS_VSCROLL
+    PUSHBUTTON      "Copy request", IDC_PAIR_COPY, 10, 149, 90, 22
+    LTEXT           "", IDC_PAIR_FINGERPRINT, 110, 152, 325, 18, SS_LEFT
+    LTEXT           "Paste the response produced by the PBX:", -1, 10, 178, 300, 14
+    EDITTEXT        IDC_PAIR_RESPONSE, 10, 195, 425, 52, ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL
+    LTEXT           "Linux SSH account (only if SSH was approved):", -1, 10, 255, 260, 14
+    EDITTEXT        IDC_PAIR_SSHUSER, 275, 252, 160, 18, ES_AUTOHSCROLL
+    LTEXT           "Pairing does not grant SSH unless the PBX administrator explicitly enabled it.", -1, 10, 278, 425, 20, SS_LEFT
+    DEFPUSHBUTTON   "Save connection", IDOK, 265, 304, 90, 20
+    PUSHBUTTON      "Cancel", IDCANCEL, 360, 304, 75, 20
+END
+
+IDD_SUPPORT DIALOGEX 0, 0, 445, 310
+STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Remote Support"
+FONT 9, "Segoe UI"
+BEGIN
+    LTEXT           "Profile name:", -1, 10, 12, 80, 14
+    EDITTEXT        IDC_SUP_NAME, 95, 10, 245, 18, ES_AUTOHSCROLL
+    PUSHBUTTON      "Generate engineer key", IDC_SUP_GENERATE, 10, 38, 135, 22
+    PUSHBUTTON      "Copy public key", IDC_SUP_COPY, 150, 38, 100, 22
+    EDITTEXT        IDC_SUP_PUBKEY, 10, 66, 425, 35, ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY | WS_VSCROLL
+    LTEXT           "", IDC_SUP_HINT, 10, 108, 425, 42, SS_LEFT
+    LTEXT           "Current grant:", -1, 10, 157, 90, 14
+    EDITTEXT        IDC_SUP_GRANT, 10, 176, 325, 44, ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY | WS_VSCROLL
+    PUSHBUTTON      "Import grant...", IDC_SUP_BROWSE, 345, 176, 90, 22
+    LTEXT           "The private key remains in Windows Credential Manager. Share only the public key with your gateway operator.", -1, 10, 230, 425, 28, SS_LEFT
+    DEFPUSHBUTTON   "Save", IDOK, 265, 276, 80, 22
+    PUSHBUTTON      "Cancel", IDCANCEL, 355, 276, 80, 22
+END

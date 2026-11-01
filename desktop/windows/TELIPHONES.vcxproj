@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64"><Configuration>Debug</Configuration><Platform>x64</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>17.0</VCProjectVersion>
+    <Keyword>Win32Proj</Keyword>
+    <ProjectGuid>{82907D6A-649B-4A7F-99F5-831B3B7A8633}</ProjectGuid>
+    <RootNamespace>TELIPHONES</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType><UseDebugLibraries>true</UseDebugLibraries><PlatformToolset>v143</PlatformToolset><CharacterSet>Unicode</CharacterSet><UseOfMfc>Static</UseOfMfc>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType><UseDebugLibraries>false</UseDebugLibraries><PlatformToolset>v143</PlatformToolset><WholeProgramOptimization>true</WholeProgramOptimization><CharacterSet>Unicode</CharacterSet><UseOfMfc>Static</UseOfMfc>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings"><Import Project="$(VCTargetsPath)\BuildCustomizations\masm.props" Condition="Exists('$(VCTargetsPath)\BuildCustomizations\masm.props')" /></ImportGroup>
+  <ImportGroup Label="Shared" />
+  <ImportGroup Label="PropertySheets" />
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup>
+    <OutDir>$(SolutionDir)build\$(Configuration)\</OutDir>
+    <IntDir>$(SolutionDir)build\obj\$(ProjectName)\$(Configuration)\</IntDir>
+    <TargetName>TELIPHONES</TargetName>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile><ExceptionHandling>Sync</ExceptionHandling></ClCompile>
+    <Link><TargetMachine>MachineX64</TargetMachine><GenerateManifest>true</GenerateManifest></Link>
+    <Manifest><AdditionalManifestFiles>$(ProjectDir)src\app\TELIPHONES.manifest;%(AdditionalManifestFiles)</AdditionalManifestFiles></Manifest>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <WarningLevel>Level4</WarningLevel><SDLCheck>true</SDLCheck><ConformanceMode>true</ConformanceMode><LanguageStandard>stdcpp17</LanguageStandard><AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions><PreprocessorDefinitions>UNICODE;_UNICODE;WIN32_LEAN_AND_MEAN;NOMINMAX;_WIN32_WINNT=0x0A00;%(PreprocessorDefinitions)</PreprocessorDefinitions><AdditionalIncludeDirectories>$(ProjectDir)src\app;$(ProjectDir)src\core;$(ProjectDir)src\platform;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories><RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem><GenerateDebugInformation>true</GenerateDebugInformation><AdditionalDependencies>bcrypt.lib;wintrust.lib;crypt32.lib;advapi32.lib;ws2_32.lib;shell32.lib;comdlg32.lib;ole32.lib;comctl32.lib;uuid.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+    <ResourceCompile><AdditionalIncludeDirectories>$(ProjectDir)src\app;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories></ResourceCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <WarningLevel>Level4</WarningLevel><FunctionLevelLinking>true</FunctionLevelLinking><IntrinsicFunctions>true</IntrinsicFunctions><SDLCheck>true</SDLCheck><ConformanceMode>true</ConformanceMode><LanguageStandard>stdcpp17</LanguageStandard><AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions><PreprocessorDefinitions>UNICODE;_UNICODE;WIN32_LEAN_AND_MEAN;NOMINMAX;_WIN32_WINNT=0x0A00;%(PreprocessorDefinitions)</PreprocessorDefinitions><AdditionalIncludeDirectories>$(ProjectDir)src\app;$(ProjectDir)src\core;$(ProjectDir)src\platform;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories><RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem><EnableCOMDATFolding>true</EnableCOMDATFolding><OptimizeReferences>true</OptimizeReferences><GenerateDebugInformation>true</GenerateDebugInformation><AdditionalDependencies>bcrypt.lib;wintrust.lib;crypt32.lib;advapi32.lib;ws2_32.lib;shell32.lib;comdlg32.lib;ole32.lib;comctl32.lib;uuid.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+    <ResourceCompile><AdditionalIncludeDirectories>$(ProjectDir)src\app;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories></ResourceCompile>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="src\app\TeliphonesApp.cpp" />
+    <ClCompile Include="src\app\MainDlg.cpp" />
+    <ClCompile Include="src\app\PairDlg.cpp" />
+    <ClCompile Include="src\app\SupportDlg.cpp" />
+    <ClCompile Include="src\core\CommandLine.cpp" />
+    <ClCompile Include="src\core\Encoding.cpp" />
+    <ClCompile Include="src\core\Json.cpp" />
+    <ClCompile Include="src\core\Monitor.cpp" />
+    <ClCompile Include="src\core\Pairing.cpp" />
+    <ClCompile Include="src\core\Profiles.cpp" />
+    <ClCompile Include="src\core\TunnelConfig.cpp" />
+    <ClCompile Include="src\core\Validation.cpp" />
+    <ClCompile Include="src\platform\Win.cpp" />
+    <ClCompile Include="src\platform\WireGuard.cpp" />
+    <ClCompile Include="src\platform\Services.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="src\app\framework.h" />
+    <ClInclude Include="src\app\TeliphonesApp.h" />
+    <ClInclude Include="src\app\MainDlg.h" />
+    <ClInclude Include="src\app\PairDlg.h" />
+    <ClInclude Include="src\app\SupportDlg.h" />
+    <ClInclude Include="src\app\resource.h" />
+    <ClInclude Include="src\app\TELIPHONES.manifest" />
+    <ClInclude Include="src\core\CommandLine.h" />
+    <ClInclude Include="src\core\Encoding.h" />
+    <ClInclude Include="src\core\Json.h" />
+    <ClInclude Include="src\core\Monitor.h" />
+    <ClInclude Include="src\core\Pairing.h" />
+    <ClInclude Include="src\core\Profiles.h" />
+    <ClInclude Include="src\core\Rendezvous.h" />
+    <ClInclude Include="src\core\TunnelConfig.h" />
+    <ClInclude Include="src\core\Validation.h" />
+    <ClInclude Include="src\platform\Win.h" />
+    <ClInclude Include="src\platform\WireGuard.h" />
+    <ClInclude Include="src\platform\Services.h" />
+  </ItemGroup>
+  <ItemGroup><ResourceCompile Include="src\app\TELIPHONES.rc" /></ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

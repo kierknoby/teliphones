@@ -32,13 +32,20 @@ class WebSupport
         return null;
     }
 
-    public const BROKER_ACTIONS = ['authorise', 'revoke', 'dependencies', 'evidence', 'configure'];
+    public const BROKER_ACTIONS = ['authorise', 'revoke', 'dependencies', 'evidence', 'configure', 'pair', 'unpair'];
     public const ACTION_LABELS = [
         'authorise' => 'Authorise Remote Support',
         'revoke' => 'Revoke Remote Support',
         'dependencies' => 'Approve installation of WireGuard tools',
         'evidence' => 'Submit Checker evidence',
         'configure' => 'Save secure gateway enrollment',
+        'pair' => 'Pair Windows workstation',
+        'unpair' => 'Revoke workstation access',
+    ];
+    /** Exact fields forwarded for workstation pairing actions; other actions keep their existing forwarding. */
+    public const PAIRING_FIELDS = [
+        'pair' => ['request', 'endpoint_host', 'listen_port', 'mode', 'minutes', 'ssh'],
+        'unpair' => ['workstation_id'],
     ];
 
     private string $socket;
@@ -54,8 +61,8 @@ class WebSupport
     }
 
     public const OPERATION_STATES = ['running', 'succeeded', 'failed'];
-    /** Minimum broker status protocol supplying operation records for live monitoring (support_broker.py PROTOCOL). */
-    public const BROKER_PROTOCOL = 2;
+    /** Broker status protocol this module requires (support_broker.py PROTOCOL): 2 adds live operation records, 3 adds workstation pairing. */
+    public const BROKER_PROTOCOL = 3;
 
     public static function brokerOperational(array $response): bool
     {
@@ -79,7 +86,7 @@ class WebSupport
         }
         $request = ['action' => $post['action']];
         $operation = self::ACTION_LABELS[$request['action']];
-        foreach (['minutes', 'evidence', 'url', 'certificate', 'private_key', 'ca', 'checker_key'] as $field) {
+        foreach (self::PAIRING_FIELDS[$request['action']] ?? ['minutes', 'evidence', 'url', 'certificate', 'private_key', 'ca', 'checker_key'] as $field) {
             if (isset($post[$field]) && is_string($post[$field])) $request[$field] = $post[$field];
         }
         if (!self::brokerOperational($support)) {
@@ -90,6 +97,10 @@ class WebSupport
         }
         if ($request['action'] === 'configure' && strtolower((string)($server['HTTPS'] ?? '')) !== 'on' && (string)($server['SERVER_PORT'] ?? '') !== '443') {
             return ['code' => 200, 'dispatched' => false, 'notice' => ['ok' => false, 'action_failed' => true, 'action' => 'configure', 'operation' => $operation, 'error' => 'Gateway credentials may only be submitted over HTTPS. Configure FreePBX HTTPS before enrollment.']];
+        }
+        // A pairing request names the WireGuard key that will be admitted; it must not be alterable in transit.
+        if ($request['action'] === 'pair' && strtolower((string)($server['HTTPS'] ?? '')) !== 'on' && (string)($server['SERVER_PORT'] ?? '') !== '443') {
+            return ['code' => 200, 'dispatched' => false, 'notice' => ['ok' => false, 'action_failed' => true, 'action' => 'pair', 'operation' => $operation, 'error' => 'Workstations may only be paired over HTTPS. Open the FreePBX administration interface using https:// and try again.']];
         }
         $notice = $client->request($request);
         $notice['action'] = $request['action'];
@@ -239,7 +250,8 @@ class WebSupport
             'operation_id' => is_string($notice['operation_id'] ?? null) && preg_match('/^[a-f0-9]{1,32}$/', $notice['operation_id']) ? $notice['operation_id'] : null,
             'message' => is_string($notice['message'] ?? null) ? $notice['message'] : null,
             'error' => is_string($notice['error'] ?? null) ? $notice['error'] : null,
-            'operation' => is_string($notice['operation'] ?? null) ? $notice['operation'] : null];
+            'operation' => is_string($notice['operation'] ?? null) ? $notice['operation'] : null,
+            'pairing_response' => self::validPairingResponse($notice['pairing_response'] ?? null) ? $notice['pairing_response'] : null];
         return ['code' => $result['code'], 'body' => $body + ['ok' => $publicNotice['ok'], 'notice' => $publicNotice,
             'status' => self::publicStatus($support, $client->brokerState($support))]];
     }
@@ -249,6 +261,34 @@ class WebSupport
         if (!isset($request['token'], $request['action']) || !is_string($request['token'])
             || !is_string($request['action']) || $token === '' || !hash_equals($token, $request['token'])) return false;
         return in_array($request['action'], self::BROKER_ACTIONS, true);
+    }
+
+    /** Validated workstation pairing status for server-side rendering; never contains WireGuard keys. */
+    public static function workstations(array $support): array
+    {
+        $status = is_array($support['status'] ?? null) ? $support['status'] : [];
+        $raw = is_array($status['workstations'] ?? null) ? $status['workstations'] : null;
+        $supported = $raw !== null && is_int($status['protocol'] ?? null) && $status['protocol'] >= self::BROKER_PROTOCOL;
+        $items = [];
+        foreach ($supported && is_array($raw['items'] ?? null) ? $raw['items'] : [] as $item) {
+            if (!is_array($item) || !is_string($item['id'] ?? null) || !preg_match('/^[a-f0-9]{16}$/', $item['id'])) continue;
+            $items[] = ['id' => $item['id'], 'name' => substr((string)($item['name'] ?? ''), 0, 64), 'address' => substr((string)($item['address'] ?? ''), 0, 18),
+                'mode' => ($item['mode'] ?? '') === 'persistent' ? 'persistent' : 'temporary', 'ssh' => ($item['ssh'] ?? false) === true,
+                'expires_at' => is_int($item['expires_at'] ?? null) ? $item['expires_at'] : null,
+                'fingerprint' => substr((string)($item['fingerprint'] ?? ''), 0, 40)];
+        }
+        $requirements = [];
+        foreach ($supported && is_array($raw['requirements'] ?? null) ? $raw['requirements'] : [] as $name => $value) {
+            if (is_string($name)) $requirements[substr($name, 0, 20)] = $value === true;
+        }
+        return ['supported' => $supported, 'ready' => $supported && ($raw['ready'] ?? false) === true, 'requirements' => $requirements,
+            'error' => $supported && is_string($raw['error'] ?? null) ? substr($raw['error'], 0, 500) : '',
+            'listen_port' => $supported && is_int($raw['listen_port'] ?? null) ? $raw['listen_port'] : null, 'items' => $items];
+    }
+
+    public static function validPairingResponse($value): bool
+    {
+        return is_string($value) && preg_match('/^TELIPHONES-PAIR-RESPONSE-1:[A-Za-z0-9_-]{20,4000}$/', $value) === 1;
     }
 
     /**

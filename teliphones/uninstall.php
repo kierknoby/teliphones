@@ -11,6 +11,15 @@ foreach (['/etc/systemd/system/teliphones-broker.service', '/usr/local/lib/telip
     if (file_exists($brokerFile) && !unlink($brokerFile)) throw new RuntimeException('Unable to remove TELIPHONES broker artifact.');
 }
 
+// Stopping the broker tears down workstation access; this repeats it when running as root and drops paired workstations.
+if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
+    @exec('/usr/sbin/ip link del tlp-admin >/dev/null 2>&1');
+    @exec('/usr/sbin/nft delete table inet teliphones_workstations >/dev/null 2>&1');
+}
+foreach (['/var/lib/teliphones/workstations.json', '/etc/teliphones/workstation-wg.key'] as $workstationFile) {
+    if (is_file($workstationFile)) @unlink($workstationFile);
+}
+
 require_once __DIR__ . '/SupportAdapter.php';
 require_once __DIR__ . '/WireGuardAgent.php';
 require_once __DIR__ . '/LocalAttestor.php';

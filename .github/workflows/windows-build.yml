@@ -1,0 +1,212 @@
+name: Windows build
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'desktop/windows/**'
+      - '.github/workflows/windows-build.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  windows-build:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Locate Visual Studio and verify MSVC, MFC and Windows SDK
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          if (-not (Test-Path -LiteralPath $vswhere -PathType Leaf)) {
+            throw "Missing Visual Studio discovery tool: $vswhere"
+          }
+          $vs = & $vswhere -latest -products '*' -version '[17.0,18.0)' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if ($LASTEXITCODE -ne 0 -or -not $vs) {
+            throw 'Visual Studio 2022 with Microsoft.VisualStudio.Component.VC.Tools.x86.x64 is missing.'
+          }
+          $vs = $vs.Trim()
+          $mfcInstallations = @(& $vswhere -products '*' -version '[17.0,18.0)' -requires Microsoft.VisualStudio.Component.VC.ATLMFC -property installationPath)
+          if ($LASTEXITCODE -ne 0 -or $vs -notin $mfcInstallations) {
+            throw "Visual Studio at $vs is missing Microsoft.VisualStudio.Component.VC.ATLMFC (C++ MFC for v143 x86/x64). No components will be downloaded."
+          }
+          $versionFile = Join-Path $vs 'VC\Auxiliary\Build\Microsoft.VCToolsVersion.default.txt'
+          if (-not (Test-Path -LiteralPath $versionFile -PathType Leaf)) {
+            throw "Missing default MSVC toolset version file: $versionFile"
+          }
+          $toolVersion = (Get-Content -LiteralPath $versionFile -Raw).Trim()
+          $tools = Join-Path $vs "VC\Tools\MSVC\$toolVersion"
+          $msbuild = Join-Path $vs 'MSBuild\Current\Bin\MSBuild.exe'
+          $dumpbin = Join-Path $tools 'bin\Hostx64\x64\dumpbin.exe'
+          $requiredFiles = @(
+            $msbuild,
+            $dumpbin,
+            (Join-Path $tools 'bin\Hostx64\x64\cl.exe'),
+            (Join-Path $tools 'include\vector'),
+            (Join-Path $tools 'lib\x64\libcmt.lib'),
+            (Join-Path $tools 'atlmfc\include\afxwin.h'),
+            (Join-Path $tools 'atlmfc\include\afxdialogex.h'),
+            (Join-Path $tools 'atlmfc\lib\x64\uafxcw.lib')
+          )
+          foreach ($file in $requiredFiles) {
+            if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
+              throw "Required MSVC/MFC build file is missing: $file. No dependencies will be downloaded."
+            }
+          }
+          $kits = (Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows Kits\Installed Roots' -Name KitsRoot10).KitsRoot10
+          $sdkVersions = @(Get-ChildItem -LiteralPath (Join-Path $kits 'Include') -Directory |
+            Where-Object { $_.Name -match '^10\.0\.\d+\.\d+$' } |
+            Sort-Object { [version]$_.Name } -Descending)
+          if ($sdkVersions.Count -eq 0) {
+            throw "No Windows 10/11 SDK headers found under $kits"
+          }
+          $sdkVersion = $sdkVersions[0].Name
+          $sdkFiles = @(
+            "Include\$sdkVersion\um\Windows.h",
+            "Include\$sdkVersion\ucrt\stdio.h",
+            "Lib\$sdkVersion\um\x64\kernel32.lib",
+            "Lib\$sdkVersion\um\x64\uuid.lib",
+            "Lib\$sdkVersion\ucrt\x64\libucrt.lib",
+            "bin\$sdkVersion\x64\rc.exe",
+            "bin\$sdkVersion\x64\mt.exe"
+          )
+          foreach ($relative in $sdkFiles) {
+            $file = Join-Path $kits $relative
+            if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
+              throw "Required Windows SDK build file is missing: $file. No dependencies will be downloaded."
+            }
+          }
+          Write-Host "Visual Studio: $vs"
+          Write-Host "MSVC: $toolVersion; Windows SDK: $sdkVersion; MFC: static Unicode x64"
+          "MSBUILD_EXE=$msbuild" >> $env:GITHUB_ENV
+          "DUMPBIN_EXE=$dumpbin" >> $env:GITHUB_ENV
+          "VCTOOLS_VERSION=$toolVersion" >> $env:GITHUB_ENV
+          "WINDOWS_SDK_VERSION=$sdkVersion" >> $env:GITHUB_ENV
+          "MANIFEST_TOOL=$(Join-Path $kits "bin\$sdkVersion\x64\mt.exe")" >> $env:GITHUB_ENV
+
+      - name: Validate native project and resource layout
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Get-Command python.exe -ErrorAction SilentlyContinue)) {
+            throw 'The runner is missing Python for the standard-library build layout tests. Nothing will be downloaded.'
+          }
+          python desktop/windows/tests/build_layout_test.py -v
+          if ($LASTEXITCODE -ne 0) {
+            throw "Native build layout checks failed with exit code $LASTEXITCODE."
+          }
+
+      - name: Build TELIPHONES solution (Release x64)
+        run: |
+          & $env:MSBUILD_EXE desktop/windows/TELIPHONES.sln /m /t:Rebuild /p:Configuration=Release /p:Platform=x64 "/p:VCToolsVersion=$env:VCTOOLS_VERSION" "/p:WindowsTargetPlatformVersion=$env:WINDOWS_SDK_VERSION" /verbosity:minimal
+          if ($LASTEXITCODE -ne 0) {
+            throw "MSVC/MFC solution build failed with exit code $LASTEXITCODE."
+          }
+
+      - name: Run native Windows core regression tests
+        run: |
+          $tests = Join-Path $env:GITHUB_WORKSPACE 'desktop\windows\build\Release\TeliphonesCoreTests.exe'
+          if (-not (Test-Path -LiteralPath $tests -PathType Leaf)) {
+            throw "The native test executable was not produced: $tests"
+          }
+          & $tests
+          if ($LASTEXITCODE -ne 0) {
+            throw "Native core regression tests failed with exit code $LASTEXITCODE."
+          }
+
+      - name: Verify real x64 native executable and runtime dependencies
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = Join-Path $env:GITHUB_WORKSPACE 'desktop\windows\build\Release\TELIPHONES.exe'
+          if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
+            throw "TELIPHONES.exe was not produced at $exe"
+          }
+          $bytes = [IO.File]::ReadAllBytes($exe)
+          if ($bytes.Length -lt 64 -or [BitConverter]::ToUInt16($bytes, 0) -ne 0x5A4D) {
+            throw 'TELIPHONES.exe is not a Windows executable (missing MZ header).'
+          }
+          $pe = [BitConverter]::ToInt32($bytes, 0x3C)
+          if ($pe -lt 64 -or $pe -gt ($bytes.Length - 264) -or [BitConverter]::ToUInt32($bytes, $pe) -ne 0x4550) {
+            throw 'TELIPHONES.exe has an invalid PE header.'
+          }
+          if ([BitConverter]::ToUInt16($bytes, $pe + 4) -ne 0x8664 -or [BitConverter]::ToUInt16($bytes, $pe + 24) -ne 0x20B) {
+            throw 'TELIPHONES.exe is not an AMD64 PE32+ executable.'
+          }
+          if ([BitConverter]::ToUInt16($bytes, $pe + 92) -ne 2) {
+            throw 'TELIPHONES.exe does not use the Windows GUI subsystem.'
+          }
+          if ([BitConverter]::ToUInt32($bytes, $pe + 248) -ne 0 -or [BitConverter]::ToUInt32($bytes, $pe + 252) -ne 0) {
+            throw 'TELIPHONES.exe unexpectedly has a .NET CLR header.'
+          }
+          $dependencies = & $env:DUMPBIN_EXE /nologo /dependents $exe
+          if ($LASTEXITCODE -ne 0) {
+            throw "dumpbin failed with exit code $LASTEXITCODE."
+          }
+          $dependencies | Write-Host
+          if (($dependencies -join "`n") -match '(?im)^\s*(mfc\d+\w*|vcruntime\d+\w*|msvcp\d+\w*|ucrtbase|api-ms-win-crt-[\w-]+)\.dll\s*$') {
+            throw 'Unexpected dynamic MFC/MSVC runtime dependency: the application must use static MFC and /MT.'
+          }
+          $manifestFile = Join-Path $env:RUNNER_TEMP 'TELIPHONES.exe.manifest'
+          & $env:MANIFEST_TOOL "-inputresource:$exe;#1" "-out:$manifestFile"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not extract the embedded application manifest: exit code $LASTEXITCODE."
+          }
+          [xml]$manifest = Get-Content -LiteralPath $manifestFile -Raw
+          $privileges = $manifest.SelectSingleNode("//*[local-name()='requestedExecutionLevel']")
+          $controls = $manifest.SelectSingleNode("//*[local-name()='assemblyIdentity' and @name='Microsoft.Windows.Common-Controls']")
+          $dpi = $manifest.SelectSingleNode("//*[local-name()='dpiAwareness']")
+          if (-not $privileges -or $privileges.level -ne 'asInvoker' -or $privileges.uiAccess -ne 'false' -or -not $controls -or -not $dpi -or $dpi.InnerText -ne 'PerMonitorV2') {
+            throw 'The embedded application manifest is missing expected UAC, Common Controls or DPI settings.'
+          }
+          Get-FileHash -LiteralPath $exe -Algorithm SHA256 | Format-List
+
+      - name: Smoke-test executable loading without UAC or networking
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = Join-Path $env:GITHUB_WORKSPACE 'desktop\windows\build\Release\TELIPHONES.exe'
+          foreach ($argument in @('/tunnel-up', '/tunnel-down')) {
+            $startInfo = [Diagnostics.ProcessStartInfo]::new($exe, $argument)
+            $startInfo.UseShellExecute = $false
+            $startInfo.CreateNoWindow = $true
+            $process = [Diagnostics.Process]::Start($startInfo)
+            if (-not $process) {
+              throw "Could not start TELIPHONES for smoke test: $argument"
+            }
+            try {
+              if (-not $process.WaitForExit(15000)) {
+                $process.Kill()
+                $process.WaitForExit()
+                throw "TELIPHONES malformed helper smoke test timed out: $argument"
+              }
+              if ($process.ExitCode -ne 2) {
+                throw "TELIPHONES did not reject malformed $argument arguments before elevation: exit code $($process.ExitCode), expected 2."
+              }
+            } finally {
+              $process.Dispose()
+            }
+          }
+
+      - name: Prepare application artifact
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Path 'desktop/windows/build/artifact' | Out-Null
+          Copy-Item -LiteralPath 'desktop/windows/build/Release/TELIPHONES.exe' -Destination 'desktop/windows/build/artifact/TELIPHONES.exe'
+          Copy-Item -LiteralPath 'desktop/windows/README.md' -Destination 'desktop/windows/build/artifact/README.md'
+
+      - name: Upload Windows application
+        uses: actions/upload-artifact@v4
+        with:
+          name: TELIPHONES-Windows-x64
+          path: |
+            desktop/windows/build/artifact/TELIPHONES.exe
+            desktop/windows/build/artifact/README.md
+          if-no-files-found: error
+          retention-days: 14

@@ -32,7 +32,7 @@ namespace {
     $session = ['AMP_user' => 'admin', 'teliphones_token' => 'known-token'];
     $operation = ['id' => 'abc123', 'action' => 'dependencies', 'state' => 'running', 'stage' => 'Installing WireGuard tools',
         'message' => '', 'started_at' => 1000, 'finished_at' => null];
-    $ready = ['ok' => true, 'error' => null, 'status' => ['protocol' => 2, 'phase' => 'Missing dependency', 'enabled' => true, 'can_authorise' => false,
+    $ready = ['ok' => true, 'error' => null, 'status' => ['protocol' => 3, 'phase' => 'Missing dependency', 'enabled' => true, 'can_authorise' => false,
         'readiness' => ['WireGuard wg' => false, 'Gateway enrollment' => true], 'session' => null, 'server_time' => 1010, 'operation' => $operation,
         'private_key' => '-----BEGIN PRIVATE KEY-----secret', 'gateway' => ['certificate' => 'secret-cert']]];
     $client = new WebSupport('/nonexistent/control.sock', '/nonexistent/unit', static function () { return null; });
@@ -74,8 +74,8 @@ namespace {
     $assert(strpos($result['json'], 'secret') === false && strpos($result['json'], 'PRIVATE KEY') === false && !isset($status['private_key']) && !isset($status['gateway']),
         'Status must not expose credentials, keys or configuration.');
     $assert($status['readiness'] === ['WireGuard wg' => false, 'Gateway enrollment' => true], 'Readiness must be a boolean map.');
-    $assert($status['broker_current'] === true, 'A protocol 2 broker supports live monitoring.');
-    foreach ([null, 1, '2', 2.0] as $protocol) {
+    $assert($status['broker_current'] === true, 'A protocol 3 broker supports live monitoring and pairing.');
+    foreach ([null, 1, 2, '3', 3.0] as $protocol) {
         $legacy = $ready;
         $legacy['status']['protocol'] = $protocol;
         $assert(WebSupport::publicStatus($legacy, ['available' => true])['broker_current'] === false, 'Older or malformed broker protocol must not be treated as current.');

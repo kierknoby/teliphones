@@ -2,11 +2,13 @@
 """Restricted local GUI-to-root bridge; no browser-selected commands or paths."""
 import base64
 import hashlib
+import ipaddress
 import json
 import os
 from pathlib import Path
 import pwd
 import re
+import secrets
 import signal
 import socket
 import struct
@@ -20,11 +22,23 @@ from urllib.parse import urlsplit
 STATE = Path("/var/lib/teliphones")
 ENROLLMENT = Path("/etc/teliphones")
 SOCKET = "/run/teliphones/control.sock"
-# Version of the broker status contract; 2 adds operation records and server_time for live GUI monitoring.
-PROTOCOL = 2
+# Version of the broker status contract; 2 adds operation records and server_time for live GUI monitoring;
+# 3 adds administrator-owned workstation pairing (pair/unpair and the "workstations" status block).
+PROTOCOL = 3
 FWCONSOLE = "/usr/sbin/fwconsole"
-ACTIONS = {"status", "authorise", "revoke", "dependencies", "evidence", "configure"}
+ACTIONS = {"status", "authorise", "revoke", "dependencies", "evidence", "configure", "pair", "unpair"}
 ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C", "HOME": "/root", "DEBIAN_FRONTEND": "noninteractive"}
+# Administrator-owned workstation pairing (TELIPHONES Windows application). Separate from the support interface.
+WORKSTATION_IFACE = "tlp-admin"
+WORKSTATION_TABLE = "teliphones_workstations"
+WORKSTATION_POOL = ipaddress.IPv4Network("100.64.0.0/10")
+WORKSTATION_EXCLUDED = ipaddress.IPv4Network("100.100.0.0/16")
+PAIR_REQUEST_PREFIX = "TELIPHONES-PAIR-REQUEST-1:"
+PAIR_RESPONSE_PREFIX = "TELIPHONES-PAIR-RESPONSE-1:"
+WG_PUBLIC_KEY = re.compile(r"[A-Za-z0-9+/]{42}[AEIMQUYcgkosw480]=")
+WORKSTATION_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._()-]{0,63}")
+HOSTNAME = re.compile(r"(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*")
+TOOLS = {"wg": ["/usr/bin/wg", "/usr/sbin/wg"], "ip": ["/usr/sbin/ip", "/sbin/ip"], "nft": ["/usr/sbin/nft", "/sbin/nft"]}
 
 
 class BrokerError(Exception):
@@ -67,6 +81,7 @@ def validate(request):
         "status": set(), "revoke": set(), "dependencies": set(),
         "authorise": {"minutes"}, "evidence": {"evidence"},
         "configure": {"url", "certificate", "private_key", "ca", "checker_key"},
+        "pair": {"request", "endpoint_host", "listen_port", "mode", "minutes", "ssh"}, "unpair": {"workstation_id"},
     }[action]
     if set(request) - fields - {"action"}:
         raise BrokerError("Unexpected TELIPHONES input.")
@@ -87,7 +102,84 @@ def validate(request):
         url = urlsplit(request["url"])
         if url.scheme != "https" or not url.hostname or url.username or url.password or url.query or url.fragment or url.path not in ("", "/") or any(c in request["url"] for c in '\r\n"'):
             raise BrokerError("Gateway URL must be an HTTPS origin without credentials, paths or query.")
+    if action == "pair":
+        if any(not isinstance(request.get(field), str) for field in ("request", "endpoint_host", "listen_port", "mode", "ssh")):
+            raise BrokerError("Complete workstation pairing details are required.")
+        parse_pair_request(request["request"])
+        endpoint_host(request["endpoint_host"])
+        if not re.fullmatch(r"[0-9]{4,5}", request["listen_port"]) or not 1024 <= int(request["listen_port"]) <= 65535:
+            raise BrokerError("The WireGuard UDP port must be between 1024 and 65535.")
+        if request["mode"] not in ("temporary", "persistent") or request["ssh"] not in ("0", "1"):
+            raise BrokerError("Choose temporary or persistent pairing, and whether SSH is permitted.")
+        if request["mode"] == "temporary" and (not isinstance(request.get("minutes"), str) or not re.fullmatch(r"[0-9]{2,4}", request["minutes"])
+                                               or not 15 <= int(request["minutes"]) <= 1440):
+            raise BrokerError("Temporary pairing must last between 15 and 1440 minutes.")
+    if action == "unpair":
+        if not isinstance(request.get("workstation_id"), str) or not re.fullmatch(r"[a-f0-9]{16}|all", request["workstation_id"]):
+            raise BrokerError("Unknown workstation.")
     return action
+
+
+def b64url_decode(text):
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,4000}", text):
+        raise ValueError("invalid base64url")
+    return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
+
+
+def b64url_encode(data):
+    return base64.urlsafe_b64encode(data).decode("ascii").rstrip("=")
+
+
+def parse_pair_request(code):
+    """Parse the workstation-generated request; it carries only a public key, a name and a nonce."""
+    try:
+        code = code.strip()
+        if not code.startswith(PAIR_REQUEST_PREFIX) or len(code) > 4096:
+            raise ValueError("prefix")
+        value = json.loads(b64url_decode(code[len(PAIR_REQUEST_PREFIX):]).decode("utf-8"))
+    except (ValueError, UnicodeDecodeError) as error:
+        raise BrokerError("The pairing request is not a TELIPHONES workstation pairing request.") from error
+    if (not isinstance(value, dict) or set(value) != {"schema", "workstation", "public_key", "nonce"}
+            or value["schema"] != "teliphones-pair-request/1"
+            or not isinstance(value["workstation"], str) or not WORKSTATION_NAME.fullmatch(value["workstation"])
+            or not isinstance(value["public_key"], str) or not WG_PUBLIC_KEY.fullmatch(value["public_key"])
+            or base64.b64decode(value["public_key"]) == bytes(32)
+            or not isinstance(value["nonce"], str) or not re.fullmatch(r"[A-Za-z0-9_-]{22}", value["nonce"])):
+        raise BrokerError("The pairing request is malformed or incomplete.")
+    return value
+
+
+def endpoint_host(host):
+    host = host.strip()
+    try:
+        address = ipaddress.ip_address(host.strip("[]"))
+        if address.is_unspecified or address.is_multicast or address.is_loopback:
+            raise BrokerError("The public WireGuard address must be reachable by the workstation.")
+        return "[" + str(address) + "]" if address.version == 6 else str(address)
+    except ValueError:
+        if HOSTNAME.fullmatch(host) and not re.fullmatch(r"[0-9.]+", host):
+            return host.lower()
+    raise BrokerError("Enter the PBX public hostname or IP address that the workstation will use for WireGuard.")
+
+
+def key_fingerprint(public_key):
+    return "SHA256:" + base64.b64encode(hashlib.sha256(base64.b64decode(public_key)).digest()).decode().rstrip("=")[:16]
+
+
+def workstation_ruleset(pbx_address, ssh_sources):
+    """nftables policy for tlp-admin: PBX GUI (80/443) for every paired workstation, SSH only where approved,
+    no forwarding into other networks. Applied atomically and before any peer is added."""
+    lines = ["add table inet " + WORKSTATION_TABLE, "delete table inet " + WORKSTATION_TABLE,
+             "table inet " + WORKSTATION_TABLE + " {",
+             "    chain input {", "        type filter hook input priority -10; policy accept;",
+             '        iifname "%s" ip daddr %s tcp dport { 80, 443 } accept' % (WORKSTATION_IFACE, pbx_address)]
+    if ssh_sources:
+        lines.append('        iifname "%s" ip saddr { %s } ip daddr %s tcp dport 22 accept' % (WORKSTATION_IFACE, ", ".join(sorted(ssh_sources)), pbx_address))
+    lines += ['        iifname "%s" ip daddr %s icmp type echo-request accept' % (WORKSTATION_IFACE, pbx_address),
+              '        iifname "%s" drop' % WORKSTATION_IFACE, "    }",
+              "    chain forward {", "        type filter hook forward priority -10; policy accept;",
+              '        iifname "%s" drop' % WORKSTATION_IFACE, '        oifname "%s" drop' % WORKSTATION_IFACE, "    }", "}"]
+    return "\n".join(lines) + "\n"
 
 
 def permitted_peer(uid, web_uid):
@@ -104,6 +196,9 @@ class Broker:
         self.revoking = False
         # Progress of the most recent web operation, reported read-only through "status".
         self.operation = None
+        # Workstation pairing is independent of support sessions and serialised separately.
+        self.wslock = threading.Lock()
+        self.workstation_error = ""
 
     def begin(self, action, stage):
         self.operation = {"id": uuid.uuid4().hex, "action": action, "state": "running", "stage": stage,
@@ -209,7 +304,201 @@ class Broker:
                 "can_authorise": all(readiness.values()) and enabled and not session and not quarantine and not self.running and not self.revoking,
                 "session": {key: session[key] for key in ("session_id", "state", "expires_at") if key in session},
                 "access_verified": phase == "Connected",
-                "engineer": fingerprint, "challenge": read_json(STATE / "checker-challenge.json") if session.get("state") == "locally_verified" else None}
+                "engineer": fingerprint, "challenge": read_json(STATE / "checker-challenge.json") if session.get("state") == "locally_verified" else None,
+                "workstations": self.workstation_status()}
+
+    # ----- Administrator-owned workstation pairing -----
+
+    def tool(self, name):
+        for path in TOOLS[name]:
+            if os.access(path, os.X_OK):
+                return path
+        raise BrokerError("Workstation pairing requires %s, which is not installed." % {"wg": "WireGuard tools (wg)", "ip": "iproute2 (ip)", "nft": "nftables (nft)"}[name])
+
+    def run(self, arguments, stdin=None, check=True):
+        result = subprocess.run(arguments, input=stdin, capture_output=True, text=True, timeout=20, env=ENV)
+        if result.returncode and check:
+            raise BrokerError("Workstation network operation failed: " + os.path.basename(arguments[0]) + " " + arguments[1] + ".")
+        return result.stdout if result.returncode == 0 else None
+
+    def workstation_state(self):
+        """Load the pairing state and drop expired temporary pairings. Returns (state, changed)."""
+        state = read_json(STATE / "workstations.json")
+        items = state.get("workstations") if isinstance(state.get("workstations"), list) else []
+        now = int(time.time())
+        valid = [item for item in items if isinstance(item, dict) and WG_PUBLIC_KEY.fullmatch(str(item.get("public_key", "")))
+                 and (item.get("mode") == "persistent" or (isinstance(item.get("expires_at"), int) and item["expires_at"] > now))]
+        state = {"subnet": state.get("subnet") if isinstance(state.get("subnet"), str) else None,
+                 "listen_port": state.get("listen_port") if isinstance(state.get("listen_port"), int) else None,
+                 "workstations": valid}
+        return state, len(valid) != len(items)
+
+    def save_workstations(self, state):
+        atomic(STATE / "workstations.json", json.dumps(state, indent=2, sort_keys=True))
+
+    def choose_subnet(self):
+        used = []
+        for arguments in ([self.tool("ip"), "-4", "-o", "address", "show"], [self.tool("ip"), "-4", "route", "show", "table", "all"]):
+            for token in (self.run(arguments) or "").split():
+                try:
+                    used.append(ipaddress.IPv4Network(token, strict=False))
+                except ValueError:
+                    pass
+        candidates = [net for net in WORKSTATION_POOL.subnets(new_prefix=24) if not net.overlaps(WORKSTATION_EXCLUDED)]
+        for _ in range(64):
+            candidate = secrets.choice(candidates)
+            if not any(candidate.overlaps(net) for net in used if net.prefixlen > 0):
+                return str(candidate)
+        raise BrokerError("No unused private address range is available for workstation pairing.")
+
+    def server_public_key(self):
+        path = ENROLLMENT / "workstation-wg.key"
+        ENROLLMENT.mkdir(mode=0o700, exist_ok=True)
+        if not path.exists():
+            atomic(path, self.run([self.tool("wg"), "genkey"]).strip() + "\n")
+        if path.is_symlink() or path.stat().st_uid != os.geteuid() or path.stat().st_mode & 0o077:
+            raise BrokerError("The workstation WireGuard key must be a private, root-owned file.")
+        public = self.run([self.tool("wg"), "pubkey"], stdin=path.read_text()).strip()
+        if not WG_PUBLIC_KEY.fullmatch(public):
+            raise BrokerError("The PBX workstation WireGuard identity could not be derived.")
+        return public
+
+    def teardown_workstations(self):
+        for name in ("ip", "nft"):
+            try:
+                self.tool(name)
+            except BrokerError:
+                continue
+            if name == "ip":
+                self.run([self.tool("ip"), "link", "del", "dev", WORKSTATION_IFACE], check=False)
+            else:
+                self.run([self.tool("nft"), "delete", "table", "inet", WORKSTATION_TABLE], check=False)
+
+    def apply_workstations(self, state):
+        """Make the kernel match the state. Fails closed: any error removes all workstation access."""
+        try:
+            if not state["workstations"]:
+                self.teardown_workstations()
+                self.workstation_error = ""
+                return
+            network = ipaddress.IPv4Network(state["subnet"])
+            pbx = str(network[1])
+            wg, ip = self.tool("wg"), self.tool("ip")
+            # Port policy first, so no peer is ever reachable without it.
+            self.run([self.tool("nft"), "-f", "-"], stdin=workstation_ruleset(pbx, [item["address"].split("/")[0] for item in state["workstations"] if item.get("ssh") is True]))
+            if self.run([ip, "link", "show", "dev", WORKSTATION_IFACE], check=False) is None:
+                self.run([ip, "link", "add", "dev", WORKSTATION_IFACE, "type", "wireguard"])
+            self.server_public_key()
+            self.run([wg, "set", WORKSTATION_IFACE, "listen-port", str(state["listen_port"]), "private-key", str(ENROLLMENT / "workstation-wg.key")])
+            self.run([ip, "address", "replace", pbx + "/" + str(network.prefixlen), "dev", WORKSTATION_IFACE])
+            wanted = {item["public_key"]: item["address"] for item in state["workstations"]}
+            for peer in (self.run([wg, "show", WORKSTATION_IFACE, "peers"]) or "").split():
+                if peer not in wanted:
+                    self.run([wg, "set", WORKSTATION_IFACE, "peer", peer, "remove"])
+            for key, address in wanted.items():
+                self.run([wg, "set", WORKSTATION_IFACE, "peer", key, "allowed-ips", address])
+            self.run([ip, "link", "set", "up", "dev", WORKSTATION_IFACE])
+            self.workstation_error = ""
+        except (BrokerError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+            self.teardown_workstations()
+            self.workstation_error = "Workstation access could not be applied and was removed: " + (str(error) if isinstance(error, BrokerError) else "network configuration failed.")
+            raise BrokerError(self.workstation_error) from error
+
+    def restore_workstations(self):
+        """Broker start: re-create persistent and unexpired temporary pairings, failing closed."""
+        with self.wslock:
+            state, changed = self.workstation_state()
+            if changed:
+                self.save_workstations(state)
+            try:
+                self.apply_workstations(state)
+            except BrokerError:
+                pass
+
+    def expire_workstations(self):
+        with self.wslock:
+            state, changed = self.workstation_state()
+            if changed:
+                self.save_workstations(state)
+                self.audit("workstation-expired", 0, "completed")
+                try:
+                    self.apply_workstations(state)
+                except BrokerError:
+                    pass
+
+    def pair(self, request, uid):
+        if (STATE / "disabled").exists():
+            raise BrokerError("TELIPHONES is disabled; workstation pairing is unavailable.")
+        pairing = parse_pair_request(request["request"])
+        host, port = endpoint_host(request["endpoint_host"]), int(request["listen_port"])
+        for name in TOOLS:
+            self.tool(name)
+        state, _ = self.workstation_state()
+        previous = json.loads(json.dumps(state))
+        if state["workstations"] and state["listen_port"] != port:
+            raise BrokerError("Paired workstations already use UDP port %d. Use the same port, or revoke all workstations first." % state["listen_port"])
+        if not state["workstations"] or not state["subnet"]:
+            state["subnet"] = self.choose_subnet()
+        state["listen_port"] = port
+        network = ipaddress.IPv4Network(state["subnet"])
+        existing = next((item for item in state["workstations"] if item["public_key"] == pairing["public_key"]), None)
+        if existing:
+            state["workstations"].remove(existing)
+            address = existing["address"]
+        else:
+            taken = {item["address"] for item in state["workstations"]}
+            free = [str(host_address) + "/32" for host_address in list(network.hosts())[1:] if str(host_address) + "/32" not in taken]
+            if not free:
+                raise BrokerError("No workstation addresses remain; revoke unused workstations first.")
+            address = free[0]
+        now = int(time.time())
+        entry = {"id": existing["id"] if existing else secrets.token_hex(8), "name": pairing["workstation"], "public_key": pairing["public_key"],
+                 "address": address, "mode": request["mode"], "ssh": request["ssh"] == "1", "created_at": now,
+                 "expires_at": now + int(request["minutes"]) * 60 if request["mode"] == "temporary" else None}
+        state["workstations"].append(entry)
+        self.save_workstations(state)
+        try:
+            self.apply_workstations(state)
+            pbx_public = self.server_public_key()
+        except BrokerError:
+            self.save_workstations(previous)
+            try:
+                self.apply_workstations(previous)
+            except BrokerError:
+                pass
+            raise
+        self.audit("pair", uid, "completed")
+        pbx_address = str(network[1])
+        response = {"schema": "teliphones-pair-response/1", "nonce": pairing["nonce"], "workstation_id": entry["id"],
+                    "workstation_public_key": entry["public_key"], "address": address, "pbx_address": pbx_address,
+                    "pbx_name": re.sub(r"[^A-Za-z0-9._-]", "", socket.gethostname())[:64] or "FreePBX",
+                    "pbx_public_key": pbx_public, "endpoint": host + ":" + str(port), "mode": entry["mode"],
+                    "expires_at": entry["expires_at"], "ssh": entry["ssh"], "gui_url": "http://" + pbx_address + "/admin/"}
+        return PAIR_RESPONSE_PREFIX + b64url_encode(json.dumps(response, separators=(",", ":"), sort_keys=True).encode()), entry
+
+    def unpair(self, request, uid):
+        state, _ = self.workstation_state()
+        before = len(state["workstations"])
+        state["workstations"] = [] if request["workstation_id"] == "all" else [item for item in state["workstations"] if item["id"] != request["workstation_id"]]
+        if len(state["workstations"]) == before and request["workstation_id"] != "all":
+            raise BrokerError("Unknown workstation; it may already have been revoked or expired.")
+        self.save_workstations(state)
+        try:
+            self.apply_workstations(state)
+        except BrokerError:
+            # apply_workstations has already removed all workstation access, so revocation still holds.
+            pass
+        self.audit("unpair", uid, "completed")
+
+    def workstation_status(self):
+        state, _ = self.workstation_state()
+        requirements = {name: any(os.access(path, os.X_OK) for path in paths) for name, paths in TOOLS.items()}
+        return {"ready": all(requirements.values()), "requirements": requirements, "error": self.workstation_error,
+                "listen_port": state["listen_port"],
+                "pbx_address": str(ipaddress.IPv4Network(state["subnet"])[1]) if state["subnet"] and state["workstations"] else None,
+                "items": [{"id": item["id"], "name": item["name"], "address": item["address"], "mode": item["mode"],
+                           "ssh": item.get("ssh") is True, "created_at": item.get("created_at"), "expires_at": item.get("expires_at"),
+                           "fingerprint": key_fingerprint(item["public_key"])} for item in state["workstations"]]}
 
     def configure(self, request):
         if read_json(STATE / "session.json") or read_json(STATE / "connect.json"):
@@ -330,6 +619,15 @@ class Broker:
         action = validate(request)
         if action == "status":
             return {"ok": True, "status": self.status(), "error": self.error}
+        if action == "pair":
+            with self.wslock:
+                code, entry = self.pair(request, uid)
+            return {"ok": True, "pairing_response": code,
+                    "message": "Workstation '%s' paired. Paste the pairing response into the TELIPHONES Windows application." % entry["name"]}
+        if action == "unpair":
+            with self.wslock:
+                self.unpair(request, uid)
+            return {"ok": True, "message": "Workstation access revoked." if request["workstation_id"] != "all" else "All workstation access revoked."}
         if action == "revoke":
             self.cancel.set()
             self.revoking = True
@@ -383,6 +681,22 @@ def serve():
     broker = Broker()
     # Interrupted broker jobs never resume/open access implicitly.
     broker.cleanup(0, quarantine=(STATE / "session.json").exists() or (STATE / "connect.json").exists())
+    # Workstation access exists only while the broker runs and can enforce expiry.
+    broker.restore_workstations()
+
+    def stop(signum, frame):
+        broker.teardown_workstations()
+        raise SystemExit(0)
+    signal.signal(signal.SIGTERM, stop)
+
+    def expiry():
+        while True:
+            time.sleep(15)
+            try:
+                broker.expire_workstations()
+            except Exception:
+                broker.teardown_workstations()
+    threading.Thread(target=expiry, daemon=True).start()
     Path("/run/teliphones").mkdir(mode=0o750, exist_ok=True)
     if Path("/run/teliphones").is_symlink() or Path("/run/teliphones").stat().st_uid != 0:
         raise SystemExit("TELIPHONES socket directory must be root-owned.")

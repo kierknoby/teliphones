@@ -13,6 +13,9 @@ TELIPHONES remains experimental. Module Admin installation and the root broker b
 - [`teliphones/README.md`](teliphones/README.md): module setup, compatibility status and security limitations.
 - [`teliphones/docs/`](teliphones/docs/): provider-neutral Connect, Checker and Console contracts, integration and testing guides.
 - [`gateway/README.md`](gateway/README.md): separate reference gateway, engineer/Checker tools and disposable Linux namespace laboratory.
+- [`desktop/windows/README.md`](desktop/windows/README.md): experimental native Windows client, pairing workflow, build instructions and test limitations.
+- [`teliphones/docs/WORKSTATION-PAIRING.md`](teliphones/docs/WORKSTATION-PAIRING.md): administrator-owned workstation pairing contract.
+- [`docs/RENDEZVOUS.md`](docs/RENDEZVOUS.md): direct-first, provider-neutral future rendezvous/relay design note.
 - [`gateway/config.example.json`](gateway/config.example.json): placeholder-only gateway configuration template.
 
 After installing through Module Admin, complete the one-time root broker bootstrap described in [Complete Installation on FreePBX 17](teliphones/README.md#complete-installation-on-freepbx-17); Connectivity > TELIPHONES shows the same commands. Remote support on the FreePBX 17 / Debian 12 target is not yet validated end to end. The reference gateway is separate from the module and is not deployed or production-certified. No managed Connect, Checker, Console service or infrastructure endpoint is supplied.

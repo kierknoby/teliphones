@@ -552,6 +552,14 @@ The human contributor remains solely responsible for the contribution. AI tools 
 
 [@kierknoby](https://github.com/kierknoby), Kieran Knowles-Byrne // [FreePBX UK](https://github.com/freepbxUK)
 
+## Experimental Windows desktop client
+
+The native C++17 Win32/MFC client is under [`../desktop/windows/`](../desktop/windows/README.md). It supports administrator-owned workstation pairing and imported, customer-authorised Remote Support grants. It uses the official WireGuard for Windows installation and requires explicit Windows administrator approval for tunnel service setup. The client is experimental and has not been built or tested on Windows in this development environment.
+
+Administrator workstation pairing is separate from MSP session authorization. It is explicitly approved and revocable in **Connectivity > TELIPHONES > Windows workstations**. Persistent pairing lasts until revoked; temporary pairing expires on the PBX. Revoke a workstation on the PBX before deleting its local Windows profile. See [the workstation pairing contract](docs/WORKSTATION-PAIRING.md).
+
+Direct WireGuard requires the PBX's configured UDP endpoint to be reachable. TELIPHONES does not configure router forwarding, promise universal NAT traversal, or provide a relay. The reference Linux gateway remains optional and experimental.
+
 ## Release History
 
 ### 0.0.1, initial testing release, 26 September 2026

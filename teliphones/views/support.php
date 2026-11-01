@@ -77,7 +77,7 @@ $markdown = static function (string $text) use ($escape): string {
 <?php endif; ?>
 <?php if ($outdated): ?>
 <div class="alert alert-warning teliphones-broker-outdated"><h4>Root broker update required</h4>
-<p>The FreePBX module has been upgraded, but the separately installed root broker is an earlier version that does not report operation progress. Remote support actions still work through ordinary page submission, but the page cannot monitor their progress automatically. When no support session is active, rerun <strong>Complete Installation</strong> below from a root shell, then refresh this page.</p></div>
+<p>The FreePBX module has been upgraded, but the separately installed root broker is an earlier version that does not support every feature of this module (live operation progress and Windows workstation pairing). Remote support actions still work through ordinary page submission, but the page cannot monitor their progress automatically, and workstations cannot be paired. When no support session is active, rerun <strong>Complete Installation</strong> below from a root shell, then refresh this page.</p></div>
 <?php endif; ?>
 <?php if (isset($notice) && is_array($notice)): ?>
 <?php if (!empty($notice['action_failed'])): ?>
@@ -224,6 +224,81 @@ Permitted access: <span data-teliphones="access"><?=!empty($status['access_verif
 </fieldset>
 </form></details>
 <p>Expiry is enforced by PBX timers and the temporary SSH systemd lifetime, independently of this page. Cleanup failures quarantine support; revocation may be retried, but quarantine is not cleared from the GUI.</p>
+<?php
+$workstations = WebSupport::workstations($support);
+$pairingResponse = isset($notice) && is_array($notice) && !empty($notice['ok']) && WebSupport::validPairingResponse($notice['pairing_response'] ?? null) ? $notice['pairing_response'] : null;
+$pairOff = $available && $workstations['ready'] ? '' : ' disabled aria-disabled="true"';
+$unpairOff = $available && $workstations['supported'] ? '' : ' disabled aria-disabled="true"';
+$defaultHost = preg_replace('/:[0-9]+$/', '', (string)($_SERVER['HTTP_HOST'] ?? ''));
+?>
+<h3 id="teliphones-workstations">Windows workstations</h3>
+<p>Pair the TELIPHONES Windows application on a workstation you control, so that it can reach this PBX over WireGuard without repeating remote support authorisation. A paired workstation reaches only this PBX's administration interface (TCP 80 and 443) and, only if you allow it, SSH (TCP 22). It cannot reach other networks through the PBX. Pairing creates no accounts, passwords or SSH keys: you sign in with your existing FreePBX and SSH credentials. The PBX's WireGuard UDP port must be reachable from the workstation (for example, through a port forward on the PBX's router). Other administration and SSH ports are not exposed by pairing.</p>
+<?php if ($pairingResponse !== null): ?>
+<div class="alert alert-success teliphones-pairing-response" role="status"><strong>Pairing response.</strong> Copy it into the TELIPHONES Windows application to finish pairing. It contains no secret keys.
+<pre id="teliphones-pairing-response" style="user-select:all;white-space:pre-wrap;word-break:break-all"><?=$escape($pairingResponse)?></pre>
+<button type="button" class="btn btn-default" id="teliphones-copy-pairing">Copy pairing response</button>
+<script>
+(function () {
+    var button = document.getElementById('teliphones-copy-pairing');
+    var source = document.getElementById('teliphones-pairing-response');
+    if (!button || !source) return;
+    button.addEventListener('click', function () {
+        var select = function () {
+            var range = document.createRange();
+            range.selectNodeContents(source);
+            window.getSelection().removeAllRanges();
+            window.getSelection().addRange(range);
+            button.textContent = 'Press Ctrl+C to copy the selected response';
+        };
+        if (navigator.clipboard && window.isSecureContext) {
+            navigator.clipboard.writeText(source.textContent).then(function () { button.textContent = 'Pairing response copied'; }, select);
+        } else {
+            select();
+        }
+    });
+})();
+</script></div>
+<?php endif; ?>
+<?php if (!$workstations['supported']): ?>
+<p class="help-block teliphones-pairing-unavailable"><?=!$available ? $escape($unavailableReason) : ($live['broker_current'] ? 'Workstation pairing status was not reported by the root broker; pairing is unavailable.' : 'Workstation pairing requires the updated root broker; see Root broker update required above.')?></p>
+<?php elseif (!$workstations['ready']): ?>
+<div class="alert alert-warning teliphones-pairing-requirements">Workstation pairing requires WireGuard tools, iproute2 and nftables on the PBX. Missing: <?=$escape(implode(', ', array_keys(array_filter($workstations['requirements'], static function ($value) { return $value !== true; }))))?>.</div>
+<?php endif; ?>
+<?php if ($workstations['error'] !== ''): ?><div class="alert alert-danger teliphones-pairing-error"><?=$escape($workstations['error'])?></div><?php endif; ?>
+<table class="table table-striped teliphones-workstations"><thead><tr><th>Workstation</th><th>Key fingerprint</th><th>Address</th><th>Access</th><th>Pairing</th><th></th></tr></thead><tbody>
+<?php if (!$workstations['items']): ?><tr><td colspan="6">No workstations are paired.</td></tr><?php endif; ?>
+<?php foreach ($workstations['items'] as $item): ?>
+<tr><td><?=$escape($item['name'])?></td><td><code><?=$escape($item['fingerprint'])?></code></td><td><?=$escape($item['address'])?></td>
+<td><?=$item['ssh'] ? 'Web interface and SSH' : 'Web interface only'?></td>
+<td><?=$item['mode'] === 'persistent' ? 'Persistent (until revoked)' : 'Temporary, expires ' . $escape(gmdate('Y-m-d H:i', (int)$item['expires_at'])) . ' UTC'?></td>
+<td><form method="post"><input type="hidden" name="token" value="<?=$escape($token ?? '')?>"><input type="hidden" name="workstation_id" value="<?=$escape($item['id'])?>">
+<button class="btn btn-danger btn-sm" type="submit" name="action" value="unpair"<?=$unpairOff?>>Revoke</button></form></td></tr>
+<?php endforeach; ?>
+</tbody></table>
+<?php if (count($workstations['items']) > 1): ?>
+<form method="post"><input type="hidden" name="token" value="<?=$escape($token ?? '')?>"><input type="hidden" name="workstation_id" value="all">
+<button class="btn btn-danger" type="submit" name="action" value="unpair"<?=$unpairOff?>>Revoke all workstations</button></form>
+<?php endif; ?>
+<details class="teliphones-pair"><summary><strong>Pair a workstation</strong></summary>
+<p>In the TELIPHONES Windows application, choose <strong>Add PBX</strong> and copy its pairing request. Check that the key fingerprint shown in the application matches the fingerprint listed above after pairing. Pairing must be performed over HTTPS.</p>
+<form method="post" autocomplete="off">
+<input type="hidden" name="token" value="<?=$escape($token ?? '')?>">
+<fieldset<?=$pairOff?> id="teliphones-pair-fields">
+<label for="teliphones-pair-request">Pairing request from the Windows application</label>
+<textarea id="teliphones-pair-request" class="form-control" name="request" rows="3" maxlength="4096" required></textarea>
+<label for="teliphones-pair-host">PBX public hostname or IP address (used by the workstation to reach WireGuard)</label>
+<input id="teliphones-pair-host" class="form-control" name="endpoint_host" maxlength="253" required value="<?=$escape($defaultHost)?>">
+<label for="teliphones-pair-port">WireGuard UDP port on the PBX</label>
+<input id="teliphones-pair-port" class="form-control" name="listen_port" inputmode="numeric" pattern="[0-9]{4,5}" required value="<?=$escape($workstations['listen_port'] ?? 51821)?>">
+<label for="teliphones-pair-mode">Pairing</label>
+<select id="teliphones-pair-mode" class="form-control" name="mode"><option value="temporary">Temporary</option><option value="persistent">Persistent trusted workstation (until revoked)</option></select>
+<label for="teliphones-pair-minutes">Temporary pairing duration (minutes)</label>
+<select id="teliphones-pair-minutes" class="form-control" name="minutes"><?php foreach ([60, 240, 480, 1440] as $minutes): ?><option value="<?=$minutes?>"><?=$minutes?></option><?php endforeach; ?></select>
+<label for="teliphones-pair-ssh">SSH access through the tunnel</label>
+<select id="teliphones-pair-ssh" class="form-control" name="ssh"><option value="0">Not permitted</option><option value="1">Permit SSH (TCP 22) with existing PBX credentials</option></select>
+<button class="btn btn-primary" type="submit" name="action" value="pair"<?=$pairOff?>>Pair workstation</button>
+</fieldset>
+</form></details>
 <script type="application/json" id="teliphones-initial-status"><?=json_encode($initial, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_UNICODE | JSON_PARTIAL_OUTPUT_ON_ERROR)?></script>
 <script src="modules/teliphones/assets/js/teliphones.js"></script>
 </div>

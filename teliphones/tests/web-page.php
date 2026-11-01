@@ -44,7 +44,7 @@ namespace {
     if ($postAction === 'configure') $_SERVER['HTTPS'] = 'on';
     $GLOBALS['brokerRequests'] = 0;
     $GLOBALS['brokerPeers'] = [];
-    $readyStatus = ['ok' => true, 'error' => null, 'status' => ['protocol' => 2, 'phase' => 'Missing dependency', 'enabled' => true, 'can_authorise' => true,
+    $readyStatus = ['ok' => true, 'error' => null, 'status' => ['protocol' => 3, 'phase' => 'Missing dependency', 'enabled' => true, 'can_authorise' => true,
         'readiness' => ['WireGuard wg' => false, 'Temporary SSH server' => true, 'Gateway enrollment' => true, 'Checker trusted public key' => false]]];
     $GLOBALS['brokerResponses'] = [];
     if ($scenario === 'invalid-status-authorise-post') $GLOBALS['brokerResponses'] = [['ok' => false, 'error' => 'Broker internal failure.']];
