@@ -164,7 +164,7 @@ jobs:
             throw "Could not extract the embedded application manifest: exit code $LASTEXITCODE."
           }
           Get-Content -LiteralPath $manifestFile | Write-Host
-          & $env:MANIFEST_TOOL "-manifest:$manifestFile" -validate_manifest
+          & $env:MANIFEST_TOOL -manifest "$manifestFile" -validate_manifest
           if ($LASTEXITCODE -ne 0) {
             throw "Windows SDK validation of the embedded manifest failed: exit code $LASTEXITCODE."
           }
