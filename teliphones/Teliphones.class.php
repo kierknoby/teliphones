@@ -28,6 +28,23 @@ class Teliphones extends FreePBX_Helpers implements BMO
     {
     }
 
+    /**
+     * FreePBX ajax.php allowlist. Framework authentication is left enabled (no
+     * $setting changes); ajaxHandler() additionally enforces full administrator access.
+     */
+    public function ajaxRequest($req, &$setting)
+    {
+        return in_array($req, ['status', 'action'], true);
+    }
+
+    public function ajaxHandler()
+    {
+        $result = WebSupport::ajax((string)($_REQUEST['command'] ?? ''), (string)($_SERVER['REQUEST_METHOD'] ?? ''), $_POST,
+            is_array($_SESSION ?? null) ? $_SESSION : [], $GLOBALS['ampuser'] ?? null, $_SERVER, new WebSupport());
+        if ($result['code'] !== 200) http_response_code($result['code']);
+        return $result['body'];
+    }
+
     public function getState(): array
     {
         if (!is_readable(self::STATE_FILE)) return ['state' => 'off', 'enabled' => $this->isEnabled()];

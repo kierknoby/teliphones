@@ -123,8 +123,144 @@ class SupportBrokerTests(unittest.TestCase):
 
     def test_fixed_dependency_command_requires_explicit_action(self):
         self.broker.command = lambda arguments, **kwargs: self.calls.append(arguments)
+        self.broker.readiness = lambda: {"Gateway enrollment": True, "WireGuard wg": bool(self.calls)}
         self.run_work({"action": "dependencies"})
         self.assertEqual(self.calls, [["/usr/bin/apt-get", "-y", "--no-install-recommends", "install", "wireguard-tools"]])
+
+    def wait_for_operation(self):
+        # Mocked operations are bounded; acquiring the lock waits for the worker thread to finish.
+        with self.broker.lock:
+            pass
+        for _ in range(100):
+            if self.broker.operation["state"] != "running":
+                return self.broker.operation
+            broker_module.time.sleep(0.01)
+        self.fail("operation did not finish")
+
+    def test_started_operation_is_reported_running_then_verified_success(self):
+        release = broker_module.threading.Event()
+        stages = []
+        def command(arguments, **kwargs):
+            stages.append(self.broker.status()["operation"]["stage"])
+            release.wait(2)
+            self.calls.append(arguments)
+        self.broker.command = command
+        self.broker.readiness = lambda: {"Gateway enrollment": True, "WireGuard wg": bool(self.calls)}
+        response = self.broker.dispatch({"action": "dependencies"}, 1000)
+        self.assertTrue(response["ok"])
+        self.assertEqual(response["message"], "TELIPHONES operation started. Monitoring progress automatically…")
+        self.assertNotIn("Refresh", response["message"])
+        operation = self.broker.status()["operation"]
+        self.assertEqual((operation["id"], operation["action"], operation["state"]), (response["operation_id"], "dependencies", "running"))
+        self.assertIsNone(operation["finished_at"])
+        with self.assertRaises(broker_module.BrokerError):
+            self.broker.dispatch({"action": "configure"}, 1000)
+        release.set()
+        operation = self.wait_for_operation()
+        self.assertEqual(stages, ["Installing WireGuard tools"])
+        self.assertEqual(operation["state"], "succeeded")
+        self.assertIn("verified", operation["message"])
+        self.assertIsInstance(self.broker.status()["server_time"], int)
+
+    def test_dependency_success_requires_verified_wg(self):
+        self.broker.command = lambda arguments, **kwargs: self.calls.append(arguments)
+        self.broker.readiness = lambda: {"Gateway enrollment": True, "WireGuard wg": False}
+        self.broker.dispatch({"action": "dependencies"}, 1000)
+        operation = self.wait_for_operation()
+        self.assertEqual(operation["state"], "failed")
+        self.assertIn("could not be verified", operation["message"])
+
+    def test_failed_dependency_installation_is_reported_and_retryable(self):
+        def command(arguments, **kwargs):
+            raise broker_module.BrokerError("TELIPHONES operation failed: install.")
+        self.broker.command = command
+        self.broker.readiness = lambda: {"Gateway enrollment": True, "WireGuard wg": False}
+        self.broker.dispatch({"action": "dependencies"}, 1000)
+        operation = self.wait_for_operation()
+        self.assertEqual((operation["state"], operation["message"]), ("failed", "TELIPHONES operation failed: install."))
+        self.assertFalse(self.broker.lock.locked())
+        self.assertFalse((self.state / "quarantine.json").exists())
+        self.assertTrue(self.broker.dispatch({"action": "dependencies"}, 1000)["ok"])
+        self.wait_for_operation()
+
+    def test_installed_dependency_is_not_reinstalled(self):
+        self.broker.readiness = lambda: {"Gateway enrollment": True, "WireGuard wg": True}
+        self.broker.command = lambda arguments, **kwargs: self.calls.append(arguments)
+        with self.assertRaises(broker_module.BrokerError):
+            self.broker.dispatch({"action": "dependencies"}, 1000)
+        self.assertEqual(self.calls, [])
+        self.assertFalse(self.broker.lock.locked())
+        self.assertIsNone(self.broker.status()["operation"])
+
+    def test_connection_stages_and_failure_cleanup_are_reported(self):
+        stages = []
+        def cli(action, *args, **kwargs):
+            stages.append(self.broker.operation["stage"])
+            self.calls.append(action)
+            if action == "connect-confirm":
+                raise broker_module.BrokerError("handshake failed")
+        self.broker.cli = cli
+        self.broker.cancel.set()  # stop the bounded connect-confirm retry immediately
+        operation_id = self.broker.begin("authorise", "Authorising remote support")
+        self.broker.lock.acquire()
+        self.broker.running = True
+        self.broker.work({"action": "authorise", "minutes": "5"}, 1000, operation_id)
+        self.assertEqual(stages, ["Authorising remote support", "Provisioning WireGuard connection",
+                                  "Establishing WireGuard connection", "Cleaning up after failure"])
+        self.assertEqual(self.broker.operation["state"], "failed")
+        self.assertEqual(self.broker.operation["message"], "handshake failed")
+        self.assertTrue((self.state / "quarantine.json").exists())
+
+    def test_cleanup_failure_is_included_in_operation_failure(self):
+        def cli(action, *args, **kwargs):
+            raise broker_module.BrokerError("revoke failed" if action == "revoke" else "authorise failed")
+        self.broker.cli = cli
+        operation_id = self.broker.begin("authorise", "Authorising remote support")
+        self.broker.lock.acquire()
+        self.broker.running = True
+        self.broker.work({"action": "authorise", "minutes": "5"}, 1000, operation_id)
+        self.assertEqual(self.broker.operation["message"], "authorise failed Cleanup also failed: revoke failed")
+
+    def test_revocation_is_monitored_and_supersedes_interrupted_operation(self):
+        self.broker.cli = lambda *args, **kwargs: self.calls.append(args[0])
+        interrupted = self.broker.begin("authorise", "Authorising remote support")
+        self.broker.lock.acquire()
+        self.broker.running = True
+        response = self.broker.dispatch({"action": "revoke"}, 1000)
+        self.assertEqual(response["message"], "Revocation started. Monitoring progress automatically…")
+        self.assertEqual(self.broker.status()["operation"]["stage"], "Cancelling the running operation")
+        self.broker.finish(interrupted, False, "Operation interrupted")
+        self.assertEqual(self.broker.operation["state"], "running")
+        self.broker.running = False
+        self.broker.lock.release()
+        operation = self.wait_for_operation()
+        self.assertEqual((operation["id"], operation["action"], operation["state"]), (response["operation_id"], "revoke", "succeeded"))
+        self.assertIn("revoke", self.calls)
+
+    def test_failed_revocation_is_not_reported_successful(self):
+        self.broker.cli = lambda *args, **kwargs: (_ for _ in ()).throw(broker_module.BrokerError("cleanup failed"))
+        self.broker.dispatch({"action": "revoke"}, 1000)
+        operation = self.wait_for_operation()
+        self.assertEqual(operation["state"], "failed")
+        self.assertIn("cleanup failed", operation["message"])
+        self.assertTrue((self.state / "quarantine.json").exists())
+
+    def test_status_reports_live_monitoring_protocol_matching_gui(self):
+        status = self.broker.status()
+        self.assertEqual(status["protocol"], broker_module.PROTOCOL)
+        self.assertIn("operation", status)
+        self.assertIsInstance(status["server_time"], int)
+        web_support = (Path(broker_module.__file__).parent / "WebSupport.php").read_text()
+        self.assertIn("public const BROKER_PROTOCOL = %d;" % broker_module.PROTOCOL, web_support)
+
+    def test_status_never_starts_an_operation(self):
+        self.broker.command = lambda arguments, **kwargs: self.calls.append(arguments)
+        self.broker.cli = lambda *args, **kwargs: self.calls.append(args)
+        for _ in range(3):
+            self.assertTrue(self.broker.dispatch({"action": "status"}, 1000)["ok"])
+        self.assertEqual(self.calls, [])
+        self.assertIsNone(self.broker.operation)
+        self.assertFalse(self.broker.lock.locked())
 
     def test_socket_rejects_other_service_accounts(self):
         self.assertTrue(broker_module.permitted_peer(1000, 1000))

@@ -13,21 +13,13 @@ if (empty($_SESSION['teliphones_token'])) $_SESSION['teliphones_token'] = bin2he
 $token = $_SESSION['teliphones_token'];
 $client = new WebSupport();
 $notice = null;
-if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
-    if (!WebSupport::validRequest($_POST, $token)) {
-        http_response_code(403);
-        $notice = ['ok' => false, 'error' => 'TELIPHONES request rejected: invalid action or security token.'];
-    } else {
-        $request = ['action' => $_POST['action']];
-        foreach (['minutes', 'evidence', 'url', 'certificate', 'private_key', 'ca', 'checker_key'] as $field) {
-            if (isset($_POST[$field]) && is_string($_POST[$field])) $request[$field] = $_POST[$field];
-        }
-        if ($request['action'] === 'configure' && strtolower((string)($_SERVER['HTTPS'] ?? '')) !== 'on' && (string)($_SERVER['SERVER_PORT'] ?? '') !== '443') {
-            $notice = ['ok' => false, 'error' => 'Gateway credentials may only be submitted over HTTPS. Configure FreePBX HTTPS before enrollment.'];
-        } else {
-            $notice = $client->request($request);
-        }
-    }
-}
+// Probe first so unavailable privileged operations are refused server-side, not only disabled in HTML.
 $support = $client->request(['action' => 'status']);
-show_view(__DIR__ . '/views/support.php', compact('support', 'notice', 'token'));
+if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
+    $result = WebSupport::handleAction($client, $_POST, $token, $support, $_SERVER);
+    $notice = $result['notice'];
+    if ($result['code'] !== 200) http_response_code($result['code']);
+    if ($result['dispatched']) $support = $client->request(['action' => 'status']);
+}
+$broker = $client->brokerState($support);
+show_view(__DIR__ . '/views/support.php', compact('support', 'notice', 'token', 'broker'));

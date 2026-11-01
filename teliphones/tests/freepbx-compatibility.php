@@ -78,7 +78,7 @@ namespace {
     }
 
     $pageSource = file_get_contents(dirname(__DIR__) . '/page.teliphones.php');
-    $assert(is_string($pageSource) && strpos($pageSource, "show_view(__DIR__ . '/views/support.php', compact('support', 'notice', 'token'));") !== false, 'The page controller must pass broker state into the support template.');
+    $assert(is_string($pageSource) && strpos($pageSource, "show_view(__DIR__ . '/views/support.php', compact('support', 'notice', 'token', 'broker'));") !== false, 'The page controller must pass broker state into the support template.');
 
     $GLOBALS['teliphonesCompatibilityAssertions'] = $assert;
 }

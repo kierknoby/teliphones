@@ -1,12 +1,12 @@
-# TELIPHONES 0.1.2
+# TELIPHONES 0.1.3
 
 TELIPHONES is an open-source FreePBX module for locally authorised, time-limited remote support. The module is located at `teliphones/` and is intended to appear under **Connectivity > TELIPHONES**.
 
-The current repository development milestone is **0.1.2**. The Module Admin package is `TELIPHONES-0.1.2.tgz`. This milestone preserves the FreePBX 17 compatibility corrections and browser support workflow from intermediate development iterations; it is not a production release or proof of end-to-end connectivity.
+The current repository development milestone is **0.1.3**. The Module Admin package is `TELIPHONES-0.1.3.tgz`. This milestone adds live status and progress monitoring to the browser support workflow and documents the root broker bootstrap, including rerunning it after upgrades. It preserves the FreePBX 17 compatibility corrections and authentication fixes from earlier iterations; it is not a production release or proof of end-to-end connectivity.
 
 ## ⚠️ Not Currently Suitable for Production
 
-TELIPHONES remains experimental. It has not completed live FreePBX 17 installation, end-to-end network, interruption-recovery or adversarial security testing. Do not install it on a production PBX or gateway.
+TELIPHONES remains experimental. Module Admin installation and the root broker bootstrap have been verified on a Debian 12 / FreePBX 17 test PBX, but it has not completed end-to-end network, interruption-recovery or adversarial security testing. Do not install it on a production PBX or gateway.
 
 ## Project Contents
 
@@ -15,7 +15,7 @@ TELIPHONES remains experimental. It has not completed live FreePBX 17 installati
 - [`gateway/README.md`](gateway/README.md): separate reference gateway, engineer/Checker tools and disposable Linux namespace laboratory.
 - [`gateway/config.example.json`](gateway/config.example.json): placeholder-only gateway configuration template.
 
-The FreePBX 17 on Debian 12 target is not yet validated. The reference gateway is separate from the module and is not deployed or production-certified. No managed Connect, Checker, Console service or infrastructure endpoint is supplied.
+After installing through Module Admin, complete the one-time root broker bootstrap described in [Complete Installation on FreePBX 17](teliphones/README.md#complete-installation-on-freepbx-17); Connectivity > TELIPHONES shows the same commands. Remote support on the FreePBX 17 / Debian 12 target is not yet validated end to end. The reference gateway is separate from the module and is not deployed or production-certified. No managed Connect, Checker, Console service or infrastructure endpoint is supplied.
 
 ## Local Tests
 

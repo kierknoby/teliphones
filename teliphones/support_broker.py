@@ -14,11 +14,14 @@ import subprocess
 import tempfile
 import threading
 import time
+import uuid
 from urllib.parse import urlsplit
 
 STATE = Path("/var/lib/teliphones")
 ENROLLMENT = Path("/etc/teliphones")
 SOCKET = "/run/teliphones/control.sock"
+# Version of the broker status contract; 2 adds operation records and server_time for live GUI monitoring.
+PROTOCOL = 2
 FWCONSOLE = "/usr/sbin/fwconsole"
 ACTIONS = {"status", "authorise", "revoke", "dependencies", "evidence", "configure"}
 ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C", "HOME": "/root", "DEBIAN_FRONTEND": "noninteractive"}
@@ -99,6 +102,23 @@ class Broker:
         self.error = ""
         self.running = False
         self.revoking = False
+        # Progress of the most recent web operation, reported read-only through "status".
+        self.operation = None
+
+    def begin(self, action, stage):
+        self.operation = {"id": uuid.uuid4().hex, "action": action, "state": "running", "stage": stage,
+                          "message": "", "started_at": int(time.time()), "finished_at": None}
+        return self.operation["id"]
+
+    def stage(self, operation_id, stage):
+        if operation_id is not None and self.operation and self.operation["id"] == operation_id:
+            self.operation["stage"] = stage
+
+    def finish(self, operation_id, succeeded, message):
+        # A superseded operation (for example, cancelled by revocation) never overwrites the newer record.
+        if operation_id is not None and self.operation and self.operation["id"] == operation_id:
+            self.operation.update({"state": "succeeded" if succeeded else "failed", "stage": "",
+                                   "message": message, "finished_at": int(time.time())})
 
     def audit(self, action, uid, result):
         with open("/var/log/teliphones-web.log", "a") as handle:
@@ -184,7 +204,8 @@ class Broker:
                 fingerprint = "SHA256:" + base64.b64encode(hashlib.sha256(base64.b64decode(key[1], validate=True)).digest()).decode().rstrip("=")
             except ValueError:
                 fingerprint = "Invalid gateway SSH identity"
-        return {"phase": phase, "readiness": readiness, "enabled": enabled,
+        return {"protocol": PROTOCOL, "phase": phase, "readiness": readiness, "enabled": enabled,
+                "operation": dict(self.operation) if self.operation else None, "server_time": int(time.time()),
                 "can_authorise": all(readiness.values()) and enabled and not session and not quarantine and not self.running and not self.revoking,
                 "session": {key: session[key] for key in ("session_id", "state", "expires_at") if key in session},
                 "access_verified": phase == "Connected",
@@ -222,14 +243,18 @@ class Broker:
                'CONNECT_URL="' + request["url"].rstrip("/") + '"\n'
                'CLIENT_CERT=/etc/teliphones/connect-client.crt\nCLIENT_KEY=/etc/teliphones/connect-client.key\nCA_CERT=/etc/teliphones/connect-ca.crt\n')
 
-    def work(self, request, uid):
+    def work(self, request, uid, operation_id=None):
         action = request["action"]
+        stage = lambda text: self.stage(operation_id, text)
         try:
             if action == "authorise":
                 self.phase = "Authorising"
+                stage("Authorising remote support")
                 self.cli("authorise", "--minutes=" + request["minutes"], "--topology=on-pbx")
                 self.phase = "Connecting"
+                stage("Provisioning WireGuard connection")
                 self.cli("provision")
+                stage("Establishing WireGuard connection")
                 deadline = time.monotonic() + 60
                 while True:
                     try:
@@ -239,8 +264,11 @@ class Broker:
                         if self.cancel.is_set() or time.monotonic() >= deadline:
                             raise
                         self.cancel.wait(2)
+                stage("Verifying the connection locally")
                 self.cli("attest")
+                stage("Requesting Checker challenge")
                 self.cli("checker-request")
+                message = "Remote support authorised and the WireGuard connection verified locally. Submit independent Checker evidence to open access."
             elif action == "evidence":
                 session = read_json(STATE / "session.json")
                 if session.get("state") != "locally_verified" or int(session.get("expires_at", 0)) <= time.time():
@@ -248,23 +276,39 @@ class Broker:
                 evidence = STATE / "web-checker-evidence.json"
                 atomic(evidence, request["evidence"])
                 try:
+                    stage("Verifying Checker evidence")
                     self.cli("checker-accept", "--evidence-file=" + str(evidence))
+                    stage("Opening approved access")
                     self.cli("open")
+                    message = "Checker evidence accepted and approved access opened."
                 finally:
                     if evidence.exists():
                         evidence.unlink()
             elif action == "dependencies":
                 if read_json(STATE / "session.json"):
                     raise BrokerError("Revoke support before installing dependencies.")
+                stage("Installing WireGuard tools")
                 self.command(["/usr/bin/apt-get", "-y", "--no-install-recommends", "install", "wireguard-tools"], timeout=300, cancellable=False)
+                stage("Checking WireGuard tools")
+                if self.readiness().get("WireGuard wg") is not True:
+                    raise BrokerError("wireguard-tools installation finished, but the wg executable could not be verified.")
+                message = "WireGuard tools installed; the wg executable was verified."
             elif action == "configure":
+                stage("Validating gateway enrollment")
                 self.configure(request)
+                message = "Gateway enrollment validated and saved."
             self.audit(action, uid, "completed")
+            self.finish(operation_id, True, message)
         except (BrokerError, OSError, ValueError, subprocess.TimeoutExpired) as error:
             self.error = str(error) if isinstance(error, BrokerError) else "TELIPHONES operation failed; inspect broker service logs."
             self.audit(action, uid, "failed")
+            failure = self.error
             if action in ("authorise", "evidence"):
+                stage("Cleaning up after failure")
                 self.cleanup(uid, quarantine=True)
+                if self.error != failure:
+                    failure += " Cleanup also failed: " + self.error
+            self.finish(operation_id, False, failure)
         finally:
             self.running = False
             self.lock.release()
@@ -290,32 +334,43 @@ class Broker:
             self.cancel.set()
             self.revoking = True
             self.phase = "Revoking"
+            revocation = self.begin("revoke", "Cancelling the running operation" if self.running else "Revoking remote support")
             def revoke():
                 with self.lock:
                     self.running = True
+                    self.stage(revocation, "Revoking remote support")
                     try:
+                        self.error = ""
                         self.cleanup(uid)
+                        if self.error:
+                            self.finish(revocation, False, self.error + " TELIPHONES remains quarantined; revocation may be retried.")
+                        else:
+                            self.finish(revocation, True, "Remote support revoked and local cleanup confirmed.")
                     finally:
                         self.running = False
                         self.revoking = False
             threading.Thread(target=revoke, daemon=True).start()
-            return {"ok": True, "message": "Revocation requested. Refresh until Disconnected; cleanup failures remain quarantined."}
+            return {"ok": True, "operation_id": revocation, "message": "Revocation started. Monitoring progress automatically…"}
         if not self.lock.acquire(blocking=False):
             raise BrokerError("A TELIPHONES operation is already running. Revocation remains available.")
         try:
             if self.revoking:
                 raise BrokerError("Revocation is in progress.")
+            if action == "dependencies" and self.readiness().get("WireGuard wg") is True:
+                raise BrokerError("WireGuard tools are already installed.")
             if action == "authorise" and not self.status()["can_authorise"]:
                 raise BrokerError("TELIPHONES is not ready, already active, disabled or quarantined.")
             self.cancel.clear()
             self.running = True
             self.error = ""
             self.audit(action, uid, "approved")
-            threading.Thread(target=self.work, args=(request, uid), daemon=True).start()
+            operation_id = self.begin(action, {"authorise": "Authorising remote support", "evidence": "Verifying Checker evidence",
+                                               "dependencies": "Installing WireGuard tools", "configure": "Validating gateway enrollment"}[action])
+            threading.Thread(target=self.work, args=(request, uid, operation_id), daemon=True).start()
         except Exception:
             self.lock.release()
             raise
-        return {"ok": True, "message": "TELIPHONES operation queued. Refresh to monitor the result."}
+        return {"ok": True, "operation_id": operation_id, "message": "TELIPHONES operation started. Monitoring progress automatically…"}
 
 
 def serve():

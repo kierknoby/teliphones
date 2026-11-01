@@ -1,6 +1,6 @@
-# TELIPHONES 0.1.2 testing
+# TELIPHONES 0.1.3 testing
 
-0.1.2 is a development milestone for testing on a **disposable FreePBX 17 / Debian 12 PBX**. Do not begin on a production PBX.
+0.1.3 is a development milestone for testing on a **disposable FreePBX 17 / Debian 12 PBX**. Do not begin on a production PBX.
 
 For the administrator-operated browser workflow, start with the [module README](../README.md#browser-support-workflow-012). The CLI steps below remain platform recovery and direct integration tests, not required browser operations. Local regression tests use framework stubs and mocked privileged broker calls; they do not prove real systemd, apt, SSH or FreePBX administrator permissions.
 
