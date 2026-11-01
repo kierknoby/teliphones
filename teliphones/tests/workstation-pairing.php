@@ -97,6 +97,9 @@ $buttonDisabled = static function (string $html, string $action): bool {
 };
 $status['status']['readiness'] = ['WireGuard wg' => true];
 $html = $render($status);
+$assert(strpos($html, '<code>nft</code> CLI') !== false && strpos($html, '<code>nftables.service</code> does not need to be enabled or running') !== false
+    && strpos($html, 'this page does not install nftables') !== false && strpos($html, 'not zero-exposure or truly fail-closed') !== false,
+    'GUI must explain essential nft userspace tools, unnecessary service activation, administrator repair and external-flush exposure limits.');
 $assert(strpos($html, '<h3 id="teliphones-workstations">Windows workstations</h3>') !== false && strpos($html, '>ADMIN-PC</td>') !== false
     && strpos($html, 'Web interface and SSH') !== false && strpos($html, 'SHA256:abcdefghijklmnop') !== false
     && strpos($html, 'LEAKED-PUBLIC-KEY') === false && strpos($html, '../../x') === false, 'Paired workstations must be listed without keys.');

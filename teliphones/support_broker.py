@@ -17,6 +17,7 @@ import tempfile
 import threading
 import time
 import uuid
+import sys
 from urllib.parse import urlsplit
 
 STATE = Path("/var/lib/teliphones")
@@ -31,6 +32,7 @@ ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C", "HOME": "/root", "D
 # Administrator-owned workstation pairing (TELIPHONES Windows application). Separate from the support interface.
 WORKSTATION_IFACE = "tlp-admin"
 WORKSTATION_TABLE = "teliphones_workstations"
+WORKSTATION_OWNER = "TELIPHONES workstation enforcement v1"
 WORKSTATION_POOL = ipaddress.IPv4Network("100.64.0.0/10")
 WORKSTATION_EXCLUDED = ipaddress.IPv4Network("100.100.0.0/16")
 PAIR_REQUEST_PREFIX = "TELIPHONES-PAIR-REQUEST-1:"
@@ -167,10 +169,9 @@ def key_fingerprint(public_key):
 
 
 def workstation_ruleset(pbx_address, ssh_sources):
-    """nftables policy for tlp-admin: PBX GUI (80/443) for every paired workstation, SSH only where approved,
-    no forwarding into other networks. Applied atomically and before any peer is added."""
-    lines = ["add table inet " + WORKSTATION_TABLE, "delete table inet " + WORKSTATION_TABLE,
-             "table inet " + WORKSTATION_TABLE + " {",
+    """Human-readable policy illustration; enforcement uses workstation_policy JSON."""
+    lines = ["table inet " + WORKSTATION_TABLE + " {",
+             '    comment "%s";' % WORKSTATION_OWNER,
              "    chain input {", "        type filter hook input priority -10; policy accept;",
              '        iifname "%s" ip daddr %s tcp dport { 80, 443 } accept' % (WORKSTATION_IFACE, pbx_address)]
     if ssh_sources:
@@ -180,6 +181,159 @@ def workstation_ruleset(pbx_address, ssh_sources):
               "    chain forward {", "        type filter hook forward priority -10; policy accept;",
               '        iifname "%s" drop' % WORKSTATION_IFACE, '        oifname "%s" drop' % WORKSTATION_IFACE, "    }", "}"]
     return "\n".join(lines) + "\n"
+
+
+def workstation_policy(pbx_address, ssh_sources):
+    """Offline expected nft JSON, deliberately without sets, counters or implicit expressions."""
+    family = {"family": "inet", "table": WORKSTATION_TABLE}
+    objects = [{"table": {"family": "inet", "name": WORKSTATION_TABLE, "comment": WORKSTATION_OWNER}}]
+
+    def match(left, right):
+        return {"match": {"op": "==", "left": left, "right": right}}
+
+    def meta(key):
+        return {"meta": {"key": key}}
+
+    def payload(protocol, field):
+        return {"payload": {"protocol": protocol, "field": field}}
+
+    def rule(chain, expressions):
+        objects.append({"rule": {**family, "chain": chain, "expr": expressions}})
+
+    incoming = match(meta("iifname"), WORKSTATION_IFACE)
+    destination = match(payload("ip", "daddr"), str(ipaddress.IPv4Address(pbx_address)))
+    objects.append({"chain": {**family, "name": "input", "type": "filter", "hook": "input", "prio": -10, "policy": "accept"}})
+    for port in (80, 443):
+        rule("input", [incoming, destination, match(payload("tcp", "dport"), port), {"accept": None}])
+    for source in sorted(set(ssh_sources)):
+        rule("input", [incoming, match(payload("ip", "saddr"), str(ipaddress.IPv4Address(source))),
+                       destination, match(payload("tcp", "dport"), 22), {"accept": None}])
+    rule("input", [incoming, destination, match(payload("icmp", "type"), "echo-request"), {"accept": None}])
+    rule("input", [incoming, {"drop": None}])
+    objects.append({"chain": {**family, "name": "forward", "type": "filter", "hook": "forward", "prio": -10, "policy": "accept"}})
+    rule("forward", [incoming, {"drop": None}])
+    rule("forward", [match(meta("oifname"), WORKSTATION_IFACE), {"drop": None}])
+    return {"nftables": objects}
+
+
+def nft_objects(document):
+    """Ignore only kernel-assigned object handles and nft's envelope metadata.
+
+    Everything else (including extra objects, expressions, policies and rule order)
+    participates in equality. Unsupported JSON fails closed rather than guessing.
+    """
+    if not isinstance(document, dict) or set(document) != {"nftables"} or not isinstance(document["nftables"], list):
+        raise BrokerError("Invalid nftables JSON.")
+    objects = []
+    for entry in document["nftables"]:
+        if not isinstance(entry, dict) or len(entry) != 1:
+            raise BrokerError("Invalid nftables object.")
+        kind, value = next(iter(entry.items()))
+        if kind == "metainfo":
+            continue
+        if kind not in ("table", "chain", "rule") or not isinstance(value, dict):
+            raise BrokerError("Unexpected workstation firewall object.")
+        identity = {"table": ("family", "name"), "chain": ("family", "table", "name"), "rule": ("family", "table", "chain")}[kind]
+        if any(not isinstance(value.get(key), str) for key in identity) or (kind == "rule" and not isinstance(value.get("expr"), list)):
+            raise BrokerError("Invalid workstation firewall identity or expressions.")
+        objects.append({kind: {key: item for key, item in value.items() if key != "handle"}})
+    return objects
+
+
+def policy_equal(actual, expected):
+    # nft emits each chain followed by its rules; keep rule order, but not chain enumeration order.
+    def canonical(document):
+        objects = nft_objects(document)
+        tables = [item["table"] for item in objects if "table" in item]
+        chains = [item["chain"] for item in objects if "chain" in item]
+        rules = [item["rule"] for item in objects if "rule" in item]
+        return [tables, sorted(chains, key=lambda item: item["name"]),
+                {name: [rule for rule in rules if rule["chain"] == name] for name in sorted({rule["chain"] for rule in rules})}]
+    return json.dumps(canonical(actual), sort_keys=True) == json.dumps(canonical(expected), sort_keys=True)
+
+
+class NftMonitor:
+    """One local netlink event stream. Own transactions are acknowledged before admission."""
+    def __init__(self, broker):
+        self.broker = broker
+        self.condition = threading.Condition()
+        self.pending = []
+        self.failed = ""
+        self.process = broker.run([broker.tool("nft"), "-j", "monitor", "ruleset"], stream=True)
+        self.thread = threading.Thread(target=self.read, daemon=True)
+        self.thread.start()
+
+    def alive(self):
+        return not self.failed and self.process.poll() is None and self.thread.is_alive()
+
+    def expect(self, events):
+        with self.condition:
+            if not self.alive() or self.pending:
+                raise BrokerError("Workstation nft monitor is unavailable or has an unacknowledged transaction.")
+            self.pending = events[:]
+
+    def wait(self):
+        with self.condition:
+            if not self.condition.wait_for(lambda: not self.pending or not self.alive(), timeout=3) or not self.alive():
+                raise BrokerError("Workstation nft monitor registration/transaction could not be verified.")
+
+    @staticmethod
+    def signature(action, kind, value):
+        if action == "create":
+            action = "add"
+        # Delete notifications may contain only identity and handle.
+        if action == "delete":
+            value = {key: value[key] for key in ("family", "name", "table", "chain") if key in value}
+        else:
+            value = {key: item for key, item in value.items() if key != "handle"}
+        return action, kind, value
+
+    def event(self, event):
+        if not isinstance(event, dict) or len(event) != 1:
+            raise BrokerError("Invalid nft monitor event.")
+        action, content = next(iter(event.items()))
+        if action == "metainfo":
+            return
+        if not isinstance(content, dict) or len(content) != 1:
+            raise BrokerError("Invalid nft monitor operation.")
+        kind, value = next(iter(content.items()))
+        if not isinstance(value, dict):
+            raise BrokerError("Invalid nft monitor value.")
+        if value.get("family") != "inet" or (value.get("table") if kind != "table" else value.get("name")) != WORKSTATION_TABLE:
+            return
+        signature = self.signature(action, kind, value)
+        with self.condition:
+            if signature in self.pending:
+                # The kernel may announce all chains before any rules, not command order.
+                self.pending.remove(signature)
+                self.condition.notify_all()
+                return
+        self.broker.enforcement_event.set()
+
+    def read(self):
+        try:
+            for line in self.process.stdout:
+                document = json.loads(line)
+                if not isinstance(document, dict):
+                    raise BrokerError("Invalid nft monitor envelope.")
+                events = document.get("nftables", [document])
+                if not isinstance(events, list):
+                    raise BrokerError("Invalid nft monitor envelope.")
+                for event in events:
+                    self.event(event)
+            raise BrokerError("Workstation nft monitor stopped.")
+        except Exception as error:
+            with self.condition:
+                self.failed = str(error)
+                self.condition.notify_all()
+            self.broker.enforcement_event.set()
+
+    def close(self):
+        if self.process.poll() is None:
+            self.process.terminate()
+        self.process.wait(timeout=5)
+        self.thread.join(timeout=5)
+        self.process.stdout.close()
 
 
 def permitted_peer(uid, web_uid):
@@ -197,8 +351,11 @@ class Broker:
         # Progress of the most recent web operation, reported read-only through "status".
         self.operation = None
         # Workstation pairing is independent of support sessions and serialised separately.
-        self.wslock = threading.Lock()
+        self.wslock = threading.RLock()
         self.workstation_error = ""
+        self.monitor = None
+        self.enforcement_event = threading.Event()
+        self.workstation_cleanup_failed = False
 
     def begin(self, action, stage):
         self.operation = {"id": uuid.uuid4().hex, "action": action, "state": "running", "stage": stage,
@@ -315,7 +472,10 @@ class Broker:
                 return path
         raise BrokerError("Workstation pairing requires %s, which is not installed." % {"wg": "WireGuard tools (wg)", "ip": "iproute2 (ip)", "nft": "nftables (nft)"}[name])
 
-    def run(self, arguments, stdin=None, check=True):
+    def run(self, arguments, stdin=None, check=True, stream=False):
+        if stream:
+            return subprocess.Popen(arguments, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                    stderr=subprocess.DEVNULL, text=True, env=ENV)
         result = subprocess.run(arguments, input=stdin, capture_output=True, text=True, timeout=20, env=ENV)
         if result.returncode and check:
             raise BrokerError("Workstation network operation failed: " + os.path.basename(arguments[0]) + " " + arguments[1] + ".")
@@ -363,41 +523,151 @@ class Broker:
             raise BrokerError("The PBX workstation WireGuard identity could not be derived.")
         return public
 
+    def link_state(self):
+        links = json.loads(self.run([self.tool("ip"), "-j", "link", "show"]))
+        if not isinstance(links, list) or any(not isinstance(link, dict) or not isinstance(link.get("ifname"), str)
+                                              or not isinstance(link.get("flags"), list) for link in links):
+            raise BrokerError("Workstation interface inventory could not be verified.")
+        matches = [link for link in links if link.get("ifname") == WORKSTATION_IFACE]
+        if len(matches) > 1:
+            raise BrokerError("Ambiguous workstation interface.")
+        return matches[0] if matches else None
+
+    def disable_workstations(self):
+        if self.link_state() is not None:
+            self.run([self.tool("ip"), "link", "set", "down", "dev", WORKSTATION_IFACE], check=False)
+            link = self.link_state()
+            if link is not None and "UP" in link["flags"]:
+                # Deletion is a second way to stop traffic, never permission to remove policy on failure.
+                self.run([self.tool("ip"), "link", "del", "dev", WORKSTATION_IFACE], check=False)
+                if self.link_state() is not None:
+                    raise BrokerError("Workstation interface could not be disabled or removed; retaining firewall and recovery state.")
+
+    def owned_table(self):
+        nft = self.tool("nft")
+        # A failed query is not evidence that the table is absent.
+        inventory = json.loads(self.run([nft, "-j", "list", "tables"]))
+        if not isinstance(inventory, dict) or not isinstance(inventory.get("nftables"), list):
+            raise BrokerError("Workstation firewall inventory could not be verified.")
+        tables = []
+        for item in inventory["nftables"]:
+            if not isinstance(item, dict) or len(item) != 1:
+                raise BrokerError("Invalid nftables table inventory.")
+            if "metainfo" in item:
+                continue
+            table = item.get("table")
+            if not isinstance(table, dict) or not isinstance(table.get("family"), str) or not isinstance(table.get("name"), str):
+                raise BrokerError("Invalid nftables table identity.")
+            tables.append(table)
+        if not any(table["family"] == "inet" and table["name"] == WORKSTATION_TABLE for table in tables):
+            return None
+        document = json.loads(self.run([nft, "-j", "list", "table", "inet", WORKSTATION_TABLE]))
+        if (not isinstance(document, dict) or not isinstance(document.get("nftables"), list)
+                or any(not isinstance(item, dict) or len(item) != 1 for item in document["nftables"])):
+            raise BrokerError("Invalid workstation table JSON.")
+        tables = [item["table"] for item in document["nftables"] if "table" in item]
+        if any(not isinstance(table, dict) for table in tables):
+            raise BrokerError("Invalid workstation table identity.")
+        if len(tables) != 1 or tables[0].get("family") != "inet" or tables[0].get("name") != WORKSTATION_TABLE or tables[0].get("comment") != WORKSTATION_OWNER:
+            raise BrokerError("Unfamiliar inet teliphones_workstations table: ownership marker missing/changed; it will not be modified.")
+        return document
+
+    def expected_policy(self, state):
+        network = ipaddress.IPv4Network(state["subnet"])
+        if not network.subnet_of(WORKSTATION_POOL) or network.prefixlen != 24 or network.overlaps(WORKSTATION_EXCLUDED):
+            raise BrokerError("Invalid workstation subnet.")
+        return workstation_policy(str(network[1]), [item["address"].split("/")[0] for item in state["workstations"] if item.get("ssh") is True])
+
+    def start_monitor(self):
+        if self.monitor is None:
+            self.monitor = NftMonitor(self)
+        if not self.monitor.alive():
+            raise BrokerError("Workstation nft monitor is unavailable; restart the broker after repairing nftables.")
+
+    def mutate_policy(self, expected, existing, registration_retry=True):
+        nft = self.tool("nft")
+        commands, events = [], []
+        if existing is not None:
+            identity = {"family": "inet", "name": WORKSTATION_TABLE}
+            table = next(entry["table"] for entry in existing["nftables"] if "table" in entry)
+            if table.get("family") != "inet" or table.get("name") != WORKSTATION_TABLE or table.get("comment") != WORKSTATION_OWNER:
+                raise BrokerError("Unfamiliar workstation table; refusing mutation.")
+            handle = table.get("handle")
+            if type(handle) is not int or handle <= 0:
+                raise BrokerError("Workstation table identity handle could not be verified; refusing deletion.")
+            # Delete the inspected kernel object, not a possibly-replaced namesake.
+            commands.append({"delete": {"table": {"family": "inet", "handle": handle}}})
+            events.append(NftMonitor.signature("delete", "table", identity))
+        if expected is not None:
+            for entry in expected["nftables"]:
+                kind, value = next(iter(entry.items()))
+                # "create" (unlike "add") refuses a namesake appearing after inventory.
+                commands.append({"create" if kind == "table" else "add": entry})
+                events.append(NftMonitor.signature("add", kind, value))
+        if not commands:
+            return
+        monitored = self.monitor is not None and self.monitor.alive()
+        if monitored:
+            self.monitor.expect(events)
+        try:
+            self.run([nft, "-j", "-f", "-"], stdin=json.dumps({"nftables": commands}))
+        except (BrokerError, OSError, subprocess.SubprocessError):
+            if monitored:
+                with self.monitor.condition:
+                    self.monitor.pending = []
+            raise
+        if monitored:
+            try:
+                self.monitor.wait()
+            except BrokerError:
+                if expected is None or not registration_retry or not self.monitor.alive():
+                    raise
+                # Popen is not subscription readiness. With the interface still down,
+                # retry once and require a complete observed transaction before admission.
+                with self.monitor.condition:
+                    self.monitor.pending = []
+                self.mutate_policy(expected, self.owned_table(), registration_retry=False)
+
     def teardown_workstations(self):
-        try:
-            ip = self.tool("ip")
-        except BrokerError:
-            if (STATE / "workstations.json").exists():
-                raise BrokerError("Workstation teardown cannot be verified without iproute2. Restore iproute2 and retry revocation.")
-            return
-        self.run([ip, "link", "del", "dev", WORKSTATION_IFACE], check=False)
-        if self.run([ip, "link", "show", "dev", WORKSTATION_IFACE], check=False) is not None:
-            # Keep the restrictive firewall if deletion failed, and stop traffic before reporting failure.
-            self.run([ip, "link", "set", "down", "dev", WORKSTATION_IFACE])
-            raise BrokerError("Workstation interface could not be removed and was disabled. Retry revocation and inspect the broker.")
-        try:
-            nft = self.tool("nft")
-        except BrokerError:
-            if (STATE / "workstations.json").exists():
-                raise BrokerError("Workstation interface was removed, but firewall cleanup cannot be verified without nftables.")
-            return
-        self.run([nft, "delete", "table", "inet", WORKSTATION_TABLE], check=False)
-        if self.run([nft, "list", "table", "inet", WORKSTATION_TABLE], check=False) is not None:
-            raise BrokerError("Workstation interface was removed, but firewall cleanup is incomplete. Retry revocation.")
+        """Shared by revoke, failure, shutdown and the trusted uninstall entry point."""
+        self.disable_workstations()
+        if self.link_state() is not None:
+            self.run([self.tool("ip"), "link", "del", "dev", WORKSTATION_IFACE], check=False)
+            if self.link_state() is not None:
+                raise BrokerError("Workstation interface could not be removed and was disabled; retaining firewall and recovery state.")
+        existing = self.owned_table()
+        self.mutate_policy(None, existing)
+        if self.owned_table() is not None:
+            raise BrokerError("Workstation interface was removed, but firewall cleanup is incomplete; retaining recovery state.")
+
+    def uninstall_workstations(self):
+        with self.wslock:
+            self.teardown_workstations()
+            # Never remove either recovery file until link and owned-table absence are proven.
+            for path in (STATE / "workstations.json", STATE / "workstation-recovery.json", ENROLLMENT / "workstation-wg.key"):
+                path.unlink(missing_ok=True)
 
     def apply_workstations(self, state):
-        """Make the kernel match the state. Fails closed: any error removes all workstation access."""
+        """Disable before any change, verify the entire policy, then admit peers."""
+        self.workstation_cleanup_failed = False
         try:
+            self.disable_workstations()
             if not state["workstations"] or (STATE / "disabled").exists():
                 self.teardown_workstations()
                 self.workstation_error = ""
                 return
+            self.start_monitor()
             network = ipaddress.IPv4Network(state["subnet"])
             pbx = str(network[1])
             wg, ip = self.tool("wg"), self.tool("ip")
-            # Port policy first, so no peer is ever reachable without it.
-            self.run([self.tool("nft"), "-f", "-"], stdin=workstation_ruleset(pbx, [item["address"].split("/")[0] for item in state["workstations"] if item.get("ssh") is True]))
-            if self.run([ip, "link", "show", "dev", WORKSTATION_IFACE], check=False) is None:
+            expected = self.expected_policy(state)
+            existing = self.owned_table()
+            # Even an already-correct policy needs an acknowledged initial transaction:
+            # this proves monitor subscription before the first admission.
+            self.mutate_policy(expected, existing)
+            if not policy_equal(self.owned_table(), expected):
+                raise BrokerError("Workstation firewall differs from the complete expected policy.")
+            if self.link_state() is None:
                 self.run([ip, "link", "add", "dev", WORKSTATION_IFACE, "type", "wireguard"])
             self.server_public_key()
             self.run([wg, "set", WORKSTATION_IFACE, "listen-port", str(state["listen_port"]), "private-key", str(ENROLLMENT / "workstation-wg.key")])
@@ -408,12 +678,15 @@ class Broker:
                     self.run([wg, "set", WORKSTATION_IFACE, "peer", peer, "remove"])
             for key, address in wanted.items():
                 self.run([wg, "set", WORKSTATION_IFACE, "peer", key, "allowed-ips", address])
+            if not self.monitor.alive() or not policy_equal(self.owned_table(), expected):
+                raise BrokerError("Workstation enforcement could not be verified before admission.")
             self.run([ip, "link", "set", "up", "dev", WORKSTATION_IFACE])
             self.workstation_error = ""
         except (BrokerError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
             try:
                 self.teardown_workstations()
-            except (BrokerError, OSError, subprocess.SubprocessError) as cleanup_error:
+            except (BrokerError, OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as cleanup_error:
+                self.workstation_cleanup_failed = True
                 self.workstation_error = "Workstation cleanup could not be confirmed: " + (str(cleanup_error) if isinstance(cleanup_error, BrokerError) else "network operation failed.")
                 raise BrokerError(self.workstation_error) from error
             self.workstation_error = "Workstation access could not be applied and was removed: " + (str(error) if isinstance(error, BrokerError) else "network configuration failed.")
@@ -422,25 +695,46 @@ class Broker:
     def restore_workstations(self):
         """Broker start: re-create persistent and unexpired temporary pairings, failing closed."""
         with self.wslock:
-            state, changed = self.workstation_state()
-            if changed:
-                self.save_workstations(state)
             try:
+                state, changed = self.workstation_state()
                 self.apply_workstations(state)
-            except BrokerError:
-                pass
+                if changed:
+                    self.save_workstations(state)
+            except (BrokerError, OSError, ValueError, subprocess.SubprocessError) as error:
+                self.workstation_error = str(error)
+                try:
+                    self.disable_workstations()
+                except (BrokerError, OSError, ValueError, subprocess.SubprocessError) as cleanup_error:
+                    self.workstation_error += " Cleanup unverified: " + str(cleanup_error)
 
     def expire_workstations(self):
         with self.wslock:
+            event = self.enforcement_event.is_set()
+            if event:
+                self.enforcement_event.clear()
             state, changed = self.workstation_state()
-            if changed:
-                self.save_workstations(state)
-                self.audit("workstation-expired", 0, "completed")
-            if changed or (STATE / "disabled").exists():
-                try:
+            try:
+                if state["workstations"]:
+                    if self.monitor is None or not self.monitor.alive():
+                        raise BrokerError("Workstation nft monitor is unavailable; access disabled. Restart the broker.")
+                    actual = self.owned_table()
+                    try:
+                        matches = actual is not None and policy_equal(actual, self.expected_policy(state))
+                    except (BrokerError, KeyError, TypeError):
+                        matches = False
+                    if not matches:
+                        event = True
+                if changed or event or (STATE / "disabled").exists():
                     self.apply_workstations(state)
-                except BrokerError:
-                    pass
+                    if changed:
+                        self.save_workstations(state)
+                        self.audit("workstation-expired", 0, "completed")
+            except (BrokerError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+                self.workstation_error = str(error)
+                try:
+                    self.disable_workstations()
+                except (BrokerError, OSError, ValueError, subprocess.SubprocessError) as cleanup_error:
+                    self.workstation_error += " Cleanup could not be confirmed: " + str(cleanup_error)
 
     def pair(self, request, uid):
         if (STATE / "disabled").exists():
@@ -472,12 +766,14 @@ class Broker:
                  "address": address, "mode": request["mode"], "ssh": request["ssh"] == "1", "created_at": now,
                  "expires_at": now + int(request["minutes"]) * 60 if request["mode"] == "temporary" else None}
         state["workstations"].append(entry)
-        self.save_workstations(state)
         try:
             self.apply_workstations(state)
             pbx_public = self.server_public_key()
+            self.save_workstations(state)
         except BrokerError:
-            self.save_workstations(previous)
+            if self.workstation_cleanup_failed:
+                atomic(STATE / "workstation-recovery.json", json.dumps(state, indent=2, sort_keys=True))
+                raise
             try:
                 self.apply_workstations(previous)
             except BrokerError:
@@ -498,8 +794,8 @@ class Broker:
         state["workstations"] = [] if request["workstation_id"] == "all" else [item for item in state["workstations"] if item["id"] != request["workstation_id"]]
         if len(state["workstations"]) == before and request["workstation_id"] != "all":
             raise BrokerError("Unknown workstation; it may already have been revoked or expired.")
-        self.save_workstations(state)
         self.apply_workstations(state)
+        self.save_workstations(state)
         self.audit("unpair", uid, "completed")
 
     def workstation_status(self):
@@ -507,6 +803,8 @@ class Broker:
         requirements = {name: any(os.access(path, os.X_OK) for path in paths) for name, paths in TOOLS.items()}
         handshakes = {}
         error = self.workstation_error
+        if (self.monitor is not None and not self.monitor.alive()) or (state["workstations"] and self.monitor is None):
+            error = error or "Workstation nft monitor unavailable; access is being disabled. Restart the broker after repair."
         if state["workstations"] and not error:
             try:
                 output = self.run([self.tool("wg"), "show", WORKSTATION_IFACE, "latest-handshakes"])
@@ -517,7 +815,7 @@ class Broker:
                     handshakes[key] = int(timestamp)
             except (BrokerError, OSError, ValueError, subprocess.SubprocessError):
                 error = "Workstation connection status could not be read. Check the broker and tlp-admin interface; pairing is not proof of connectivity."
-        return {"ready": all(requirements.values()) and not (STATE / "disabled").exists(), "requirements": requirements, "error": error,
+        return {"ready": all(requirements.values()) and not error and not (STATE / "disabled").exists(), "requirements": requirements, "error": error,
                 "listen_port": state["listen_port"],
                 "pbx_address": str(ipaddress.IPv4Network(state["subnet"])[1]) if state["subnet"] and state["workstations"] else None,
                 "items": [{"id": item["id"], "name": item["name"], "address": item["address"], "mode": item["mode"],
@@ -704,23 +1002,42 @@ def serve():
     if STATE.is_symlink() or STATE.stat().st_uid != 0 or STATE.stat().st_mode & 0o077:
         raise SystemExit("TELIPHONES state directory must be root-owned and private.")
     broker = Broker()
+    def stop(signum, frame):
+        with broker.wslock:
+            broker.teardown_workstations()
+        if broker.monitor is not None:
+            broker.monitor.close()
+        raise SystemExit(0)
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
+    try:
+        broker.disable_workstations()
+    except (BrokerError, OSError, ValueError, subprocess.SubprocessError) as error:
+        broker.workstation_error = "Initial workstation shutdown unverified: " + str(error)
     # Interrupted broker jobs never resume/open access implicitly.
     broker.cleanup(0, quarantine=(STATE / "session.json").exists() or (STATE / "connect.json").exists())
     # Workstation access exists only while the broker runs and can enforce expiry.
+    try:
+        broker.start_monitor()
+    except (BrokerError, OSError):
+        broker.workstation_error = "Workstation nft monitor unavailable; pairing cannot be admitted."
     broker.restore_workstations()
-
-    def stop(signum, frame):
-        broker.teardown_workstations()
-        raise SystemExit(0)
-    signal.signal(signal.SIGTERM, stop)
 
     def expiry():
         while True:
-            time.sleep(15)
+            broker.enforcement_event.wait(15)
             try:
                 broker.expire_workstations()
-            except Exception:
-                broker.teardown_workstations()
+            except Exception as error:
+                broker.workstation_error = "Workstation enforcement worker failed: " + str(error)
+                if broker.monitor is not None:
+                    broker.monitor.failed = broker.workstation_error
+                try:
+                    broker.disable_workstations()
+                except Exception as cleanup_error:
+                    broker.workstation_error += " Cleanup unverified: " + str(cleanup_error)
+                return
+            # A dead stream sets the event once; do not spin indefinitely on failure.
     threading.Thread(target=expiry, daemon=True).start()
     Path("/run/teliphones").mkdir(mode=0o750, exist_ok=True)
     if Path("/run/teliphones").is_symlink() or Path("/run/teliphones").stat().st_uid != 0:
@@ -761,4 +1078,14 @@ def serve():
 
 
 if __name__ == "__main__":
-    serve()
+    if sys.argv[1:] == ["--uninstall-workstations"]:
+        if os.geteuid() != 0:
+            raise SystemExit("Workstation uninstall requires root.")
+        try:
+            Broker().uninstall_workstations()
+        except (BrokerError, OSError, ValueError, subprocess.SubprocessError) as error:
+            raise SystemExit("Workstation uninstall incomplete; recovery state retained: " + str(error))
+    elif len(sys.argv) != 1:
+        raise SystemExit("Unsupported broker arguments.")
+    else:
+        serve()

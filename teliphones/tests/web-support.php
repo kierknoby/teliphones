@@ -192,6 +192,12 @@ $installSource = (string)file_get_contents(dirname(__DIR__) . '/install.php');
 $assert(strpos($installSource, "if (!defined('FREEPBX_IS_AUTH')) { die('No direct script access allowed'); }") === 6
     && substr_count($installSource, 'BrokerBootstrap::install(__DIR__);') === 1, 'Module Admin installer must delegate once to the shared bootstrap.');
 $bootstrapSource = (string)file_get_contents(dirname(__DIR__) . '/BrokerBootstrap.php');
+$assert(strpos($bootstrapSource, "copy(\$moduleDir . '/support_broker.py', \$brokerFile)") !== false
+    && strpos($bootstrapSource, 'chmod($brokerFile, 0600)') !== false
+    && strpos($bootstrapSource, 'systemctl restart teliphones-broker.service') !== false,
+    'Root bootstrap must install the current broker as a protected root-owned file and restart it.');
+$assert(strpos($bootstrapSource, 'workstations.json') === false && strpos($bootstrapSource, 'workstation-wg.key') === false,
+    'Bootstrap must not recreate or delete workstation pairing state or the PBX key.');
 $assert(preg_match('/posix_geteuid\(\) !== 0\) \{\s*error_log\(\'[^\'\n]*Complete Installation on FreePBX 17[^\'\n]*\'\);\s*return false;/', $bootstrapSource) === 1,
     'Non-root installation must log the bootstrap step and return without throwing or escalating.');
 $assert(preg_match('/sudo|setuid|chmod\([^)]*04[0-7]{3}|apt-get/', $bootstrapSource) === 0, 'Bootstrap must not escalate privileges or install packages.');

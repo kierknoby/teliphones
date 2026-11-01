@@ -1,8 +1,16 @@
-# TELIPHONES 0.2.0 testing
+# TELIPHONES 0.2.1 testing
 
-0.2.0 is a development milestone for testing on a **disposable FreePBX 17 / Debian 12 PBX**. Do not begin on a production PBX.
+## Workstation enforcement regression coverage
 
-For workstation pairing, start with [install, pair and connect](../README.md#windows-workstations-install-pair-and-connect); for remote support use the [browser workflow](../README.md#browser-support-workflow-020). The CLI steps below remain platform recovery and direct integration tests, not required browser operations. Local regression tests use framework stubs and mocked privileged broker calls; they do not prove real systemd, apt, SSH or FreePBX administrator permissions.
+From the repository root, run `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s gateway/tests -v` and `php teliphones/tests/run.php`. The new enforcement cases exercise complete JSON-policy tampering, ownership conflicts, verified disable/delete failures, recovery-file retention, both pairing lifetimes, transient external flush/restore events, monitor startup/death and own-event filtering. PHP covers trusted-helper ancestry, refusal of legacy/web-owned helpers, verified service stopping and abort-on-failure ordering. The existing portable C++ contract tests reuse the updated Python fake network; Windows sources are unchanged.
+
+When `unshare`, `ip`, `nft` and user/network namespaces are usable, Python automatically runs `gateway/tests/workstation_namespace_lab.py` inside a fresh isolated namespace. It checks actual kernel JSON equivalence, real monitor framing/registration, external flush detection, interface disable/delete, foreign-table preservation and stale-handle deletion refusal. All network mutations stay in that child namespace. It does not touch the host firewall or require packages. The current workspace passed this nft/dummy-interface lab; `wg` is absent, so real WireGuard admission/traffic tests are explicitly skipped. This is not an installed FreePBX/Windows or FreePBX Firewall reload test. No local FreePBX hooks were available to inspect. Monitor recovery does not prove zero packet exposure during external flushes; the [documented race and latency limitations](WORKSTATION-PAIRING.md#enforcement-integrity-and-exposure-limits) apply.
+
+The `TELIPHONES-0.2.1.tgz` Module Admin package includes these corrections. Run `PYTHONDONTWRITEBYTECODE=1 python3 teliphones/tests/package-validation.py -v` from the repository root to verify clean extraction and byte-for-byte equality with all intended module files. Tests, Windows sources, caches and runtime state are excluded.
+
+0.2.1 is a development milestone for testing on a **disposable FreePBX 17 / Debian 12 PBX**. Do not begin on a production PBX.
+
+For workstation pairing, start with [install, pair and connect](../README.md#windows-workstations-install-pair-and-connect); for remote support use the [browser workflow](../README.md#browser-support-workflow-021). The CLI steps below remain platform recovery and direct integration tests, not required browser operations. Local regression tests use framework stubs and mocked privileged broker calls; they do not prove real systemd, apt, SSH or FreePBX administrator permissions.
 
 The first objective is to prove TELIPHONES independently of any hosted integration. Test the local module with a disposable WireGuard peer, manual Checker evidence and a throw-away Console SSH key. Only after that passes should Connect, Checker and Console implementations be integrated.
 

@@ -34,7 +34,7 @@ After PBX-local verification succeeds, obtain a fresh request:
 
 A `teliphones-checker/1` request contains a session-bound random nonce, topology, short evidence deadline and the policy to test. A conforming Checker returns the same protocol, session ID, topology and nonce plus observations.
 
-TELIPHONES 0.2.0 requires evidence that:
+TELIPHONES 0.2.1 requires evidence that:
 
 * the support service is reachable from an authorised source;
 * the same support service is blocked from a negative-control source;

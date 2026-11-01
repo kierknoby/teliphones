@@ -1,24 +1,9 @@
 <?php
 if (!defined('FREEPBX_IS_AUTH')) { die('No direct script access allowed'); }
 
-if (is_executable('/usr/bin/systemctl')) {
-    exec('/usr/bin/systemctl disable --now teliphones-broker.service 2>&1', $brokerOutput, $brokerResult);
-    if ($brokerResult !== 0 && is_file('/etc/systemd/system/teliphones-broker.service')) {
-        throw new RuntimeException('TELIPHONES broker could not be stopped; refusing concurrent uninstall cleanup.');
-    }
-}
-foreach (['/etc/systemd/system/teliphones-broker.service', '/usr/local/lib/teliphones-broker/support_broker.py', '/run/teliphones/control.sock'] as $brokerFile) {
-    if (file_exists($brokerFile) && !unlink($brokerFile)) throw new RuntimeException('Unable to remove TELIPHONES broker artifact.');
-}
-
-// Stopping the broker tears down workstation access; this repeats it when running as root and drops paired workstations.
-if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
-    @exec('/usr/sbin/ip link del tlp-admin >/dev/null 2>&1');
-    @exec('/usr/sbin/nft delete table inet teliphones_workstations >/dev/null 2>&1');
-}
-foreach (['/var/lib/teliphones/workstations.json', '/etc/teliphones/workstation-wg.key'] as $workstationFile) {
-    if (is_file($workstationFile)) @unlink($workstationFile);
-}
+require_once __DIR__ . '/BrokerBootstrap.php';
+// No root execution of the web-owned module Python, and no parallel shell cleanup.
+\FreePBX\modules\Teliphones\BrokerBootstrap::uninstallWorkstations();
 
 require_once __DIR__ . '/SupportAdapter.php';
 require_once __DIR__ . '/WireGuardAgent.php';
@@ -63,6 +48,11 @@ if ($sshClean && $wireguardClean && $attestationClean && $checkerClean && $remot
     ];
     @file_put_contents('/var/lib/teliphones/quarantine.json', json_encode($quarantine, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n", LOCK_EX);
     @chmod('/var/lib/teliphones/quarantine.json', 0600);
+    throw new RuntimeException('TELIPHONES uninstall cleanup incomplete; broker artifacts and recovery state retained.');
+}
+
+foreach (['/etc/systemd/system/teliphones-broker.service', '/usr/local/lib/teliphones-broker/support_broker.py', '/run/teliphones/control.sock'] as $brokerFile) {
+    if (file_exists($brokerFile) && !unlink($brokerFile)) throw new RuntimeException('Unable to remove TELIPHONES broker artifact.');
 }
 
 $service = '/etc/systemd/system/teliphones-reconcile.service';

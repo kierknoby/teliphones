@@ -1,6 +1,6 @@
 # TELIPHONES topologies
 
-TELIPHONES 0.2.0 uses three support topology names. They describe where the private support network terminates; they do not prescribe who supplies that network. Administrator-owned Windows workstations use the separate direct pairing contract.
+TELIPHONES 0.2.1 uses three support topology names. They describe where the private support network terminates; they do not prescribe who supplies that network. Administrator-owned Windows workstations use the separate direct pairing contract.
 
 ## On-PBX (`on-pbx`)
 

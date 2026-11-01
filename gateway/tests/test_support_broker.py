@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -326,14 +327,28 @@ class FakeNetwork:
         self.ruleset = None
         self.fail = None
         self.handshakes = {}
+        self.table = None
+        self.process = None
+        self.silent = False
+        self.next_handle = 1
 
-    def run(self, arguments, stdin=None, check=True):
+    def emit(self, events):
+        if self.process and self.process.poll() is None and not self.silent:
+            self.process.writer.write(json.dumps({"nftables": events}) + "\n")
+            self.process.writer.flush()
+
+    def run(self, arguments, stdin=None, check=True, stream=False):
         name, rest = arguments[0], arguments[1:]
         self.calls.append((name, tuple(rest)))
         if self.fail and self.fail(name, rest):
             if check:
                 raise broker_module.BrokerError("Workstation network operation failed: " + name)
             return None
+        if stream:
+            self.process = FakeMonitorProcess()
+            return self.process
+        if name == "ip" and rest == ["-j", "link", "show"]:
+            return json.dumps([{"ifname": broker_module.WORKSTATION_IFACE, "flags": ["UP"] if self.up else []}] if self.link else [])
         if name == "ip" and rest[:2] == ["link", "show"]:
             return "" if self.link else None
         if name == "ip" and rest[:2] == ["link", "add"]:
@@ -360,13 +375,53 @@ class FakeNetwork:
                 self.peers.pop(key, None)
             else:
                 self.peers[key] = rest[rest.index("allowed-ips") + 1]
-        if name == "nft" and rest == ["-f", "-"]:
-            self.ruleset = stdin
-        if name == "nft" and rest[:1] == ["delete"]:
-            self.ruleset = None
-        if name == "nft" and rest[:1] == ["list"]:
-            return self.ruleset
+        if name == "nft" and rest == ["-j", "-f", "-"]:
+            commands = json.loads(stdin)["nftables"]
+            notifications = []
+            for command in commands:
+                action, entry = next(iter(command.items()))
+                kind, value = next(iter(entry.items()))
+                if action == "delete":
+                    if self.table:
+                        notifications.append({"delete": {"table": self.table["nftables"][0]["table"]}})
+                    self.table, self.ruleset = None, None
+                else:
+                    if kind == "table":
+                        self.table = {"nftables": []}
+                    value = {**value, "handle": self.next_handle}
+                    self.next_handle += 1
+                    self.table["nftables"].append({kind: value})
+                    notifications.append({"add": {kind: value}})
+            if self.table:
+                rules = [entry["rule"] for entry in self.table["nftables"] if "rule" in entry]
+                pbx = rules[0]["expr"][1]["match"]["right"]
+                sources = [entry["expr"][1]["match"]["right"] for entry in rules
+                           if any(expr.get("match", {}).get("right") == 22 for expr in entry["expr"])]
+                self.ruleset = broker_module.workstation_ruleset(pbx, sources)
+            self.emit(notifications)
+        if name == "nft" and rest == ["-j", "list", "tables"]:
+            return json.dumps({"nftables": [entry for entry in self.table["nftables"] if "table" in entry] if self.table else []})
+        if name == "nft" and rest == ["-j", "list", "table", "inet", broker_module.WORKSTATION_TABLE]:
+            return json.dumps(self.table)
         return ""
+
+
+class FakeMonitorProcess:
+    def __init__(self):
+        read, write = os.pipe()
+        self.stdout = os.fdopen(read)
+        self.writer = os.fdopen(write, "w")
+        self.returncode = None
+
+    def poll(self):
+        return self.returncode
+
+    def terminate(self):
+        self.returncode = 0
+        self.writer.close()
+
+    def wait(self, timeout=None):
+        return self.returncode
 
 
 class WorkstationPairingTests(unittest.TestCase):
@@ -386,6 +441,8 @@ class WorkstationPairingTests(unittest.TestCase):
         self.broker.tool = lambda name: name
 
     def tearDown(self):
+        if self.broker.monitor:
+            self.broker.monitor.close()
         for item in self.patches:
             item.stop()
         self.directory.cleanup()
@@ -445,7 +502,9 @@ class WorkstationPairingTests(unittest.TestCase):
         self.assertNotIn("dport 22", ruleset)
         self.assertIn('        iifname "tlp-admin" drop', ruleset)
         self.assertIn('        oifname "tlp-admin" drop', ruleset)
-        self.assertTrue(ruleset.startswith("add table inet teliphones_workstations\ndelete table inet teliphones_workstations\n"))
+        self.assertTrue(ruleset.startswith("table inet teliphones_workstations {"))
+        self.assertIn(broker_module.WORKSTATION_OWNER, ruleset)
+        self.assertNotIn("delete table", ruleset)
         ruleset = broker_module.workstation_ruleset("100.70.1.1", ["100.70.1.3", "100.70.1.2"])
         self.assertIn("ip saddr { 100.70.1.2, 100.70.1.3 } ip daddr 100.70.1.1 tcp dport 22 accept", ruleset)
         self.assertLess(ruleset.index("dport 22 accept"), ruleset.index('iifname "tlp-admin" drop'))
@@ -489,11 +548,11 @@ class WorkstationPairingTests(unittest.TestCase):
     def test_revocation_holds_even_when_network_update_fails(self):
         _, first = self.pair()
         self.pair(public_key="B" * 42 + "E=")
-        self.net.fail = lambda name, rest: name == "nft" and rest == ["-f", "-"]
+        self.net.fail = lambda name, rest: name == "nft" and rest == ["-j", "-f", "-"]
         with self.assertRaises(broker_module.BrokerError):
             self.broker.dispatch({"action": "unpair", "workstation_id": first["workstation_id"]}, 1000)
         self.assertFalse(self.net.link)
-        self.assertNotIn(first["workstation_id"], [item["id"] for item in json.loads((self.state / "workstations.json").read_text())["workstations"]])
+        self.assertIn(first["workstation_id"], [item["id"] for item in json.loads((self.state / "workstations.json").read_text())["workstations"]])
 
     def test_failed_interface_deletion_disables_traffic_and_preserves_firewall(self):
         self.pair()
@@ -510,7 +569,7 @@ class WorkstationPairingTests(unittest.TestCase):
 
     def test_failed_firewall_cleanup_is_not_reported_as_success(self):
         self.pair()
-        self.net.fail = lambda name, rest: name == "nft" and rest[:1] == ["delete"]
+        self.net.fail = lambda name, rest: name == "nft" and rest == ["-j", "-f", "-"]
         with self.assertRaisesRegex(broker_module.BrokerError, "cleanup"):
             self.broker.dispatch({"action": "unpair", "workstation_id": "all"}, 1000)
         self.assertFalse(self.net.link)
@@ -583,8 +642,10 @@ class WorkstationPairingTests(unittest.TestCase):
         state["workstations"][0]["expires_at"] = 1
         (self.state / "workstations.json").write_text(json.dumps(state))
         self.broker.teardown_workstations()
+        self.broker.monitor.close()
         restarted = broker_module.Broker()
         restarted.audit, restarted.run, restarted.tool = self.broker.audit, self.net.run, self.broker.tool
         restarted.restore_workstations()
         self.assertEqual(set(self.net.peers), {"B" * 42 + "E="})
         self.assertTrue(self.net.link)
+        restarted.monitor.close()

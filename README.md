@@ -1,8 +1,10 @@
-# TELIPHONES 0.2.0
+# TELIPHONES 0.2.1
 
 TELIPHONES is an open-source FreePBX module for administrator-owned PBX connections and locally authorised, time-limited remote support. The module is located at `teliphones/` and appears under **Connectivity > TELIPHONES**, including **Windows workstations**.
 
-The current repository development milestone is **0.2.0**. The Module Admin package is `TELIPHONES-0.2.0.tgz`. This milestone integrates Windows workstation approval, temporary or explicitly persistent pairing, direct WireGuard access to the PBX web interface and separately approved SSH, plus individual revocation and handshake status. It preserves the 0.1.3 live-status support workflow and existing FreePBX 17 authentication and security controls. The native Windows executable has compiled and launched in user-run Windows testing; end-to-end Windows/PBX connectivity remains to be tested. This is not a production release.
+The current repository development milestone is **0.2.1**. The Module Admin package is `TELIPHONES-0.2.1.tgz`. This milestone integrates Windows workstation approval, temporary or explicitly persistent pairing, direct WireGuard access to the PBX web interface and separately approved SSH, plus individual revocation and handshake status. It preserves the 0.1.3 live-status support workflow and existing FreePBX 17 authentication and security controls. The native Windows executable has compiled and launched in user-run Windows testing; end-to-end Windows/PBX connectivity remains to be tested. This is not a production release.
+
+Version **0.2.1** packages the workstation firewall enforcement, event monitoring, ownership validation and verified uninstall corrections. It retains nftables and the existing architecture. Upgrading preserves saved workstation pairings and the PBX WireGuard key, but an older unmarked or unfamiliar firewall table is refused, not overwritten. See [upgrade recovery and enforcement limitations](teliphones/docs/WORKSTATION-PAIRING.md#upgrading-from-020) before controlled testing; external flush exposure is not eliminated.
 
 ## ⚠️ Not Currently Suitable for Production
 
@@ -20,7 +22,7 @@ TELIPHONES remains experimental. Module Admin installation and the root broker b
 
 After installing through Module Admin, complete the one-time root broker bootstrap described in [Complete Installation on FreePBX 17](teliphones/README.md#complete-installation-on-freepbx-17); Connectivity > TELIPHONES shows the same commands. Remote support on the FreePBX 17 / Debian 12 target is not yet validated end to end. The reference gateway is separate from the module and is not deployed or production-certified. No managed Connect, Checker, Console service or infrastructure endpoint is supplied.
 
-For the first Windows connection, follow [Windows workstations: install, pair and connect](teliphones/README.md#windows-workstations-install-pair-and-connect). Upgrading Module Admin alone is insufficient: rerun the root bootstrap with no active support session. The old 0.1.3 package contains broker protocol 2; 0.2.0 includes protocol 3 and verifies the workstation status contract, not merely its version number. Use a WireGuard UDP endpoint actually reachable from the workstation; no automatic router configuration, NAT traversal or relay is supplied.
+For the first Windows connection, follow [Windows workstations: install, pair and connect](teliphones/README.md#windows-workstations-install-pair-and-connect). Upgrading Module Admin alone is insufficient: rerun the root bootstrap with no active support session. The old 0.1.3 package contains broker protocol 2; 0.2.1 includes protocol 3 and verifies the workstation status contract, not merely its version number. Use a WireGuard UDP endpoint actually reachable from the workstation; no automatic router configuration, NAT traversal or relay is supplied.
 
 ## Local Tests
 
