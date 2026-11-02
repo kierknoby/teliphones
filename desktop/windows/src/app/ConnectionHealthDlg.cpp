@@ -208,9 +208,9 @@ void CConnectionHealthDlg::LayoutGraph(int width, int height) {
     int warningBottom = std::min({historyTop, topmostTop, limitsTop}) - warningGapDlu.bottom;
     int warningTop = warningBottom - warningDlu.Height();
     int graphBottom = warningTop - warningGapDlu.bottom;
-    graph->SetWindowPos(nullptr, graphDlu.left, graphDlu.top, std::max(80, width - graphDlu.left * 2),
-                        std::max(30, graphBottom - graphDlu.top), SWP_NOZORDER);
-    GetDlgItem(IDC_HEALTH_WARNING)->SetWindowPos(nullptr, warningDlu.left, warningTop, std::max(80, width - warningDlu.left * 2),
+    graph->SetWindowPos(nullptr, graphDlu.left, graphDlu.top, std::max<int>(80, static_cast<int>(width - graphDlu.left * 2)),
+                        std::max<int>(30, static_cast<int>(graphBottom - graphDlu.top)), SWP_NOZORDER);
+    GetDlgItem(IDC_HEALTH_WARNING)->SetWindowPos(nullptr, warningDlu.left, warningTop, std::max<int>(80, static_cast<int>(width - warningDlu.left * 2)),
                                                   warningDlu.Height(), SWP_NOZORDER);
     GetDlgItem(IDC_HEALTH_HISTORY)->SetWindowPos(nullptr, historyDlu.left, historyTop, historyDlu.Width(), historyDlu.Height(), SWP_NOZORDER);
     GetDlgItem(IDC_HEALTH_TOPMOST)->SetWindowPos(nullptr, topmostDlu.left, topmostTop, topmostDlu.Width(), topmostDlu.Height(), SWP_NOZORDER);
