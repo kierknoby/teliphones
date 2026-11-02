@@ -4,6 +4,7 @@
 #define IDD_MAIN                    101
 #define IDD_PAIR                    102
 #define IDD_SUPPORT                 103
+#define IDD_APP_SETTINGS            104
 
 #define IDC_WG_STATUS               1000
 #define IDC_PROFILES                1001
@@ -19,6 +20,7 @@
 #define IDC_STATE                   1011
 #define IDC_GUIDANCE                1012
 #define IDC_DETAILS                 1015
+#define IDC_SETTINGS                1016
 
 #define IDC_PAIR_NAME               1100
 #define IDC_PAIR_WORKSTATION        1101
@@ -37,11 +39,20 @@
 #define IDC_SUP_BROWSE              1205
 #define IDC_SUP_HINT                1206
 
+#define IDC_APPS_HEADING            1300
+#define IDC_APPS_INTRO              1301
+#define IDC_APPS_BROWSER            1302
+#define IDC_APPS_TERMINAL           1303
+#define IDC_APPS_LOCATE_BROWSER     1304
+#define IDC_APPS_LOCATE_TERMINAL    1305
+#define IDC_APPS_STATUS             1306
+#define IDC_APPS_SKIP               1307
+
 #ifdef APSTUDIO_INVOKED
 #ifndef APSTUDIO_READONLY_SYMBOLS
 #define _APS_NEXT_RESOURCE_VALUE    129
 #define _APS_NEXT_COMMAND_VALUE     32771
-#define _APS_NEXT_CONTROL_VALUE     1300
+#define _APS_NEXT_CONTROL_VALUE     1308
 #define _APS_NEXT_SYMED_VALUE       101
 #endif
 #endif

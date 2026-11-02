@@ -232,7 +232,7 @@ $unpairOff = $available && $workstations['supported'] ? '' : ' disabled aria-dis
 $defaultHost = preg_replace('/:[0-9]+$/', '', (string)($_SERVER['HTTP_HOST'] ?? ''));
 ?>
 <h3 id="teliphones-workstations">Windows workstations</h3>
-<p>Workstation enforcement requires the <code>nft</code> CLI (nftables userspace tools); the <code>nftables.service</code> does not need to be enabled or running. The root broker owns only the isolated <code>inet teliphones_workstations</code> table, watches local nft events and periodically verifies its complete rules. Missing tools must be repaired by the platform administrator; this page does not install nftables or change FreePBX Firewall. External firewall flushes can briefly remove protection before detection disables the interface: this is not zero-exposure or truly fail-closed protection against external changes.</p>
+<p>Workstation enforcement requires the <code>nft</code> CLI (nftables userspace tools); the <code>nftables.service</code> does not need to be enabled or running. The root broker owns only the isolated <code>inet teliphones_workstations</code> table, watches local nft events and periodically verifies its complete rules. Missing tools must be repaired by the platform administrator; this page does not install nftables. Because an nftables accept cannot override a later FreePBX Firewall drop, the broker also maintains its own iptables chain <code>teliphones-ws</code>, jumped to from INPUT immediately before the FreePBX Firewall hook (<code>fpbxfirewall</code>) and after any Fail2Ban hooks. It accepts only TCP 80/443 (and TCP 22 for SSH-approved workstations) from each paired workstation address to this PBX's tunnel address; all other tunnel traffic returns to normal FreePBX Firewall processing. FreePBX Firewall chains, zones, settings and services are not changed. External firewall flushes can briefly remove protection before detection disables the interface: this is not zero-exposure or truly fail-closed protection against external changes.</p>
 <p>Pair the TELIPHONES Windows application on a workstation you control, so that it can reach this PBX over WireGuard without repeating remote support authorisation. A paired workstation reaches only this PBX's administration interface (TCP 80 and 443) and, only if you allow it, SSH (TCP 22). It cannot reach other networks through the PBX. Pairing creates no accounts, passwords or SSH keys: you sign in with your existing FreePBX and SSH credentials. The PBX's WireGuard UDP port must be reachable from the workstation (for example, through a port forward on the PBX's router). Other administration and SSH ports are not exposed by pairing.</p>
 <?php if ($pairingResponse !== null): ?>
 <div class="alert alert-success teliphones-pairing-response" role="status"><strong>Pairing response.</strong> Copy it into the TELIPHONES Windows application to finish pairing. It contains no secret keys.
@@ -270,13 +270,23 @@ $defaultHost = preg_replace('/:[0-9]+$/', '', (string)($_SERVER['HTTP_HOST'] ?? 
 <?php endif; ?>
 <?php endif; ?>
 <?php if ($workstations['error'] !== ''): ?><div class="alert alert-danger teliphones-pairing-error"><?=$escape($workstations['error'])?></div><?php endif; ?>
+<?php $integration = $workstations['firewall_integration']; $integrationActive = $integration['state'] === 'active'; ?>
+<?php if ($workstations['items'] && $integration['state'] === 'unknown'): ?>
+<div class="alert alert-warning teliphones-firewall-integration">The running root broker does not report FreePBX Firewall integration. Rerun the documented root bootstrap to install the updated broker; until then FreePBX Firewall may drop workstation HTTP/HTTPS even after a successful WireGuard handshake.</div>
+<?php elseif ($workstations['items'] && $integration['state'] === 'error'): ?>
+<div class="alert alert-danger teliphones-firewall-integration"><strong>FreePBX Firewall integration failed.</strong> <?=$escape($integration['message'])?></div>
+<?php elseif ($workstations['items'] && $integration['state'] === 'not-detected'): ?>
+<div class="alert alert-info teliphones-firewall-integration"><strong>FreePBX Firewall integration not installed.</strong> <?=$escape($integration['message'])?></div>
+<?php elseif ($integrationActive): ?>
+<p class="help-block teliphones-firewall-integration">FreePBX Firewall integration active<?=$integration['backend'] !== null ? ' (iptables ' . $escape($integration['backend']) . ')' : ''?>. <?=$escape($integration['message'])?></p>
+<?php endif; ?>
 <table class="table table-striped teliphones-workstations"><thead><tr><th>Workstation</th><th>Key fingerprint</th><th>Address</th><th>Access</th><th>Pairing</th><th>WireGuard status</th><th></th></tr></thead><tbody>
 <?php if (!$workstations['items']): ?><tr><td colspan="7">No workstations are paired.</td></tr><?php endif; ?>
 <?php foreach ($workstations['items'] as $item): ?>
 <tr><td><?=$escape($item['name'])?></td><td><code><?=$escape($item['fingerprint'])?></code></td><td><?=$escape($item['address'])?></td>
 <td><?=$item['ssh'] ? 'Web interface and SSH' : 'Web interface only'?></td>
 <td><?=$item['mode'] === 'persistent' ? 'Persistent (until revoked)' : 'Temporary, expires ' . $escape(gmdate('Y-m-d H:i', (int)$item['expires_at'])) . ' UTC'?></td>
-<td><?=$item['last_handshake'] === null ? 'Not verified (status unavailable)' : ($item['last_handshake'] === 0 ? 'Authorised; no handshake yet' : 'Last handshake ' . $escape(gmdate('Y-m-d H:i:s', $item['last_handshake'])) . ' UTC')?></td>
+<td><?=$item['last_handshake'] === null ? 'Not verified (status unavailable)' : ($item['last_handshake'] === 0 ? 'Authorised; no handshake yet' : 'Last handshake ' . $escape(gmdate('Y-m-d H:i:s', $item['last_handshake'])) . ' UTC')?><?php if (is_int($item['last_handshake']) && $item['last_handshake'] > 0 && !$integrationActive && $integration['state'] !== 'not-detected'): ?><br><span class="text-danger teliphones-handshake-blocked">Handshake succeeded, but FreePBX Firewall integration is not active: HTTP/HTTPS may be dropped by FreePBX Firewall.</span><?php endif; ?></td>
 <td><form method="post"><input type="hidden" name="token" value="<?=$escape($token ?? '')?>"><input type="hidden" name="workstation_id" value="<?=$escape($item['id'])?>">
 <button class="btn btn-danger btn-sm" type="submit" name="action" value="unpair"<?=$unpairOff?>>Revoke</button></form></td></tr>
 <?php endforeach; ?>

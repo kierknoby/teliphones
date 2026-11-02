@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import os
+import shlex
 from pathlib import Path
 import tempfile
 import unittest
@@ -316,6 +317,20 @@ def decode_response(code):
     return json.loads(broker_module.b64url_decode(code[len(broker_module.PAIR_RESPONSE_PREFIX):]))
 
 
+# Fail2Ban INPUT chains observed on the FreePBX 17 test installation.
+FREEPBX17_FAIL2BAN = ["fail2ban-sshd", "fail2ban-SIP", "fail2ban-BadBots", "fail2ban-api",
+                      "fail2ban-SSH", "fail2ban-apache-auth", "fail2ban-recidive", "fail2ban-PBX-GUI"]
+
+
+def fail2ban_hook(name):
+    """iptables -S shape of a Fail2Ban INPUT hook (port-limited jails use multiport, others are all-ports)."""
+    ports = {"fail2ban-sshd": "22", "fail2ban-SSH": "22", "fail2ban-apache-auth": "80,443",
+             "fail2ban-BadBots": "80,443", "fail2ban-PBX-GUI": "80,443"}
+    if name in ports:
+        return ["-p", "tcp", "-m", "multiport", "--dports", ports[name], "-j", name]
+    return ["-j", name]
+
+
 class FakeNetwork:
     """Stateful stand-in for ip/wg/nft. Records every command; real kernel behaviour is not exercised."""
 
@@ -331,6 +346,47 @@ class FakeNetwork:
         self.process = None
         self.silent = False
         self.next_handle = 1
+        # Simulated iptables filter table (None: no iptables). Rule token lists use iptables -S syntax.
+        self.filter = None
+
+    def freepbx(self, fail2ban=None):
+        """FreePBX Firewall-shaped hooks only; not the FreePBX implementation. Default Fail2Ban hooks are the
+        INPUT chain names observed on the FreePBX 17 test installation."""
+        fail2ban = FREEPBX17_FAIL2BAN if fail2ban is None else fail2ban
+        self.filter = {"INPUT": [fail2ban_hook(name) for name in fail2ban] + [["-j", "fpbxfirewall"]], "FORWARD": [], "OUTPUT": [],
+                       "fpbxfirewall": [["-i", "lo", "-j", "ACCEPT"], ["-j", "DROP"]]}
+        self.filter.update({name: [["-j", "RETURN"]] for name in fail2ban})
+        return self
+
+    def iptables(self, rest):
+        if rest == ["--version"]:
+            return "iptables v1.8.9 (nf_tables)\n"
+        assert rest[:2] == ["-w", "5"], rest
+        table, operation, chain, rule = self.filter, rest[2], (rest[3] if len(rest) > 3 else None), rest[4:]
+        if operation == "-S":
+            return "\n".join(["-P INPUT ACCEPT", "-P FORWARD ACCEPT", "-P OUTPUT ACCEPT"]
+                             + ["-N " + name for name in table if name not in ("INPUT", "FORWARD", "OUTPUT")]
+                             + ["-A %s %s" % (name, shlex.join(item)) for name in table for item in table[name]]) + "\n"
+        failed = broker_module.BrokerError("Workstation network operation failed: iptables")
+        if operation == "-N":
+            if chain in table:
+                raise failed
+            table[chain] = []
+        elif operation == "-F":
+            table[chain] = []
+        elif operation == "-X":
+            if table.get(chain) or any(chain in item for rules in table.values() for item in rules):
+                raise failed
+            table.pop(chain)
+        elif operation == "-A":
+            table[chain].append(rule)
+        elif operation == "-I":
+            table[chain].insert(int(rule[0]) - 1, rule[1:])
+        elif operation == "-D":
+            if rule not in table[chain]:
+                raise failed
+            table[chain].remove(rule)
+        return ""
 
     def emit(self, events):
         if self.process and self.process.poll() is None and not self.silent:
@@ -347,6 +403,8 @@ class FakeNetwork:
         if stream:
             self.process = FakeMonitorProcess()
             return self.process
+        if name == "iptables":
+            return self.iptables(list(rest))
         if name == "ip" and rest == ["-j", "link", "show"]:
             return json.dumps([{"ifname": broker_module.WORKSTATION_IFACE, "flags": ["UP"] if self.up else []}] if self.link else [])
         if name == "ip" and rest[:2] == ["link", "show"]:
@@ -439,6 +497,7 @@ class WorkstationPairingTests(unittest.TestCase):
         self.net = FakeNetwork()
         self.broker.run = self.net.run
         self.broker.tool = lambda name: name
+        self.broker.iptables_tool = lambda: "iptables" if self.net.filter is not None else None
 
     def tearDown(self):
         if self.broker.monitor:
@@ -594,7 +653,8 @@ class WorkstationPairingTests(unittest.TestCase):
     def test_status_reports_workstations_without_keys(self):
         self.pair(mode="temporary", ssh="1")
         status = self.broker.status()["workstations"]
-        self.assertEqual(set(status), {"ready", "requirements", "error", "listen_port", "pbx_address", "items"})
+        self.assertEqual(set(status), {"ready", "requirements", "error", "listen_port", "firewall_integration", "pbx_address", "items"})
+        self.assertEqual(status["firewall_integration"]["state"], "not-detected")
         item = status["items"][0]
         self.assertEqual(set(item), {"id", "name", "address", "mode", "ssh", "created_at", "expires_at", "fingerprint", "last_handshake"})
         self.assertTrue(item["fingerprint"].startswith("SHA256:"))
@@ -645,6 +705,7 @@ class WorkstationPairingTests(unittest.TestCase):
         self.broker.monitor.close()
         restarted = broker_module.Broker()
         restarted.audit, restarted.run, restarted.tool = self.broker.audit, self.net.run, self.broker.tool
+        restarted.iptables_tool = self.broker.iptables_tool
         restarted.restore_workstations()
         self.assertEqual(set(self.net.peers), {"B" * 42 + "E="})
         self.assertTrue(self.net.link)

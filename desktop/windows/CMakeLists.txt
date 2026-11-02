@@ -9,6 +9,7 @@ add_library(teliphones_core STATIC
     src/core/CommandLine.cpp
     src/core/Encoding.cpp
     src/core/Json.cpp
+    src/core/Launchers.cpp
     src/core/Monitor.cpp
     src/core/Pairing.cpp
     src/core/Profiles.cpp

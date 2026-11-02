@@ -17,3 +17,4 @@
 
 #define WM_APP_OPERATION_DONE (WM_APP + 1)
 #define WM_APP_PROBE_DONE     (WM_APP + 2)
+#define WM_APP_FIRST_RUN      (WM_APP + 3)

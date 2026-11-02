@@ -36,17 +36,23 @@ std::string JoinCommandLine(const std::vector<std::string>& arguments) {
     return out;
 }
 
-std::vector<std::string> SshArguments(const Profile& profile, const std::string& sessionId) {
+SshTarget SshTargetFor(const Profile& profile, const std::string& sessionId) {
     std::string address = ConnectionAddress(profile, sessionId);
     std::uint32_t parsed = 0;
     if (!ParseIPv4(address, parsed)) throw Error("Invalid PBX tunnel address.");
     if (profile.kind == ProfileKind::Administrator) {
         if (!profile.pairing.ssh) throw Error("SSH was not approved for this workstation. Pair again on the PBX with SSH enabled.");
         if (!IsLinuxUser(profile.sshUser)) throw Error("Set a valid PBX SSH user name for this PBX first.");
-        return {"-o", "ServerAliveInterval=15", "-o", "HostKeyAlias=teliphones-" + profile.id, "-p", "22", profile.sshUser + "@" + address};
+        if (!IsProfileId(profile.id)) throw Error("Invalid saved connection.");
+        return {profile.sshUser, address, 22, "teliphones-" + profile.id};
     }
     if (!IsSessionId(sessionId)) throw Error("Invalid support session.");
-    return {"-o", "ServerAliveInterval=15", "-o", "HostKeyAlias=teliphones-support-" + sessionId, "-p", "22222", "root@" + address};
+    return {"root", address, 22222, "teliphones-support-" + sessionId};
+}
+
+std::vector<std::string> SshArguments(const Profile& profile, const std::string& sessionId) {
+    SshTarget target = SshTargetFor(profile, sessionId);
+    return {"-o", "ServerAliveInterval=15", "-o", "HostKeyAlias=" + target.hostKeyAlias, "-p", std::to_string(target.port), target.user + "@" + target.address};
 }
 
 bool IsSid(const std::string& text) {

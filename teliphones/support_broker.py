@@ -9,6 +9,7 @@ from pathlib import Path
 import pwd
 import re
 import secrets
+import shlex
 import signal
 import socket
 import struct
@@ -41,6 +42,18 @@ WG_PUBLIC_KEY = re.compile(r"[A-Za-z0-9+/]{42}[AEIMQUYcgkosw480]=")
 WORKSTATION_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._()-]{0,63}")
 HOSTNAME = re.compile(r"(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*")
 TOOLS = {"wg": ["/usr/bin/wg", "/usr/sbin/wg"], "ip": ["/usr/sbin/ip", "/sbin/ip"], "nft": ["/usr/sbin/nft", "/sbin/nft"]}
+# FreePBX Firewall integration. An nft ACCEPT in TELIPHONES' own table is not final: FreePBX Firewall's
+# separate iptables INPUT processing can still drop the packet. A broker-owned chain, jumped to from INPUT
+# immediately before the FreePBX hook (and after Fail2Ban hooks), accepts only exact authorised flows;
+# everything else returns to normal FreePBX processing. FreePBX's own chains are never modified.
+IPTABLES = ["/usr/sbin/iptables", "/sbin/iptables"]
+FREEPBX_HOOK = "fpbxfirewall"
+# Fail2Ban hook chains: "fail2ban-<jail>" (FreePBX 17, e.g. fail2ban-SIP, fail2ban-PBX-GUI) and "f2b-<jail>"
+# (upstream default). Prefixes are matched case-insensitively so no Fail2Ban hook can be overlooked.
+FAIL2BAN_PREFIXES = ("fail2ban-", "f2b-")
+INTEGRATION_CHAIN = "teliphones-ws"
+INTEGRATION_MARK = "TELIPHONES workstation integration v1"
+INTEGRATION_JUMP = {"i": WORKSTATION_IFACE, "comment": INTEGRATION_MARK, "j": INTEGRATION_CHAIN}
 
 
 class BrokerError(Exception):
@@ -216,6 +229,65 @@ def workstation_policy(pbx_address, ssh_sources):
     return {"nftables": objects}
 
 
+def iptables_rule(tokens):
+    """Canonical form of the only match options TELIPHONES writes; anything else is not recognised (None)."""
+    options = {"-s": "s", "-d": "d", "-i": "i", "-p": "p", "--dport": "dport", "--comment": "comment", "-j": "j"}
+    rule, index = {}, 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "-m" and index + 1 < len(tokens) and tokens[index + 1] in ("tcp", "comment"):
+            index += 2
+            continue
+        if token not in options or index + 1 >= len(tokens) or options[token] in rule:
+            return None
+        rule[options[token]] = tokens[index + 1]
+        index += 2
+    return rule
+
+
+def iptables_target(tokens):
+    target = None
+    for index, token in enumerate(tokens[:-1]):
+        if token in ("-j", "-g"):
+            target = tokens[index + 1]
+    return target
+
+
+def is_fail2ban_hook(target):
+    return isinstance(target, str) and target.lower().startswith(FAIL2BAN_PREFIXES)
+
+
+def integration_placement_valid(hooks, bans, jumps):
+    """Exactly one jump, immediately before the first FreePBX hook, after every Fail2Ban hook."""
+    return (len(jumps) == 1 and bool(hooks) and jumps[0] == hooks[0] - 1
+            and all(index < jumps[0] for index in bans))
+
+
+def iptables_arguments(rule):
+    arguments = []
+    for option, key in (("-s", "s"), ("-d", "d"), ("-i", "i"), ("-p", "p")):
+        if key in rule:
+            arguments += [option, rule[key]]
+    if "dport" in rule:
+        arguments += ["-m", "tcp", "--dport", rule["dport"]]
+    return arguments + ["-m", "comment", "--comment", rule["comment"], "-j", rule["j"]]
+
+
+def integration_rules(pbx_address, workstations):
+    """Exact per-peer ACCEPTs: TCP 80/443, plus 22 only for SSH-approved peers. Nothing else is trusted."""
+    pbx = str(ipaddress.IPv4Address(pbx_address)) + "/32"
+    rules = []
+    for item in sorted(workstations, key=lambda entry: ipaddress.IPv4Network(entry["address"])):
+        source = ipaddress.IPv4Network(item["address"])
+        if source.prefixlen != 32:
+            raise BrokerError("Workstation integration requires a single-address peer.")
+        for port in (80, 443, 22) if item.get("ssh") is True else (80, 443):
+            rules.append({"s": str(source), "d": pbx, "i": WORKSTATION_IFACE, "p": "tcp", "dport": str(port),
+                          "comment": INTEGRATION_MARK, "j": "ACCEPT"})
+    rules.append({"comment": INTEGRATION_MARK, "j": "RETURN"})
+    return rules
+
+
 def nft_objects(document):
     """Ignore only kernel-assigned object handles and nft's envelope metadata.
 
@@ -299,6 +371,10 @@ class NftMonitor:
         kind, value = next(iter(content.items()))
         if not isinstance(value, dict):
             raise BrokerError("Invalid nft monitor value.")
+        if value.get("family") == "ip" and (value.get("table") if kind != "table" else value.get("name")) == "filter":
+            # iptables-nft change (for example a FreePBX Firewall reload): re-check integration only.
+            self.broker.wake.set()
+            return
         if value.get("family") != "inet" or (value.get("table") if kind != "table" else value.get("name")) != WORKSTATION_TABLE:
             return
         signature = self.signature(action, kind, value)
@@ -309,6 +385,7 @@ class NftMonitor:
                 self.condition.notify_all()
                 return
         self.broker.enforcement_event.set()
+        self.broker.wake.set()
 
     def read(self):
         try:
@@ -327,6 +404,7 @@ class NftMonitor:
                 self.failed = str(error)
                 self.condition.notify_all()
             self.broker.enforcement_event.set()
+            self.broker.wake.set()
 
     def close(self):
         if self.process.poll() is None:
@@ -355,6 +433,9 @@ class Broker:
         self.workstation_error = ""
         self.monitor = None
         self.enforcement_event = threading.Event()
+        # Wakes the enforcement worker; enforcement_event alone means the owned nft policy must be re-applied.
+        self.wake = threading.Event()
+        self.integration = {"state": "inactive", "message": "", "backend": None}
         self.workstation_cleanup_failed = False
 
     def begin(self, action, stage):
@@ -584,6 +665,140 @@ class Broker:
         if not self.monitor.alive():
             raise BrokerError("Workstation nft monitor is unavailable; restart the broker after repairing nftables.")
 
+    # ----- FreePBX Firewall (iptables) integration -----
+
+    def iptables_tool(self):
+        return next((path for path in IPTABLES if os.access(path, os.X_OK)), None)
+
+    def ipt(self, iptables, *arguments):
+        try:
+            return self.run([iptables, "-w", "5", *arguments])
+        except BrokerError:
+            raise BrokerError("FreePBX Firewall integration command failed: iptables %s." % arguments[0]) from None
+
+    def integration_inventory(self, iptables):
+        """Parse the filter table. A failed or unparseable listing is never evidence of absence."""
+        chains, rules = {"INPUT", "FORWARD", "OUTPUT"}, []
+        try:
+            lines = [shlex.split(line) for line in self.ipt(iptables, "-S").splitlines() if line.strip()]
+        except ValueError:
+            raise BrokerError("The iptables filter table could not be parsed.") from None
+        for tokens in lines:
+            if tokens[0] == "-P" and len(tokens) == 3:
+                continue
+            if tokens[0] == "-N" and len(tokens) == 2:
+                chains.add(tokens[1])
+            elif tokens[0] == "-A" and len(tokens) >= 2:
+                rules.append((tokens[1], tokens[2:]))
+            else:
+                raise BrokerError("Unexpected iptables filter table listing.")
+        for chain, tokens in rules:
+            if chain == INTEGRATION_CHAIN:
+                rule = iptables_rule(tokens)
+                if rule is None or rule.get("comment") != INTEGRATION_MARK:
+                    raise BrokerError("Unfamiliar iptables chain %s (rule without TELIPHONES marker); it will not be modified." % INTEGRATION_CHAIN)
+            elif iptables_target(tokens) == INTEGRATION_CHAIN and (chain != "INPUT" or iptables_rule(tokens) != INTEGRATION_JUMP):
+                raise BrokerError("Unexpected reference to iptables chain %s from %s; it will not be modified." % (INTEGRATION_CHAIN, chain))
+        return chains, rules
+
+    @staticmethod
+    def integration_positions(rules):
+        targets = [iptables_target(tokens) for chain, tokens in rules if chain == "INPUT"]
+        return ([index for index, target in enumerate(targets) if target == FREEPBX_HOOK],
+                [index for index, target in enumerate(targets) if is_fail2ban_hook(target)],
+                [index for index, target in enumerate(targets) if target == INTEGRATION_CHAIN])
+
+    def integration_backend(self, iptables):
+        version = self.run([iptables, "--version"], check=False) or ""
+        return "nf_tables" if "nf_tables" in version else ("legacy" if "legacy" in version else None)
+
+    def integration_status(self, state, message, backend=None):
+        self.integration = {"state": state, "message": message, "backend": backend}
+
+    def firewall_integration(self, state):
+        """Idempotently install/verify the exact integration. Caller must have verified the nft policy first."""
+        iptables = self.iptables_tool()
+        if iptables is None:
+            self.integration_status("not-detected", "iptables is not installed, so no FreePBX Firewall hook is present; no integration rules were installed.")
+            return
+        backend = self.integration_backend(iptables)
+        chains, rules = self.integration_inventory(iptables)
+        hooks, bans, _ = self.integration_positions(rules)
+        if not hooks:
+            self.remove_integration()
+            self.integration_status("not-detected", "No iptables INPUT jump to %s (FreePBX Firewall) was found; no integration rules were installed. "
+                                    "If FreePBX Firewall is enabled and tunnel traffic is dropped, report this." % FREEPBX_HOOK, backend)
+            return
+        if bans and max(bans) > hooks[0]:
+            # Never bypass Fail2Ban: without a position after every Fail2Ban hook, install nothing.
+            targets = [iptables_target(tokens) for chain, tokens in rules if chain == "INPUT"]
+            late = sorted({targets[index] for index in bans if index > hooks[0]})
+            self.remove_integration()
+            self.integration_status("error", "Fail2Ban INPUT hook(s) %s follow the FreePBX Firewall hook (%s), so no position both after Fail2Ban "
+                                    "and before FreePBX Firewall exists; integration was not installed (Fail2Ban is not bypassed) and FreePBX "
+                                    "Firewall may drop tunnel traffic. Check with: iptables -S INPUT" % (", ".join(late)[:200], FREEPBX_HOOK), backend)
+            return
+        network = ipaddress.IPv4Network(state["subnet"])
+        expected = integration_rules(str(network[1]), state["workstations"])
+        for item in state["workstations"]:
+            if not ipaddress.IPv4Network(item["address"]).subnet_of(network):
+                raise BrokerError("Workstation address is outside the workstation subnet.")
+        if INTEGRATION_CHAIN not in chains:
+            self.ipt(iptables, "-N", INTEGRATION_CHAIN)
+        current = [iptables_rule(tokens) for chain, tokens in rules if chain == INTEGRATION_CHAIN]
+        if current != expected:
+            # With the jump present, a flushed chain simply returns to FreePBX processing (never more permissive).
+            self.ipt(iptables, "-F", INTEGRATION_CHAIN)
+            for rule in expected:
+                self.ipt(iptables, "-A", INTEGRATION_CHAIN, *iptables_arguments(rule))
+        hooks, bans, jumps = self.integration_positions(rules)
+        if not integration_placement_valid(hooks, bans, jumps):
+            for _ in jumps:
+                self.ipt(iptables, "-D", "INPUT", *iptables_arguments(INTEGRATION_JUMP))
+            hooks, bans, jumps = self.integration_positions(self.integration_inventory(iptables)[1])
+            if jumps or not hooks or (bans and max(bans) > hooks[0]):
+                raise BrokerError("FreePBX Firewall INPUT hooks changed during integration.")
+            self.ipt(iptables, "-I", "INPUT", str(hooks[0] + 1), *iptables_arguments(INTEGRATION_JUMP))
+        chains, rules = self.integration_inventory(iptables)
+        hooks, bans, jumps = self.integration_positions(rules)
+        if ([iptables_rule(tokens) for chain, tokens in rules if chain == INTEGRATION_CHAIN] != expected
+                or not integration_placement_valid(hooks, bans, jumps)):
+            raise BrokerError("FreePBX Firewall integration could not be verified after update.")
+        self.integration_status("active", "Authorised workstation peers may reach TCP 80/443%s on the PBX tunnel address before %s; "
+                                "all other tunnel traffic returns to FreePBX Firewall." % (
+                                    " (and TCP 22 for SSH-approved peers)" if any(item.get("ssh") is True for item in state["workstations"]) else "",
+                                    FREEPBX_HOOK), backend)
+
+    def remove_integration(self):
+        iptables = self.iptables_tool()
+        if iptables is None:
+            self.integration_status("inactive", "")
+            return
+        chains, rules = self.integration_inventory(iptables)
+        for _ in self.integration_positions(rules)[2]:
+            self.ipt(iptables, "-D", "INPUT", *iptables_arguments(INTEGRATION_JUMP))
+        if INTEGRATION_CHAIN in chains:
+            self.ipt(iptables, "-F", INTEGRATION_CHAIN)
+            self.ipt(iptables, "-X", INTEGRATION_CHAIN)
+        chains, rules = self.integration_inventory(iptables)
+        if INTEGRATION_CHAIN in chains or self.integration_positions(rules)[2]:
+            raise BrokerError("FreePBX Firewall integration rules could not be removed.")
+        self.integration_status("inactive", "")
+
+    def reconcile_integration(self, state):
+        """Integration failure removes TELIPHONES' iptables rules (FreePBX then decides); unverifiable removal fails closed."""
+        try:
+            self.firewall_integration(state)
+        except (BrokerError, OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
+            reason = str(error) if isinstance(error, BrokerError) else "integration command failed."
+            try:
+                self.remove_integration()
+            except (BrokerError, OSError, ValueError, subprocess.SubprocessError) as cleanup_error:
+                self.integration_status("error", "FreePBX Firewall integration could not be verified or removed: " + reason)
+                raise BrokerError("FreePBX Firewall integration could not be verified or removed: " + str(cleanup_error)) from error
+            self.integration_status("error", "FreePBX Firewall integration failed and was removed; WireGuard handshakes may succeed while "
+                                    "FreePBX Firewall drops HTTP/HTTPS: " + reason)
+
     def mutate_policy(self, expected, existing, registration_retry=True):
         nft = self.tool("nft")
         commands, events = [], []
@@ -635,10 +850,20 @@ class Broker:
             self.run([self.tool("ip"), "link", "del", "dev", WORKSTATION_IFACE], check=False)
             if self.link_state() is not None:
                 raise BrokerError("Workstation interface could not be removed and was disabled; retaining firewall and recovery state.")
+        # With the interface gone the integration rules are inert; still remove them, but never let an
+        # iptables failure skip owned nft cleanup. Either failure is reported and keeps recovery state.
+        try:
+            self.remove_integration()
+            integration_error = None
+        except (BrokerError, OSError, ValueError, subprocess.SubprocessError) as error:
+            integration_error = error
         existing = self.owned_table()
         self.mutate_policy(None, existing)
         if self.owned_table() is not None:
             raise BrokerError("Workstation interface was removed, but firewall cleanup is incomplete; retaining recovery state.")
+        if integration_error is not None:
+            raise BrokerError("Workstation interface was removed, but FreePBX Firewall integration cleanup is incomplete: "
+                              + (str(integration_error) if isinstance(integration_error, BrokerError) else "iptables failed."))
 
     def uninstall_workstations(self):
         with self.wslock:
@@ -680,6 +905,8 @@ class Broker:
                 self.run([wg, "set", WORKSTATION_IFACE, "peer", key, "allowed-ips", address])
             if not self.monitor.alive() or not policy_equal(self.owned_table(), expected):
                 raise BrokerError("Workstation enforcement could not be verified before admission.")
+            # Only after the nft restrictions are verified may the narrower FreePBX Firewall ACCEPTs be added.
+            self.reconcile_integration(state)
             self.run([ip, "link", "set", "up", "dev", WORKSTATION_IFACE])
             self.workstation_error = ""
         except (BrokerError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
@@ -729,6 +956,11 @@ class Broker:
                     if changed:
                         self.save_workstations(state)
                         self.audit("workstation-expired", 0, "completed")
+                elif state["workstations"]:
+                    link = self.link_state()
+                    if link is not None and "UP" in link["flags"]:
+                        # Repairs a FreePBX Firewall reload without re-admitting peers; a no-op when already exact.
+                        self.reconcile_integration(state)
             except (BrokerError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
                 self.workstation_error = str(error)
                 try:
@@ -817,6 +1049,9 @@ class Broker:
                 error = "Workstation connection status could not be read. Check the broker and tlp-admin interface; pairing is not proof of connectivity."
         return {"ready": all(requirements.values()) and not error and not (STATE / "disabled").exists(), "requirements": requirements, "error": error,
                 "listen_port": state["listen_port"],
+                "firewall_integration": {"state": self.integration["state"] if state["workstations"] else "inactive",
+                                         "message": self.integration["message"] if state["workstations"] else "",
+                                         "backend": self.integration["backend"], "hook": FREEPBX_HOOK, "chain": INTEGRATION_CHAIN},
                 "pbx_address": str(ipaddress.IPv4Network(state["subnet"])[1]) if state["subnet"] and state["workstations"] else None,
                 "items": [{"id": item["id"], "name": item["name"], "address": item["address"], "mode": item["mode"],
                            "ssh": item.get("ssh") is True, "created_at": item.get("created_at"), "expires_at": item.get("expires_at"),
@@ -1025,7 +1260,8 @@ def serve():
 
     def expiry():
         while True:
-            broker.enforcement_event.wait(15)
+            broker.wake.wait(15)
+            broker.wake.clear()
             try:
                 broker.expire_workstations()
             except Exception as error:

@@ -3,9 +3,11 @@
 
 #include <atomic>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
+#include "../core/Launchers.h"
 #include "../core/Monitor.h"
 #include "../core/Profiles.h"
 #include "../platform/WireGuard.h"
@@ -27,10 +29,12 @@ protected:
     afx_msg void OnDisconnect();
     afx_msg void OnOpenGui();
     afx_msg void OnOpenSsh();
+    afx_msg void OnSettings();
     afx_msg void OnSelectionChanged(NMHDR* header, LRESULT* result);
     afx_msg void OnTimer(UINT_PTR id);
     afx_msg LRESULT OnOperationDone(WPARAM, LPARAM result);
     afx_msg LRESULT OnProbeDone(WPARAM generation, LPARAM result);
+    afx_msg LRESULT OnFirstRun(WPARAM, LPARAM);
     DECLARE_MESSAGE_MAP()
 
 private:
@@ -42,6 +46,8 @@ private:
         std::int64_t expiresAt = 0;
         std::unique_ptr<tlp::ConnectionMonitor> monitor;
         bool connected = false;
+        // Set only after the monitor has confirmed the PBX answers through the tunnel.
+        bool verified = false;
     };
 
     int SelectedIndex() const;
@@ -56,6 +62,9 @@ private:
     void StartDisconnect(const std::string& reason);
     void RemoveStaleTunnels();
     bool RequireWireGuard();
+    tlp::Preferences CurrentPreferences();
+    bool ShowAppSettings(bool welcome, const std::string& notice);
+    bool SshReady();
 
     CListCtrl list_;
     CComboBox sessions_;
@@ -63,6 +72,7 @@ private:
     std::vector<tlp::Profile> profiles_;
     tlp::win::WireGuardInstallation wireguard_;
     std::unique_ptr<Active> active_;
+    std::optional<tlp::Preferences> storedPreferences_;
     bool busy_ = false;
     bool probing_ = false;
     UINT_PTR generation_ = 0;

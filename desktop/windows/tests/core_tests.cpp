@@ -7,6 +7,7 @@
 #include "../src/core/CommandLine.h"
 #include "../src/core/Encoding.h"
 #include "../src/core/Json.h"
+#include "../src/core/Launchers.h"
 #include "../src/core/Monitor.h"
 #include "../src/core/Pairing.h"
 #include "../src/core/Profiles.h"
@@ -355,6 +356,176 @@ void testMonitor() {
     check(plan.endpoint == "pbx.example.net:51821" && !plan.relayed && plan.provider == "direct", "direct provider does not alter the endpoint");
 }
 
+const std::string kSsh = "C:\\Windows\\System32\\OpenSSH\\ssh.exe";
+const std::string kPowerShell = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
+const std::string kChrome = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
+const std::string kPutty = "C:\\Program Files\\PuTTY\\putty.exe";
+
+bool unavailable(const std::function<void()>& action, AppKind kind, const std::string& id) {
+    try {
+        action();
+    } catch (const AppUnavailable& e) {
+        return e.kind == kind && e.id == id && std::string(e.what()).find("could not be found") != std::string::npos;
+    } catch (const Error&) {
+    }
+    return false;
+}
+
+void testLaunchers() {
+    // Catalogue and detection-driven choices.
+    check(KnownApps(AppKind::Browser).front().id == kWindowsDefaultBrowser, "Windows default browser listed first");
+    for (const char* id : {"chrome", "edge", "firefox", "brave"}) check(FindApp(AppKind::Browser, id) != nullptr, "required browser catalogued");
+    for (const char* id : {"powershell", "windows-terminal", "putty", "cmd"}) check(FindApp(AppKind::Terminal, id) != nullptr, "required terminal catalogued");
+    check(!FindApp(AppKind::Terminal, "putty")->needsOpenSsh && FindApp(AppKind::Terminal, "cmd")->needsOpenSsh, "only PuTTY works without OpenSSH");
+    DetectedApps noBrowsers;
+    DetectedApps browsers{{"chrome", kChrome}, {"firefox", "C:\\Program Files\\Mozilla Firefox\\firefox.exe"}};
+    DetectedApps terminals{{"powershell", kPowerShell}, {"cmd", "C:\\Windows\\System32\\cmd.exe"}, {"putty", kPutty}};
+    check(AvailableApps(AppKind::Browser, noBrowsers) == std::vector<std::string>{kWindowsDefaultBrowser}, "Windows default browser always offered");
+    check(AvailableApps(AppKind::Browser, browsers) == std::vector<std::string>({kWindowsDefaultBrowser, "chrome", "firefox"}),
+          "only detected browsers offered, in catalogue order");
+    check(AvailableApps(AppKind::Terminal, terminals) == std::vector<std::string>({"powershell", "putty", "cmd"}), "only detected terminals offered");
+    check(AvailableApps(AppKind::Terminal, {}).empty(), "no terminal offered when none is installed");
+    check(DefaultBrowser(browsers) == "chrome" && DefaultBrowser(noBrowsers) == kWindowsDefaultBrowser, "Chrome preselected when installed");
+    check(DefaultTerminal(terminals) == "powershell", "PowerShell preselected when installed");
+    check(DefaultTerminal({{"cmd", "C:\\Windows\\System32\\cmd.exe"}, {"putty", kPutty}}) == "cmd", "Command Prompt fallback");
+    check(DefaultTerminal({{"putty", kPutty}}) == "putty" && DefaultTerminal({}).empty(), "other terminal fallback");
+
+    // First run: saved, skipped and cancelled.
+    check(NeedsFirstRun(std::nullopt), "first run without preferences");
+    auto cancelled = PreferencesAfterFirstRun(FirstRunOutcome::Cancelled, "firefox", "putty", browsers, terminals, std::nullopt);
+    check(!cancelled, "cancelling first run stores nothing");
+    auto skipped = PreferencesAfterFirstRun(FirstRunOutcome::Skipped, "", "", browsers, terminals, std::nullopt);
+    check(skipped && skipped->browser == "chrome" && skipped->terminal == "powershell" && skipped->setup == "skipped" && !NeedsFirstRun(skipped),
+          "skipping first run stores the defaults and is not asked again");
+    auto saved = PreferencesAfterFirstRun(FirstRunOutcome::Saved, "firefox", "putty", browsers, terminals, std::nullopt);
+    check(saved && saved->browser == "firefox" && saved->terminal == "putty" && saved->setup == "completed" && !NeedsFirstRun(saved), "first-run choices saved");
+    check(throws([&] { PreferencesAfterFirstRun(FirstRunOutcome::Saved, "edge", "putty", browsers, terminals, std::nullopt); }),
+          "uninstalled browser cannot be saved");
+    check(throws([&] { PreferencesAfterFirstRun(FirstRunOutcome::Saved, "chrome", "windows-terminal", browsers, terminals, std::nullopt); }),
+          "uninstalled terminal cannot be saved");
+    Preferences unfinished;
+    unfinished.browser = "chrome";
+    check(NeedsFirstRun(unfinished), "welcome shown again until completed or skipped");
+
+    // Changing preferences later keeps user-located executables.
+    Preferences located = *saved;
+    located.locations["putty"] = "D:\\Tools\\PuTTY Portable\\putty.exe";
+    auto changed = PreferencesAfterFirstRun(FirstRunOutcome::Saved, kWindowsDefaultBrowser, "cmd", browsers, terminals, located);
+    check(changed && changed->browser == kWindowsDefaultBrowser && changed->terminal == "cmd" && changed->locations.at("putty") == located.locations.at("putty"),
+          "changing preferences keeps located applications");
+
+    // Persistence: exact round trip and strict parsing.
+    Preferences restored = ParsePreferences(SerializePreferences(located));
+    check(restored.browser == "firefox" && restored.terminal == "putty" && restored.setup == "completed" && restored.locations == located.locations,
+          "preferences round trip");
+    check(ParsePreferences(SerializePreferences(Preferences())).browser.empty(), "empty preferences round trip");
+    check(ParsePreferences("{\"schema\":\"teliphones-desktop-preferences/1\",\"browser\":\"future-browser\",\"terminal\":\"cmd\",\"locations\":{},"
+                           "\"setup\":\"completed\"}")
+                  .browser == "future-browser",
+          "unknown application kept so it is reported rather than replaced");
+    std::vector<std::string> badPreferences = {
+        "",
+        "{\"schema\":\"teliphones-desktop-preferences/2\",\"browser\":\"\",\"terminal\":\"\",\"locations\":{},\"setup\":\"\"}",
+        "{\"schema\":\"teliphones-desktop-preferences/1\",\"browser\":\"\",\"terminal\":\"\",\"locations\":{},\"setup\":\"\",\"pbx\":\"x\"}",
+        "{\"schema\":\"teliphones-desktop-preferences/1\",\"browser\":\"Chrome.exe\",\"terminal\":\"\",\"locations\":{},\"setup\":\"\"}",
+        "{\"schema\":\"teliphones-desktop-preferences/1\",\"browser\":\"\",\"terminal\":\"\",\"locations\":{},\"setup\":\"later\"}",
+        "{\"schema\":\"teliphones-desktop-preferences/1\",\"browser\":\"\",\"terminal\":\"\",\"locations\":{\"putty\":\"C:\\\\x\\\\calc.exe\"},\"setup\":\"\"}",
+        "{\"schema\":\"teliphones-desktop-preferences/1\",\"browser\":\"\",\"terminal\":\"\",\"locations\":{\"putty\":\"putty.exe\"},\"setup\":\"\"}",
+        "{\"schema\":\"teliphones-desktop-preferences/1\",\"browser\":\"\",\"terminal\":\"\",\"locations\":{\"evil\":\"C:\\\\x\\\\putty.exe\"},\"setup\":\"\"}",
+    };
+    for (const auto& text : badPreferences) check(throws([&] { ParsePreferences(text); }), "invalid preferences rejected");
+
+    // Effective preferences never substitute another application for a missing one.
+    check(EffectivePreferences(std::nullopt, browsers, terminals).browser == "chrome", "defaults apply before first run");
+    Preferences edge;
+    edge.browser = "edge";
+    edge.terminal = "windows-terminal";
+    Preferences effective = EffectivePreferences(edge, browsers, terminals);
+    check(effective.browser == "edge" && effective.terminal == "windows-terminal", "missing selections are kept, not replaced");
+    check(unavailable([&] { ResolveApp(AppKind::Browser, "edge", browsers); }, AppKind::Browser, "edge"), "uninstalled browser reported");
+    check(unavailable([&] { ResolveApp(AppKind::Terminal, "windows-terminal", terminals); }, AppKind::Terminal, "windows-terminal"),
+          "uninstalled terminal reported");
+    check(unavailable([&] { ResolveApp(AppKind::Browser, "future-browser", browsers); }, AppKind::Browser, "future-browser"), "unknown browser reported");
+    check(ResolveApp(AppKind::Browser, kWindowsDefaultBrowser, noBrowsers).empty(), "Windows default browser needs no executable");
+    check(ResolveApp(AppKind::Browser, "chrome", browsers) == kChrome, "installed browser resolved");
+    check(unavailable([&] { ResolveApp(AppKind::Terminal, "putty", {{"putty", "C:\\Temp\\calc.exe"}}); }, AppKind::Terminal, "putty"),
+          "wrong executable is not launched");
+
+    // Executable and argument validation.
+    const AppInfo& putty = *FindApp(AppKind::Terminal, "putty");
+    check(IsExpectedExecutable(putty, kPutty) && IsExpectedExecutable(putty, "D:\\Tools\\PUTTY.EXE"), "expected executable accepted");
+    for (const char* path : {"putty.exe", "C:\\Tools\\..\\putty.exe", "C:\\Tools\\\"putty.exe", "C:/Tools/putty.exe", "C:\\Tools\\putty.exe:stream",
+                             "\\\\server\\share\\putty.exe", "C:\\Tools\\putty.exe.lnk", "C:\\Tools\\plink.exe"}) {
+        check(!IsExpectedExecutable(putty, path), "unexpected executable rejected");
+    }
+    check(IsShellSafePath(kSsh) && IsShellSafePath("C:\\Program Files (x86)\\OpenSSH\\ssh.exe"), "OpenSSH paths with spaces accepted");
+    check(!IsShellSafePath("C:\\Users\\a&b\\ssh.exe") && !IsShellSafePath("C:\\Users\\a'b\\ssh.exe") && !IsShellSafePath("C:\\Users\\%x%\\ssh.exe"),
+          "shell metacharacters rejected in the OpenSSH path");
+    check(!IsShellSafeToken("a;b") && !IsShellSafeToken("a b") && !IsShellSafeToken("$(x)") && !IsShellSafeToken(""), "unsafe tokens rejected");
+
+    // Browser launching.
+    Profile admin = adminProfile();
+    std::string url = FreePbxUrl(admin, "");
+    check(url == "http://100.70.1.1/admin/", "FreePBX URL unchanged");
+    check(FreePbxUrl(supportProfile(), "s-1") == "http://10.20.4.2/admin/", "Remote Support FreePBX URL unchanged");
+    LaunchPlan system = BrowserLaunch(kWindowsDefaultBrowser, "", url);
+    check(system.shellOpen && system.target == url && system.program.empty(), "Windows default browser uses the registered URL handler");
+    LaunchPlan chrome = BrowserLaunch("chrome", kChrome, url);
+    check(!chrome.shellOpen && chrome.program == kChrome && chrome.commandLine == "\"" + kChrome + "\" " + url, "selected browser opens the PBX URL");
+    check(BrowserLaunch("firefox", "D:\\Firefox\\firefox.exe", url).commandLine == "D:\\Firefox\\firefox.exe " + url, "browser path quoting");
+    check(unavailable([&] { BrowserLaunch("chrome", "C:\\x\\msedge.exe", url); }, AppKind::Browser, "chrome"), "mismatched browser executable refused");
+    for (const char* bad : {"http://100.70.1.1/admin/ --incognito", "https://evil.example/admin/", "http://100.70.1.1/admin/?x", "--disable-web-security",
+                            "http://pbx.example.net/admin/"}) {
+        check(throws([&] { BrowserLaunch(kWindowsDefaultBrowser, "", bad); }), "unexpected browser URL refused");
+    }
+
+    // Terminal launching.
+    SshTarget target = SshTargetFor(admin, "");
+    check(target.user == "admin" && target.address == "100.70.1.1" && target.port == 22 && target.hostKeyAlias == "teliphones-0011223344556677",
+          "administrator SSH target");
+    const std::string sshArgs = "-o ServerAliveInterval=15 -o HostKeyAlias=teliphones-0011223344556677 -p 22 admin@100.70.1.1";
+    LaunchPlan powershell = TerminalLaunch("powershell", kPowerShell, kSsh, target);
+    check(powershell.program == kPowerShell && powershell.newConsole &&
+              powershell.commandLine == kPowerShell + " -NoLogo -NoExit -Command \"& '" + kSsh +
+                                            "' '-o' 'ServerAliveInterval=15' '-o' 'HostKeyAlias=teliphones-0011223344556677' '-p' '22' 'admin@100.70.1.1'\"",
+          "PowerShell runs OpenSSH with literal arguments");
+    const std::string pwsh = "C:\\Program Files\\PowerShell\\7\\pwsh.exe";
+    check(TerminalLaunch("pwsh", pwsh, kSsh, target).commandLine.rfind("\"" + pwsh + "\" -NoLogo -NoExit -Command \"& '", 0) == 0, "PowerShell 7 path quoted");
+    const std::string wt = "C:\\Users\\Ann Smith\\AppData\\Local\\Microsoft\\WindowsApps\\wt.exe";
+    LaunchPlan terminal = TerminalLaunch("windows-terminal", wt, kSsh, target);
+    check(!terminal.newConsole && terminal.commandLine == "\"" + wt + "\" new-tab --title \"TELIPHONES SSH\" -- " + kSsh + " " + sshArgs,
+          "Windows Terminal opens a tab running OpenSSH");
+    const std::string cmd = "C:\\Windows\\System32\\cmd.exe";
+    check(TerminalLaunch("cmd", cmd, kSsh, target).commandLine == cmd + " /s /k \"\"" + kSsh + "\" " + sshArgs + "\"", "Command Prompt runs OpenSSH");
+    LaunchPlan puttyPlan = TerminalLaunch("putty", kPutty, "", target);
+    check(!puttyPlan.newConsole && puttyPlan.program == kPutty &&
+              puttyPlan.commandLine == "\"" + kPutty + "\" -ssh -P 22 -l admin -loghost teliphones-0011223344556677 100.70.1.1",
+          "PuTTY receives address, port and user as separate options without OpenSSH");
+    SshTarget support = SshTargetFor(supportProfile(), "s-1");
+    check(TerminalLaunch("putty", kPutty, "", support).commandLine.find("-P 22222 -l root ") != std::string::npos, "Remote Support uses the support SSH service");
+    check(throws([&] { TerminalLaunch("powershell", kPowerShell, "", target); }), "OpenSSH required for PowerShell");
+    check(throws([&] { TerminalLaunch("cmd", cmd, "C:\\Users\\a&calc\\ssh.exe", target); }), "unsafe OpenSSH path refused");
+    check(unavailable([&] { TerminalLaunch("putty", "C:\\x\\cmd.exe", "", target); }, AppKind::Terminal, "putty"), "mismatched terminal executable refused");
+    check(unavailable([&] { TerminalLaunch("future-terminal", kPutty, kSsh, target); }, AppKind::Terminal, "future-terminal"), "unknown terminal refused");
+    SshTarget unsafe = target;
+    unsafe.user = "admin -oProxyCommand=calc";
+    check(throws([&] { TerminalLaunch("putty", kPutty, "", unsafe); }), "unsafe SSH user refused for every terminal");
+    unsafe = target;
+    unsafe.address = "100.70.1.1;calc";
+    check(throws([&] { TerminalLaunch("powershell", kPowerShell, kSsh, unsafe); }), "unsafe SSH address refused");
+    unsafe = target;
+    unsafe.hostKeyAlias = "x' ; calc ; '";
+    check(throws([&] { TerminalLaunch("powershell", kPowerShell, kSsh, unsafe); }), "unsafe host key alias refused");
+    unsafe = target;
+    unsafe.port = 0;
+    check(throws([&] { TerminalLaunch("putty", kPutty, "", unsafe); }), "invalid SSH port refused");
+
+    // Choosing a terminal never authorises SSH.
+    Profile webOnly = webOnlyPersistentProfile();
+    check(throws([&] { SshTargetFor(webOnly, ""); }), "SSH refused when not authorised, whatever the terminal");
+    check(throws([&] { SshTargetFor(supportProfile(), "s-2-missing"); }), "SSH refused for an unknown support session");
+}
+
 }  // namespace
 
 int main() {
@@ -367,10 +538,11 @@ int main() {
     testProfiles();
     testCommandLine();
     testMonitor();
+    testLaunchers();
     if (failures) {
         std::printf("Desktop core tests: FAIL (%d of %d checks failed)\n", failures, checks);
         return 1;
     }
-    std::printf("Desktop core tests: PASS (%d checks: encoding, JSON, validation, pairing, tunnels, grants, profiles, command lines, monitor)\n", checks);
+    std::printf("Desktop core tests: PASS (%d checks: encoding, JSON, validation, pairing, tunnels, grants, profiles, command lines, monitor, application preferences and launchers)\n", checks);
     return 0;
 }

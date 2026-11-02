@@ -20,7 +20,7 @@ Root creates a bounded session, for example:
 fwconsole teliphones authorise --minutes=15 --topology=on-pbx
 ```
 
-`on-pbx`, `on-net` and `off-net` are the support protocol topology names. In 0.2.1 the complete executable local support path is On-PBX; the other topologies define integration contracts without pretending to provide the same local WireGuard/sshd path. Administrator workstation pairing uses a separate direct WireGuard interface and does not change these support contracts.
+`on-pbx`, `on-net` and `off-net` are the support protocol topology names. In 0.3.0 the complete executable local support path is On-PBX; the other topologies define integration contracts without pretending to provide the same local WireGuard/sshd path. Administrator workstation pairing uses a separate direct WireGuard interface and does not change these support contracts.
 
 ## 2. Connect creates the path
 

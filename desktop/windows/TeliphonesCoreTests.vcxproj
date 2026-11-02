@@ -27,6 +27,7 @@
     <ClCompile Include="src\core\CommandLine.cpp" />
     <ClCompile Include="src\core\Encoding.cpp" />
     <ClCompile Include="src\core\Json.cpp" />
+    <ClCompile Include="src\core\Launchers.cpp" />
     <ClCompile Include="src\core\Monitor.cpp" />
     <ClCompile Include="src\core\Pairing.cpp" />
     <ClCompile Include="src\core\Profiles.cpp" />

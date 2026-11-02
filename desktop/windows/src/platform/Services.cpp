@@ -5,10 +5,8 @@
 
 #include "Win.h"
 
-#include <shellapi.h>
 #include <wincred.h>
 
-#include "../core/CommandLine.h"
 #include "../core/Json.h"
 #include "../core/Validation.h"
 
@@ -105,36 +103,6 @@ bool ProbeTcp(const std::string& ipv4, unsigned short port, unsigned timeoutMs) 
     }
     WSACleanup();
     return connected;
-}
-
-void OpenFreePbx(const Profile& profile, const std::string& sessionId) {
-    std::string address = ConnectionAddress(profile, sessionId);
-    std::uint32_t parsed = 0;
-    if (!ParseIPv4(address, parsed)) throw Error("Invalid PBX tunnel address.");
-    // Only a URL built from the validated tunnel address is opened; never a URL supplied by a remote party.
-    std::wstring url = Widen("http://" + address + "/admin/");
-    HINSTANCE result = ShellExecuteW(nullptr, L"open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-    if (reinterpret_cast<INT_PTR>(result) <= 32) throw Error("Windows could not open the web browser.");
-}
-
-void OpenSsh(const Profile& profile, const std::string& sessionId) {
-    std::vector<std::string> arguments = SshArguments(profile, sessionId);
-    wchar_t system[MAX_PATH] = L"";
-    UINT length = GetSystemDirectoryW(system, MAX_PATH);
-    if (length == 0 || length >= MAX_PATH) ThrowLastError("Unable to locate Windows");
-    std::wstring ssh = std::wstring(system) + L"\\OpenSSH\\ssh.exe";
-    if (GetFileAttributesW(ssh.c_str()) == INVALID_FILE_ATTRIBUTES) {
-        throw Error("The Windows OpenSSH client is not installed. Install it from Settings > System > Optional features > OpenSSH Client, then try again.");
-    }
-    std::wstring commandLine = Widen(QuoteArgument(Narrow(ssh)) + " " + JoinCommandLine(arguments));
-    STARTUPINFOW startup{};
-    startup.cb = sizeof(startup);
-    PROCESS_INFORMATION process{};
-    if (!CreateProcessW(ssh.c_str(), &commandLine[0], nullptr, nullptr, FALSE, CREATE_NEW_CONSOLE, nullptr, nullptr, &startup, &process)) {
-        ThrowLastError("Unable to start the SSH client");
-    }
-    CloseHandle(process.hThread);
-    CloseHandle(process.hProcess);
 }
 
 }  // namespace win

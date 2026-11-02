@@ -11,7 +11,7 @@ $pageSource = is_readable($pageFile) ? file_get_contents($pageFile) : '';
 $assertions = [
     (string)$module->rawname === 'teliphones',
     (string)$module->name === 'TELIPHONES',
-    (string)$module->version === '0.2.1',
+    (string)$module->version === '0.3.0',
     (string)$module->category === 'Connectivity',
     count($menuItems) === 1,
     isset($module->menuitems->teliphones),

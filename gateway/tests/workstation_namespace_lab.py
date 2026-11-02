@@ -15,6 +15,8 @@ if os.geteuid() != 0 or len(sys.argv) != 2 or not sys.argv[1].startswith("net:["
 spec = importlib.util.spec_from_file_location("broker", ROOT / "teliphones/support_broker.py")
 broker = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(broker)
+# Namespace-safe iptables backend (the host default may be legacy with a host-owned lock).
+broker.IPTABLES = ["/usr/sbin/iptables-nft"]
 
 
 def nft(*arguments, value=None):

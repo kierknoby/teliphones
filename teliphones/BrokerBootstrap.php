@@ -54,7 +54,7 @@ echo "TELIPHONES broker is ready."
 SCRIPT;
 
     /** Shared by the GUI and README; tests require both to contain this text verbatim. */
-    public const UPGRADE_NOTE = 'A Module Admin upgrade updates the FreePBX module files but does not necessarily update the separately installed, root-owned broker (`/usr/local/lib/teliphones-broker/support_broker.py`), because Module Admin runs as the web service account. After every TELIPHONES upgrade, confirm that no support session is active (as root: `fwconsole teliphones status`), then rerun the root bootstrap procedure from an existing root shell and refresh Connectivity > TELIPHONES. TELIPHONES 0.2.1 requires broker protocol 3 with valid workstation pairing status for Windows workstation operations and automatic monitoring; the 0.1.3 package supplied protocol 2. Until the broker is updated, the page reports **Root broker update required**, workstation operations are refused, and remote support actions fall back to ordinary page submission without automatic progress updates. Disconnect Windows tunnels before the bootstrap; valid pairings are restored when the broker restarts, without extending temporary expiry.';
+    public const UPGRADE_NOTE = 'A Module Admin upgrade updates the FreePBX module files but does not necessarily update the separately installed, root-owned broker (`/usr/local/lib/teliphones-broker/support_broker.py`), because Module Admin runs as the web service account. After every TELIPHONES upgrade, confirm that no support session is active (as root: `fwconsole teliphones status`), then rerun the root bootstrap procedure from an existing root shell and refresh Connectivity > TELIPHONES. TELIPHONES 0.3.0 requires broker protocol 3 with valid workstation pairing status for Windows workstation operations and automatic monitoring; the 0.1.3 package supplied protocol 2. Until the broker is updated, the page reports **Root broker update required**, workstation operations are refused, and remote support actions fall back to ordinary page submission without automatic progress updates. Disconnect Windows tunnels before the bootstrap; valid pairings are restored when the broker restarts, without extending temporary expiry.';
 
     public const RECONCILE_UNIT_CONTENTS = <<<'UNIT'
 [Unit]
@@ -149,7 +149,7 @@ UNIT;
         @chmod($dir, 0700);
         $config = self::CONFIG;
         if (!file_exists($config)) {
-            @file_put_contents($config, "; TELIPHONES 0.2.1 development configuration\n; Support transport is temporary and session-scoped.\n; On-PBX uses local ephemeral WireGuard. On-net/Off-net require an external Connect implementation.\n");
+            @file_put_contents($config, "; TELIPHONES 0.3.0 development configuration\n; Support transport is temporary and session-scoped.\n; On-PBX uses local ephemeral WireGuard. On-net/Off-net require an external Connect implementation.\n");
             @chmod($config, 0600);
         }
 

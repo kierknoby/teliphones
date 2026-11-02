@@ -39,7 +39,7 @@ class PackageTests(unittest.TestCase):
                 for name, source in expected.items():
                     self.assertEqual((Path(directory) / name).read_bytes(), source.read_bytes(), name)
                 metadata = ET.parse(Path(directory) / "teliphones/module.xml").getroot()
-                self.assertEqual(metadata.findtext("version"), "0.2.1")
+                self.assertEqual(metadata.findtext("version"), "0.3.0")
                 self.assertEqual(metadata.findtext("rawname"), "teliphones")
                 self.assertEqual(metadata.findtext("category"), "Connectivity")
                 for name in ("WebSupport.php", "views/support.php", "support_broker.py", "assets/js/teliphones.js", "install.php"):
@@ -47,7 +47,9 @@ class PackageTests(unittest.TestCase):
                 self.assertIn("def pair(", (Path(directory) / "teliphones/support_broker.py").read_text())
                 self.assertIn("Windows workstations", (Path(directory) / "teliphones/views/support.php").read_text())
                 broker = (Path(directory) / "teliphones/support_broker.py").read_text()
-                for feature in ("TELIPHONES workstation enforcement v1", "def start_monitor(", "def uninstall_workstations(", "def policy_equal("):
+                for feature in ("TELIPHONES workstation enforcement v1", "def start_monitor(", "def uninstall_workstations(", "def policy_equal(",
+                                "TELIPHONES workstation integration v1", 'FREEPBX_HOOK = "fpbxfirewall"',
+                                'FAIL2BAN_PREFIXES = ("fail2ban-", "f2b-")', "def reconcile_integration("):
                     self.assertIn(feature, broker)
                 bootstrap = (Path(directory) / "teliphones/BrokerBootstrap.php").read_text()
                 self.assertIn("copy($moduleDir . '/support_broker.py', $brokerFile)", bootstrap)

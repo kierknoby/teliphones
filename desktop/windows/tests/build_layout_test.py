@@ -63,7 +63,7 @@ class BuildLayoutTests(unittest.TestCase):
                 used.update(re.findall(r"\bID[CD]_[A-Z0-9_]+\b", path.read_text()))
         self.assertEqual(used - declared, set())
         rc = (resource_dir / "TELIPHONES.rc").read_text()
-        for name in ("IDD_MAIN", "IDD_PAIR", "IDD_SUPPORT"):
+        for name in ("IDD_MAIN", "IDD_PAIR", "IDD_SUPPORT", "IDD_APP_SETTINGS"):
             self.assertRegex(rc, rf"\b{name}\s+DIALOGEX\b")
         self.assertNotIn("RT_MANIFEST", rc)
         app = project("TELIPHONES.vcxproj")

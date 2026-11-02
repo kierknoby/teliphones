@@ -17,6 +17,16 @@ std::string JoinCommandLine(const std::vector<std::string>& arguments);
 // service on port 22222 as root. HostKeyAlias keeps reused tunnel addresses from mixing host keys between PBXs.
 std::vector<std::string> SshArguments(const Profile& profile, const std::string& sessionId);
 
+// The authorised SSH destination behind SshArguments, for terminals that do not use the OpenSSH client (PuTTY).
+// Throws unless SSH is permitted for the profile and every field is validated.
+struct SshTarget {
+    std::string user;
+    std::string address;
+    int port = 22;
+    std::string hostKeyAlias;
+};
+SshTarget SshTargetFor(const Profile& profile, const std::string& sessionId);
+
 struct HelperCommand {
     enum class Verb { TunnelUp, TunnelDown } verb = Verb::TunnelDown;
     std::string tunnelName;

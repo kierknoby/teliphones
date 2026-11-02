@@ -153,4 +153,28 @@ $cleanup['status']['workstations']['error'] = 'Workstation cleanup could not be 
 $html = $render($cleanup);
 $assert(strpos($html, 'Revoke all workstations') !== false && !$buttonDisabled($html, 'unpair'), 'Failed cleanup must remain retryable even when saved pairing authority is already removed.');
 
-echo "Workstation pairing tests: PASS (field allowlist, HTTPS/CSRF, restricted admins, sanitised status, GUI states, revocation)\n";
+// FreePBX Firewall integration diagnostics.
+$assert(WebSupport::workstations($status)['firewall_integration'] === ['state' => 'unknown', 'message' => '', 'backend' => null],
+    'A broker without integration reporting must be identified as unknown.');
+$html = $render($handshake = array_replace_recursive($status, ['status' => ['workstations' => ['items' => [0 => ['last_handshake' => 1790000000]]]]]));
+$assert(strpos($html, 'does not report FreePBX Firewall integration') !== false && strpos($html, 'Rerun the documented root bootstrap') !== false
+    && strpos($html, 'Handshake succeeded, but FreePBX Firewall integration is not active') !== false, 'Outdated broker must explain possible FreePBX Firewall drops.');
+$integration = $handshake;
+$integration['status']['workstations']['firewall_integration'] = ['state' => 'active', 'message' => 'Authorised peers <b>only</b>.', 'backend' => 'nf_tables', 'hook' => 'fpbxfirewall'];
+$html = $render($integration);
+$assert(strpos($html, 'FreePBX Firewall integration active (iptables nf_tables). Authorised peers &lt;b&gt;only&lt;/b&gt;.') !== false
+    && strpos($html, 'teliphones-handshake-blocked') === false, 'Active integration must be shown, escaped, without a blocked warning.');
+$integration['status']['workstations']['firewall_integration'] = ['state' => 'error', 'message' => 'FreePBX Firewall integration failed and was removed.', 'backend' => 'evil'];
+$sanitised = WebSupport::workstations($integration)['firewall_integration'];
+$assert($sanitised['backend'] === null && $sanitised['state'] === 'error', 'Integration backend must be allowlisted.');
+$html = $render($integration);
+$assert(strpos($html, 'alert-danger teliphones-firewall-integration') !== false && strpos($html, 'teliphones-handshake-blocked') !== false,
+    'Failed integration with a successful handshake must be diagnosed.');
+$integration['status']['workstations']['firewall_integration'] = ['state' => 'not-detected', 'message' => 'No iptables INPUT jump to fpbxfirewall was found.'];
+$html = $render($integration);
+$assert(strpos($html, 'FreePBX Firewall integration not installed.') !== false && strpos($html, 'No iptables INPUT jump to fpbxfirewall') !== false,
+    'Missing FreePBX hook must be reported.');
+$integration['status']['workstations']['firewall_integration']['state'] = 'trusted-everything';
+$assert(WebSupport::workstations($integration)['firewall_integration']['state'] === 'unknown', 'Integration state must be allowlisted.');
+
+echo "Workstation pairing tests: PASS (field allowlist, HTTPS/CSRF, restricted admins, sanitised status, GUI states, revocation, firewall integration diagnostics)\n";

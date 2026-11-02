@@ -22,4 +22,13 @@ if ($node === '') {
     if ($status !== 0) exit($status);
 }
 
+$python = trim((string)shell_exec('command -v python3 2>/dev/null'));
+if ($python === '') {
+    echo "Documentation link tests: SKIPPED (python3 not available)\n";
+} else {
+    passthru('PYTHONDONTWRITEBYTECODE=1 ' . escapeshellarg($python) . ' ' . escapeshellarg(__DIR__ . '/documentation-links.py'), $status);
+    if ($status !== 0) exit($status);
+    echo "Documentation link tests: PASS\n";
+}
+
 echo "TELIPHONES local regression suite: PASS\n";

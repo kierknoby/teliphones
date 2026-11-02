@@ -22,6 +22,7 @@ BEGIN
     PUSHBUTTON      "Disconnect", IDC_DISCONNECT, 90, 358, 75, 22
     PUSHBUTTON      "Open FreePBX", IDC_OPEN_GUI, 170, 358, 90, 22
     PUSHBUTTON      "Open SSH", IDC_OPEN_SSH, 265, 358, 75, 22
+    PUSHBUTTON      "Settings...", IDC_SETTINGS, 395, 358, 75, 22
     DEFPUSHBUTTON   "Close", IDCANCEL, 475, 358, 75, 22
 END
 
@@ -63,4 +64,25 @@ BEGIN
     LTEXT           "The private key remains in Windows Credential Manager. Share only the public key with your gateway operator.", -1, 10, 230, 425, 28, SS_LEFT
     DEFPUSHBUTTON   "Save", IDOK, 265, 276, 80, 22
     PUSHBUTTON      "Cancel", IDCANCEL, 355, 276, 80, 22
+END
+
+IDD_APP_SETTINGS DIALOGEX 0, 0, 340, 214
+STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "TELIPHONES Settings"
+FONT 9, "Segoe UI"
+BEGIN
+    LTEXT           "Applications", IDC_APPS_HEADING, 10, 10, 320, 14
+    LTEXT           "", IDC_APPS_INTRO, 10, 26, 320, 30, SS_LEFT
+    GROUPBOX        "Applications", -1, 10, 60, 320, 98
+    LTEXT           "Default Browser:", -1, 20, 79, 85, 14
+    COMBOBOX        IDC_APPS_BROWSER, 108, 76, 150, 120, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    PUSHBUTTON      "Locate...", IDC_APPS_LOCATE_BROWSER, 264, 75, 56, 16
+    LTEXT           "Default SSH Terminal:", -1, 20, 101, 85, 14
+    COMBOBOX        IDC_APPS_TERMINAL, 108, 98, 150, 120, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    PUSHBUTTON      "Locate...", IDC_APPS_LOCATE_TERMINAL, 264, 97, 56, 16
+    LTEXT           "", IDC_APPS_STATUS, 20, 120, 300, 34, SS_LEFT
+    LTEXT           "Choosing an SSH terminal does not grant SSH access. Open SSH remains available only for PBXs that explicitly authorised SSH for this workstation, using your existing SSH credentials.", -1, 10, 164, 320, 24, SS_LEFT
+    PUSHBUTTON      "Skip", IDC_APPS_SKIP, 10, 190, 60, 18
+    DEFPUSHBUTTON   "Save", IDOK, 205, 190, 60, 18
+    PUSHBUTTON      "Cancel", IDCANCEL, 270, 190, 60, 18
 END

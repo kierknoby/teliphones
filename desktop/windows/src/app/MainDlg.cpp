@@ -12,8 +12,10 @@
 #include "../core/Pairing.h"
 #include "../core/Rendezvous.h"
 #include "../core/TunnelConfig.h"
+#include "../platform/Applications.h"
 #include "../platform/Services.h"
 #include "../platform/Win.h"
+#include "AppSettingsDlg.h"
 #include "PairDlg.h"
 #include "SupportDlg.h"
 #include "resource.h"
@@ -107,11 +109,13 @@ BEGIN_MESSAGE_MAP(CMainDlg, CDialogEx)
     ON_BN_CLICKED(IDC_DISCONNECT, &CMainDlg::OnDisconnect)
     ON_BN_CLICKED(IDC_OPEN_GUI, &CMainDlg::OnOpenGui)
     ON_BN_CLICKED(IDC_OPEN_SSH, &CMainDlg::OnOpenSsh)
+    ON_BN_CLICKED(IDC_SETTINGS, &CMainDlg::OnSettings)
     ON_NOTIFY(LVN_ITEMCHANGED, IDC_PROFILES, &CMainDlg::OnSelectionChanged)
     ON_CBN_SELCHANGE(IDC_SESSION, &CMainDlg::UpdateButtons)
     ON_WM_TIMER()
     ON_MESSAGE(WM_APP_OPERATION_DONE, &CMainDlg::OnOperationDone)
     ON_MESSAGE(WM_APP_PROBE_DONE, &CMainDlg::OnProbeDone)
+    ON_MESSAGE(WM_APP_FIRST_RUN, &CMainDlg::OnFirstRun)
 END_MESSAGE_MAP()
 
 CMainDlg::CMainDlg(CWnd* parent) : CDialogEx(IDD_MAIN, parent) {}
@@ -149,8 +153,40 @@ BOOL CMainDlg::OnInitDialog() {
     SetState("Not connected", "Select a PBX and choose Connect. Add a PBX with \"Add my PBX...\" or a Remote Support gateway.");
     RemoveStaleTunnels();
     SetTimer(kMonitorTimer, kMonitorIntervalMs, nullptr);
+
+    bool preferencesReadable = true;
+    try {
+        storedPreferences_ = tlp::win::LoadPreferences();
+    } catch (const std::exception& e) {
+        preferencesReadable = false;
+        ShowError(std::string("Your browser and SSH terminal preferences could not be read and were left unchanged: ") + e.what() +
+                  " Open Settings to choose them again.");
+    }
+    if (preferencesReadable && tlp::NeedsFirstRun(storedPreferences_)) PostMessage(WM_APP_FIRST_RUN);
     return TRUE;
 }
+
+LRESULT CMainDlg::OnFirstRun(WPARAM, LPARAM) {
+    ShowAppSettings(true, "");
+    return 0;
+}
+
+tlp::Preferences CMainDlg::CurrentPreferences() {
+    tlp::Preferences locations = storedPreferences_.value_or(tlp::Preferences());
+    return tlp::EffectivePreferences(storedPreferences_, tlp::win::DetectApps(tlp::AppKind::Browser, locations),
+                                     tlp::win::DetectApps(tlp::AppKind::Terminal, locations));
+}
+
+// Shared by first run and Settings. Returns true when preferences were saved (or skipped with defaults).
+bool CMainDlg::ShowAppSettings(bool welcome, const std::string& notice) {
+    CAppSettingsDlg dialog(welcome ? CAppSettingsDlg::Mode::Welcome : CAppSettingsDlg::Mode::Settings, storedPreferences_, this);
+    dialog.notice = notice;
+    if (dialog.DoModal() != IDOK || dialog.outcome == tlp::FirstRunOutcome::Cancelled) return false;
+    storedPreferences_ = dialog.preferences;
+    return true;
+}
+
+void CMainDlg::OnSettings() { ShowAppSettings(false, ""); }
 
 int CMainDlg::SelectedIndex() const { return list_.GetNextItem(-1, LVNI_SELECTED); }
 
@@ -237,6 +273,7 @@ void CMainDlg::UpdateButtons() {
     const Profile* activeProfile = active_ ? FindProfile(active_->profileId) : nullptr;
     bool connected = active_ && active_->connected && !busy_;
     bool sshAllowed = activeProfile != nullptr && (activeProfile->kind == ProfileKind::Support || activeProfile->pairing.ssh);
+    bool verified = connected && active_->verified;
 
     GetDlgItem(IDC_ADD_PBX)->EnableWindow(!busy_);
     GetDlgItem(IDC_ADD_SUPPORT)->EnableWindow(!busy_);
@@ -245,7 +282,8 @@ void CMainDlg::UpdateButtons() {
     GetDlgItem(IDC_CONNECT)->EnableWindow(canConnect);
     GetDlgItem(IDC_DISCONNECT)->EnableWindow(active_ && !busy_);
     GetDlgItem(IDC_OPEN_GUI)->EnableWindow(connected);
-    GetDlgItem(IDC_OPEN_SSH)->EnableWindow(connected && sshAllowed);
+    GetDlgItem(IDC_OPEN_SSH)->EnableWindow(verified && sshAllowed);
+    GetDlgItem(IDC_SETTINGS)->EnableWindow(!busy_);
 }
 
 void CMainDlg::SetState(const std::string& state, const std::string& guidance) {
@@ -425,24 +463,74 @@ void CMainDlg::StartDisconnect(const std::string& reason) {
 void CMainDlg::OnDisconnect() { StartDisconnect(""); }
 
 void CMainDlg::OnOpenGui() {
-    const Profile* profile = active_ ? FindProfile(active_->profileId) : nullptr;
+    const Profile* profile = active_ && active_->connected && !busy_ ? FindProfile(active_->profileId) : nullptr;
     if (profile == nullptr) return;
     try {
-        tlp::win::OpenFreePbx(*profile, active_->sessionId);
+        tlp::win::OpenFreePbx(*profile, active_->sessionId, CurrentPreferences());
+    } catch (const tlp::AppUnavailable& e) {
+        std::string text = std::string(e.what()) +
+                           "\n\nYes: use the Windows default browser from now on.\nNo: choose another browser in Settings.\nCancel: do nothing.";
+        int answer = AfxMessageBox(Widen(text).c_str(), MB_YESNOCANCEL | MB_ICONWARNING);
+        bool retry = false;
+        if (answer == IDYES) {
+            tlp::Preferences updated = storedPreferences_.value_or(CurrentPreferences());
+            updated.browser = tlp::kWindowsDefaultBrowser;
+            if (updated.setup.empty()) updated.setup = "completed";
+            try {
+                tlp::win::SavePreferences(updated);
+                storedPreferences_ = updated;
+                retry = true;
+            } catch (const std::exception& saveError) {
+                ShowError(std::string("Your application preferences could not be saved: ") + saveError.what());
+            }
+        } else if (answer == IDNO) {
+            retry = ShowAppSettings(false, e.what());
+        }
+        if (!retry) return;
+        profile = active_ && active_->connected && !busy_ ? FindProfile(active_->profileId) : nullptr;
+        if (profile == nullptr) return;
+        try {
+            tlp::win::OpenFreePbx(*profile, active_->sessionId, CurrentPreferences());
+        } catch (const std::exception& again) {
+            ShowError(again.what());
+        }
     } catch (const std::exception& e) {
         ShowError(e.what());
     }
 }
 
-void CMainDlg::OnOpenSsh() {
-    Profile* profile = active_ ? FindProfile(active_->profileId) : nullptr;
-    if (profile == nullptr) return;
+// SSH opens only for an active, monitor-verified connection whose PBX or grant explicitly authorised SSH.
+bool CMainDlg::SshReady() {
+    const Profile* profile = active_ ? FindProfile(active_->profileId) : nullptr;
+    if (profile == nullptr || busy_ || !active_->connected) return false;
+    if (!active_->verified) {
+        ShowError("The PBX has not yet answered through the secure connection. Wait until TELIPHONES shows Connected, then choose Open SSH again.");
+        return false;
+    }
+    if (profile->kind == ProfileKind::Administrator && !profile->pairing.ssh) {
+        ShowError("SSH was not authorised for this workstation when it was paired.");
+        return false;
+    }
     if (profile->kind == ProfileKind::Administrator && profile->sshUser.empty()) {
         ShowError("No SSH user is set for this PBX. Remove and pair it again, entering the Linux account to use for SSH.");
-        return;
+        return false;
     }
+    return true;
+}
+
+void CMainDlg::OnOpenSsh() {
+    if (!SshReady()) return;
     try {
-        tlp::win::OpenSsh(*profile, active_->sessionId);
+        tlp::win::OpenSsh(*FindProfile(active_->profileId), active_->sessionId, CurrentPreferences());
+    } catch (const tlp::AppUnavailable& e) {
+        std::string text = std::string(e.what()) + "\n\nChoose OK to select another SSH terminal in Settings.";
+        if (AfxMessageBox(Widen(text).c_str(), MB_OKCANCEL | MB_ICONWARNING) != IDOK) return;
+        if (!ShowAppSettings(false, e.what()) || !SshReady()) return;
+        try {
+            tlp::win::OpenSsh(*FindProfile(active_->profileId), active_->sessionId, CurrentPreferences());
+        } catch (const std::exception& again) {
+            ShowError(again.what());
+        }
     } catch (const std::exception& e) {
         ShowError(e.what());
     }
@@ -490,6 +578,11 @@ LRESULT CMainDlg::OnProbeDone(WPARAM generation, LPARAM lparam) {
     std::string state = decision.summary;
     if (active_->expiresAt > now) state += "  (" + tlp::FormatRemaining(active_->expiresAt - now) + " remaining)";
     SetState(state, decision.guidance);
+    bool verified = decision.state == tlp::LinkState::Connected;
+    if (verified != active_->verified) {
+        active_->verified = verified;
+        UpdateButtons();
+    }
     if (decision.disconnect) StartDisconnect(decision.summary + " " + decision.guidance);
     return 0;
 }

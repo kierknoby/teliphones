@@ -304,8 +304,15 @@ class WebSupport
         foreach ($supported && is_array($raw['requirements'] ?? null) ? $raw['requirements'] : [] as $name => $value) {
             if (is_string($name)) $requirements[substr($name, 0, 20)] = $value === true;
         }
+        // Brokers before the FreePBX Firewall integration do not report it ("unknown"): rerun the root bootstrap.
+        $integration = $supported && is_array($raw['firewall_integration'] ?? null) ? $raw['firewall_integration'] : [];
+        $integrationState = in_array($integration['state'] ?? null, ['inactive', 'active', 'not-detected', 'error'], true) ? $integration['state'] : 'unknown';
+        $firewallIntegration = ['state' => $integrationState,
+            'message' => is_string($integration['message'] ?? null) ? substr($integration['message'], 0, 500) : '',
+            'backend' => in_array($integration['backend'] ?? null, ['nf_tables', 'legacy'], true) ? $integration['backend'] : null];
         return ['supported' => $supported, 'ready' => $supported && $raw['ready'] === true && !in_array(false, $requirements, true) && ($status['enabled'] ?? true) === true, 'requirements' => $requirements,
             'error' => $supported && is_string($raw['error'] ?? null) ? substr($raw['error'], 0, 500) : '',
+            'firewall_integration' => $firewallIntegration,
             'listen_port' => $supported && is_int($raw['listen_port'] ?? null) ? $raw['listen_port'] : null, 'items' => $items];
     }
 
