@@ -1,4 +1,5 @@
 #include "Applications.h"
+#include "Win.h"
 
 #include <shellapi.h>
 
@@ -8,7 +9,6 @@
 #include <vector>
 
 #include "../core/Validation.h"
-#include "Win.h"
 
 namespace tlp {
 namespace win {

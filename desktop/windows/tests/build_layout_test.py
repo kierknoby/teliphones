@@ -51,7 +51,16 @@ class BuildLayoutTests(unittest.TestCase):
             self.assertEqual(root.findtext(".//ms:OutDir", namespaces=NS), "$(SolutionDir)build\\$(Configuration)\\")
             self.assertIsNone(root.find(".//ms:CLRSupport", NS))
         for deps in app.findall(".//ms:AdditionalDependencies", NS):
-            self.assertIn("uuid.lib", deps.text.split(";"))
+            for library in ("uuid.lib", "shell32.lib", "comdlg32.lib", "advapi32.lib"):
+                self.assertIn(library, deps.text.split(";"))
+
+    def test_application_sdk_header_order(self):
+        applications = (ROOT / "src/platform/Applications.cpp").read_text()
+        win = (ROOT / "src/platform/Win.h").read_text()
+        self.assertIn("#include <windows.h>", win)
+        self.assertLess(applications.index('#include "Win.h"'), applications.index("#include <shellapi.h>"))
+        settings = (ROOT / "src/app/AppSettingsDlg.cpp").read_text()
+        self.assertLess(settings.index('#include "AppSettingsDlg.h"'), settings.index("#include <commdlg.h>"))
 
     def test_resources_and_manifest_are_wired_once(self):
         resource_dir = ROOT / "src" / "app"

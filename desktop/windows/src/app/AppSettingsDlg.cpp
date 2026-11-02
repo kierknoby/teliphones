@@ -1,5 +1,7 @@
 #include "AppSettingsDlg.h"
 
+#include <commdlg.h>
+
 #include <algorithm>
 #include <exception>
 #include <iterator>
