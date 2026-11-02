@@ -1,5 +1,6 @@
 // Portable unit tests for the TELIPHONES desktop core. Build with CMake or any C++17 compiler; no dependencies.
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <functional>
 #include <iterator>
@@ -7,6 +8,7 @@
 #include <vector>
 
 #include "../src/core/CommandLine.h"
+#include "../src/core/ConnectionHealth.h"
 #include "../src/core/Encoding.h"
 #include "../src/core/Json.h"
 #include "../src/core/Launchers.h"
@@ -343,21 +345,193 @@ void testMonitor() {
     monitor.Observe(1025, true, false);
     monitor.Observe(1030, true, false);
     MonitorDecision lost = monitor.Observe(1035, true, false);
-    check(lost.state == LinkState::Lost && lost.disconnect && lost.guidance.find("revoked") != std::string::npos, "revocation or loss disconnects");
+    check(lost.state == LinkState::Lost && !lost.disconnect && lost.guidance.find("revoked") != std::string::npos,
+          "reachability loss is reported without automatically removing the tunnel");
 
     ConnectionMonitor never(1000, 0, "pbx.example.net:51821", false);
     check(!never.Observe(1029, true, false).disconnect, "no disconnect before the first-answer window");
     MonitorDecision unreachable = never.Observe(1031, true, false);
-    check(unreachable.state == LinkState::NoResponse && unreachable.disconnect && unreachable.guidance.find("UDP traffic to pbx.example.net:51821") != std::string::npos &&
+    check(unreachable.state == LinkState::NoResponse && !unreachable.disconnect && unreachable.guidance.find("UDP traffic to pbx.example.net:51821") != std::string::npos &&
               unreachable.guidance.find("does not relay") != std::string::npos,
           "direct connectivity failure is reported honestly");
     ConnectionMonitor expiring(1000, 1100, "gw:1", true);
     MonitorDecision expired = expiring.Observe(1100, true, true);
     check(expired.state == LinkState::Expired && expired.disconnect, "expiry disconnects even while reachable");
-    check(ConnectionMonitor(1000, 0, "x:1", false).Observe(1001, false, false).state == LinkState::Stopped, "stopped service detected");
+    MonitorDecision stopped = ConnectionMonitor(1000, 0, "x:1", false).Observe(1001, false, false);
+    check(stopped.state == LinkState::Stopped && !stopped.disconnect, "stopped service is reported without an extra removal attempt");
     DirectProvider direct;
     EndpointPlan plan = direct.Plan("pbx.example.net:51821");
     check(plan.endpoint == "pbx.example.net:51821" && !plan.relayed && plan.provider == "direct", "direct provider does not alter the endpoint");
+}
+
+void testConnectionHealth() {
+    HealthPreferences preferences;
+    preferences.historySeconds = 300;
+    preferences.alwaysOnTop = true;
+    preferences.windowX = -120;
+    preferences.windowY = 240;
+    preferences.windowWidth = 420;
+    preferences.windowHeight = 300;
+    preferences.thresholds.warningLatencyMs = 500;
+    preferences.thresholds.warningJitterMs = 200;
+    preferences.thresholds.consecutiveFailures = 4;
+    HealthPreferences restored = ParseHealthPreferences(SerializeHealthPreferences(preferences));
+    check(restored.historySeconds == 300 && restored.alwaysOnTop && restored.windowX == -120 && restored.windowY == 240 &&
+              restored.windowWidth == 420 && restored.windowHeight == 300 &&
+              restored.thresholds.warningLatencyMs == 500 && restored.thresholds.warningJitterMs == 200 &&
+              restored.thresholds.consecutiveFailures == 4,
+          "connection health preferences persist history, position, topmost and configurable thresholds");
+    check(throws([] { HealthPreferences invalid; invalid.thresholds.warningLatencyMs = 20; SerializeHealthPreferences(invalid); }),
+          "invalid health thresholds rejected");
+
+    WireGuardCounters counters = ParseWireGuardCounters(kPbxKey + "\t2000\t1000\n", kPbxKey + "\t1700000000\n", kPbxKey);
+    check(counters.receivedBytes == 2000 && counters.transmittedBytes == 1000 && counters.handshakeUnixSeconds == 1700000000,
+          "WireGuard byte counters and handshake parse from local CLI telemetry");
+    WireGuardCounters absent = ParseWireGuardCounters("", "", kPbxKey);
+    check(!absent.receivedBytes && !absent.transmittedBytes && !absent.handshakeUnixSeconds, "missing WireGuard telemetry remains unavailable");
+    check(throws([] { ParseWireGuardCounters("bad\t1\t2\n", "", kPbxKey); }), "malformed WireGuard telemetry rejected");
+
+    ConnectionHealthMonitor monitor;
+    for (int i = 0; i < 5; ++i) {
+        HealthSample sample;
+        sample.timestampMs = 1000 + i * 2000;
+        sample.tunnelKnown = true;
+        sample.tunnelRunning = true;
+        sample.probeKnown = true;
+        sample.probeSucceeded = true;
+        sample.latencyMs = 100.0 + i * 10;
+        sample.receivedBytes = static_cast<std::uint64_t>(i) * 1000;
+        sample.transmittedBytes = static_cast<std::uint64_t>(i) * 500;
+        sample.handshakeUnixSeconds = 1;
+        sample.wireGuardTelemetryAttempted = true;
+        monitor.AddSample(sample);
+    }
+    HealthSnapshot stable = monitor.Snapshot(9000, 60);
+    check(stable.state == HealthState::Stable && stable.continuouslyHealthySeconds == 8,
+          "connection is not declared stable until consecutive consistent measurements");
+    check(stable.latencyMs && std::abs(*stable.latencyMs - 120.0) < 0.01 &&
+              stable.jitterMs && std::abs(*stable.jitterMs - 10.0) < 0.01,
+          "latency average and absolute-difference jitter are calculated from successful probes");
+    check(stable.probeSuccessPercent == 100.0 && stable.probeFailurePercent == 0.0,
+          "application probe success and failure percentages are reported");
+    check(stable.receiveBytesPerSecond == 500.0 && stable.transmitBytesPerSecond == 250.0,
+          "actual WireGuard byte-counter deltas produce receive and transmit rates");
+    check(stable.handshakeAgeSeconds == 8, "handshake age uses local WireGuard timestamp");
+
+    HealthSample missingTelemetry;
+    missingTelemetry.timestampMs = 11000;
+    missingTelemetry.tunnelKnown = true;
+    missingTelemetry.tunnelRunning = true;
+    missingTelemetry.probeKnown = true;
+    missingTelemetry.probeSucceeded = true;
+    missingTelemetry.latencyMs = 100;
+    missingTelemetry.wireGuardTelemetryAttempted = true;
+    monitor.AddSample(missingTelemetry);
+    HealthSnapshot telemetryUnavailable = monitor.Snapshot(11000, 60);
+    check(!telemetryUnavailable.receiveBytesPerSecond && !telemetryUnavailable.transmitBytesPerSecond &&
+              !telemetryUnavailable.handshakeAgeSeconds,
+          "failed latest WireGuard telemetry attempt displays rates and handshake as Unknown");
+
+    HealthSample failure;
+    failure.timestampMs = 13000;
+    failure.tunnelKnown = true;
+    failure.tunnelRunning = true;
+    failure.probeKnown = true;
+    monitor.AddSample(failure);
+    HealthSnapshot degraded = monitor.Snapshot(13000, 60);
+    check(degraded.state == HealthState::Degraded && degraded.consecutiveFailures == 1 &&
+              degraded.probeFailurePercent && *degraded.probeFailurePercent > 0 &&
+              degraded.deterioration,
+          "failed application probes are reported as probe failures and degrade health, not packet loss");
+    check(!degraded.samples.back().probeSucceeded && !degraded.samples.back().latencyMs,
+          "failed probe has no fabricated successful latency measurement");
+
+    for (int i = 0; i < 2; ++i) {
+        failure.timestampMs += 2000;
+        monitor.AddSample(failure);
+    }
+    check(monitor.Snapshot(17000, 60).state == HealthState::Unstable &&
+              monitor.Snapshot(17000, 60).consecutiveFailures == 3,
+          "repeated application-probe failures escalate health to Unstable");
+
+    HealthSample unknown;
+    unknown.timestampMs = 19000;
+    unknown.tunnelKnown = true;
+    unknown.tunnelRunning = true;
+    monitor.AddSample(unknown);
+    check(monitor.Snapshot(19000, 60).state == HealthState::Unknown,
+          "unavailable application probe is Unknown, not a fabricated failure");
+
+    HealthSample down;
+    down.timestampMs = 21000;
+    down.tunnelKnown = true;
+    down.tunnelRunning = false;
+    down.probeKnown = true;
+    monitor.AddSample(down);
+    check(monitor.Snapshot(21000, 60).state == HealthState::Disconnected, "stopped tunnel is immediately Disconnected");
+
+    ConnectionHealthMonitor expiredAuthorization;
+    HealthSample expired;
+    expired.timestampMs = 1000;
+    expired.tunnelKnown = true;
+    expired.tunnelRunning = true;
+    expired.probeKnown = true;
+    expired.probeSucceeded = true;
+    expired.latencyMs = 40;
+    expired.authorizationExpiresAt = 5;
+    expiredAuthorization.AddSample(expired);
+    HealthSnapshot expiredSnapshot = expiredAuthorization.Snapshot(5000, 60);
+    check(expiredSnapshot.state == HealthState::Disconnected && expiredSnapshot.authorizationRemainingSeconds == 0,
+          "expired authorization is separate from reachability and reports Disconnected");
+
+    ConnectionHealthMonitor bounded;
+    for (int i = 0; i < 350; ++i) {
+        HealthSample sample;
+        sample.timestampMs = 1000 + i * 2000;
+        sample.tunnelKnown = true;
+        sample.tunnelRunning = true;
+        sample.probeKnown = true;
+        sample.probeSucceeded = true;
+        sample.latencyMs = 50;
+        bounded.AddSample(sample);
+    }
+    check(bounded.Snapshot(699000, 60).samples.size() == 31 &&
+              bounded.Snapshot(699000, 300).samples.size() == 151 &&
+              bounded.Snapshot(699000, 300).samples.size() <= ConnectionHealthMonitor::kMaximumSamples,
+          "60-second and 5-minute graphs use bounded sample histories");
+    check(throws([&] { bounded.Snapshot(699000, 30); }), "unsupported history duration rejected");
+
+    ConnectionHealthMonitor recovery;
+    std::int64_t tick = 1000;
+    auto addRecoverySample = [&](bool success) {
+        HealthSample sample;
+        sample.timestampMs = tick;
+        tick += 2000;
+        sample.tunnelKnown = true;
+        sample.tunnelRunning = true;
+        sample.probeKnown = true;
+        sample.probeSucceeded = success;
+        if (success) sample.latencyMs = 80;
+        recovery.AddSample(sample);
+    };
+    for (int i = 0; i < 5; ++i) addRecoverySample(true);
+    for (int i = 0; i < 3; ++i) addRecoverySample(false);
+    check(recovery.Snapshot(tick - 2000, 60).state == HealthState::Unstable,
+          "health transitions from Stable to Unstable during an interruption");
+    for (int i = 0; i < 5; ++i) addRecoverySample(true);
+    check(recovery.Snapshot(tick - 2000, 60).state == HealthState::Stable,
+          "five fresh successful probes restore Stable after a network interruption");
+
+    ConnectionHealthMonitor noTunnelTelemetry;
+    HealthSample noProbe;
+    noProbe.timestampMs = 1000;
+    noProbe.tunnelKnown = true;
+    noProbe.tunnelRunning = true;
+    noTunnelTelemetry.AddSample(noProbe);
+    HealthSnapshot unknownMeasurements = noTunnelTelemetry.Snapshot(1000, 60);
+    check(unknownMeasurements.state == HealthState::Unknown && !unknownMeasurements.latencyMs &&
+              !unknownMeasurements.receiveBytesPerSecond && !unknownMeasurements.probeSuccessPercent,
+          "unavailable probe and counter measurements remain Unknown");
 }
 
 const std::string kSsh = "C:\\Windows\\System32\\OpenSSH\\ssh.exe";
@@ -618,6 +792,7 @@ int main() {
     testProfiles();
     testCommandLine();
     testMonitor();
+    testConnectionHealth();
     testLaunchers();
     testWireGuardSetup();
     if (failures) {

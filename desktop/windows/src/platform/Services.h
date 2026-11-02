@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "../core/Profiles.h"
+#include "../core/ConnectionHealth.h"
 
 namespace tlp {
 namespace win {
@@ -22,6 +23,15 @@ std::string NewProfileId();
 
 // TCP connection to the PBX tunnel address; succeeds only when the PBX answers through the tunnel.
 bool ProbeTcp(const std::string& ipv4, unsigned short port, unsigned timeoutMs);
+struct TcpProbeMeasurement {
+    bool known = false;
+    bool succeeded = false;
+    std::optional<double> latencyMs;
+};
+TcpProbeMeasurement MeasureTcpProbe(const std::string& ipv4, unsigned short port, unsigned timeoutMs);
+WireGuardCounters ReadWireGuardCounters(const std::wstring& wgExecutable, const std::string& tunnelName, const std::string& peerPublicKey);
+std::optional<HealthPreferences> LoadHealthPreferences();
+void SaveHealthPreferences(const HealthPreferences& preferences);
 
 }  // namespace win
 }  // namespace tlp

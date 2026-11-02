@@ -5,6 +5,8 @@
 #define IDD_PAIR                    102
 #define IDD_SUPPORT                 103
 #define IDD_APP_SETTINGS            104
+#define IDD_CONNECTION_HEALTH       105
+#define IDD_HEALTH_LIMITS           106
 
 #define IDC_WG_STATUS               1000
 #define IDC_PROFILES                1001
@@ -21,6 +23,7 @@
 #define IDC_GUIDANCE                1012
 #define IDC_DETAILS                 1015
 #define IDC_SETTINGS                1016
+#define IDC_CONNECTION_HEALTH       1017
 
 #define IDC_PAIR_NAME               1100
 #define IDC_PAIR_WORKSTATION        1101
@@ -59,11 +62,25 @@
 #define IDC_SETUP_PBX               1317
 #define IDC_SETUP_SUPPORT           1318
 
+#define IDC_HEALTH_STATE            1400
+#define IDC_HEALTH_AUTH             1401
+#define IDC_HEALTH_LATENCY          1402
+#define IDC_HEALTH_PROBES           1403
+#define IDC_HEALTH_TRAFFIC          1404
+#define IDC_HEALTH_GRAPH            1405
+#define IDC_HEALTH_WARNING          1406
+#define IDC_HEALTH_HISTORY          1407
+#define IDC_HEALTH_TOPMOST          1408
+#define IDC_HEALTH_THRESHOLDS       1409
+#define IDC_HEALTH_LIMIT_LATENCY    1410
+#define IDC_HEALTH_LIMIT_JITTER     1411
+#define IDC_HEALTH_LIMIT_FAILURES   1412
+
 #ifdef APSTUDIO_INVOKED
 #ifndef APSTUDIO_READONLY_SYMBOLS
 #define _APS_NEXT_RESOURCE_VALUE    129
 #define _APS_NEXT_COMMAND_VALUE     32771
-#define _APS_NEXT_CONTROL_VALUE     1319
+#define _APS_NEXT_CONTROL_VALUE     1413
 #define _APS_NEXT_SYMED_VALUE       101
 #endif
 #endif

@@ -8,10 +8,12 @@
 #include <vector>
 
 #include "../core/Launchers.h"
+#include "../core/ConnectionHealth.h"
 #include "../core/Monitor.h"
 #include "../core/WireGuardSetup.h"
 #include "../core/Profiles.h"
 #include "../platform/WireGuard.h"
+#include "ConnectionHealthDlg.h"
 
 class CMainDlg : public CDialogEx {
 public:
@@ -31,6 +33,7 @@ protected:
     afx_msg void OnOpenGui();
     afx_msg void OnOpenSsh();
     afx_msg void OnSettings();
+    afx_msg void OnConnectionHealth();
     afx_msg void OnSelectionChanged(NMHDR* header, LRESULT* result);
     afx_msg void OnTimer(UINT_PTR id);
     afx_msg LRESULT OnOperationDone(WPARAM, LPARAM result);
@@ -44,8 +47,10 @@ private:
         std::string sessionId;
         std::string tunnelName;
         std::string pbxAddress;
+        std::string peerPublicKey;
         std::int64_t expiresAt = 0;
         std::unique_ptr<tlp::ConnectionMonitor> monitor;
+        std::unique_ptr<tlp::ConnectionHealthMonitor> health;
         bool connected = false;
         // Set only after the monitor has confirmed the PBX answers through the tunnel.
         bool verified = false;
@@ -73,10 +78,13 @@ private:
     std::vector<std::string> sessionIds_;
     std::vector<tlp::Profile> profiles_;
     tlp::win::WireGuardInstallation wireguard_;
+    CConnectionHealthDlg healthDialog_;
+    tlp::HealthPreferences healthPreferences_;
     std::unique_ptr<Active> active_;
     std::optional<tlp::Preferences> storedPreferences_;
     tlp::SetupResult installation_;
     bool busy_ = false;
     bool probing_ = false;
     UINT_PTR generation_ = 0;
+    std::uint64_t lastTelemetryTickMs_ = 0;
 };

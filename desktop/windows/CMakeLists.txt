@@ -7,6 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 add_library(teliphones_core STATIC
     src/core/CommandLine.cpp
+    src/core/ConnectionHealth.cpp
     src/core/Encoding.cpp
     src/core/Json.cpp
     src/core/Launchers.cpp

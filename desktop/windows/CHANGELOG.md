@@ -18,6 +18,10 @@ This version has not been published as a release and is not production-ready.
 - Three-step onboarding: Applications, Secure connectivity, Get started.
 - Settings Connectivity section, installation progress, deferral, retry and
   post-install verification without restarting TELIPHONES.
+- Compact (approximately 320 x 220 pixels) native Connection Health pop-out with local PBX TCP probes, WireGuard peer
+  byte counters and handshake age, latency/jitter history, configurable health
+  thresholds, and persistent window/history preferences. Reachability warnings
+  are separate from authorization expiry and do not close existing SSH windows.
 - Embedded file/product version metadata, a visible version in the main window,
   and build validation of the version information.
 

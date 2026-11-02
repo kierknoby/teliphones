@@ -21,7 +21,6 @@ MonitorDecision ConnectionMonitor::Observe(std::int64_t now, bool serviceRunning
         decision.state = LinkState::Stopped;
         decision.summary = "Tunnel stopped";
         decision.guidance = "The WireGuard tunnel service is no longer running. Connect again to restart it.";
-        decision.disconnect = true;
         return decision;
     }
     std::string remaining = expiresAt_ > 0 ? " (" + FormatRemaining(expiresAt_ - now) + " remaining)" : "";
@@ -49,20 +48,19 @@ MonitorDecision ConnectionMonitor::Observe(std::int64_t now, bool serviceRunning
             : "The tunnel started, but the PBX did not answer. Check that UDP traffic to " + endpoint_ +
                   " reaches the PBX (router port forwarding and the FreePBX Firewall), that this workstation has not been revoked or expired on the PBX, "
                   "and that this network permits outbound UDP. TELIPHONES connects directly and does not relay traffic, so restrictive NAT or firewalls can prevent a connection.";
-        decision.disconnect = true;
         return decision;
     }
     if (failures_ < kLostAfterFailures) {
         decision.state = LinkState::NotResponding;
         decision.summary = "PBX not responding — rechecking" + remaining;
-        decision.guidance = "The last status check did not reach the PBX. TELIPHONES will disconnect if it does not recover.";
+        decision.guidance = "The last status check did not reach the PBX. TELIPHONES will keep checking; new SSH launches stay unavailable until reachability is verified. Existing terminal windows are not closed.";
         return decision;
     }
     decision.state = LinkState::Lost;
     decision.summary = "Connection lost";
-    decision.guidance = viaGateway_ ? "The PBX stopped answering. The support session may have been revoked or ended, or the network changed. The tunnel has been disconnected."
-                                    : "The PBX stopped answering. Workstation access may have been revoked or expired on the PBX, or the network changed. The tunnel has been disconnected.";
-    decision.disconnect = true;
+    decision.guidance = viaGateway_
+        ? "The PBX stopped answering. The support session may have been revoked or ended, or the network changed. The tunnel remains available for manual recovery; existing terminal windows are not closed."
+        : "The PBX stopped answering. Workstation access may have been revoked or expired on the PBX, or the network changed. The tunnel remains available for manual recovery; existing terminal windows are not closed.";
     return decision;
 }
 

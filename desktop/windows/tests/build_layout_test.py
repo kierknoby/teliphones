@@ -79,6 +79,23 @@ class BuildLayoutTests(unittest.TestCase):
         }
         expected = {path.relative_to(ROOT).as_posix() for path in (ROOT / "src").rglob("*.cpp")}
         self.assertEqual(compiled, expected)
+        project_headers = {
+            item.attrib["Include"].replace("\\", "/")
+            for item in app.findall("ms:ItemGroup/ms:ClInclude", NS)
+        }
+        self.assertIn("src/app/ConnectionHealthDlg.h", project_headers)
+        self.assertIn("src/core/ConnectionHealth.h", project_headers)
+        self.assertIn("src/app/ConnectionHealthDlg.cpp", compiled)
+        self.assertIn("src/core/ConnectionHealth.cpp", compiled)
+
+    def test_connection_health_popout_starts_compact(self):
+        resource = (ROOT / "src/app/TELIPHONES.rc").read_text()
+        self.assertRegex(resource, r"IDD_CONNECTION_HEALTH DIALOGEX 0, 0, 160, 110")
+        for control in ("IDC_HEALTH_STATE", "IDC_HEALTH_AUTH", "IDC_HEALTH_GRAPH", "IDC_HEALTH_WARNING",
+                        "IDC_HEALTH_HISTORY", "IDC_HEALTH_TOPMOST", "IDC_HEALTH_THRESHOLDS"):
+            self.assertIn(control, resource)
+        dialog = (ROOT / "src/app/ConnectionHealthDlg.cpp").read_text()
+        self.assertIn("width - limitsDlu.Width() - rightMarginDlu.right", dialog)
 
     def test_project_inputs_exist(self):
         for name in ("TELIPHONES.vcxproj", "TeliphonesCoreTests.vcxproj"):
@@ -161,8 +178,22 @@ class BuildLayoutTests(unittest.TestCase):
                 used.update(re.findall(r"\bID[CD]_[A-Z0-9_]+\b", path.read_text()))
         self.assertEqual(used - declared, set())
         rc = (resource_dir / "TELIPHONES.rc").read_text()
-        for name in ("IDD_MAIN", "IDD_PAIR", "IDD_SUPPORT", "IDD_APP_SETTINGS"):
+        for name in ("IDD_MAIN", "IDD_PAIR", "IDD_SUPPORT", "IDD_APP_SETTINGS", "IDD_CONNECTION_HEALTH", "IDD_HEALTH_LIMITS"):
             self.assertRegex(rc, rf"\b{name}\s+DIALOGEX\b")
+        for name in ("IDC_CONNECTION_HEALTH", "IDC_HEALTH_GRAPH", "IDC_HEALTH_HISTORY", "IDC_HEALTH_TOPMOST",
+                     "IDC_HEALTH_THRESHOLDS", "IDC_HEALTH_LIMIT_LATENCY", "IDC_HEALTH_LIMIT_JITTER", "IDC_HEALTH_LIMIT_FAILURES"):
+            self.assertIn(name, header)
+        health_source = (resource_dir / "ConnectionHealthDlg.cpp").read_text()
+        main_source = (resource_dir / "MainDlg.cpp").read_text()
+        self.assertIn("ON_WM_DRAWITEM()", health_source)
+        self.assertIn("SetWindowPos(preferences_.alwaysOnTop", health_source)
+        self.assertIn("tlp::win::SaveHealthPreferences(preferences)", main_source)
+        self.assertIn("std::thread([window, generation", main_source)
+        self.assertIn("MeasureTcpProbe(address, 443, 1200)", main_source)
+        self.assertIn("ReadWireGuardCounters(wgExecutable, tunnelName, peerPublicKey)", main_source)
+        self.assertIn("The Connection Health monitor will keep checking; existing terminal windows are not closed.", main_source)
+        self.assertIn("Probes != packet loss", health_source)
+        self.assertIn("congestion not measured", health_source)
         self.assertNotIn("RT_MANIFEST", rc)
         app = project("TELIPHONES.vcxproj")
         manifests = app.findall(".//ms:AdditionalManifestFiles", NS)

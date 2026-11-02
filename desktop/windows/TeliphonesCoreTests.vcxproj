@@ -25,6 +25,7 @@
   <ItemGroup>
     <ClCompile Include="tests\core_tests.cpp" />
     <ClCompile Include="src\core\CommandLine.cpp" />
+    <ClCompile Include="src\core\ConnectionHealth.cpp" />
     <ClCompile Include="src\core\Encoding.cpp" />
     <ClCompile Include="src\core\Json.cpp" />
     <ClCompile Include="src\core\Launchers.cpp" />
