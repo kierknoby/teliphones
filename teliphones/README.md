@@ -1,9 +1,9 @@
 # TELIPHONES for FreePBX 17: module guide
 
-This guide covers installing, configuring, operating, maintaining and troubleshooting the TELIPHONES FreePBX module (`teliphones`, version 0.3.0). For an introduction to the project, its architecture and its security model, see the project overview (`README.md`), `docs/ARCHITECTURE.md` and `docs/SECURITY.md` at the root of the TELIPHONES source repository; these are not included in the module package.
+This guide covers installing, configuring, operating, maintaining and troubleshooting the TELIPHONES FreePBX module (`teliphones`, version 0.3.1). For an introduction to the project, its architecture and its security model, see the project overview (`README.md`), `docs/ARCHITECTURE.md` and `docs/SECURITY.md` at the root of the TELIPHONES source repository; these are not included in the module package.
 
 > [!WARNING]
-> **Not currently suitable for production.** TELIPHONES 0.3.0 is a development milestone for controlled testing on a **disposable** Debian 12 / FreePBX 17 system. The controls described here are what TELIPHONES is designed to enforce; most have been tested only automatically or in simulation. See [Known limitations](#known-limitations) and [Outstanding 0.3.0 verification](#outstanding-030-verification).
+> **Not currently suitable for production.** TELIPHONES 0.3.1 is an unreleased development correction for controlled testing on a **disposable** Debian 12 / FreePBX 17 system. Its nftables ownership-marker correction was separately tested by the operator on the FreePBX 17 PBX; repository regression tests are simulations/isolated namespace tests, not a repeat of that live test. See [Known limitations](#known-limitations) and [Outstanding 0.3.1 verification](#outstanding-031-verification).
 
 ## Contents
 
@@ -85,10 +85,10 @@ TELIPHONES is a community module and is not listed in the FreePBX online module 
 
 ### Install through Module Admin (recommended)
 
-1. Obtain `TELIPHONES-0.3.0.tgz` and its SHA-256 checksum from a trusted source, then verify the archive:
+1. Obtain `TELIPHONES-0.3.1.tgz` and its SHA-256 checksum from a trusted source, then verify the archive:
 
    ```bash
-   sha256sum TELIPHONES-0.3.0.tgz
+   sha256sum TELIPHONES-0.3.1.tgz
    ```
 
 2. In FreePBX, open **Admin > Module Admin**, choose **Upload modules**, and upload the archive.
@@ -193,15 +193,15 @@ Update TELIPHONES in place. Do not uninstall the module first: uninstalling remo
 
 ### After upgrading TELIPHONES
 
-A Module Admin upgrade updates the FreePBX module files but does not necessarily update the separately installed, root-owned broker (`/usr/local/lib/teliphones-broker/support_broker.py`), because Module Admin runs as the web service account. After every TELIPHONES upgrade, confirm that no support session is active (as root: `fwconsole teliphones status`), then rerun the root bootstrap procedure from an existing root shell and refresh Connectivity > TELIPHONES. TELIPHONES 0.3.0 requires broker protocol 3 with valid workstation pairing status for Windows workstation operations and automatic monitoring; the 0.1.3 package supplied protocol 2. Until the broker is updated, the page reports **Root broker update required**, workstation operations are refused, and remote support actions fall back to ordinary page submission without automatic progress updates. Disconnect Windows tunnels before the bootstrap; valid pairings are restored when the broker restarts, without extending temporary expiry.
+A Module Admin upgrade updates the FreePBX module files but does not necessarily update the separately installed, root-owned broker (`/usr/local/lib/teliphones-broker/support_broker.py`), because Module Admin runs as the web service account. After every TELIPHONES upgrade, confirm that no support session is active (as root: `fwconsole teliphones status`), then rerun the root bootstrap procedure from an existing root shell and refresh Connectivity > TELIPHONES. TELIPHONES 0.3.1 keeps broker protocol 3 and adds a hookless nftables ownership chain that remains visible when Debian 12 nftables 1.0.6 drops table comments. Module Admin does not update the root-owned broker automatically; until the bootstrap copies and restarts the corrected broker, existing firewall ownership may not be recognised. Disconnect Windows tunnels before the bootstrap; valid pairings are restored when the broker restarts, without extending temporary expiry.
 
-Both the 0.2.1 security corrections and the 0.3.0 FreePBX Firewall integration require rerunning this bootstrap, even when a 0.2.0 or 0.2.1 broker already reports protocol 3; that number alone does not distinguish the corrected implementation. Until the 0.3.0 broker runs, **Windows workstations** warns that the running root broker does not report FreePBX Firewall integration.
+The 0.2.1 and 0.3.0 security/firewall changes, and the 0.3.1 nftables ownership correction, require rerunning this bootstrap even when an older broker already reports protocol 3; that number alone does not distinguish the implementation. Confirm the installed broker file and restart using the documented bootstrap rather than relying on protocol status alone.
 
 ### Upgrading from 0.2.0 or 0.2.1
 
 - Saved pairings, their addresses, permissions and original deadlines, and the PBX's workstation key are preserved.
 - Expired temporary pairings are not restored.
-- An unmarked firewall table from 0.2.0 is deliberately treated as unfamiliar. It is not overwritten, and workstation access stays disabled until its ownership has been investigated. Follow [upgrading from 0.2.0](docs/WORKSTATION-PAIRING.md#upgrading-from-020). Never flush the host ruleset to bypass a conflict.
+- An unmarked table is migrated only when its complete contents exactly match the known 0.3.0 TELIPHONES policy reconstructed against root-owned saved state, and the interface is verified down. Unknown or altered tables remain untouched and workstation access stays disabled. See [upgrading from 0.3.0](docs/WORKSTATION-PAIRING.md#upgrading-from-030). Never flush the host ruleset to bypass a conflict.
 
 ## Windows workstations: install, pair and connect
 
@@ -271,7 +271,7 @@ SSH through the tunnel reaches the PBX's existing SSH service on TCP 22, with it
   - PuTTY is opened directly with the address, port and account, and uses its own credentials, such as Pageant or a `.ppk` key.
 - **Another SSH client:** while connected, connect to the PBX tunnel address shown in the profile on port 22, with your existing PBX credentials.
 
-SSH through PuTTY or any of the other terminals has not yet been verified on a real PBX; see [Outstanding 0.3.0 verification](#outstanding-030-verification). Choosing a terminal never grants SSH access.
+The operator reports that PuTTY reaches the real PBX SSH server, which requires public-key authentication; successful SSH authentication has not been completed. See [Outstanding 0.3.1 verification](#outstanding-031-verification). A separate SSH key-management proposal remains repository documentation and is not included in this module package. Choosing a terminal never grants SSH access.
 
 #### Browser and SSH terminal preferences
 
@@ -313,7 +313,7 @@ Above the table, TELIPHONES reports the FreePBX Firewall integration state:
 | **FreePBX Firewall integration active (iptables nf_tables)** or **(iptables legacy)** | Approved web and SSH traffic is admitted ahead of FreePBX Firewall |
 | **FreePBX Firewall integration not installed.** | No FreePBX Firewall hook (`fpbxfirewall`) was found in `INPUT`, so no integration is installed |
 | **FreePBX Firewall integration failed.** | The integration could not be placed safely, for example because of Fail2Ban ordering; the message names the cause |
-| *The running root broker does not report FreePBX Firewall integration...* | The broker is older than 0.3.0; rerun the root bootstrap |
+| *The running root broker does not report FreePBX Firewall integration...* | The running broker is outdated or its capability response is incomplete; rerun the root bootstrap |
 
 A row showing **Handshake succeeded, but FreePBX Firewall integration is not active** means that WireGuard is working, but FreePBX Firewall may drop web and SSH traffic. See [The handshake succeeds but FreePBX does not load](#the-handshake-succeeds-but-freepbx-does-not-load).
 
@@ -508,7 +508,7 @@ If a Fail2Ban hook appears **after** `fpbxfirewall` in `INPUT`, there is no posi
 
 ### Firewall ownership conflict
 
-If TELIPHONES reports an unfamiliar `inet teliphones_workstations` table or `teliphones-ws` chain, it has found an object with its name that does not carry its ownership marker. It will not change it, and workstation access stays disabled. Investigate with the interface stopped. Remove an isolated table only once it has been positively identified as an old TELIPHONES table; see [upgrading from 0.2.0](docs/WORKSTATION-PAIRING.md#upgrading-from-020). Never flush the ruleset or remove unrelated tables.
+If TELIPHONES reports an unfamiliar `inet teliphones_workstations` table or `teliphones-ws` chain, it will not change it and workstation access stays disabled. The 0.3.1 broker safely migrates only the exact known 0.3.0 nft policy while `tlp-admin` is down. If migration is refused, preserve the saved pairing/key data and obtain administrator review; do not flush the ruleset or remove unrelated tables. See [firewall ownership and migration](docs/WORKSTATION-PAIRING.md#enforcement-integrity-and-exposure-limits).
 
 ### SSH does not connect
 
@@ -570,11 +570,11 @@ After uninstalling, verify that no `tlp-admin` or `wg-teliphones` interface rema
 
 The project-wide security model and its complete list of known limitations are in `docs/SECURITY.md` in the TELIPHONES source repository.
 
-### Outstanding 0.3.0 verification
+### Outstanding 0.3.1 verification
 
-0.3.0 FreePBX Firewall integration, Fail2Ban compatibility, reconciliation and diagnostics have been tested only with automated suites and simulated FreePBX and Fail2Ban layouts in disposable network namespaces. The following remain outstanding. Until they pass, 0.3.0 must not be treated as production-ready, or as a confirmed fix for workstation connectivity:
+The operator reports that the 0.3.1 nftables ownership correction was installed and tested on the Debian 12 / FreePBX 17 test PBX. Repository tests below use simulated FreePBX/Fail2Ban rules in isolated namespaces and do not repeat that exact test or establish production readiness. Remaining validation includes:
 
-- live verification on the Debian 12 / FreePBX 17 test PBX, including `iptables -S INPUT` ordering and `teliphones-ws` counters;
+- repeated live verification of broker restart, migration, `iptables -S INPUT` ordering and `teliphones-ws` counters;
 - repeated Windows WireGuard connection and reconnection tests;
 - FreePBX Firewall restart and reload compatibility;
 - Fail2Ban enforcement during firewall-rule reordering;
@@ -691,9 +691,16 @@ The human contributor remains solely responsible for the contribution. AI tools 
 
 Entries for 0.0.2 to 0.2.1 are summarised from the repository history. Release dates are recorded only where they were previously published.
 
+### 0.3.1, nftables ownership compatibility (unreleased)
+
+- Replaces reliance on nftables table comments with the exact hookless, ruleless `teliphones_owner_v1` chain, which remains visible in Debian 12 nftables 1.0.6 JSON readback.
+- Safely migrates only an exact known 0.3.0 policy while the verified workstation interface is down. Unknown or altered rules remain untouched.
+- Keeps broker protocol 3; rerunning the root bootstrap is required to copy and restart the separately installed broker.
+- The operator reports successful testing of the ownership correction on the FreePBX 17 test PBX. The repository's automated packet tests still use a simulated FreePBX Firewall.
+
 ### 0.3.0, development milestone (unreleased)
 
-Not yet released. This package is for manual installation and testing on a disposable FreePBX 17 PBX only; see [outstanding 0.3.0 verification](#outstanding-030-verification). It is the milestone that introduces FreePBX Firewall integration and enhanced workstation connectivity enforcement. It builds on the 0.2.0 workstation pairing and the 0.2.1 firewall enforcement corrections, which are preserved.
+Not yet released. This package is for manual installation and testing on a disposable FreePBX 17 PBX only; see [outstanding 0.3.1 verification](#outstanding-031-verification). It is the milestone that introduces FreePBX Firewall integration and enhanced workstation connectivity enforcement. It builds on the 0.2.0 workstation pairing and the 0.2.1 firewall enforcement corrections, which are preserved.
 
 #### FreePBX Firewall integration
 
@@ -737,7 +744,7 @@ Not yet released. This package is for manual installation and testing on a dispo
 
 - Verifies the complete owned nftables policy before admitting workstation peers, and monitors it for external changes, with a periodic fallback.
 - Disables workstation connectivity when enforcement is missing or altered, and restores verified restrictions before readmitting peers.
-- Validates ownership of `inet teliphones_workstations`, and refuses unmarked or unfamiliar tables.
+- Originally identified `inet teliphones_workstations` with a table comment; nftables 1.0.6 does not preserve that marker in JSON readback. The 0.3.1 ownership chain and constrained migration supersede that mechanism.
 - Makes uninstallation verify interface removal before removing firewall protection, and retain recovery information on failure.
 - Preserves workstation pairing data on upgrade.
 

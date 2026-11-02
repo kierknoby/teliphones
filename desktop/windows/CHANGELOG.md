@@ -29,10 +29,17 @@ This version has not been published as a release and is not production-ready.
 
 ### Validation status
 
-Portable tests and source/build-layout checks are available locally. Native
-MSVC/MFC compilation, installer/UAC behaviour, UI layout and actual PBX
-connectivity require Windows testing. A successful Actions build is not an
-end-to-end installation or connectivity test.
+The operator reports that 0.4.0 runs on a Windows office PC, establishes a
+WireGuard tunnel to the FreePBX 17 test PBX and launches PuTTY, which reaches
+the SSH server. Web access still requires disabling FreePBX Firewall in that
+test, and SSH public-key authentication has not completed. Disabling the
+firewall is not an acceptable solution; compatibility remains unresolved.
+
+Portable tests and source/build-layout checks are available locally; they are
+not native MSVC/MFC compilation. Installer/UAC behaviour, the full UI/lifecycle
+matrix, firewall-enabled web access and authenticated SSH still require
+validation. This operator test is not a published release or proof of production
+readiness. A successful Actions build is not an end-to-end installation test.
 
 ## Earlier development — no dependable Windows version identifiers
 

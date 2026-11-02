@@ -34,6 +34,7 @@ ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C", "HOME": "/root", "D
 WORKSTATION_IFACE = "tlp-admin"
 WORKSTATION_TABLE = "teliphones_workstations"
 WORKSTATION_OWNER = "TELIPHONES workstation enforcement v1"
+WORKSTATION_OWNER_CHAIN = "teliphones_owner_v1"
 WORKSTATION_POOL = ipaddress.IPv4Network("100.64.0.0/10")
 WORKSTATION_EXCLUDED = ipaddress.IPv4Network("100.100.0.0/16")
 PAIR_REQUEST_PREFIX = "TELIPHONES-PAIR-REQUEST-1:"
@@ -184,7 +185,7 @@ def key_fingerprint(public_key):
 def workstation_ruleset(pbx_address, ssh_sources):
     """Human-readable policy illustration; enforcement uses workstation_policy JSON."""
     lines = ["table inet " + WORKSTATION_TABLE + " {",
-             '    comment "%s";' % WORKSTATION_OWNER,
+             "    chain " + WORKSTATION_OWNER_CHAIN + " { }",
              "    chain input {", "        type filter hook input priority -10; policy accept;",
              '        iifname "%s" ip daddr %s tcp dport { 80, 443 } accept' % (WORKSTATION_IFACE, pbx_address)]
     if ssh_sources:
@@ -199,7 +200,10 @@ def workstation_ruleset(pbx_address, ssh_sources):
 def workstation_policy(pbx_address, ssh_sources):
     """Offline expected nft JSON, deliberately without sets, counters or implicit expressions."""
     family = {"family": "inet", "table": WORKSTATION_TABLE}
-    objects = [{"table": {"family": "inet", "name": WORKSTATION_TABLE, "comment": WORKSTATION_OWNER}}]
+    # nftables 1.0.6 accepts table comments in JSON but drops them from kernel state.
+    # A hookless, ruleless chain remains visible and verifiable on that version.
+    objects = [{"table": {"family": "inet", "name": WORKSTATION_TABLE}},
+               {"chain": {**family, "name": WORKSTATION_OWNER_CHAIN}}]
 
     def match(left, right):
         return {"match": {"op": "==", "left": left, "right": right}}
@@ -646,11 +650,68 @@ class Broker:
         if (not isinstance(document, dict) or not isinstance(document.get("nftables"), list)
                 or any(not isinstance(item, dict) or len(item) != 1 for item in document["nftables"])):
             raise BrokerError("Invalid workstation table JSON.")
+        return self.validate_owned_table(document)
+
+    def validate_owned_table(self, document):
+        if (not isinstance(document, dict) or not isinstance(document.get("nftables"), list)
+                or any(not isinstance(item, dict) or len(item) != 1 for item in document["nftables"])):
+            raise BrokerError("Invalid workstation table JSON.")
         tables = [item["table"] for item in document["nftables"] if "table" in item]
         if any(not isinstance(table, dict) for table in tables):
             raise BrokerError("Invalid workstation table identity.")
-        if len(tables) != 1 or tables[0].get("family") != "inet" or tables[0].get("name") != WORKSTATION_TABLE or tables[0].get("comment") != WORKSTATION_OWNER:
-            raise BrokerError("Unfamiliar inet teliphones_workstations table: ownership marker missing/changed; it will not be modified.")
+        if len(tables) != 1 or tables[0].get("family") != "inet" or tables[0].get("name") != WORKSTATION_TABLE:
+            raise BrokerError("Unfamiliar inet teliphones_workstations table; it will not be modified.")
+        if tables[0].get("comment") not in (None, WORKSTATION_OWNER):
+            raise BrokerError("Unexpected workstation table comment; refusing modification.")
+        owner_chains = [item["chain"] for item in document["nftables"]
+                        if "chain" in item and isinstance(item["chain"], dict)
+                        and item["chain"].get("name") == WORKSTATION_OWNER_CHAIN]
+        if owner_chains:
+            if (len(owner_chains) != 1
+                    or set(owner_chains[0]) - {"family", "table", "name", "handle"}
+                    or any(owner_chains[0].get(key) != value for key, value in
+                           (("family", "inet"), ("table", WORKSTATION_TABLE),
+                            ("name", WORKSTATION_OWNER_CHAIN)))
+                    or any(item.get("rule", {}).get("chain") == WORKSTATION_OWNER_CHAIN
+                           for item in document["nftables"] if isinstance(item, dict))):
+                raise BrokerError("Workstation ownership chain has unexpected configuration; refusing modification.")
+            return document
+
+        # One-time migration from the 0.3.0 table comment, which nftables 1.0.6
+        # drops when returning kernel state. Reconstruct only the exact old policy
+        # using the root-owned subnet and SSH-source matches before adopting it.
+        persisted = read_json(STATE / "workstations.json")
+        try:
+            network = ipaddress.IPv4Network(persisted.get("subnet"))
+        except (ipaddress.AddressValueError, ipaddress.NetmaskValueError, TypeError) as error:
+            raise BrokerError("Legacy workstation table cannot be matched to saved TELIPHONES state; refusing migration.") from error
+        self.expected_policy({"subnet": str(network), "workstations": []})
+        ssh_sources = set()
+        for item in document["nftables"]:
+            rule = item.get("rule")
+            if not isinstance(rule, dict):
+                continue
+            for expression in rule.get("expr", []):
+                if (isinstance(expression, dict) and isinstance(expression.get("match"), dict)
+                        and expression["match"].get("left") == {"payload": {"protocol": "ip", "field": "saddr"}}):
+                    try:
+                        source = ipaddress.IPv4Address(expression["match"].get("right"))
+                    except (ipaddress.AddressValueError, TypeError) as error:
+                        raise BrokerError("Legacy workstation source is invalid; refusing migration.") from error
+                    if source not in network:
+                        raise BrokerError("Legacy workstation source is outside the saved subnet; refusing migration.")
+                    ssh_sources.add(str(source))
+        expected = workstation_policy(str(network[1]), sorted(ssh_sources))
+        legacy = {"nftables": [item for item in expected["nftables"]
+                               if "chain" not in item or item["chain"].get("name") != WORKSTATION_OWNER_CHAIN]}
+        if tables[0].get("comment") == WORKSTATION_OWNER:
+            legacy["nftables"][0] = {"table": {**legacy["nftables"][0]["table"],
+                                               "comment": WORKSTATION_OWNER}}
+        if not policy_equal(document, legacy):
+            raise BrokerError("Unmarked workstation table does not exactly match the saved TELIPHONES policy; refusing migration.")
+        link = self.link_state()
+        if link is not None and "UP" in link["flags"]:
+            raise BrokerError("Legacy workstation table cannot be migrated while the tunnel is up; refusing modification.")
         return document
 
     def expected_policy(self, state):
@@ -804,8 +865,9 @@ class Broker:
         commands, events = [], []
         if existing is not None:
             identity = {"family": "inet", "name": WORKSTATION_TABLE}
+            self.validate_owned_table(existing)
             table = next(entry["table"] for entry in existing["nftables"] if "table" in entry)
-            if table.get("family") != "inet" or table.get("name") != WORKSTATION_TABLE or table.get("comment") != WORKSTATION_OWNER:
+            if table.get("family") != "inet" or table.get("name") != WORKSTATION_TABLE:
                 raise BrokerError("Unfamiliar workstation table; refusing mutation.")
             handle = table.get("handle")
             if type(handle) is not int or handle <= 0:

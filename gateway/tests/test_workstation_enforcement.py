@@ -37,13 +37,16 @@ class EnforcementTests(unittest.TestCase):
                 next(iter(altered["nftables"][index].values()))[key] = "unexpected"
                 variants.append(altered)
         extra_rule = copy.deepcopy(expected)
-        extra_rule["nftables"].append(copy.deepcopy(extra_rule["nftables"][2]))
+        first_rule = next(index for index, item in enumerate(extra_rule["nftables"]) if "rule" in item)
+        extra_rule["nftables"].append(copy.deepcopy(extra_rule["nftables"][first_rule]))
         variants.append(extra_rule)
         reversed_rules = copy.deepcopy(expected)
-        reversed_rules["nftables"][2:4] = reversed(reversed_rules["nftables"][2:4])
+        first_rule = next(index for index, item in enumerate(reversed_rules["nftables"]) if "rule" in item)
+        reversed_rules["nftables"][first_rule:first_rule + 2] = reversed(reversed_rules["nftables"][first_rule:first_rule + 2])
         variants.append(reversed_rules)
         extra_expression = copy.deepcopy(expected)
-        extra_expression["nftables"][2]["rule"]["expr"].insert(0, {"counter": {"packets": 0, "bytes": 0}})
+        first_rule = next(item for item in extra_expression["nftables"] if "rule" in item)
+        first_rule["rule"]["expr"].insert(0, {"counter": {"packets": 0, "bytes": 0}})
         variants.append(extra_expression)
         for changed in variants:
             with self.subTest(changed=changed):
@@ -72,43 +75,133 @@ class EnforcementTests(unittest.TestCase):
         self.net.calls = []
         for operation in (lambda: self.pair(), self.broker.teardown_workstations,
                           self.broker.uninstall_workstations):
-            with self.assertRaisesRegex(broker.BrokerError, "Unfamiliar|ownership"):
+            with self.assertRaisesRegex(broker.BrokerError, "Unfamiliar|ownership|Unexpected"):
                 operation()
             self.assertEqual(self.net.table, original)
             self.assertEqual(self.saved(), saved)
             self.assertEqual(self.mutations(), [])
             self.assertFalse(self.net.up)
 
-    def test_legacy_markerless_table_is_unfamiliar(self):
+    def test_hookless_owner_chain_is_visible_without_table_comments(self):
         self.pair()
-        del self.net.table["nftables"][0]["table"]["comment"]
-        self.net.calls = []
-        with self.assertRaisesRegex(broker.BrokerError, "Unfamiliar"):
-            self.broker.teardown_workstations()
-        self.assertEqual(self.mutations(), [])
+        self.assertNotIn("comment", self.net.table["nftables"][0]["table"])
+        self.assertEqual(self.net.table["nftables"][1]["chain"]["name"], broker.WORKSTATION_OWNER_CHAIN)
+        self.assertEqual(set(self.net.table["nftables"][1]["chain"]), {"family", "table", "name", "handle"})
+        self.assertTrue(broker.policy_equal(self.broker.owned_table(), self.broker.expected_policy(
+            json.loads(self.saved()))))
+
+    def legacy_policy(self, include_comment=False):
+        state = json.loads(self.saved())
+        sources = [item["address"].split("/")[0] for item in state["workstations"] if item.get("ssh") is True]
+        legacy = broker.workstation_policy(str(broker.ipaddress.IPv4Network(state["subnet"])[1]), sources)
+        legacy["nftables"] = [
+            item for item in legacy["nftables"]
+            if "chain" not in item or item["chain"].get("name") != broker.WORKSTATION_OWNER_CHAIN
+        ]
+        if include_comment:
+            legacy["nftables"][0]["table"]["comment"] = broker.WORKSTATION_OWNER
+        for item in legacy["nftables"]:
+            value = next(iter(item.values()))
+            value["handle"] = self.net.next_handle
+            self.net.next_handle += 1
+        return legacy
 
     def test_upgrade_legacy_table_preserves_pairings_and_key_with_access_disabled(self):
         self.pair(mode="persistent", ssh="1")
         self.pair(mode="temporary", public_key="B" * 42 + "E=", nonce="m" * 22)
         saved = self.saved()
         key = (self.enrollment / "workstation-wg.key").read_bytes()
-        del self.net.table["nftables"][0]["table"]["comment"]
+        self.net.table = self.legacy_policy()
         legacy = copy.deepcopy(self.net.table)
         self.net.calls = []
-        self.broker.restore_workstations()
-        self.assertFalse(self.net.up)
-        self.assertEqual(self.saved(), saved)
-        self.assertEqual((self.enrollment / "workstation-wg.key").read_bytes(), key)
-        self.assertEqual(self.net.table, legacy)
-        self.assertEqual(self.mutations(), [])
-        self.assertIn("Unfamiliar", self.broker.workstation_error)
-        # Simulate the operator removing only the positively identified legacy table.
-        self.net.table = None
         self.broker.restore_workstations()
         self.assertTrue(self.net.up)
         self.assertEqual(self.saved(), saved)
         self.assertEqual((self.enrollment / "workstation-wg.key").read_bytes(), key)
         self.assertTrue(broker.policy_equal(self.net.table, self.broker.expected_policy(json.loads(saved))))
+        self.assertNotEqual(self.net.table, legacy)
+        self.assertTrue(any("nft" == call[0] and call[1] == ("-j", "-f", "-") for call in self.net.calls))
+        self.assertEqual(self.net.table["nftables"][0]["table"].get("comment"), None)
+        self.assertEqual(self.net.table["nftables"][1]["chain"]["name"], broker.WORKSTATION_OWNER_CHAIN)
+
+    def test_legacy_policy_with_old_table_comment_migrates_after_verified_down(self):
+        self.pair(mode="persistent", ssh="1")
+        self.net.table = self.legacy_policy(include_comment=True)
+        self.net.calls = []
+        self.broker.restore_workstations()
+        self.assertTrue(self.net.up)
+        self.assertTrue(broker.policy_equal(self.net.table, self.broker.expected_policy(json.loads(self.saved()))))
+        self.assertEqual(self.net.table["nftables"][0]["table"].get("comment"), None)
+        down = self.net.calls.index(("ip", ("link", "set", "down", "dev", broker.WORKSTATION_IFACE)))
+        mutation = self.net.calls.index(("nft", ("-j", "-f", "-")))
+        self.assertLess(down, mutation)
+
+    def test_legacy_migration_refuses_when_interface_cannot_be_proved_down(self):
+        self.pair()
+        self.net.table = self.legacy_policy()
+        self.net.calls = []
+        with self.assertRaisesRegex(broker.BrokerError, "cannot be migrated while the tunnel is up"):
+            self.broker.validate_owned_table(self.net.table)
+        self.assertEqual(self.mutations(), [])
+        self.assertTrue(self.net.up)
+
+    def test_legacy_migration_refuses_unmatched_or_unfamiliar_policy(self):
+        self.pair(mode="persistent", ssh="1")
+        invalid = self.legacy_policy()
+        invalid["nftables"][-1]["rule"]["expr"][-1] = {"accept": None}
+        self.net.table = invalid
+        self.net.up = False
+        self.net.calls = []
+        with self.assertRaisesRegex(broker.BrokerError, "does not exactly match"):
+            self.broker.owned_table()
+        self.assertEqual(self.mutations(), [])
+        changed_comment = self.legacy_policy(include_comment=True)
+        changed_comment["nftables"][0]["table"]["comment"] = "foreign owner"
+        self.net.table = changed_comment
+        with self.assertRaisesRegex(broker.BrokerError, "Unexpected workstation table comment"):
+            self.broker.owned_table()
+
+    def test_owner_chain_must_be_unique_hookless_and_ruleless(self):
+        self.pair()
+        original = copy.deepcopy(self.net.table)
+        for mutate in (
+            lambda chain: chain.update({"type": "filter", "hook": "input", "prio": -10, "policy": "accept"}),
+            lambda chain: chain.update({"comment": "untrusted"}),
+        ):
+            actual = copy.deepcopy(original)
+            mutate(actual["nftables"][1]["chain"])
+            self.net.table = actual
+            with self.assertRaisesRegex(broker.BrokerError, "ownership chain"):
+                self.broker.owned_table()
+        actual = copy.deepcopy(original)
+        actual["nftables"].append(copy.deepcopy(actual["nftables"][1]))
+        self.net.table = actual
+        with self.assertRaisesRegex(broker.BrokerError, "ownership chain"):
+            self.broker.owned_table()
+        actual = copy.deepcopy(original)
+        actual["nftables"].append({"rule": {"family": "inet", "table": broker.WORKSTATION_TABLE,
+                                             "chain": broker.WORKSTATION_OWNER_CHAIN, "expr": [{"accept": None}]}})
+        self.net.table = actual
+        with self.assertRaisesRegex(broker.BrokerError, "ownership chain"):
+            self.broker.owned_table()
+
+    def test_restart_revalidates_owner_chain_and_revocation_removes_owned_policy(self):
+        _, response = self.pair(mode="persistent", ssh="1")
+        restarted = broker.Broker()
+        self.addCleanup(lambda: restarted.monitor.close() if restarted.monitor is not None else None)
+        restarted.audit = lambda *args: None
+        restarted.run = self.net.run
+        restarted.tool = lambda name: name
+        restarted.iptables_tool = self.broker.iptables_tool
+        restarted.restore_workstations()
+        self.assertTrue(self.net.up)
+        self.assertTrue(broker.policy_equal(self.net.table, restarted.expected_policy(
+            json.loads(self.saved()))))
+        self.assertEqual(self.net.table["nftables"][1]["chain"]["name"], broker.WORKSTATION_OWNER_CHAIN)
+        with patch.object(broker, "STATE", self.state), patch.object(broker, "ENROLLMENT", self.enrollment):
+            restarted.dispatch({"action": "unpair", "workstation_id": response["workstation_id"]}, 1000)
+        self.assertIsNone(self.net.table)
+        self.assertFalse(self.net.link)
 
     def test_update_disables_and_verifies_before_firewall_or_peer_changes(self):
         self.pair()
@@ -203,7 +296,8 @@ class EnforcementTests(unittest.TestCase):
 
     def test_periodic_fallback_repairs_altered_rule(self):
         self.pair()
-        self.net.table["nftables"][2]["rule"]["expr"][-1] = {"drop": None}
+        first_rule = next(item for item in self.net.table["nftables"] if "rule" in item)
+        first_rule["rule"]["expr"][-1] = {"drop": None}
         self.broker.expire_workstations()
         state, _ = self.broker.workstation_state()
         self.assertTrue(self.net.up)
@@ -216,7 +310,7 @@ class EnforcementTests(unittest.TestCase):
         self.broker.expire_workstations()
         self.assertFalse(self.net.up)
         self.assertEqual(self.mutations(), [])
-        self.assertIn("Unfamiliar", self.broker.workstation_error)
+        self.assertIn("Unexpected", self.broker.workstation_error)
         self.assertFalse(self.broker.workstation_status()["ready"])
 
     def test_temporary_flush_then_restore_still_triggers_disable_and_reverify(self):
@@ -282,7 +376,7 @@ class EnforcementTests(unittest.TestCase):
             output = original(arguments, **kwargs)
             if arguments[1:] == ["-j", "list", "table", "inet", broker.WORKSTATION_TABLE] and self.net.table:
                 value = json.loads(output)
-                value["nftables"][2]["rule"]["expr"][-1] = {"accept": {"unexpected": True}}
+                next(item for item in value["nftables"] if "rule" in item)["rule"]["expr"][-1] = {"accept": {"unexpected": True}}
                 return json.dumps(value)
             return output
         self.broker.run = altered

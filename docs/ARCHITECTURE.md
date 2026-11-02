@@ -1,6 +1,6 @@
 # TELIPHONES architecture
 
-This document describes how TELIPHONES 0.3.0 is built: its components, trust boundaries, network interfaces, firewall layers and stored state. For the security properties and their limitations, see [Security](SECURITY.md). For operating instructions, see the [module guide](../teliphones/README.md).
+This document describes how TELIPHONES module version 0.3.1 is built: its components, trust boundaries, network interfaces, firewall layers and stored state. For the security properties and their limitations, see [Security](SECURITY.md). For operating instructions, see the [module guide](../teliphones/README.md).
 
 ## Contents
 
@@ -155,7 +155,7 @@ Placement rules:
 - Fail2Ban hooks are recognised by the case-insensitive prefixes `fail2ban-` (as used on the FreePBX 17 test PBX) and `f2b-` (upstream Fail2Ban).
 - If no `fpbxfirewall` hook exists, the status is `not-detected` and no integration is installed.
 - If a Fail2Ban hook follows `fpbxfirewall`, no safe position exists. The integration is withdrawn and the status is `error`, naming the chains. Tunnel traffic is then left to FreePBX Firewall.
-- An unfamiliar chain named `teliphones-ws`, an unmarked rule within it or a reference from another chain is never modified, and admission is refused.
+- The `inet teliphones_workstations` table is owned through its exact hookless `teliphones_owner_v1` marker chain, not a table comment that Debian 12 nftables 1.0.6 drops from JSON readback. An unfamiliar `teliphones-ws` iptables chain, an unmarked rule within it or a reference from another chain is never modified, and admission is refused.
 
 The exact rule text, the reconciliation behaviour and the known ordering gap are documented in [FreePBX Firewall integration](../teliphones/docs/WORKSTATION-PAIRING.md#freepbx-firewall-integration).
 

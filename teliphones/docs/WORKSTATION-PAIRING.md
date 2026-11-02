@@ -1,4 +1,4 @@
-# TELIPHONES 0.3.0 workstation pairing contract
+# TELIPHONES 0.3.1 workstation pairing contract
 
 Workstation pairing is for an administrator's own Windows workstation. It is separate from the customer-authorised Remote Support session workflow. The FreePBX module and root broker remain authoritative for peer enrollment, allowed traffic, expiry and revocation.
 
@@ -34,13 +34,19 @@ The response is a copyable enrollment artifact, not proof that arbitrary access 
 
 ## Upgrading from 0.2.0
 
-This also applies when upgrading from 0.2.1. Until the bootstrap installs the 0.3.0 broker, **Windows workstations** warns that the running broker does not report FreePBX Firewall integration, and FreePBX Firewall may drop workstation HTTP/HTTPS.
+This also applies when upgrading from 0.2.1. Install the current module and rerun the root bootstrap before relying on the separately installed broker.
 
-Install `TELIPHONES-0.3.0.tgz` through Module Admin, then rerun the documented root bootstrap with no active support session and Windows tunnels disconnected. Installation does not delete `workstations.json`, `workstation-recovery.json` or `workstation-wg.key`. Valid pairings keep their identities, addresses, permissions and original deadlines.
+Install `TELIPHONES-0.3.1.tgz` through Module Admin, then rerun the documented root bootstrap with no active support session and Windows tunnels disconnected. Installation does not delete `workstations.json`, `workstation-recovery.json` or `workstation-wg.key`. Valid pairings keep their identities, addresses, permissions and original deadlines.
 
 The bootstrap copies the current broker into its protected root-owned installation and restarts it. Protocol 3 was already used in 0.2.0: an operational socket or protocol number alone does **not** prove these security corrections are installed. Rerunning the bootstrap is mandatory even if no update warning appears.
 
-An unmarked 0.2.0 table is treated as unfamiliar: startup disables `tlp-admin`, retains the saved pairing/key data, reports the ownership conflict and does not change or delete that table. There is deliberately no automatic adoption or marker injection. A root administrator must investigate ownership with the interface stopped and, only if positively identified as the old TELIPHONES table, explicitly remove that isolated legacy table before restarting the updated broker. Do not flush the ruleset, remove unrelated tables, clear pairing data or add a marker to an unknown table. If ownership cannot be established, leave workstation access disabled. Restoration of valid pairings requires verified new restrictions; expired temporary entries are not revived.
+An unmarked legacy table is migrated only when its complete nft JSON exactly matches the known 0.3.0 policy reconstructed against the root-owned saved subnet and SSH source rules, its optional old table comment is absent or exactly expected, and `tlp-admin` has been verified down. The broker then replaces the inspected table atomically with the current policy and hookless owner chain. It does not infer ownership from a name or add a marker to an unknown policy. Unknown or altered tables remain untouched, saved pairings and the PBX key are retained, and access stays disabled for administrator investigation. Do not flush rules, remove unrelated tables or clear pairing data. Expired temporary pairings are not revived.
+
+## Upgrading from 0.3.0
+
+The 0.3.1 broker adds the hookless `teliphones_owner_v1` chain because Debian 12 nftables 1.0.6 drops table comments from kernel JSON readback. The operator reports that this ownership correction was tested successfully on the actual FreePBX 17 test PBX. The repository code still needs to be installed and verified on that PBX through the normal upgrade/bootstrap procedure; this document does not claim that deployment has occurred.
+
+Install `TELIPHONES-0.3.1.tgz`, confirm there is no active support session, disconnect Windows tunnels, then rerun [Complete Installation on FreePBX 17](../README.md#complete-installation-on-freepbx-17) from an existing root shell. Broker protocol remains 3, so protocol/status alone cannot prove the corrected root-owned broker is running. On restart, the broker verifies the tunnel is down, safely migrates only the exact known 0.3.0 policy, restores current policy from saved state and re-admits valid, unexpired pairings. Pairing identities, addresses, SSH permissions, deadlines and the PBX WireGuard key are preserved. If exact ownership cannot be established, migration is refused and recovery data remains intact.
 
 ## Network requirements
 
@@ -50,7 +56,7 @@ The `nft` CLI is essential; enabling or running `nftables.service` is **not** re
 
 ## Enforcement integrity and exposure limits
 
-The only managed table is `inet teliphones_workstations`, bearing the exact table comment `TELIPHONES workstation enforcement v1`. An unfamiliar or unmarked namesake is **never** overwritten or deleted, including during uninstall. The interface is disabled and the conflict is reported. Older unmarked TELIPHONES tables require explicit operator investigation with the interface stopped; the broker does not infer ownership from a name, and adding its marker to an unknown table is not a safe migration.
+The current managed table is `inet teliphones_workstations` and contains the exact hookless, ruleless chain `teliphones_owner_v1`. This kernel-visible object is the ownership marker; unlike table comments, it survives nftables 1.0.6 JSON readback. Table comments are not relied upon. An unfamiliar owner chain or unmarked namesake is **never** overwritten or deleted. The only exception is a one-time migration when the entire table exactly matches the known 0.3.0 policy, its optional table comment is absent or exact, the subnet and SSH sources reconcile to root-owned saved state, and the interface is verified down. All other unmarked tables require administrator investigation.
 
 Expected JSON is generated offline from the approved PBX address and SSH sources. The broker compares the actual `nft -j list table` output with the complete expected table, both base chains (type, hooks, priority and policy), ordered rules and every expression. Only kernel handles, envelope metadata and chain enumeration order are ignored. Extra rules/objects or changed destinations, interfaces, protocols, ports, verdicts or ownership fail validation. The same JSON is submitted atomically, read back and checked before peer admission. Exclusive table creation refuses a newly appearing namesake; deletion uses the inspected table handle so a replacement table is not deleted by name.
 

@@ -1,9 +1,9 @@
 # TELIPHONES security
 
-Security is the defining consideration for TELIPHONES. This document explains the security model of version 0.3.0 in accessible terms, states the assurance behind each control and records the known limitations honestly.
+Security is the defining consideration for TELIPHONES. This document explains the security model of module version 0.3.1 in accessible terms, states the assurance behind each control and records the known limitations honestly.
 
 > [!WARNING]
-> TELIPHONES 0.3.0 is experimental. The controls below describe what TELIPHONES is **designed** to enforce. Most have been tested only with automated tests and simulated environments. Treat them as security guarantees only once the corresponding live and adversarial tests have passed. Do not use TELIPHONES on a production PBX.
+> TELIPHONES 0.3.1 is unreleased and experimental. The controls below describe what TELIPHONES is **designed** to enforce. Most have been tested only with automated tests and simulated environments; the operator separately reports live testing of the nftables ownership correction. Treat controls as security guarantees only once their corresponding live and adversarial tests have passed. Do not use TELIPHONES on a production PBX.
 
 ## Contents
 
@@ -99,9 +99,9 @@ SSH approval admits the PBX's **existing** SSH service, with the PBX's existing 
 
 ### TELIPHONES-owned nftables table
 
-- The broker manages only `inet teliphones_workstations`, identified by the exact comment `TELIPHONES workstation enforcement v1`.
+- The broker manages only `inet teliphones_workstations`, identified by the exact hookless `teliphones_owner_v1` chain. It does not rely on table comments, which Debian 12 nftables 1.0.6 omits from kernel JSON readback.
 - Before any peer is admitted, the broker reads back the complete kernel table and compares it with the expected policy: its chains, hooks, priorities, policies, every rule and every expression. Extra or altered content fails verification.
-- A table with the same name but without the TELIPHONES marker is treated as unfamiliar. It is never overwritten or deleted, and workstation access stays disabled until a root administrator has investigated it.
+- A table with the same name but without the TELIPHONES owner chain is treated as unfamiliar, except for a one-time migration of the exact known 0.3.0 policy while the interface is verified down. Altered or unrecognised tables are never overwritten or deleted, and workstation access stays disabled until a root administrator has investigated them.
 - External changes are detected through a local `nft monitor` stream, with a periodic check about every 15 seconds as a fallback. When a change is detected, the interface is disabled, the policy is restored and verified, and only then are peers readmitted.
 
 ### FreePBX Firewall integration
@@ -174,7 +174,7 @@ TELIPHONES never flushes the system ruleset, deletes or edits FreePBX Firewall o
 - **No revocation push to Windows.** Clients detect revocation through lost reachability.
 - **Root SSH for Remote Support.** The temporary support SSH service uses root with session-specific keys. A narrower support account model has not yet been designed.
 - **Remote Support firewall policy.** Support-session reachability with FreePBX Firewall enabled is unknown, and TELIPHONES does not change the support firewall policy.
-- **Real-world verification.** End-to-end workstation connectivity with FreePBX Firewall enabled, firewall reload behaviour, Fail2Ban enforcement during reordering, SSH through PuTTY and the inaccessibility of unauthorised services all remain to be verified on a real PBX. See [outstanding verification](../teliphones/README.md#outstanding-030-verification).
+- **Real-world verification.** The operator reports that the 0.3.1 nftables ownership correction was tested on the FreePBX 17 test PBX. Full repository package upgrade/recovery, Fail2Ban ordering, failure recovery and adversarial security testing remain incomplete. See [outstanding verification](../teliphones/README.md#outstanding-031-verification).
 
 ## Operational guidance
 

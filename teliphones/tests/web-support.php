@@ -194,8 +194,15 @@ $assert(strpos($installSource, "if (!defined('FREEPBX_IS_AUTH')) { die('No direc
 $bootstrapSource = (string)file_get_contents(dirname(__DIR__) . '/BrokerBootstrap.php');
 $assert(strpos($bootstrapSource, "copy(\$moduleDir . '/support_broker.py', \$brokerFile)") !== false
     && strpos($bootstrapSource, 'chmod($brokerFile, 0600)') !== false
-    && strpos($bootstrapSource, 'systemctl restart teliphones-broker.service') !== false,
+    && strpos($bootstrapSource, 'systemctl restart teliphones-broker.service') !== false
+    && strpos($bootstrapSource, "copy(\$moduleDir . '/support_broker.py', \$brokerFile)")
+        < strpos($bootstrapSource, 'systemctl restart teliphones-broker.service'),
     'Root bootstrap must install the current broker as a protected root-owned file and restart it.');
+$brokerSource = (string)file_get_contents(dirname(__DIR__) . '/support_broker.py');
+$assert(strpos($brokerSource, 'WORKSTATION_OWNER_CHAIN = "teliphones_owner_v1"') !== false
+    && strpos(BrokerBootstrap::UPGRADE_NOTE, '0.3.1') !== false
+    && strpos(BrokerBootstrap::UPGRADE_NOTE, 'nftables 1.0.6 drops table comments') !== false,
+    'The documented 0.3.1 upgrade must identify the nftables 1.0.6 ownership correction.');
 $assert(strpos($bootstrapSource, 'workstations.json') === false && strpos($bootstrapSource, 'workstation-wg.key') === false,
     'Bootstrap must not recreate or delete workstation pairing state or the PBX key.');
 $assert(preg_match('/posix_geteuid\(\) !== 0\) \{\s*error_log\(\'[^\'\n]*Complete Installation on FreePBX 17[^\'\n]*\'\);\s*return false;/', $bootstrapSource) === 1,

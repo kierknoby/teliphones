@@ -140,6 +140,32 @@ class IntegrationTests(unittest.TestCase):
         self.assertNotIn(CHAIN, self.input_targets())
         self.assertFalse(self.net.link)
 
+    def test_complete_chain_deletion_is_repaired_without_monitor_event(self):
+        self.pair()
+        self.net.filter["INPUT"] = self.baseline_input()
+        del self.net.filter[CHAIN]
+        self.broker.wake.clear()
+        self.broker.enforcement_event.clear()
+        self.net.calls = []
+        self.broker.expire_workstations()
+        self.assertEqual(self.input_targets(), EXPECTED)
+        self.assertEqual(len(self.rules()), 3)
+        self.assertEqual(self.broker.integration["state"], "active")
+        self.assertNotIn(("ip", ("link", "set", "down", "dev", broker.WORKSTATION_IFACE)), self.net.calls)
+
+    def test_temporarily_missing_freepbx_hook_withdraws_then_restores_integration(self):
+        _, response = self.pair()
+        self.net.filter["INPUT"].remove(["-j", "fpbxfirewall"])
+        self.broker.expire_workstations()
+        self.assertNotIn(CHAIN, self.net.filter)
+        self.assertEqual(self.broker.integration["state"], "not-detected")
+        self.assertTrue(self.net.up)
+        self.net.filter["INPUT"].append(["-j", "fpbxfirewall"])
+        self.broker.expire_workstations()
+        self.assertEqual(self.input_targets(), EXPECTED)
+        self.assertEqual(self.accepted(), {(response["address"], "80"), (response["address"], "443")})
+        self.assertEqual(self.broker.integration["state"], "active")
+
     def test_last_revocation_shutdown_and_uninstall_remove_integration(self):
         self.pair()
         self.unpair("all")

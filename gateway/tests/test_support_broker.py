@@ -562,7 +562,13 @@ class WorkstationPairingTests(unittest.TestCase):
         self.assertIn('        iifname "tlp-admin" drop', ruleset)
         self.assertIn('        oifname "tlp-admin" drop', ruleset)
         self.assertTrue(ruleset.startswith("table inet teliphones_workstations {"))
-        self.assertIn(broker_module.WORKSTATION_OWNER, ruleset)
+        self.assertIn("chain " + broker_module.WORKSTATION_OWNER_CHAIN + " { }", ruleset)
+        self.assertNotIn("comment", ruleset)
+        policy = broker_module.workstation_policy("100.70.1.1", [])
+        self.assertNotIn("comment", policy["nftables"][0]["table"])
+        self.assertEqual(policy["nftables"][1]["chain"], {
+            "family": "inet", "table": broker_module.WORKSTATION_TABLE, "name": broker_module.WORKSTATION_OWNER_CHAIN
+        })
         self.assertNotIn("delete table", ruleset)
         ruleset = broker_module.workstation_ruleset("100.70.1.1", ["100.70.1.3", "100.70.1.2"])
         self.assertIn("ip saddr { 100.70.1.2, 100.70.1.3 } ip daddr 100.70.1.1 tcp dport 22 accept", ruleset)

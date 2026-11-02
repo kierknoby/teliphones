@@ -214,6 +214,25 @@ with tempfile.TemporaryDirectory(prefix=".firewall-lab-", dir=ROOT) as directory
         instance.firewall_integration(state)
         check(ipt("-S") == stable and len(jumps()) == 1, "integration is not idempotent")
 
+        # "active" verifies the owned rules, not reachability through every independent firewall decision.
+        early_drop = ("-i", broker.WORKSTATION_IFACE, "-s", WEB_PEER, "-p", "tcp", "--dport", "80", "-j", "DROP")
+        ipt("-I", "INPUT", "1", *early_drop)
+        instance.firewall_integration(state)
+        check(instance.integration["state"] == "active", instance.integration)
+        check(open_set(workstation) == expected_open - {(WEB_PEER, 80)}, "an earlier INPUT drop must not be bypassed")
+        ipt("-D", "INPUT", *early_drop)
+
+        run("nft", "add", "table", "inet", "teliphones_lab_late")
+        run("nft", "add", "chain", "inet", "teliphones_lab_late", "input",
+            "{ type filter hook input priority 10; policy accept; }")
+        run("nft", "add", "rule", "inet", "teliphones_lab_late", "input",
+            "iifname", broker.WORKSTATION_IFACE, "ip", "saddr", WEB_PEER, "tcp", "dport", "443", "drop")
+        instance.firewall_integration(state)
+        check(instance.integration["state"] == "active", instance.integration)
+        check(open_set(workstation) == expected_open - {(WEB_PEER, 443)}, "a separate nftables drop must not be bypassed")
+        run("nft", "delete", "table", "inet", "teliphones_lab_late")
+        check(open_set(workstation) == expected_open, "removing lab-only blockers must restore the baseline")
+
         # IPv6 is not integrated and remains dropped by the owned nft policy.
         v6 = reachable(workstation, [("fd7e::2", "fd7e::1", port) for port in PORTS])
         check(not any(v6.values()), "IPv6 through tlp-admin must remain blocked")
@@ -234,11 +253,14 @@ with tempfile.TemporaryDirectory(prefix=".firewall-lab-", dir=ROOT) as directory
         instance.mutate_policy(instance.expected_policy(state), None)
 
         # Event-driven repair of FreePBX reloads (iptables-nft emits nft events; legacy relies on the periodic check).
-        for order in ("flush", "hook-first"):
+        for order in ("flush", "hook-first", "chain-deleted"):
             instance.wake.clear()
-            if order == "flush":
+            if order in ("flush", "chain-deleted"):
                 ipt("-F", "INPUT")
-            freepbx("normal" if order == "flush" else order)
+            if order == "chain-deleted":
+                ipt("-F", broker.INTEGRATION_CHAIN)
+                ipt("-X", broker.INTEGRATION_CHAIN)
+            freepbx("hook-first" if order == "hook-first" else "normal")
             check(freepbx_snapshot()[:3] == before[:3], "simulated reload changed FreePBX rules")
             check(open_set(workstation, (SSH_PEER,)) == set(), "reload must fall back to FreePBX policy (fail closed)")
             if BACKEND == "nft":
