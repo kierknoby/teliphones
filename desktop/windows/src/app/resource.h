@@ -47,12 +47,23 @@
 #define IDC_APPS_LOCATE_TERMINAL    1305
 #define IDC_APPS_STATUS             1306
 #define IDC_APPS_SKIP               1307
+#define IDC_APPS_GROUP              1308
+#define IDC_APPS_BROWSER_LABEL      1309
+#define IDC_APPS_TERMINAL_LABEL     1310
+#define IDC_APPS_NOTE               1311
+#define IDC_CONNECT_GROUP           1312
+#define IDC_CONNECT_STATUS          1313
+#define IDC_CONNECT_INSTALL         1314
+#define IDC_CONNECT_CHECK           1315
+#define IDC_CONNECT_NOT_NOW         1316
+#define IDC_SETUP_PBX               1317
+#define IDC_SETUP_SUPPORT           1318
 
 #ifdef APSTUDIO_INVOKED
 #ifndef APSTUDIO_READONLY_SYMBOLS
 #define _APS_NEXT_RESOURCE_VALUE    129
 #define _APS_NEXT_COMMAND_VALUE     32771
-#define _APS_NEXT_CONTROL_VALUE     1308
+#define _APS_NEXT_CONTROL_VALUE     1319
 #define _APS_NEXT_SYMED_VALUE       101
 #endif
 #endif

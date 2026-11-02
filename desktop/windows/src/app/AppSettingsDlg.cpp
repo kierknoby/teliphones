@@ -5,9 +5,11 @@
 #include <algorithm>
 #include <exception>
 #include <iterator>
+#include <memory>
 
 #include "../platform/Applications.h"
 #include "../platform/Win.h"
+#include "../platform/WireGuardInstaller.h"
 #include "resource.h"
 
 using tlp::AppKind;
@@ -27,10 +29,21 @@ BEGIN_MESSAGE_MAP(CAppSettingsDlg, CDialogEx)
     ON_BN_CLICKED(IDC_APPS_LOCATE_TERMINAL, &CAppSettingsDlg::OnLocateTerminal)
     ON_CBN_SELCHANGE(IDC_APPS_BROWSER, &CAppSettingsDlg::OnSelectionChanged)
     ON_CBN_SELCHANGE(IDC_APPS_TERMINAL, &CAppSettingsDlg::OnSelectionChanged)
+    ON_BN_CLICKED(IDC_CONNECT_INSTALL, &CAppSettingsDlg::OnInstallWireGuard)
+    ON_BN_CLICKED(IDC_CONNECT_CHECK, &CAppSettingsDlg::OnCheckWireGuard)
+    ON_BN_CLICKED(IDC_CONNECT_NOT_NOW, &CAppSettingsDlg::OnNotNow)
+    ON_BN_CLICKED(IDC_SETUP_PBX, &CAppSettingsDlg::OnGetStartedPbx)
+    ON_BN_CLICKED(IDC_SETUP_SUPPORT, &CAppSettingsDlg::OnGetStartedSupport)
+    ON_MESSAGE(WM_APP_SETUP_PROGRESS, &CAppSettingsDlg::OnSetupProgress)
+    ON_MESSAGE(WM_APP_SETUP_DONE, &CAppSettingsDlg::OnSetupDone)
 END_MESSAGE_MAP()
 
 CAppSettingsDlg::CAppSettingsDlg(Mode mode, const std::optional<tlp::Preferences>& stored, CWnd* parent)
     : CDialogEx(IDD_APP_SETTINGS, parent), mode_(mode), stored_(stored), working_(stored.value_or(tlp::Preferences())) {}
+
+CAppSettingsDlg::~CAppSettingsDlg() {
+    if (installer_.joinable()) installer_.join();
+}
 
 void CAppSettingsDlg::DoDataExchange(CDataExchange* exchange) {
     CDialogEx::DoDataExchange(exchange);
@@ -42,7 +55,7 @@ BOOL CAppSettingsDlg::OnInitDialog() {
     CDialogEx::OnInitDialog();
     if (mode_ == Mode::Welcome) {
         SetWindowText(L"Welcome to TELIPHONES");
-        SetDlgItemText(IDC_APPS_HEADING, L"Welcome to TELIPHONES");
+        SetDlgItemText(IDC_APPS_HEADING, L"Step 1: Applications");
         SetDlgItemText(IDC_APPS_INTRO, L"Choose the applications TELIPHONES uses to open FreePBX and SSH sessions through your secure connection. "
                                        L"Only applications found on this computer are listed. You can change these at any time in Settings.");
     } else {
@@ -61,6 +74,8 @@ BOOL CAppSettingsDlg::OnInitDialog() {
     Fill(AppKind::Browser, effective.browser);
     Fill(AppKind::Terminal, effective.terminal);
     UpdateStatus();
+    RefreshConnectivity();
+    ShowStep();
     return TRUE;
 }
 
@@ -162,6 +177,16 @@ bool CAppSettingsDlg::Store(const tlp::Preferences& candidate) {
 }
 
 void CAppSettingsDlg::OnOK() {
+    if (installing_) return;
+    if (mode_ == Mode::Welcome && step_ != 1) {
+        if (step_ == 2) {
+            step_ = 3;
+            ShowStep();
+        } else {
+            CDialogEx::OnOK();
+        }
+        return;
+    }
     try {
         auto result = tlp::PreferencesAfterFirstRun(tlp::FirstRunOutcome::Saved, Selection(AppKind::Browser), Selection(AppKind::Terminal), browsers_,
                                                     terminals_, working_);
@@ -171,12 +196,143 @@ void CAppSettingsDlg::OnOK() {
         return;
     }
     outcome = tlp::FirstRunOutcome::Saved;
+    if (mode_ == Mode::Welcome) {
+        step_ = 2;
+        ShowStep();
+        return;
+    }
     CDialogEx::OnOK();
 }
 
 void CAppSettingsDlg::OnSkip() {
+    if (installing_) return;
     auto result = tlp::PreferencesAfterFirstRun(tlp::FirstRunOutcome::Skipped, "", "", browsers_, terminals_, working_);
     if (!result || !Store(*result)) return;
     outcome = tlp::FirstRunOutcome::Skipped;
+    step_ = 2;
+    ShowStep();
+}
+
+void CAppSettingsDlg::OnCancel() {
+    if (installing_) return;
+    CDialogEx::OnCancel();
+}
+
+void CAppSettingsDlg::ShowStep() {
+    bool welcome = mode_ == Mode::Welcome;
+    for (int id : {IDC_APPS_GROUP, IDC_APPS_BROWSER_LABEL, IDC_APPS_TERMINAL_LABEL, IDC_APPS_BROWSER,
+                   IDC_APPS_TERMINAL, IDC_APPS_LOCATE_BROWSER, IDC_APPS_LOCATE_TERMINAL, IDC_APPS_STATUS, IDC_APPS_NOTE}) {
+        GetDlgItem(id)->ShowWindow(!welcome || step_ == 1 ? SW_SHOW : SW_HIDE);
+    }
+    for (int id : {IDC_CONNECT_GROUP, IDC_CONNECT_STATUS, IDC_CONNECT_CHECK}) {
+        GetDlgItem(id)->ShowWindow(!welcome || step_ == 2 ? SW_SHOW : SW_HIDE);
+    }
+    GetDlgItem(IDC_CONNECT_INSTALL)->ShowWindow((!welcome || step_ == 2) && !wireguard_.installed ? SW_SHOW : SW_HIDE);
+    GetDlgItem(IDC_CONNECT_NOT_NOW)->ShowWindow((!welcome || step_ == 2) && !wireguard_.installed ? SW_SHOW : SW_HIDE);
+    GetDlgItem(IDC_APPS_SKIP)->ShowWindow(welcome && step_ == 1 ? SW_SHOW : SW_HIDE);
+    GetDlgItem(IDC_SETUP_PBX)->ShowWindow(welcome && step_ == 3 ? SW_SHOW : SW_HIDE);
+    GetDlgItem(IDC_SETUP_SUPPORT)->ShowWindow(welcome && step_ == 3 ? SW_SHOW : SW_HIDE);
+    GetDlgItem(IDC_SETUP_PBX)->EnableWindow(wireguard_.installed && wireguard_.trusted);
+    GetDlgItem(IDC_SETUP_SUPPORT)->EnableWindow(wireguard_.installed && wireguard_.trusted);
+    if (welcome) {
+        SetDlgItemText(IDC_APPS_HEADING, step_ == 1 ? L"Step 1: Applications" : step_ == 2 ? L"Step 2: Secure connectivity" : L"Step 3: Get started");
+        if (step_ == 2) {
+            SetDlgItemText(IDC_APPS_INTRO, wireguard_.installed
+                ? (wireguard_.trusted ? L"WireGuard is already installed and verified. No installation is needed."
+                                     : L"WireGuard is installed, but could not be verified. TELIPHONES will not overwrite it automatically. Check Again after administrator investigation.")
+                : L"WireGuard is required\r\nTELIPHONES uses WireGuard to establish secure connections to your PBXs. WireGuard is not currently installed on this computer.");
+        } else if (step_ == 3) {
+            SetDlgItemText(IDC_APPS_INTRO, wireguard_.installed && wireguard_.trusted
+                ? L"Add your first PBX or start the separately authorised Remote Support workflow. Profiles stay on this computer; a new computer has an empty list."
+                : L"You can explore TELIPHONES now. Install WireGuard later from Settings > Connectivity before adding or connecting to a PBX.");
+        }
+        SetDlgItemText(IDOK, step_ == 1 ? L"Save & Next" : step_ == 2 ? L"Continue" : L"Finish");
+    }
+}
+
+void CAppSettingsDlg::RefreshConnectivity() {
+    try {
+        wireguard_ = tlp::win::FindWireGuard();
+        std::string text;
+        if (wireguard_.installed && wireguard_.trusted) {
+            text = "Status: Installed (verified, signed by " + wireguard_.signer + ").";
+        } else if (installation.state == tlp::SetupState::Failed) {
+            text = "Status: Installation failed.";
+        } else {
+            text = wireguard_.installed ? "Status: Installed, but verification failed. Automatic replacement is disabled."
+                                        : "Status: Not installed.";
+        }
+        if (!installation.message.empty()) text += "\r\n" + installation.message;
+        else if (!wireguard_.installed) text += "\r\nWireGuard is required. TELIPHONES can download and verify the official installer, then request administrator approval.";
+        SetDlgItemText(IDC_CONNECT_STATUS, Widen(text).c_str());
+    } catch (const std::exception& e) {
+        wireguard_ = {};
+        SetDlgItemText(IDC_CONNECT_STATUS, Widen(std::string("WireGuard detection failed: ") + e.what()).c_str());
+    }
+    ShowStep();
+}
+
+void CAppSettingsDlg::OnCheckWireGuard() {
+    if (!installing_) RefreshConnectivity();
+}
+
+void CAppSettingsDlg::OnNotNow() {
+    if (!installing_) {
+        if (mode_ == Mode::Settings) {
+            OnCancel();
+            return;
+        }
+        step_ = 3;
+        ShowStep();
+    }
+}
+
+void CAppSettingsDlg::OnInstallWireGuard() {
+    if (installing_) return;
+    RefreshConnectivity();
+    if (wireguard_.installed) return;
+    // This button is the explicit approval. No startup or detection path calls the installer.
+    installing_ = true;
+    for (int id : {IDOK, IDCANCEL, IDC_CONNECT_INSTALL, IDC_CONNECT_CHECK, IDC_CONNECT_NOT_NOW}) GetDlgItem(id)->EnableWindow(FALSE);
+    SetDlgItemText(IDC_CONNECT_STATUS, L"Downloading the official WireGuard installer...");
+    HWND window = m_hWnd;
+    try {
+        installer_ = std::thread([window] {
+            auto result = std::make_unique<tlp::SetupResult>(tlp::win::InstallWireGuard([window](const std::string& text) {
+                auto message = std::make_unique<std::string>(text);
+                if (::PostMessageW(window, WM_APP_SETUP_PROGRESS, 0, reinterpret_cast<LPARAM>(message.get()))) message.release();
+            }));
+            if (::PostMessageW(window, WM_APP_SETUP_DONE, 0, reinterpret_cast<LPARAM>(result.get()))) result.release();
+        });
+    } catch (const std::exception& e) {
+        installing_ = false;
+        installation = {tlp::SetupState::Failed, e.what()};
+        for (int id : {IDOK, IDCANCEL, IDC_CONNECT_INSTALL, IDC_CONNECT_CHECK, IDC_CONNECT_NOT_NOW}) GetDlgItem(id)->EnableWindow(TRUE);
+        RefreshConnectivity();
+    }
+}
+
+LRESULT CAppSettingsDlg::OnSetupProgress(WPARAM, LPARAM value) {
+    std::unique_ptr<std::string> text(reinterpret_cast<std::string*>(value));
+    SetDlgItemText(IDC_CONNECT_STATUS, Widen(*text).c_str());
+    return 0;
+}
+
+LRESULT CAppSettingsDlg::OnSetupDone(WPARAM, LPARAM value) {
+    std::unique_ptr<tlp::SetupResult> result(reinterpret_cast<tlp::SetupResult*>(value));
+    if (installer_.joinable()) installer_.join();
+    installing_ = false;
+    installation = *result;
+    for (int id : {IDOK, IDCANCEL, IDC_CONNECT_INSTALL, IDC_CONNECT_CHECK, IDC_CONNECT_NOT_NOW}) GetDlgItem(id)->EnableWindow(TRUE);
+    RefreshConnectivity();
+    return 0;
+}
+
+void CAppSettingsDlg::GetStarted(StartAction action) {
+    if (installing_ || !wireguard_.installed || !wireguard_.trusted) return;
+    startAction = action;
     EndDialog(IDOK);
 }
+
+void CAppSettingsDlg::OnGetStartedPbx() { GetStarted(StartAction::AddPbx); }
+void CAppSettingsDlg::OnGetStartedSupport() { GetStarted(StartAction::Support); }

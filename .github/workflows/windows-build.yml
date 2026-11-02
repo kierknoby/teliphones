@@ -132,6 +132,28 @@ jobs:
           if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
             throw "TELIPHONES.exe was not produced at $exe"
           }
+          $versionHeader = Get-Content -LiteralPath 'desktop/windows/src/app/Version.h' -Raw
+          $parts = @(
+            foreach ($part in @('MAJOR', 'MINOR', 'PATCH', 'BUILD')) {
+              $match = [regex]::Match($versionHeader, "(?m)^#define TELIPHONES_VERSION_$part\s+(\d+)\s*$")
+              if (-not $match.Success) {
+                throw "Missing Windows version component: $part"
+              }
+              [int]$match.Groups[1].Value
+            }
+          )
+          $expectedFileVersion = $parts -join '.'
+          $expectedProductVersion = $parts[0..2] -join '.'
+          $version = [Diagnostics.FileVersionInfo]::GetVersionInfo($exe)
+          if ($version.FileVersion -ne $expectedFileVersion -or $version.ProductVersion -ne $expectedProductVersion -or -not $version.IsPreRelease) {
+            throw "Unexpected embedded Windows version: file=$($version.FileVersion), product=$($version.ProductVersion), prerelease=$($version.IsPreRelease). Expected $expectedFileVersion / $expectedProductVersion (prerelease)."
+          }
+          $fixedFileVersion = @($version.FileMajorPart, $version.FileMinorPart, $version.FileBuildPart, $version.FilePrivatePart) -join '.'
+          $fixedProductVersion = @($version.ProductMajorPart, $version.ProductMinorPart, $version.ProductBuildPart, $version.ProductPrivatePart) -join '.'
+          if ($fixedFileVersion -ne $expectedFileVersion -or $fixedProductVersion -ne $expectedFileVersion) {
+            throw 'Fixed numeric version metadata does not match Version.h.'
+          }
+          Write-Host "TELIPHONES Windows $expectedProductVersion (file version $expectedFileVersion)"
           $bytes = [IO.File]::ReadAllBytes($exe)
           if ($bytes.Length -lt 64 -or [BitConverter]::ToUInt16($bytes, 0) -ne 0x5A4D) {
             throw 'TELIPHONES.exe is not a Windows executable (missing MZ header).'
@@ -279,6 +301,17 @@ jobs:
           New-Item -ItemType Directory -Path 'desktop/windows/build/artifact' | Out-Null
           Copy-Item -LiteralPath 'desktop/windows/build/Release/TELIPHONES.exe' -Destination 'desktop/windows/build/artifact/TELIPHONES.exe'
           Copy-Item -LiteralPath 'desktop/windows/README.md' -Destination 'desktop/windows/build/artifact/README.md'
+          Copy-Item -LiteralPath 'desktop/windows/CHANGELOG.md' -Destination 'desktop/windows/build/artifact/CHANGELOG.md'
+          $exe = Join-Path $env:GITHUB_WORKSPACE 'desktop/windows/build/Release/TELIPHONES.exe'
+          $version = [Diagnostics.FileVersionInfo]::GetVersionInfo($exe)
+          [ordered]@{
+            productVersion = $version.ProductVersion
+            fileVersion = $version.FileVersion
+            sourceRevision = $env:GITHUB_SHA
+            runId = $env:GITHUB_RUN_ID
+            runAttempt = $env:GITHUB_RUN_ATTEMPT
+            sha256 = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          } | ConvertTo-Json | Set-Content -LiteralPath 'desktop/windows/build/artifact/build-info.json' -Encoding utf8
 
       - name: Upload Windows application
         uses: actions/upload-artifact@v4
@@ -287,5 +320,7 @@ jobs:
           path: |
             desktop/windows/build/artifact/TELIPHONES.exe
             desktop/windows/build/artifact/README.md
+            desktop/windows/build/artifact/CHANGELOG.md
+            desktop/windows/build/artifact/build-info.json
           if-no-files-found: error
           retention-days: 14

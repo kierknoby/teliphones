@@ -19,6 +19,7 @@
 #include "PairDlg.h"
 #include "SupportDlg.h"
 #include "resource.h"
+#include "Version.h"
 
 using tlp::Profile;
 using tlp::ProfileKind;
@@ -128,6 +129,7 @@ void CMainDlg::DoDataExchange(CDataExchange* exchange) {
 
 BOOL CMainDlg::OnInitDialog() {
     CDialogEx::OnInitDialog();
+    SetWindowText(Widen("TELIPHONES " TELIPHONES_VERSION_STRING).c_str());
     HICON icon = LoadIconW(nullptr, IDI_APPLICATION);
     SetIcon(icon, TRUE);
     SetIcon(icon, FALSE);
@@ -138,11 +140,7 @@ BOOL CMainDlg::OnInitDialog() {
     list_.InsertColumn(2, L"Access", LVCFMT_LEFT, 190);
     list_.InsertColumn(3, L"Status", LVCFMT_LEFT, 110);
 
-    wireguard_ = tlp::win::FindWireGuard();
-    std::string wireguardStatus = wireguard_.installed && wireguard_.trusted
-                                      ? "WireGuard for Windows: installed (signed by " + wireguard_.signer + ")"
-                                      : "WireGuard for Windows: " + wireguard_.problem;
-    SetDlgItemText(IDC_WG_STATUS, Widen(wireguardStatus).c_str());
+    RefreshWireGuard();
 
     try {
         profiles_ = tlp::win::LoadProfiles();
@@ -167,7 +165,7 @@ BOOL CMainDlg::OnInitDialog() {
 }
 
 LRESULT CMainDlg::OnFirstRun(WPARAM, LPARAM) {
-    ShowAppSettings(true, "");
+    ShowAppSettings(tlp::NeedsFirstRun(storedPreferences_), "");
     return 0;
 }
 
@@ -181,9 +179,19 @@ tlp::Preferences CMainDlg::CurrentPreferences() {
 bool CMainDlg::ShowAppSettings(bool welcome, const std::string& notice) {
     CAppSettingsDlg dialog(welcome ? CAppSettingsDlg::Mode::Welcome : CAppSettingsDlg::Mode::Settings, storedPreferences_, this);
     dialog.notice = notice;
-    if (dialog.DoModal() != IDOK || dialog.outcome == tlp::FirstRunOutcome::Cancelled) return false;
-    storedPreferences_ = dialog.preferences;
-    return true;
+    dialog.installation = installation_;
+    if (dialog.DoModal() == -1) {
+        ShowError("TELIPHONES could not open Settings. Your preferences and profiles were left unchanged.");
+        return false;
+    }
+    installation_ = dialog.installation;
+    bool saved = dialog.outcome != tlp::FirstRunOutcome::Cancelled;
+    // Welcome saves Step 1 immediately, even when the user closes a later step.
+    if (saved) storedPreferences_ = dialog.preferences;
+    RefreshWireGuard();
+    if (dialog.startAction == CAppSettingsDlg::StartAction::AddPbx) OnAddPbx();
+    if (dialog.startAction == CAppSettingsDlg::StartAction::Support) OnAddSupport();
+    return saved;
 }
 
 void CMainDlg::OnSettings() { ShowAppSettings(false, ""); }
@@ -300,10 +308,25 @@ void CMainDlg::Persist() {
 }
 
 bool CMainDlg::RequireWireGuard() {
-    wireguard_ = tlp::win::FindWireGuard();
+    RefreshWireGuard();
     if (wireguard_.installed && wireguard_.trusted) return true;
-    ShowError(wireguard_.problem);
-    return false;
+    ShowAppSettings(false, "WireGuard is required. Use the Connectivity section below; installation is optional until you connect.");
+    return wireguard_.installed && wireguard_.trusted;
+}
+
+void CMainDlg::RefreshWireGuard() {
+    try {
+        wireguard_ = tlp::win::FindWireGuard();
+        std::string status = wireguard_.installed && wireguard_.trusted
+            ? "WireGuard for Windows: installed (signed by " + wireguard_.signer + ")"
+            : "WireGuard is required. Open Settings > Connectivity to install it or check again.";
+        if (wireguard_.installed && !wireguard_.trusted) status = "WireGuard verification failed. Open Settings > Connectivity for details.";
+        SetDlgItemText(IDC_WG_STATUS, Widen(status).c_str());
+    } catch (const std::exception& e) {
+        wireguard_ = {};
+        SetDlgItemText(IDC_WG_STATUS, Widen(std::string("WireGuard detection failed: ") + e.what()).c_str());
+    }
+    UpdateButtons();
 }
 
 void CMainDlg::RemoveStaleTunnels() {

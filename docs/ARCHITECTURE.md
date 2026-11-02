@@ -219,7 +219,7 @@ The Windows application is a native C++17 Win32/MFC executable for Windows 10/11
 - **Keys:** WireGuard private keys are stored in Windows Credential Manager for the current user and are never written into profiles.
 - **Profiles:** Public pairing and grant data are stored in the user's roaming application-data directory.
 - **Tunnels:** Configuration is staged in a user-restricted directory, revalidated by an elevated helper after UAC approval, and installed under `%ProgramFiles%\TELIPHONES\Tunnels` with a restrictive ACL. The current user may stop and remove the tunnel service, but not reconfigure it.
-- **WireGuard:** The application uses the separately installed WireGuard for Windows, checking its Authenticode signature. It does not bundle or install drivers.
+- **WireGuard:** The application uses genuine WireGuard for Windows, checking its Authenticode signature. It reuses existing installations or, only after explicit user approval, downloads a reviewed official x64 MSI, verifies its pinned hash and Authenticode publisher, and invokes Windows Installer through UAC. No WireGuard binaries are bundled. The installer does not change TELIPHONES profiles or tunnel configurations. See [installation verification and limitations](../desktop/windows/README.md#secure-connectivity-and-wireguard-installation); native installation is not yet Windows-validated.
 - **Monitoring:** Only one connection is active at a time. Reachability is polled through the tunnel; there is no server-pushed revocation channel.
 - **Extension point:** An `IRendezvousProvider` interface exists for future endpoint resolution; only direct connection is implemented ([design note](RENDEZVOUS.md)).
 

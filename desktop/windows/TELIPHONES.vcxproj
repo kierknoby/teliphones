@@ -39,7 +39,7 @@
       <WarningLevel>Level4</WarningLevel><SDLCheck>true</SDLCheck><ConformanceMode>true</ConformanceMode><LanguageStandard>stdcpp17</LanguageStandard><AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions><PreprocessorDefinitions>UNICODE;_UNICODE;WIN32_LEAN_AND_MEAN;NOMINMAX;_WIN32_WINNT=0x0A00;%(PreprocessorDefinitions)</PreprocessorDefinitions><AdditionalIncludeDirectories>$(ProjectDir)src\app;$(ProjectDir)src\core;$(ProjectDir)src\platform;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories><RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
     </ClCompile>
     <Link>
-      <SubSystem>Windows</SubSystem><GenerateDebugInformation>true</GenerateDebugInformation><AdditionalDependencies>bcrypt.lib;wintrust.lib;crypt32.lib;advapi32.lib;ws2_32.lib;shell32.lib;comdlg32.lib;ole32.lib;comctl32.lib;uuid.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <SubSystem>Windows</SubSystem><GenerateDebugInformation>true</GenerateDebugInformation><AdditionalDependencies>bcrypt.lib;wintrust.lib;crypt32.lib;advapi32.lib;ws2_32.lib;shell32.lib;comdlg32.lib;ole32.lib;comctl32.lib;uuid.lib;winhttp.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <ResourceCompile><AdditionalIncludeDirectories>$(ProjectDir)src\app;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories></ResourceCompile>
   </ItemDefinitionGroup>
@@ -48,7 +48,7 @@
       <WarningLevel>Level4</WarningLevel><FunctionLevelLinking>true</FunctionLevelLinking><IntrinsicFunctions>true</IntrinsicFunctions><SDLCheck>true</SDLCheck><ConformanceMode>true</ConformanceMode><LanguageStandard>stdcpp17</LanguageStandard><AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions><PreprocessorDefinitions>UNICODE;_UNICODE;WIN32_LEAN_AND_MEAN;NOMINMAX;_WIN32_WINNT=0x0A00;%(PreprocessorDefinitions)</PreprocessorDefinitions><AdditionalIncludeDirectories>$(ProjectDir)src\app;$(ProjectDir)src\core;$(ProjectDir)src\platform;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories><RuntimeLibrary>MultiThreaded</RuntimeLibrary>
     </ClCompile>
     <Link>
-      <SubSystem>Windows</SubSystem><EnableCOMDATFolding>true</EnableCOMDATFolding><OptimizeReferences>true</OptimizeReferences><GenerateDebugInformation>true</GenerateDebugInformation><AdditionalDependencies>bcrypt.lib;wintrust.lib;crypt32.lib;advapi32.lib;ws2_32.lib;shell32.lib;comdlg32.lib;ole32.lib;comctl32.lib;uuid.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <SubSystem>Windows</SubSystem><EnableCOMDATFolding>true</EnableCOMDATFolding><OptimizeReferences>true</OptimizeReferences><GenerateDebugInformation>true</GenerateDebugInformation><AdditionalDependencies>bcrypt.lib;wintrust.lib;crypt32.lib;advapi32.lib;ws2_32.lib;shell32.lib;comdlg32.lib;ole32.lib;comctl32.lib;uuid.lib;winhttp.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <ResourceCompile><AdditionalIncludeDirectories>$(ProjectDir)src\app;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories></ResourceCompile>
   </ItemDefinitionGroup>
@@ -67,10 +67,12 @@
     <ClCompile Include="src\core\Profiles.cpp" />
     <ClCompile Include="src\core\TunnelConfig.cpp" />
     <ClCompile Include="src\core\Validation.cpp" />
+    <ClCompile Include="src\core\WireGuardSetup.cpp" />
     <ClCompile Include="src\platform\Win.cpp" />
     <ClCompile Include="src\platform\WireGuard.cpp" />
     <ClCompile Include="src\platform\Services.cpp" />
     <ClCompile Include="src\platform\Applications.cpp" />
+    <ClCompile Include="src\platform\WireGuardInstaller.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\app\framework.h" />
@@ -80,6 +82,7 @@
     <ClInclude Include="src\app\SupportDlg.h" />
     <ClInclude Include="src\app\AppSettingsDlg.h" />
     <ClInclude Include="src\app\resource.h" />
+    <ClInclude Include="src\app\Version.h" />
     <ClInclude Include="src\app\TELIPHONES.manifest" />
     <ClInclude Include="src\core\CommandLine.h" />
     <ClInclude Include="src\core\Encoding.h" />
@@ -91,10 +94,12 @@
     <ClInclude Include="src\core\Rendezvous.h" />
     <ClInclude Include="src\core\TunnelConfig.h" />
     <ClInclude Include="src\core\Validation.h" />
+    <ClInclude Include="src\core\WireGuardSetup.h" />
     <ClInclude Include="src\platform\Win.h" />
     <ClInclude Include="src\platform\WireGuard.h" />
     <ClInclude Include="src\platform\Services.h" />
     <ClInclude Include="src\platform\Applications.h" />
+    <ClInclude Include="src\platform\WireGuardInstaller.h" />
   </ItemGroup>
   <ItemGroup><ResourceCompile Include="src\app\TELIPHONES.rc" /></ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

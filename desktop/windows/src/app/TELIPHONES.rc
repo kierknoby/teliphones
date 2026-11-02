@@ -1,6 +1,38 @@
 #include <windows.h>
 #include <commctrl.h>
 #include "resource.h"
+#include "Version.h"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION TELIPHONES_VERSION_NUMERIC
+ PRODUCTVERSION TELIPHONES_VERSION_NUMERIC
+ FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
+#ifdef _DEBUG
+ FILEFLAGS VS_FF_PRERELEASE | VS_FF_DEBUG
+#else
+ FILEFLAGS VS_FF_PRERELEASE
+#endif
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_APP
+ FILESUBTYPE VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "080904b0"
+        BEGIN
+            VALUE "FileDescription", "TELIPHONES Windows application\0"
+            VALUE "FileVersion", TELIPHONES_VERSION_FILE_STRING "\0"
+            VALUE "InternalName", "TELIPHONES\0"
+            VALUE "OriginalFilename", "TELIPHONES.exe\0"
+            VALUE "ProductName", "TELIPHONES\0"
+            VALUE "ProductVersion", TELIPHONES_VERSION_STRING "\0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0809, 1200
+    END
+END
 
 IDD_MAIN DIALOGEX 0, 0, 560, 390
 STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX
@@ -66,23 +98,30 @@ BEGIN
     PUSHBUTTON      "Cancel", IDCANCEL, 355, 276, 80, 22
 END
 
-IDD_APP_SETTINGS DIALOGEX 0, 0, 340, 214
+IDD_APP_SETTINGS DIALOGEX 0, 0, 340, 370
 STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "TELIPHONES Settings"
 FONT 9, "Segoe UI"
 BEGIN
     LTEXT           "Applications", IDC_APPS_HEADING, 10, 10, 320, 14
     LTEXT           "", IDC_APPS_INTRO, 10, 26, 320, 30, SS_LEFT
-    GROUPBOX        "Applications", -1, 10, 60, 320, 98
-    LTEXT           "Default Browser:", -1, 20, 79, 85, 14
+    GROUPBOX        "Applications", IDC_APPS_GROUP, 10, 60, 320, 98
+    LTEXT           "Default Browser:", IDC_APPS_BROWSER_LABEL, 20, 79, 85, 14
     COMBOBOX        IDC_APPS_BROWSER, 108, 76, 150, 120, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
     PUSHBUTTON      "Locate...", IDC_APPS_LOCATE_BROWSER, 264, 75, 56, 16
-    LTEXT           "Default SSH Terminal:", -1, 20, 101, 85, 14
+    LTEXT           "Default SSH Terminal:", IDC_APPS_TERMINAL_LABEL, 20, 101, 85, 14
     COMBOBOX        IDC_APPS_TERMINAL, 108, 98, 150, 120, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
     PUSHBUTTON      "Locate...", IDC_APPS_LOCATE_TERMINAL, 264, 97, 56, 16
     LTEXT           "", IDC_APPS_STATUS, 20, 120, 300, 34, SS_LEFT
-    LTEXT           "Choosing an SSH terminal does not grant SSH access. Open SSH remains available only for PBXs that explicitly authorised SSH for this workstation, using your existing SSH credentials.", -1, 10, 164, 320, 24, SS_LEFT
-    PUSHBUTTON      "Skip", IDC_APPS_SKIP, 10, 190, 60, 18
-    DEFPUSHBUTTON   "Save", IDOK, 205, 190, 60, 18
-    PUSHBUTTON      "Cancel", IDCANCEL, 270, 190, 60, 18
+    LTEXT           "Choosing an SSH terminal does not grant SSH access. Open SSH remains available only for PBXs that explicitly authorised SSH for this workstation, using your existing SSH credentials.", IDC_APPS_NOTE, 10, 164, 320, 28, SS_LEFT
+    GROUPBOX        "Connectivity - WireGuard for Windows", IDC_CONNECT_GROUP, 10, 198, 320, 108
+    LTEXT           "", IDC_CONNECT_STATUS, 20, 212, 300, 58, SS_LEFT
+    PUSHBUTTON      "Install WireGuard", IDC_CONNECT_INSTALL, 20, 278, 100, 20
+    PUSHBUTTON      "Check Again", IDC_CONNECT_CHECK, 125, 278, 85, 20
+    PUSHBUTTON      "Not Now", IDC_CONNECT_NOT_NOW, 215, 278, 100, 20
+    PUSHBUTTON      "Add my PBX", IDC_SETUP_PBX, 65, 316, 100, 20
+    PUSHBUTTON      "Remote Support", IDC_SETUP_SUPPORT, 175, 316, 100, 20
+    PUSHBUTTON      "Skip", IDC_APPS_SKIP, 10, 346, 60, 18
+    DEFPUSHBUTTON   "Save", IDOK, 205, 346, 60, 18
+    PUSHBUTTON      "Cancel", IDCANCEL, 270, 346, 60, 18
 END

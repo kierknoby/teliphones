@@ -9,6 +9,7 @@
 
 #include "../core/Launchers.h"
 #include "../core/Monitor.h"
+#include "../core/WireGuardSetup.h"
 #include "../core/Profiles.h"
 #include "../platform/WireGuard.h"
 
@@ -62,6 +63,7 @@ private:
     void StartDisconnect(const std::string& reason);
     void RemoveStaleTunnels();
     bool RequireWireGuard();
+    void RefreshWireGuard();
     tlp::Preferences CurrentPreferences();
     bool ShowAppSettings(bool welcome, const std::string& notice);
     bool SshReady();
@@ -73,6 +75,7 @@ private:
     tlp::win::WireGuardInstallation wireguard_;
     std::unique_ptr<Active> active_;
     std::optional<tlp::Preferences> storedPreferences_;
+    tlp::SetupResult installation_;
     bool busy_ = false;
     bool probing_ = false;
     UINT_PTR generation_ = 0;

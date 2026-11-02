@@ -14,7 +14,8 @@ add_library(teliphones_core STATIC
     src/core/Pairing.cpp
     src/core/Profiles.cpp
     src/core/TunnelConfig.cpp
-    src/core/Validation.cpp)
+    src/core/Validation.cpp
+    src/core/WireGuardSetup.cpp)
 if(MSVC)
     target_compile_options(teliphones_core PUBLIC /W4 /WX /utf-8)
 else()

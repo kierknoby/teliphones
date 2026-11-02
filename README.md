@@ -282,7 +282,7 @@ More detail: [architecture overview](docs/ARCHITECTURE.md).
 3. **Install the privileged broker.** From an existing root shell on the PBX, run the [root bootstrap procedure](teliphones/README.md#complete-installation-on-freepbx-17) exactly as published. **Connectivity > TELIPHONES** shows the same commands with a **Copy Commands** button. Repeat the procedure after every TELIPHONES upgrade.
 4. **Check readiness.** Open **Connectivity > TELIPHONES** over HTTPS as a full administrator. The broker should be operational, and **Windows workstations** should report its prerequisites and FreePBX Firewall integration status.
 5. **Allow WireGuard to reach the PBX.** Make the PBX's WireGuard UDP port (51821 by default) reachable from the workstation, using your router, host firewall and FreePBX Firewall as appropriate. Do not publish TCP 22, 80 or 443.
-6. **Prepare Windows.** Install the official WireGuard for Windows with administrator approval, then run `TELIPHONES.exe`. You can build it from [`desktop/windows/`](desktop/windows/README.md) or download it from a successful GitHub Actions run.
+6. **Prepare Windows.** Run `TELIPHONES.exe` and follow **Welcome to TELIPHONES**: choose applications, then install WireGuard if needed using **Install WireGuard** and normal administrator approval. **Not Now** lets you explore first; installation remains available in **Settings > Connectivity**. Existing verified WireGuard installations are reused. You can build TELIPHONES from [`desktop/windows/`](desktop/windows/README.md) or download it from a successful GitHub Actions run. The new [integrated installation flow](desktop/windows/README.md#secure-connectivity-and-wireguard-installation) still requires live Windows validation.
 7. **Pair, connect and open FreePBX.** Follow [Windows workstations: install, pair and connect](teliphones/README.md#windows-workstations-install-pair-and-connect).
 
 ## Security overview
@@ -317,6 +317,7 @@ The table below distinguishes three levels of assurance: what has been **verifie
 | FreePBX GUI and administrator access checks | ✅ Page operation on FreePBX 17 | ✅ Framework stubs | Delegated-user refusal on a real PBX |
 | Windows application build and launch | ✅ Compiled and launched on Windows | ✅ Portable core tests | Interactive tunnel, UAC and Credential Manager testing |
 | Windows browser and SSH terminal preferences | — | ✅ Portable core tests (selection, storage, command lines) | **Windows build, detection, dialogs and application launches** |
+| Integrated WireGuard installation and onboarding | — | ✅ Simulated installer flow and source checks | **MSVC build and live Windows installation, UAC, verification and recovery** |
 | Workstation WireGuard handshake | ✅ Observed on the test PBX with 0.2.1 | — | — |
 | Web access through the tunnel with FreePBX Firewall enabled | ❌ Dropped by FreePBX Firewall in 0.2.1 | ✅ Simulated FreePBX layout, real packets in namespaces | **Live retest of 0.3.0** |
 | FreePBX Firewall restart and reload compatibility | — | ✅ Simulated | **Outstanding** |
@@ -353,7 +354,7 @@ Full list: [outstanding 0.3.0 verification](teliphones/README.md#outstanding-030
 | [Connect](teliphones/docs/CONNECT-CONTRACT.md), [Checker](teliphones/docs/CHECKER-CONTRACT.md) and [Console](teliphones/docs/CONSOLE-CONTRACT.md) contracts | Versioned message formats |
 | [Topologies](teliphones/docs/TOPOLOGIES.md) | On-PBX, On-net and Off-net definitions |
 | [Testing programme](teliphones/docs/TESTING.md) | Regression coverage and the staged disposable-PBX test programme |
-| [Windows application](desktop/windows/README.md) | Build, GitHub Actions artefacts, browser and SSH terminal preferences, local data and Windows test plan |
+| [Windows application](desktop/windows/README.md) | Windows **0.4.0** (unreleased, independently versioned), build provenance, [Windows changelog](desktop/windows/CHANGELOG.md), application preferences, integrated WireGuard installation and test plan |
 | [Reference gateway](gateway/README.md) | Lab Connect gateway, engineer and Checker tools, namespace laboratory |
 | [Rendezvous design note](docs/RENDEZVOUS.md) | Future direct-first rendezvous and relay interface (not implemented) |
 

@@ -1,6 +1,6 @@
-# TELIPHONES 0.3.0 for Windows (experimental)
+# TELIPHONES 0.4.0 for Windows (experimental)
 
-The native Windows client is under active development as part of the TELIPHONES 0.3.0 milestone. The executable has no embedded version resource; its release number follows the FreePBX module. The manifest's `assemblyIdentity` version is a fixed side-by-side identity, not the release number. Its executable has successfully compiled and launched in user-run Windows testing; genuine PBX tunnel/service integration still needs testing. It is a compact C++17 Win32/MFC application, not a .NET application. It has two profile types:
+The native Windows client is under active development and versioned independently of the FreePBX module, which remains **0.3.0**. The current unreleased Windows version is **0.4.0**, shown in the main window title and embedded product version, with Windows file version **0.4.0.0**. Individual development builds retain this application version and are identified by their Git commit SHA and Actions build provenance. See the [Windows change history and versioning policy](CHANGELOG.md). The manifest's `assemblyIdentity` version is a fixed side-by-side identity, not the release number. Earlier executables have compiled and launched in user-run Windows testing; this iteration still requires native build and installation validation, and genuine PBX tunnel/service integration still needs testing. It is a compact C++17 Win32/MFC application, not a .NET application. It has two profile types:
 
 - **My PBX** pairs a workstation with a PBX using an approval in the PBX's TELIPHONES page. Persistent pairing remains revocable from that page. Temporary pairings expire on the PBX.
 - **Remote Support** keeps a locally generated engineer key and imports an operator-issued `teliphones-engineer-grant/1` JSON file. The grant must name that exact engineer public key.
@@ -11,7 +11,7 @@ Both use WireGuard for Windows and the existing TELIPHONES PBX/gateway contracts
 
 - Windows 10/11 x64.
 - Visual Studio 2022 with the **Desktop development with C++** workload, Windows 10/11 SDK, and the optional **C++ MFC for latest v143 build tools (x86 & x64)** component.
-- WireGuard for Windows installed separately by a Windows administrator. The application checks Authenticode signatures and uses its `wireguard.exe` and `wg.exe`; it does not download or install a driver.
+- WireGuard for Windows is required for pairing and connections. TELIPHONES can retrieve and verify the official installer after you choose **Install WireGuard**, then ask for administrator approval through UAC. Existing verified installations are reused unchanged. WireGuard is not bundled.
 - Windows OpenSSH Client is needed for **Open SSH** with Windows PowerShell, PowerShell 7, Windows Terminal or Command Prompt. PuTTY uses its own SSH implementation and does not need it.
 
 Open `TELIPHONES.sln` in Visual Studio, select **x64**, then build. Or run `build.ps1` in a Visual Studio 2022 Developer PowerShell:
@@ -40,9 +40,53 @@ The x64 manifest uses explicit `amd64` application and Common Controls version 6
 
 If startup fails with an incorrect side-by-side configuration, the workflow prints the `sxstrace` activation trace and recent Windows Application **SideBySide** events. Download **TELIPHONES-Windows-startup-diagnostics** from that failed run for the extracted manifest, DLL import list, startup error and available trace/event files. Diagnostic-tool failures are reported and do not bypass the executable startup test. The application artifact is uploaded only after all validation succeeds. A manifest correction is not Windows-validated until a new run passes the real smoke test.
 
-Download **TELIPHONES-Windows-x64** from the successful run's **Artifacts** section. It contains only `TELIPHONES.exe` and this README, not source archives, test binaries, keys, profiles, caches or tunnel configurations. The workflow prints the executable's SHA-256 in its verification log; artifacts are retained for 14 days. It creates no GitHub Release and deploys nothing.
+Download **TELIPHONES-Windows-x64** from the successful run's **Artifacts** section. It contains `TELIPHONES.exe`, this README, the Windows changelog and `build-info.json`, not source archives, test binaries, keys, profiles, caches or tunnel configurations. The build information records the embedded product/file version, source commit, Actions run/attempt and executable SHA-256. The workflow checks both textual and fixed numeric executable versions against `Version.h` and requires the prerelease flag before publishing the artefact. The version is also visible in **Properties > Details** on the executable and in the main window title. Artefacts are retained for 14 days. It creates no GitHub Release and deploys nothing.
 
-Extract the artifact and run `TELIPHONES.exe` on Windows 10/11 x64. Release builds statically link MFC and the MSVC C/C++ runtime (`/MT`), so no separate Visual C++ Redistributable or MFC DLL is expected; Windows system DLLs remain required. No .NET runtime is used. WireGuard for Windows must still be installed separately by an administrator before pairing/connecting, and **Open SSH** requires Windows OpenSSH Client unless PuTTY is the selected SSH terminal. An unsigned test executable may trigger Windows SmartScreen; the workflow does not code-sign it.
+Extract the artifact and run `TELIPHONES.exe` on Windows 10/11 x64. Release builds statically link MFC and the MSVC C/C++ runtime (`/MT`), so no separate Visual C++ Redistributable or MFC DLL is expected; Windows system DLLs remain required. No .NET runtime is used. The application offers [WireGuard installation](#secure-connectivity-and-wireguard-installation) if needed. **Open SSH** requires Windows OpenSSH Client unless PuTTY is selected. An unsigned test executable may trigger Windows SmartScreen; the workflow does not code-sign it.
+
+## Secure connectivity and WireGuard installation
+
+On first launch, **Welcome to TELIPHONES** guides you through three steps:
+
+1. **Applications:** select your browser and SSH terminal. **Save & Next** saves the preferences immediately; **Skip** saves the defaults.
+2. **Secure connectivity:** an existing verified WireGuard installation is shown as installed and needs no changes. Otherwise, TELIPHONES explains **WireGuard is required** and offers **Install WireGuard** or **Not Now**.
+3. **Get started:** choose **Add my PBX** or **Remote Support**, or **Finish** to explore the application. Pairing and connections require verified WireGuard; Settings and saved-profile management do not.
+
+**Not Now** never downloads or installs software. Reopen **Settings... > Connectivity** whenever you are ready. The welcome wizard is not repeated once application preferences have been saved or skipped, even if installation was deferred. Closing a later step does not undo the preferences saved in Step 1.
+
+The **Connectivity** section displays **WireGuard for Windows**, with **Installed**, **Not installed** or **Installation failed** status and verification details. **Check Again** refreshes detection, including when an administrator installed WireGuard independently. **Install WireGuard** is available when it is missing, and can be retried after cancellation or failure.
+
+### Installation mechanism and verification
+
+TELIPHONES uses the built-in **Windows Installer**, not a shell script or an assumed WinGet configuration:
+
+1. Only the explicit **Install WireGuard** button starts retrieval.
+2. WinHTTP retrieves the fixed official x64 MSI over HTTPS, using normal Windows certificate validation and proxy discovery. Redirects are refused. Downloads have time and size limits.
+3. The file is placed in a new, randomly named directory under `%LOCALAPPDATA%\TELIPHONES\Installer-*`, with a protected ACL for the current user, SYSTEM and administrator read access. Existing files are never reused.
+4. TELIPHONES checks the pinned SHA-256, then uses `WinVerifyTrust` to verify Authenticode trust and certificate revocation, and checks that both the signer's common name and organisation are **WireGuard LLC**. Verification failure prevents execution; revocation-service access may be required.
+5. The verified file stays locked against writes/deletion while the system `msiexec.exe` is launched with the normal UAC `runas` mechanism. The MSI uses basic Windows Installer progress and cancellation UI, `DO_NOT_LAUNCH=1` and `/norestart`. TELIPHONES also shows retrieval, verification and installation stages without freezing the dialog.
+6. After Windows Installer exits, TELIPHONES checks again for `wireguard.exe` and `wg.exe` and verifies their signatures using the existing detection path. An exit code of zero is not sufficient. The readiness indicator and connection controls refresh without restarting TELIPHONES. A requested Windows restart is reported, not performed automatically.
+7. Normal completion, cancellation and failure all attempt targeted file and directory cleanup. Cleanup failures are reported. Abrupt process termination or Windows shutdown may leave a private installer directory; TELIPHONES does not recursively remove unrelated files or sweep other installations.
+
+The reviewed package is **WireGuard for Windows 1.1.1, x64**:
+
+- Official MSI: `https://download.wireguard.com/windows-client/wireguard-amd64-1.1.1.msi`
+- SHA-256: `7bfed60ad61b785c914b38b61555a975488e1d3ec472dbfb2fcdf498fca75242`
+- Expected Authenticode publisher common name and organisation: `WireGuard LLC`
+
+Sources checked with explicit approval: the [official installation page](https://www.wireguard.com/install/), [WireGuard enterprise installation guidance](https://git.zx2c4.com/wireguard-windows/about/docs/enterprise.md), the [Microsoft WinGet x64 installer manifest](https://raw.githubusercontent.com/microsoft/winget-pkgs/master/manifests/w/WireGuard/WireGuard/1.1.1/WireGuard.WireGuard.installer.yaml) and [Windows Installer command-line documentation](https://learn.microsoft.com/en-us/windows/win32/msi/command-line-options). The official MSI was downloaded for read-only inspection: its hash matched the manifest and its embedded signer certificate named WireGuard LLC. This was **not** Windows Authenticode trust validation or an installation test.
+
+The fixed package avoids silently following an unreviewed newer release. If it is withdrawn, changes hash or fails signature verification, installation stops until the application is updated with a reviewed package. Integrated installation requires native Intel/AMD x64 Windows; it refuses an emulated x64 application on ARM64. TELIPHONES does not update, uninstall or repair an existing installation, change existing WireGuard tunnels, synchronise profiles or change PBX pairing. No WireGuard installer or binary is redistributed in TELIPHONES.
+
+### Cancellation and recovery
+
+- **Not Now:** continue with non-connection functions; return to Settings later.
+- **UAC declined / installer Cancel:** status explains cancellation; **Install WireGuard** retries.
+- **Download, proxy, signature or publisher failure:** nothing unverified is executed; fix the reported network/policy issue and retry. Never bypass certificate checks.
+- **Installer returns success but detection fails:** TELIPHONES reports failure and keeps connections disabled. Choose **Check Again**; restart Windows only if Windows Installer requested it.
+- **Existing files cannot be verified or only part of WireGuard is present:** TELIPHONES will not overwrite them automatically. The failure is reported for administrator investigation.
+
+During installation the dialog cannot be closed until the worker finishes; cancel an active MSI in its Windows Installer window. TELIPHONES does not kill a running installer or delete its input while it is in use.
 
 ## Pair an administrator workstation
 
@@ -78,9 +122,9 @@ The first time TELIPHONES starts for a Windows user, a **Welcome to TELIPHONES**
 
 Only applications found on the computer are listed. Google Chrome is preselected when installed, otherwise the Windows default browser. Windows PowerShell is preselected when installed, otherwise Command Prompt, otherwise the first terminal found.
 
-- **Save** stores your choices.
-- **Skip** stores the preselected defaults. The dialog is not shown again; change them later in Settings.
-- **Cancel** or closing the dialog stores nothing. TELIPHONES remains fully usable with the defaults, and the welcome dialog appears again at the next start.
+- **Save & Next** stores your choices and advances to secure connectivity.
+- **Skip** stores the preselected defaults and advances to secure connectivity. Change them later in Settings.
+- **Cancel** in Step 1 stores nothing, and the welcome dialog appears again at the next start. Closing later steps preserves the saved preferences.
 
 ### Settings
 
@@ -137,6 +181,8 @@ The C++ core tests and contract tests check parsing, key/request binding, grant 
 
 The build-layout checks also verify SDK header ordering (`Win.h`, which includes `windows.h`, before `shellapi.h`), the Settings dialog's explicit `commdlg.h` include, and the required shell, file-dialog and registry libraries in both native build configurations. These are source checks, not a substitute for compiling and linking with MSVC, MFC and the Windows SDK.
 
+Portable installer tests simulate existing/missing/untrusted installations, approval and deferral, successful installation, UAC refusal, MSI cancellation, download/verification/launch errors, success followed by failed detection, restart requests, cleanup failures and retry. Native source checks guard the official source/hash, verification policy, project dependencies, onboarding wiring and the absence of profile/tunnel mutation. They do **not** execute WinHTTP, Authenticode, UAC or MSI, and do not prove a successful live Windows installation.
+
 The following require real Windows and a disposable FreePBX/gateway environment:
 
 1. Build the Visual Studio solution with the selected Visual Studio/MFC components.
@@ -155,5 +201,6 @@ The following require real Windows and a disposable FreePBX/gateway environment:
    - Confirm **Open SSH** works with each terminal, including a user profile path containing spaces.
    - Uninstall or rename a selected application and confirm the error and recovery choices.
    - Confirm Open SSH stays unavailable without SSH approval.
+9. On disposable fresh Windows 10/11 x64 machines, test the complete installer UI with a standard user and a separate administrator account, cancellation/UAC refusal, blocked downloads and revocation servers, unexpected signatures/hashes, post-install detection, retries, safe temporary-file cleanup and connection controls becoming available. Repeat with WireGuard already installed and confirm profiles, preferences and pre-existing tunnels remain unchanged. No live Windows installer validation has been performed locally.
 
 No Windows executable is included in the module package. The existing executable has compiled and launched in user-run Windows testing and is available from the successful Actions artifact. The local Linux development environment does not have MSVC, MFC, or a Windows SDK. UAC, Credential Manager, WireGuard driver/service behavior, visual layout and real PBX connectivity still require interactive Windows/disposable-PBX testing.

@@ -1,6 +1,8 @@
 // Portable unit tests for the TELIPHONES desktop core. Build with CMake or any C++17 compiler; no dependencies.
+#include <algorithm>
 #include <cstdio>
 #include <functional>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -14,6 +16,8 @@
 #include "../src/core/Rendezvous.h"
 #include "../src/core/TunnelConfig.h"
 #include "../src/core/Validation.h"
+#include "../src/core/WireGuardSetup.h"
+#include "../src/app/Version.h"
 
 using namespace tlp;
 
@@ -526,9 +530,85 @@ void testLaunchers() {
     check(throws([&] { SshTargetFor(supportProfile(), "s-2-missing"); }), "SSH refused for an unknown support session");
 }
 
+void testWireGuardSetup() {
+    std::vector<std::string> calls;
+    ConnectivityState detection = ConnectivityState::Missing;
+    std::uint32_t exitCode = 0;
+    std::string failAt;
+    bool becomeReady = true;
+    auto action = [&](const std::string& stage) {
+        calls.push_back(stage);
+        if (failAt == stage) throw Error(stage + " simulated failure");
+    };
+    SetupOperations op{
+        [&] { action("detect"); return detection; },
+        [&] { action("download"); },
+        [&] { action("verify"); },
+        [&] {
+            action("install");
+            if (becomeReady && (exitCode == 0 || exitCode == 3010)) detection = ConnectivityState::Ready;
+            return exitCode;
+        },
+        [&] { action("cleanup"); },
+        [&](const std::string& message) { check(!message.empty(), "installer progress is visible"); }
+    };
+    auto run = [&] {
+        calls.clear();
+        return RunWireGuardSetup(true, op);
+    };
+    check(RunWireGuardSetup(false, op).state == SetupState::NotNow && calls.empty(), "Not Now never retrieves or installs software");
+    detection = ConnectivityState::Ready;
+    check(run().state == SetupState::Installed && calls == std::vector<std::string>{"detect"}, "existing verified installation is not changed");
+    detection = ConnectivityState::Untrusted;
+    check(run().state == SetupState::Failed && calls == std::vector<std::string>{"detect"}, "untrusted or partial installation is not overwritten");
+    detection = ConnectivityState::Missing;
+    check(run().state == SetupState::Installed && detection == ConnectivityState::Ready &&
+          calls == std::vector<std::string>({"detect", "download", "verify", "install", "detect", "cleanup"}),
+          "fresh installation requires verification before elevation and detection before success");
+    for (const char* stage : {"download", "verify", "install"}) {
+        detection = ConnectivityState::Missing;
+        failAt = stage;
+        SetupResult result = run();
+        check(result.state == SetupState::Failed && result.message.find(stage) != std::string::npos && calls.back() == "cleanup",
+              "download, invalid signature and launch failures are reported and cleaned");
+        if (failAt != "install") check(std::find(calls.begin(), calls.end(), "install") == calls.end(), "failed retrieval or signature never executes");
+    }
+    failAt.clear();
+    for (std::uint32_t code : {1223u, 1602u}) {
+        detection = ConnectivityState::Missing;
+        exitCode = code;
+        check(run().state == SetupState::Cancelled && calls.back() == "cleanup", "UAC refusal and MSI cancellation allow retry");
+    }
+    detection = ConnectivityState::Missing;
+    exitCode = 1603;
+    check(run().state == SetupState::Failed, "Windows Installer failure is not success-shaped");
+    exitCode = 0;
+    becomeReady = false;
+    check(run().state == SetupState::Failed && detection == ConnectivityState::Missing, "zero exit code without verified detection is failure");
+    exitCode = 3010;
+    check(run().state == SetupState::RestartRequired, "restart is reported only when installer requests it");
+    becomeReady = true;
+    check(run().state == SetupState::Installed && detection == ConnectivityState::Ready, "verified components can be used after installation requesting restart");
+    exitCode = 0;
+    detection = ConnectivityState::Missing;
+    failAt = "cleanup";
+    check(run().message.find("cleanup failed") != std::string::npos, "cleanup failures are reported");
+    failAt.clear();
+    detection = ConnectivityState::Missing;
+    check(run().state == SetupState::Installed, "retry after cancellation or failure recovers");
+}
+
 }  // namespace
 
 int main() {
+    const unsigned versionParts[] = {TELIPHONES_VERSION_NUMERIC};
+    std::string versionBase = std::to_string(versionParts[0]) + "." + std::to_string(versionParts[1]) + "." + std::to_string(versionParts[2]);
+    check(std::size(versionParts) == 4, "Windows numeric version contains four components");
+    for (unsigned part : versionParts) check(part <= 65535, "Windows version component fits the resource WORD");
+    check(TELIPHONES_VERSION_FILE_STRING == versionBase + "." + std::to_string(versionParts[3]), "file version expands consistently");
+    check(TELIPHONES_VERSION_STRING == versionBase, "product version expands without a development suffix");
+    check(std::string(TELIPHONES_VERSION_STRING) == "0.4.0", "Windows application version is independent of the module");
+    check(std::string(TELIPHONES_VERSION_FILE_STRING) == "0.4.0.0", "Windows file version is 0.4.0.0");
     testEncoding();
     testJson();
     testValidation();
@@ -539,10 +619,11 @@ int main() {
     testCommandLine();
     testMonitor();
     testLaunchers();
+    testWireGuardSetup();
     if (failures) {
         std::printf("Desktop core tests: FAIL (%d of %d checks failed)\n", failures, checks);
         return 1;
     }
-    std::printf("Desktop core tests: PASS (%d checks: encoding, JSON, validation, pairing, tunnels, grants, profiles, command lines, monitor, application preferences and launchers)\n", checks);
+    std::printf("Desktop core tests: PASS (%d checks: encoding, JSON, validation, pairing, tunnels, grants, profiles, command lines, monitor, application preferences, launchers and WireGuard setup)\n", checks);
     return 0;
 }
