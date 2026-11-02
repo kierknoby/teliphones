@@ -1,4 +1,4 @@
-# TELIPHONES 0.3.1 testing
+# TELIPHONES 0.3.2 testing
 
 ## Workstation enforcement regression coverage
 
@@ -8,9 +8,9 @@ When `unshare`, `ip`, `nft` and user/network namespaces are usable, Python autom
 
 `gateway/tests/test_firewall_integration.py` covers the FreePBX Firewall integration chain. It runs simulated broker tests against a fake iptables layout that covers ordering, exact rules, SSH scope, reconnection, reload repair, revocation, expiry, shutdown, uninstall, failure handling and refusal of unfamiliar chains. It also runs `gateway/tests/firewall_integration_lab.py` in a fresh user/network namespace for both the iptables `nf_tables` and `legacy` backends (legacy uses a private `XTABLES_LOCKFILE`). The lab sends real TCP packets over a veth `tlp-admin` through a **simulated** FreePBX layout: a `fpbxfirewall` hook, `zone-external` and final DROP, plus INPUT hooks for the eight `fail2ban-*` chains observed on the FreePBX 17 test PBX. Regression coverage now includes hookless nftables ownership, exact 0.3.0 policy migration with the interface down, refusal of altered policies, broker restart, revocation and recovery. The simulated tests also cover upstream `f2b-*` and mixed-case names, Fail2Ban hooks moved after `fpbxfirewall` or between the jump and the hook by reloads, Fail2Ban restarts, and a hook inserted concurrently with integration. It checks that only TCP 80/443 (and 22 when approved) are admitted. SIP, AMI, MySQL and IPv6 remain blocked. It also checks that Fail2Ban bans remain effective, reload repair, revocation and teardown preservation. This is not a real FreePBX Firewall or WireGuard test. The operator separately reports that the nftables ownership correction was tested on the real FreePBX 17 test PBX; the packaged repository build still requires a reviewed upgrade/bootstrap and retest.
 
-The `TELIPHONES-0.3.1.tgz` Module Admin package includes these corrections. Run `PYTHONDONTWRITEBYTECODE=1 python3 teliphones/tests/package-validation.py -v` from the repository root to verify clean extraction and byte-for-byte equality with all intended module files. Tests, Windows sources, caches and runtime state are excluded.
+The `TELIPHONES-0.3.2.tgz` Module Admin package includes these corrections. Run `PYTHONDONTWRITEBYTECODE=1 python3 teliphones/tests/package-validation.py -v` from the repository root to verify clean extraction and byte-for-byte equality with all intended module files. Tests, Windows sources, caches and runtime state are excluded.
 
-0.3.1 is an unreleased development correction for testing on a **disposable FreePBX 17 / Debian 12 PBX**. Do not begin on a production PBX.
+0.3.2 is an unreleased development correction for testing on a **disposable FreePBX 17 / Debian 12 PBX**. Do not begin on a production PBX. The workstation diagnostics regression cases exercise server-side session filtering, admin/CSRF checks, secret-free allowlisted events, rotation, retention, concurrent writers and lifecycle correlation. They are local simulations; no live PBX was contacted.
 
 For workstation pairing, start with [install, pair and connect](../README.md#windows-workstations-install-pair-and-connect); for remote support use the [browser workflow](../README.md#remote-support-browser-workflow). The CLI steps below remain platform recovery and direct integration tests, not required browser operations. Local regression tests use framework stubs and mocked privileged broker calls; they do not prove real systemd, apt, SSH or FreePBX administrator permissions.
 

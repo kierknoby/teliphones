@@ -1,9 +1,12 @@
 #!/usr/bin/python3
 """Restricted local GUI-to-root bridge; no browser-selected commands or paths."""
 import base64
+import datetime
+import fcntl
 import hashlib
 import ipaddress
 import json
+import logging
 import os
 from pathlib import Path
 import pwd
@@ -12,6 +15,7 @@ import secrets
 import shlex
 import signal
 import socket
+import stat
 import struct
 import subprocess
 import tempfile
@@ -24,11 +28,11 @@ from urllib.parse import urlsplit
 STATE = Path("/var/lib/teliphones")
 ENROLLMENT = Path("/etc/teliphones")
 SOCKET = "/run/teliphones/control.sock"
-# Version of the broker status contract; 2 adds operation records and server_time for live GUI monitoring;
-# 3 adds administrator-owned workstation pairing (pair/unpair and the "workstations" status block).
-PROTOCOL = 3
+# Version 4 adds bounded, administrator-readable workstation diagnostics.
+PROTOCOL = 4
+VERSION = "0.3.2"
 FWCONSOLE = "/usr/sbin/fwconsole"
-ACTIONS = {"status", "authorise", "revoke", "dependencies", "evidence", "configure", "pair", "unpair"}
+ACTIONS = {"status", "authorise", "revoke", "dependencies", "evidence", "configure", "pair", "unpair", "diagnostics"}
 ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C", "HOME": "/root", "DEBIAN_FRONTEND": "noninteractive"}
 # Administrator-owned workstation pairing (TELIPHONES Windows application). Separate from the support interface.
 WORKSTATION_IFACE = "tlp-admin"
@@ -55,6 +59,8 @@ FAIL2BAN_PREFIXES = ("fail2ban-", "f2b-")
 INTEGRATION_CHAIN = "teliphones-ws"
 INTEGRATION_MARK = "TELIPHONES workstation integration v1"
 INTEGRATION_JUMP = {"i": WORKSTATION_IFACE, "comment": INTEGRATION_MARK, "j": INTEGRATION_CHAIN}
+DIAGNOSTIC_ID = re.compile(r"ws-[a-f0-9]{16}")
+LOGGER = logging.getLogger("teliphones.broker")
 
 
 class BrokerError(Exception):
@@ -89,6 +95,216 @@ def atomic(path, value, mode=0o600):
             temporary.unlink()
 
 
+class DiagnosticLog:
+    MAX_FILE_BYTES = 1024 * 1024
+    RETAINED_FILES = 3
+    RETENTION_SECONDS = 7 * 24 * 60 * 60
+    MAX_RETURNED_EVENTS = 200
+    FILES = ("events.jsonl", "events.1.jsonl", "events.2.jsonl")
+    EVENT_FIELDS = {
+        "pairing.approved": {"mode": ("enum", ("temporary", "persistent")), "expires_at": ("nullable_int", None),
+                             "renewed": ("bool", None)},
+        "pairing.revoked": {"reason": ("enum", ("administrator",))},
+        "pairing.expired": {"reason": ("enum", ("deadline",))},
+        "peer.admitted": {"access": ("enum", ("web", "web+ssh"))},
+        "peer.observation": {"handshake_at": ("int", None), "rx_bytes": ("int", None), "tx_bytes": ("int", None)},
+        "interface.established": {"listen_port": ("int", None)},
+        "interface.removed": {},
+        "firewall.integration": {"state": ("enum", ("inactive", "active", "not-detected", "error")),
+                                 "backend": ("nullable_enum", ("nf_tables", "legacy"))},
+        "broker.error": {"category": ("enum", ("workstation-enforcement", "firewall-integration",
+                                                "telemetry-unavailable", "cleanup-unverified"))},
+    }
+
+    def __init__(self, directory):
+        self.directory = Path(directory)
+        self.lock_path = self.directory / "events.lock"
+
+    @staticmethod
+    def _valid_private_file(path, fd=None):
+        info = os.fstat(fd) if fd is not None else path.lstat()
+        return (stat.S_ISREG(info.st_mode) and info.st_uid == os.geteuid()
+                and info.st_mode & 0o077 == 0)
+
+    def _open_lock(self):
+        self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        info = self.directory.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode)
+                or info.st_uid != os.geteuid() or info.st_mode & 0o077):
+            raise OSError("Diagnostics directory is not private and trusted.")
+        fd = os.open(self.lock_path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        if not self._valid_private_file(self.lock_path, fd):
+            os.close(fd)
+            raise OSError("Diagnostics lock file is not private and trusted.")
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        return fd
+
+    @staticmethod
+    def _event_data(event, fields):
+        specification = DiagnosticLog.EVENT_FIELDS.get(event)
+        if specification is None or set(fields) - set(specification):
+            raise ValueError("Unsupported diagnostic event.")
+        clean = {}
+        for name, value in fields.items():
+            kind, allowed = specification[name]
+            if kind == "enum" and value in allowed:
+                clean[name] = value
+            elif kind == "nullable_enum" and (value is None or value in allowed):
+                clean[name] = value
+            elif kind == "bool" and isinstance(value, bool):
+                clean[name] = value
+            elif kind == "int" and isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                clean[name] = value
+            elif kind == "nullable_int" and (value is None or (isinstance(value, int) and not isinstance(value, bool) and value >= 0)):
+                clean[name] = value
+            else:
+                raise ValueError("Invalid diagnostic event field.")
+        return clean
+
+    @staticmethod
+    def _timestamp(value):
+        return datetime.datetime.fromtimestamp(value, datetime.timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+    def _trusted_existing(self, path):
+        try:
+            fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        except FileNotFoundError:
+            return None
+        try:
+            if not self._valid_private_file(path, fd):
+                raise OSError("Diagnostics file is not private and trusted.")
+            return fd
+        except Exception:
+            os.close(fd)
+            raise
+
+    def _prune_locked(self, now):
+        cutoff = int(now - self.RETENTION_SECONDS)
+        for name in self.FILES:
+            path = self.directory / name
+            try:
+                fd = self._trusted_existing(path)
+                if fd is None:
+                    continue
+                try:
+                    stale = now - os.fstat(fd).st_mtime > self.RETENTION_SECONDS
+                    if not stale:
+                        with os.fdopen(fd, "r", encoding="utf-8", closefd=False) as handle:
+                            lines = handle.readlines()
+                finally:
+                    os.close(fd)
+                if stale:
+                    path.unlink()
+                    continue
+                retained = []
+                changed = False
+                for line in lines:
+                    try:
+                        record = json.loads(line)
+                        valid = (isinstance(record, dict) and isinstance(record.get("unix_time"), int)
+                                 and not isinstance(record.get("unix_time"), bool) and record["unix_time"] >= cutoff)
+                    except (ValueError, TypeError):
+                        valid = False
+                    if valid and len(line) <= 4096:
+                        retained.append(line)
+                    else:
+                        changed = True
+                if changed:
+                    if retained:
+                        atomic(path, "".join(retained), 0o600)
+                    else:
+                        path.unlink()
+            except FileNotFoundError:
+                pass
+
+    def _rotate_locked(self):
+        oldest = self.directory / self.FILES[-1]
+        try:
+            oldest.unlink()
+        except FileNotFoundError:
+            pass
+        for index in range(len(self.FILES) - 2, -1, -1):
+            source = self.directory / self.FILES[index]
+            target = self.directory / self.FILES[index + 1]
+            try:
+                source.lstat()
+            except FileNotFoundError:
+                continue
+            fd = self._trusted_existing(source)
+            os.close(fd)
+            os.replace(source, target)
+
+    def record(self, diagnostic_id, event, **fields):
+        if not isinstance(diagnostic_id, str) or DIAGNOSTIC_ID.fullmatch(diagnostic_id) is None:
+            return
+        now = time.time()
+        clean = self._event_data(event, fields)
+        line = json.dumps({"component_version": VERSION, "timestamp_utc": self._timestamp(now), "unix_time": int(now),
+                           "diagnostic_id": diagnostic_id, "source": "pbx", "event": event, "data": clean},
+                          separators=(",", ":"), sort_keys=True).encode("utf-8") + b"\n"
+        if len(line) > 4096:
+            raise ValueError("Diagnostic record exceeds its bound.")
+        lock_fd = self._open_lock()
+        try:
+            self._prune_locked(now)
+            active = self.directory / self.FILES[0]
+            fd = self._trusted_existing(active)
+            size = os.fstat(fd).st_size if fd is not None else 0
+            if fd is not None:
+                os.close(fd)
+            if size + len(line) > self.MAX_FILE_BYTES:
+                self._rotate_locked()
+            fd = os.open(active, os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+            try:
+                if not self._valid_private_file(active, fd) or os.fstat(fd).st_size + len(line) > self.MAX_FILE_BYTES:
+                    raise OSError("Diagnostics file failed its size or permission check.")
+                offset = 0
+                while offset < len(line):
+                    offset += os.write(fd, line[offset:])
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        finally:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            os.close(lock_fd)
+
+    def read(self, diagnostic_id, now=None):
+        if not isinstance(diagnostic_id, str) or DIAGNOSTIC_ID.fullmatch(diagnostic_id) is None:
+            raise BrokerError("Invalid diagnostic session identifier.")
+        now = time.time() if now is None else now
+        lock_fd = self._open_lock()
+        try:
+            self._prune_locked(now)
+            events = []
+            for name in reversed(self.FILES):
+                fd = self._trusted_existing(self.directory / name)
+                if fd is None:
+                    continue
+                try:
+                    with os.fdopen(fd, "r", encoding="utf-8", closefd=False) as handle:
+                        for line in handle:
+                            if len(line) > 4096:
+                                continue
+                            try:
+                                record = json.loads(line)
+                            except (ValueError, TypeError):
+                                continue
+                            if (isinstance(record, dict) and record.get("diagnostic_id") == diagnostic_id
+                                    and record.get("source") == "pbx"
+                                    and isinstance(record.get("unix_time"), int)
+                                    and not isinstance(record.get("unix_time"), bool)
+                                    and record["unix_time"] >= int(now - self.RETENTION_SECONDS)
+                                    and record.get("event") in self.EVENT_FIELDS):
+                                events.append(record)
+                finally:
+                    os.close(fd)
+            events.sort(key=lambda item: item.get("unix_time", 0))
+            return events[-self.MAX_RETURNED_EVENTS:]
+        finally:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            os.close(lock_fd)
+
+
 def validate(request):
     if not isinstance(request, dict) or not isinstance(request.get("action"), str) or request["action"] not in ACTIONS:
         raise BrokerError("Unsupported TELIPHONES operation.")
@@ -98,6 +314,7 @@ def validate(request):
         "authorise": {"minutes"}, "evidence": {"evidence"},
         "configure": {"url", "certificate", "private_key", "ca", "checker_key"},
         "pair": {"request", "endpoint_host", "listen_port", "mode", "minutes", "ssh"}, "unpair": {"workstation_id"},
+        "diagnostics": {"diagnostic_id"},
     }[action]
     if set(request) - fields - {"action"}:
         raise BrokerError("Unexpected TELIPHONES input.")
@@ -133,6 +350,9 @@ def validate(request):
     if action == "unpair":
         if not isinstance(request.get("workstation_id"), str) or not re.fullmatch(r"[a-f0-9]{16}|all", request["workstation_id"]):
             raise BrokerError("Unknown workstation.")
+    if action == "diagnostics" and (not isinstance(request.get("diagnostic_id"), str)
+                                    or DIAGNOSTIC_ID.fullmatch(request["diagnostic_id"]) is None):
+        raise BrokerError("Invalid diagnostic session identifier.")
     return action
 
 
@@ -441,6 +661,18 @@ class Broker:
         self.wake = threading.Event()
         self.integration = {"state": "inactive", "message": "", "backend": None}
         self.workstation_cleanup_failed = False
+        self.diagnostics = DiagnosticLog(STATE / "diagnostics")
+        self.diagnostic_active_peers = set()
+        self.diagnostic_interface_up = False
+        self.diagnostic_observations = {}
+        self.diagnostic_telemetry_error = False
+
+    def diagnostic(self, diagnostic_id, event, **fields):
+        try:
+            self.diagnostics.record(diagnostic_id, event, **fields)
+        except Exception:
+            # Diagnostics must never alter firewall enforcement or access decisions.
+            LOGGER.warning("TELIPHONES diagnostic write failed", exc_info=True)
 
     def begin(self, action, stage):
         self.operation = {"id": uuid.uuid4().hex, "action": action, "state": "running", "stage": stage,
@@ -907,8 +1139,9 @@ class Broker:
 
     def teardown_workstations(self):
         """Shared by revoke, failure, shutdown and the trusted uninstall entry point."""
+        interface_present = self.link_state() is not None
         self.disable_workstations()
-        if self.link_state() is not None:
+        if interface_present:
             self.run([self.tool("ip"), "link", "del", "dev", WORKSTATION_IFACE], check=False)
             if self.link_state() is not None:
                 raise BrokerError("Workstation interface could not be removed and was disabled; retaining firewall and recovery state.")
@@ -926,6 +1159,11 @@ class Broker:
         if integration_error is not None:
             raise BrokerError("Workstation interface was removed, but FreePBX Firewall integration cleanup is incomplete: "
                               + (str(integration_error) if isinstance(integration_error, BrokerError) else "iptables failed."))
+        if interface_present:
+            for diagnostic_id in self.diagnostic_active_peers:
+                self.diagnostic(diagnostic_id, "interface.removed")
+            self.diagnostic_active_peers.clear()
+            self.diagnostic_interface_up = False
 
     def uninstall_workstations(self):
         with self.wslock:
@@ -937,12 +1175,15 @@ class Broker:
     def apply_workstations(self, state):
         """Disable before any change, verify the entire policy, then admit peers."""
         self.workstation_cleanup_failed = False
+        workstation_ids = {"ws-" + item["id"] for item in state.get("workstations", [])
+                           if isinstance(item, dict) and re.fullmatch(r"[a-f0-9]{16}", str(item.get("id", "")))}
         try:
             self.disable_workstations()
             if not state["workstations"] or (STATE / "disabled").exists():
                 self.teardown_workstations()
                 self.workstation_error = ""
                 return
+            interface_present = self.link_state() is not None
             self.start_monitor()
             network = ipaddress.IPv4Network(state["subnet"])
             pbx = str(network[1])
@@ -968,10 +1209,29 @@ class Broker:
             if not self.monitor.alive() or not policy_equal(self.owned_table(), expected):
                 raise BrokerError("Workstation enforcement could not be verified before admission.")
             # Only after the nft restrictions are verified may the narrower FreePBX Firewall ACCEPTs be added.
+            previous_integration = dict(self.integration)
             self.reconcile_integration(state)
             self.run([ip, "link", "set", "up", "dev", WORKSTATION_IFACE])
+            if not interface_present:
+                self.diagnostic_interface_up = True
+                for diagnostic_id in workstation_ids:
+                    self.diagnostic(diagnostic_id, "interface.established", listen_port=state["listen_port"])
+            if self.integration != previous_integration:
+                for diagnostic_id in workstation_ids:
+                    self.diagnostic(diagnostic_id, "firewall.integration", state=self.integration["state"],
+                                    backend=self.integration["backend"] if self.integration["backend"] in ("nf_tables", "legacy") else None)
+            active_ids = set()
+            for item in state["workstations"]:
+                diagnostic_id = "ws-" + item["id"]
+                active_ids.add(diagnostic_id)
+                if diagnostic_id not in self.diagnostic_active_peers:
+                    self.diagnostic(diagnostic_id, "peer.admitted", access="web+ssh" if item.get("ssh") is True else "web")
+            self.diagnostic_active_peers = active_ids
             self.workstation_error = ""
         except (BrokerError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+            category = "firewall-integration" if self.integration.get("state") == "error" else "workstation-enforcement"
+            for diagnostic_id in workstation_ids:
+                self.diagnostic(diagnostic_id, "broker.error", category=category)
             try:
                 self.teardown_workstations()
             except (BrokerError, OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as cleanup_error:
@@ -1001,6 +1261,12 @@ class Broker:
             event = self.enforcement_event.is_set()
             if event:
                 self.enforcement_event.clear()
+            stored = read_json(STATE / "workstations.json")
+            now = int(time.time())
+            expired_ids = ["ws-" + item["id"] for item in stored.get("workstations", [])
+                           if isinstance(item, dict) and re.fullmatch(r"[a-f0-9]{16}", str(item.get("id", "")))
+                           and item.get("mode") != "persistent" and isinstance(item.get("expires_at"), int)
+                           and item["expires_at"] <= now]
             state, changed = self.workstation_state()
             try:
                 if state["workstations"]:
@@ -1018,6 +1284,9 @@ class Broker:
                     if changed:
                         self.save_workstations(state)
                         self.audit("workstation-expired", 0, "completed")
+                        for diagnostic_id in expired_ids:
+                            self.diagnostic_observations.pop(diagnostic_id, None)
+                            self.diagnostic(diagnostic_id, "pairing.expired", reason="deadline")
                 elif state["workstations"]:
                     link = self.link_state()
                     if link is not None and "UP" in link["flags"]:
@@ -1037,6 +1306,12 @@ class Broker:
         host, port = endpoint_host(request["endpoint_host"]), int(request["listen_port"])
         for name in TOOLS:
             self.tool(name)
+        stored = read_json(STATE / "workstations.json")
+        now = int(time.time())
+        expired_ids = ["ws-" + item["id"] for item in stored.get("workstations", [])
+                       if isinstance(item, dict) and re.fullmatch(r"[a-f0-9]{16}", str(item.get("id", "")))
+                       and item.get("mode") != "persistent" and isinstance(item.get("expires_at"), int)
+                       and item["expires_at"] <= now]
         state, _ = self.workstation_state()
         previous = json.loads(json.dumps(state))
         if state["workstations"] and state["listen_port"] != port:
@@ -1073,6 +1348,12 @@ class Broker:
             except BrokerError:
                 pass
             raise
+        for diagnostic_id in expired_ids:
+            self.diagnostic(diagnostic_id, "pairing.expired", reason="deadline")
+        diagnostic_id = "ws-" + entry["id"]
+        self.diagnostic_observations.pop(diagnostic_id, None)
+        self.diagnostic(diagnostic_id, "pairing.approved", mode=entry["mode"], expires_at=entry["expires_at"],
+                        renewed=existing is not None)
         self.audit("pair", uid, "completed")
         pbx_address = str(network[1])
         response = {"schema": "teliphones-pair-response/1", "nonce": pairing["nonce"], "workstation_id": entry["id"],
@@ -1084,13 +1365,34 @@ class Broker:
 
     def unpair(self, request, uid):
         state, _ = self.workstation_state()
+        revoked_ids = ["ws-" + item["id"] for item in state["workstations"]
+                       if request["workstation_id"] == "all" or item["id"] == request["workstation_id"]]
         before = len(state["workstations"])
         state["workstations"] = [] if request["workstation_id"] == "all" else [item for item in state["workstations"] if item["id"] != request["workstation_id"]]
         if len(state["workstations"]) == before and request["workstation_id"] != "all":
             raise BrokerError("Unknown workstation; it may already have been revoked or expired.")
         self.apply_workstations(state)
         self.save_workstations(state)
+        for diagnostic_id in revoked_ids:
+            self.diagnostic_observations.pop(diagnostic_id, None)
+            self.diagnostic(diagnostic_id, "pairing.revoked", reason="administrator")
         self.audit("unpair", uid, "completed")
+
+    def observe_workstations(self, state, handshakes, transfers):
+        now = time.monotonic()
+        for item in state["workstations"]:
+            key = item["public_key"]
+            diagnostic_id = "ws-" + item["id"]
+            handshake = handshakes.get(key, 0)
+            rx_bytes, tx_bytes = transfers.get(key, (0, 0))
+            previous = self.diagnostic_observations.get(diagnostic_id)
+            changed_handshake = previous is None or handshake != previous[0]
+            traffic_summary_due = (previous is None or ((rx_bytes, tx_bytes) != previous[1:3]
+                                   and now - previous[3] >= 300))
+            if changed_handshake or traffic_summary_due:
+                self.diagnostic(diagnostic_id, "peer.observation", handshake_at=handshake,
+                                rx_bytes=rx_bytes, tx_bytes=tx_bytes)
+                self.diagnostic_observations[diagnostic_id] = (handshake, rx_bytes, tx_bytes, now)
 
     def workstation_status(self):
         state, _ = self.workstation_state()
@@ -1107,8 +1409,23 @@ class Broker:
                     if not WG_PUBLIC_KEY.fullmatch(key) or not timestamp.isdigit():
                         raise ValueError("Invalid WireGuard handshake status.")
                     handshakes[key] = int(timestamp)
+                transfers = {}
+                try:
+                    output = self.run([self.tool("wg"), "show", WORKSTATION_IFACE, "transfer"])
+                    for line in output.splitlines():
+                        key, rx_bytes, tx_bytes = line.split()
+                        if WG_PUBLIC_KEY.fullmatch(key) and rx_bytes.isdigit() and tx_bytes.isdigit():
+                            transfers[key] = (int(rx_bytes), int(tx_bytes))
+                except (BrokerError, OSError, ValueError, subprocess.SubprocessError):
+                    transfers = {}
+                self.observe_workstations(state, handshakes, transfers)
+                self.diagnostic_telemetry_error = False
             except (BrokerError, OSError, ValueError, subprocess.SubprocessError):
                 error = "Workstation connection status could not be read. Check the broker and tlp-admin interface; pairing is not proof of connectivity."
+                if not self.diagnostic_telemetry_error:
+                    for item in state["workstations"]:
+                        self.diagnostic("ws-" + item["id"], "broker.error", category="telemetry-unavailable")
+                self.diagnostic_telemetry_error = True
         return {"ready": all(requirements.values()) and not error and not (STATE / "disabled").exists(), "requirements": requirements, "error": error,
                 "listen_port": state["listen_port"],
                 "firewall_integration": {"state": self.integration["state"] if state["workstations"] else "inactive",
@@ -1239,6 +1556,14 @@ class Broker:
         action = validate(request)
         if action == "status":
             return {"ok": True, "status": self.status(), "error": self.error}
+        if action == "diagnostics":
+            try:
+                events = self.diagnostics.read(request["diagnostic_id"])
+            except (OSError, ValueError, TypeError) as error:
+                LOGGER.warning("TELIPHONES diagnostic export failed", exc_info=True)
+                raise BrokerError("Workstation diagnostics are temporarily unavailable.") from error
+            return {"ok": True, "component_version": VERSION, "diagnostic_id": request["diagnostic_id"],
+                    "exported_at": DiagnosticLog._timestamp(time.time()), "events": events}
         if action == "pair":
             with self.wslock:
                 code, entry = self.pair(request, uid)

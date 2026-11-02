@@ -1,4 +1,6 @@
 #include "ConnectionHealth.h"
+#include "Monitor.h"
+#include "Profiles.h"
 
 #include <algorithm>
 #include <cmath>
@@ -164,6 +166,27 @@ ConnectionHealthMonitor::ConnectionHealthMonitor(HealthThresholds thresholds) : 
     validateThresholds(thresholds_);
 }
 
+std::string ConnectedDurationText(const HealthSnapshot& snapshot) {
+    return "Connected for: " + (snapshot.connectedSeconds ?
+        (*snapshot.connectedSeconds == 0 ? std::string("0 s") : FormatRemaining(*snapshot.connectedSeconds)) : "Not connected");
+}
+
+std::string HealthyDurationText(const HealthSnapshot& snapshot) {
+    return std::string("Connection health: ") + HealthStateName(snapshot.state) +
+        " | Continuously healthy for: " +
+        (snapshot.continuouslyHealthySeconds ?
+            (*snapshot.continuouslyHealthySeconds == 0 ? std::string("0 s") : FormatRemaining(*snapshot.continuouslyHealthySeconds)) :
+            "Not currently healthy");
+}
+
+std::string AuthorizationRemainingText(const HealthSnapshot& snapshot) {
+    if (!snapshot.authorizationKnown) return "Unknown";
+    if (snapshot.authorizationPersistent) return "Until revoked";
+    if (!snapshot.authorizationRemainingSeconds) return "Unknown expiry";
+    return *snapshot.authorizationRemainingSeconds <= 0 ? "Expired" :
+        FormatRemaining(*snapshot.authorizationRemainingSeconds);
+}
+
 void ConnectionHealthMonitor::AddSample(const HealthSample& sample) {
     if (sample.timestampMs <= 0 || (!samples_.empty() && sample.timestampMs <= samples_.back().timestampMs)) {
         throw Error("Connection health samples must have increasing timestamps.");
@@ -175,6 +198,21 @@ void ConnectionHealthMonitor::AddSample(const HealthSample& sample) {
     if (samples_.size() > kMaximumSamples) samples_.pop_front();
     if (sample.probeKnown) {
         consecutiveFailures_ = sample.probeSucceeded ? 0 : consecutiveFailures_ + 1;
+    } else {
+        consecutiveFailures_ = 0;
+    }
+    HealthSnapshot current = Snapshot(sample.timestampMs, 300);
+    if (current.state == HealthState::Disconnected ||
+        consecutiveFailures_ >= ConnectionMonitor::kLostAfterFailures) {
+        connectedSinceMs_.reset();
+    } else if (sample.tunnelKnown && sample.tunnelRunning && sample.probeKnown && sample.probeSucceeded &&
+               !connectedSinceMs_) {
+        connectedSinceMs_ = sample.timestampMs;
+    }
+    if (current.state == HealthState::Stable) {
+        if (!healthySinceMs_) healthySinceMs_ = sample.timestampMs;
+    } else {
+        healthySinceMs_.reset();
     }
 }
 
@@ -186,6 +224,7 @@ void ConnectionHealthMonitor::SetThresholds(const HealthThresholds& thresholds) 
 HealthSnapshot ConnectionHealthMonitor::Snapshot(std::int64_t nowMs, int historySeconds) const {
     if (historySeconds != 60 && historySeconds != 300) throw Error("Connection health history must be 60 or 300 seconds.");
     HealthSnapshot result;
+    result.snapshotTimestampMs = nowMs;
     result.consecutiveFailures = consecutiveFailures_;
     if (samples_.empty()) return result;
     const std::int64_t cutoff = nowMs - static_cast<std::int64_t>(historySeconds) * 1000;
@@ -195,34 +234,41 @@ HealthSnapshot ConnectionHealthMonitor::Snapshot(std::int64_t nowMs, int history
     if (result.samples.empty()) return result;
 
     const HealthSample& latest = result.samples.back();
-    if (latest.authorizationExpiresAt > 0) {
-        result.authorizationRemainingSeconds = std::max<std::int64_t>(0, latest.authorizationExpiresAt - nowMs / 1000);
+    const std::int64_t nowSeconds = latest.utcUnixSeconds > 0
+        ? latest.utcUnixSeconds + std::max<std::int64_t>(0, nowMs - latest.timestampMs) / 1000 : 0;
+    result.authorizationKnown = latest.authorizationKnown;
+    result.authorizationPersistent = latest.authorizationPersistent;
+    result.authorizationExpiresAt = latest.authorizationExpiresAt;
+    if (result.authorizationKnown && !result.authorizationPersistent && nowSeconds > 0) {
+        result.authorizationRemainingSeconds = std::max<std::int64_t>(0, latest.authorizationExpiresAt - nowSeconds);
     }
     if (latest.tunnelKnown && !latest.tunnelRunning) {
         result.state = HealthState::Disconnected;
         return result;
     }
-    if (latest.authorizationExpiresAt > 0 && latest.authorizationExpiresAt <= nowMs / 1000) {
+    if (result.authorizationKnown && !result.authorizationPersistent && nowSeconds > 0 &&
+        latest.authorizationExpiresAt <= nowSeconds) {
         result.state = HealthState::Disconnected;
         result.authorizationRemainingSeconds = 0;
         return result;
     }
-    if (!latest.tunnelKnown || !latest.tunnelRunning || !latest.probeKnown) {
-        result.state = HealthState::Unknown;
+    if (nowMs - latest.timestampMs > 10000) {
+        result.telemetryReason = "No fresh local measurements for more than ten seconds.";
         return result;
     }
-
+    if (connectedSinceMs_ && consecutiveFailures_ < ConnectionMonitor::kLostAfterFailures) {
+        result.connectedSeconds = std::max<std::int64_t>(0, nowMs - *connectedSinceMs_) / 1000;
+    }
     std::vector<double> latencies;
     std::vector<double> jitters;
     int attempts = 0;
     int successes = 0;
     int failures = 0;
-    std::vector<double> receiveRates;
-    std::vector<double> transmitRates;
     std::optional<std::int64_t> previousTime;
     std::optional<std::uint64_t> previousRx;
     std::optional<std::uint64_t> previousTx;
-    for (const HealthSample& sample : result.samples) {
+    std::string previousSource;
+    for (HealthSample& sample : result.samples) {
         if (sample.probeKnown) {
             ++attempts;
             if (sample.probeSucceeded) ++successes;
@@ -234,21 +280,22 @@ HealthSnapshot ConnectionHealthMonitor::Snapshot(std::int64_t nowMs, int history
         }
         const std::int64_t counterTime = sample.telemetryTimestampMs > 0 ? sample.telemetryTimestampMs : sample.timestampMs;
         if (sample.receivedBytes && sample.transmittedBytes && previousTime && previousRx && previousTx &&
+            sample.trafficSource == previousSource &&
             counterTime > *previousTime && *sample.receivedBytes >= *previousRx && *sample.transmittedBytes >= *previousTx) {
             double seconds = static_cast<double>(counterTime - *previousTime) / 1000.0;
-            receiveRates.push_back(static_cast<double>(*sample.receivedBytes - *previousRx) / seconds);
-            transmitRates.push_back(static_cast<double>(*sample.transmittedBytes - *previousTx) / seconds);
+            sample.receiveBytesPerSecond = static_cast<double>(*sample.receivedBytes - *previousRx) / seconds;
+            sample.transmitBytesPerSecond = static_cast<double>(*sample.transmittedBytes - *previousTx) / seconds;
         }
         if (sample.receivedBytes && sample.transmittedBytes) {
             previousTime = counterTime;
             previousRx = sample.receivedBytes;
             previousTx = sample.transmittedBytes;
+            previousSource = sample.trafficSource;
         }
     }
-    result.latencyMs = average(latencies);
+    result.latencyMs = latest.probeSucceeded ? latest.latencyMs : std::nullopt;
+    if (jitters.size() > 5) jitters.erase(jitters.begin(), jitters.end() - 5);
     result.jitterMs = average(jitters);
-    result.receiveBytesPerSecond = average(receiveRates);
-    result.transmitBytesPerSecond = average(transmitRates);
     if (attempts > 0) {
         result.probeSuccessPercent = 100.0 * successes / attempts;
         result.probeFailurePercent = 100.0 * failures / attempts;
@@ -261,12 +308,21 @@ HealthSnapshot ConnectionHealthMonitor::Snapshot(std::int64_t nowMs, int history
         }
     }
     if (latestTelemetry && latestTelemetry->handshakeUnixSeconds) {
-        const std::int64_t nowSeconds = nowMs / 1000;
-        if (*latestTelemetry->handshakeUnixSeconds <= nowSeconds) result.handshakeAgeSeconds = nowSeconds - *latestTelemetry->handshakeUnixSeconds;
+        if (nowSeconds > 0 && *latestTelemetry->handshakeUnixSeconds > 0 &&
+            *latestTelemetry->handshakeUnixSeconds <= nowSeconds) {
+            result.handshakeAgeSeconds = nowSeconds - *latestTelemetry->handshakeUnixSeconds;
+        }
     }
-    if (!latestTelemetry || !latestTelemetry->receivedBytes || !latestTelemetry->transmittedBytes) {
-        result.receiveBytesPerSecond.reset();
-        result.transmitBytesPerSecond.reset();
+    result.telemetryReason = latestTelemetry ? latestTelemetry->telemetryReason : "WireGuard telemetry has not been collected yet.";
+    result.trafficSource = latestTelemetry ? latestTelemetry->trafficSource : "";
+    if (latestTelemetry && latestTelemetry->receivedBytes && latestTelemetry->transmittedBytes &&
+        nowMs - latestTelemetry->timestampMs <= kTelemetryIntervalSeconds * 2000LL) {
+        result.receiveBytesPerSecond = latestTelemetry->receiveBytesPerSecond;
+        result.transmitBytesPerSecond = latestTelemetry->transmitBytesPerSecond;
+    }
+    if (!latest.tunnelKnown || !latest.tunnelRunning || !latest.probeKnown) {
+        result.state = HealthState::Unknown;
+        return result;
     }
     const int unstableLatency = thresholds_.warningLatencyMs * 3;
     const int unstableJitter = thresholds_.warningJitterMs * 3;
@@ -281,7 +337,7 @@ HealthSnapshot ConnectionHealthMonitor::Snapshot(std::int64_t nowMs, int history
     bool severe = consecutiveFailures_ >= thresholds_.consecutiveFailures ||
                   (latest.latencyMs && *latest.latencyMs >= unstableLatency) ||
                   (result.jitterMs && *result.jitterMs >= unstableJitter) ||
-                  (recentAttempts > 0 && 100.0 * recentFailures / recentAttempts >= 60.0);
+                  (recentAttempts >= 5 && 100.0 * recentFailures / recentAttempts >= 60.0);
     bool elevated = consecutiveFailures_ > 0 ||
                     (latest.latencyMs && *latest.latencyMs >= thresholds_.warningLatencyMs) ||
                     (result.jitterMs && *result.jitterMs >= thresholds_.warningJitterMs) ||
@@ -301,7 +357,7 @@ HealthSnapshot ConnectionHealthMonitor::Snapshot(std::int64_t nowMs, int history
     else result.state = HealthState::Stable;
 
     if (result.state == HealthState::Stable) {
-        result.continuouslyHealthySeconds = (latest.timestampMs - stableSince) / 1000;
+        result.continuouslyHealthySeconds = healthySinceMs_ ? (nowMs - *healthySinceMs_) / 1000 : 0;
     } else {
         result.continuouslyHealthySeconds.reset();
     }

@@ -39,7 +39,7 @@ class PackageTests(unittest.TestCase):
                 for name, source in expected.items():
                     self.assertEqual((Path(directory) / name).read_bytes(), source.read_bytes(), name)
                 metadata = ET.parse(Path(directory) / "teliphones/module.xml").getroot()
-                self.assertEqual(metadata.findtext("version"), "0.3.1")
+                self.assertEqual(metadata.findtext("version"), "0.3.2")
                 self.assertEqual(metadata.findtext("rawname"), "teliphones")
                 self.assertEqual(metadata.findtext("category"), "Connectivity")
                 for name in ("WebSupport.php", "views/support.php", "support_broker.py", "assets/js/teliphones.js", "install.php"):
@@ -50,7 +50,8 @@ class PackageTests(unittest.TestCase):
                 for feature in ("TELIPHONES workstation enforcement v1", 'WORKSTATION_OWNER_CHAIN = "teliphones_owner_v1"',
                                 "def start_monitor(", "def uninstall_workstations(", "def policy_equal(",
                                 "TELIPHONES workstation integration v1", 'FREEPBX_HOOK = "fpbxfirewall"',
-                                'FAIL2BAN_PREFIXES = ("fail2ban-", "f2b-")', "def reconcile_integration("):
+                                'FAIL2BAN_PREFIXES = ("fail2ban-", "f2b-")', "def reconcile_integration(",
+                                "class DiagnosticLog", "PROTOCOL = 4"):
                     self.assertIn(feature, broker)
                 bootstrap = (Path(directory) / "teliphones/BrokerBootstrap.php").read_text()
                 self.assertIn("copy($moduleDir . '/support_broker.py', $brokerFile)", bootstrap)

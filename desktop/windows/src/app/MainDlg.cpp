@@ -18,6 +18,7 @@
 #include "AppSettingsDlg.h"
 #include "PairDlg.h"
 #include "SupportDlg.h"
+#include "SessionLogDlg.h"
 #include "resource.h"
 #include "Version.h"
 
@@ -45,6 +46,7 @@ struct ProbeResult {
     bool serviceRunning = false;
     bool probeSucceeded = false;
     tlp::HealthSample sample;
+    std::string error;
 };
 
 class WipeString {
@@ -113,6 +115,9 @@ BEGIN_MESSAGE_MAP(CMainDlg, CDialogEx)
     ON_BN_CLICKED(IDC_OPEN_SSH, &CMainDlg::OnOpenSsh)
     ON_BN_CLICKED(IDC_SETTINGS, &CMainDlg::OnSettings)
     ON_BN_CLICKED(IDC_CONNECTION_HEALTH, &CMainDlg::OnConnectionHealth)
+    ON_BN_CLICKED(IDC_SESSION_LOG, &CMainDlg::OnSessionLog)
+    ON_CBN_SELCHANGE(IDC_HEALTH_INLINE_HISTORY, &CMainDlg::OnInlineHistoryChanged)
+    ON_WM_DRAWITEM()
     ON_NOTIFY(LVN_ITEMCHANGED, IDC_PROFILES, &CMainDlg::OnSelectionChanged)
     ON_CBN_SELCHANGE(IDC_SESSION, &CMainDlg::UpdateButtons)
     ON_WM_TIMER()
@@ -131,6 +136,7 @@ void CMainDlg::DoDataExchange(CDataExchange* exchange) {
 
 BOOL CMainDlg::OnInitDialog() {
     CDialogEx::OnInitDialog();
+    LogEvent("startup", "info", "Application started; diagnostic timestamps are UTC. PBX clock may differ.");
     SetWindowText(Widen("TELIPHONES " TELIPHONES_VERSION_STRING).c_str());
     HICON icon = LoadIconW(nullptr, IDI_APPLICATION);
     SetIcon(icon, TRUE);
@@ -169,20 +175,100 @@ BOOL CMainDlg::OnInitDialog() {
         ShowError(std::string("Connection Health preferences could not be read and were left unchanged: ") + e.what());
     }
     healthDialog_.SetPreferences(healthPreferences_);
+    CComboBox* history = static_cast<CComboBox*>(GetDlgItem(IDC_HEALTH_INLINE_HISTORY));
+    history->AddString(L"60 seconds");
+    history->AddString(L"5 minutes");
+    history->SetCurSel(healthPreferences_.historySeconds == 300 ? 1 : 0);
     healthDialog_.preferencesChanged = [this](const tlp::HealthPreferences& preferences) {
         healthPreferences_ = preferences;
+        static_cast<CComboBox*>(GetDlgItem(IDC_HEALTH_INLINE_HISTORY))->SetCurSel(preferences.historySeconds == 300 ? 1 : 0);
         if (active_ && active_->health) active_->health->SetThresholds(preferences.thresholds);
         try {
             tlp::win::SaveHealthPreferences(preferences);
         } catch (const std::exception& e) {
             ShowError(std::string("Connection Health preferences could not be saved: ") + e.what());
         }
-        if (active_ && active_->health) {
-            healthDialog_.UpdateSnapshot(active_->health->Snapshot(GetTickCount64(), healthPreferences_.historySeconds));
-        }
+        RefreshHealth();
     };
     if (preferencesReadable && tlp::NeedsFirstRun(storedPreferences_)) PostMessage(WM_APP_FIRST_RUN);
     return TRUE;
+}
+
+void CMainDlg::LogEvent(const std::string& event, const std::string& severity, const std::string& detail,
+                       const std::string& diagnosticId, const std::string& attemptId) {
+    try {
+        tlp::win::WriteSessionEvent(!diagnosticId.empty() ? diagnosticId : active_ ? active_->diagnosticId : "application",
+                                   !diagnosticId.empty() ? attemptId : active_ ? active_->attemptId : "", event, severity, detail);
+    } catch (const std::exception& e) {
+        if (!logFailureShown_) {
+            logFailureShown_ = true;
+            ShowError(std::string("Session diagnostics cannot be saved: ") + e.what());
+        }
+    }
+}
+
+void CMainDlg::RefreshHealth() {
+    healthSnapshot_ = {};
+    if (active_ && active_->health) {
+        healthSnapshot_ = active_->health->Snapshot(GetTickCount64(), healthPreferences_.historySeconds);
+        healthSnapshot_.authorizationKnown = true;
+        healthSnapshot_.authorizationPersistent = active_->expiresAt == 0;
+        healthSnapshot_.authorizationExpiresAt = active_->expiresAt;
+        if (active_->expiresAt > 0) {
+            const auto remaining = active_->expiresAt - tlp::win::UnixNow();
+            healthSnapshot_.authorizationRemainingSeconds = remaining > 0 ? remaining : 0;
+        }
+        healthSnapshot_.sessionId = active_->diagnosticId;
+        healthSnapshot_.attemptId = active_->attemptId;
+    }
+    healthDialog_.UpdateSnapshot(healthSnapshot_);
+    const Profile* selected = Selected();
+    const bool showingActive = selected && active_ && selected->id == active_->profileId;
+    SetDlgItemText(IDC_HEALTH_INLINE_TEXT, Widen(showingActive ? ConnectionHealthSummary(healthSnapshot_)
+        : "Selected PBX is not connected. Measurements: Unknown.").c_str());
+    GetDlgItem(IDC_HEALTH_INLINE_GRAPH)->Invalidate(FALSE);
+}
+
+void CMainDlg::OnDrawItem(int controlId, LPDRAWITEMSTRUCT item) {
+    if (controlId != IDC_HEALTH_INLINE_GRAPH || item == nullptr) {
+        CDialogEx::OnDrawItem(controlId, item);
+        return;
+    }
+    CDC dc;
+    dc.Attach(item->hDC);
+    const Profile* selected = Selected();
+    const tlp::HealthSnapshot empty;
+    DrawConnectionHealthGraph(dc, CRect(item->rcItem),
+        selected && active_ && selected->id == active_->profileId ? healthSnapshot_ : empty,
+        healthPreferences_.historySeconds);
+    dc.Detach();
+}
+
+void CMainDlg::OnInlineHistoryChanged() {
+    healthPreferences_.historySeconds =
+        static_cast<CComboBox*>(GetDlgItem(IDC_HEALTH_INLINE_HISTORY))->GetCurSel() == 1 ? 300 : 60;
+    healthDialog_.SetPreferences(healthPreferences_);
+    try {
+        tlp::win::SaveHealthPreferences(healthPreferences_);
+    } catch (const std::exception& e) {
+        ShowError(std::string("Health preferences cannot be saved: ") + e.what());
+    }
+    RefreshHealth();
+}
+
+void CMainDlg::OnSessionLog() {
+    try {
+        const Profile* selected = Selected();
+        const std::string id = selected ? (selected->kind == ProfileKind::Administrator
+            ? "ws-" + selected->pairing.workstationId : "support-" + selected->id) : "application";
+        const std::string contents = id == "application" ? tlp::win::ReadSessionEvents(id) :
+            "APPLICATION LIFECYCLE\r\n" + tlp::win::ReadSessionEvents("application") +
+            "\r\nSELECTED PAIRING: " + id + "\r\n" + tlp::win::ReadSessionEvents(id);
+        CSessionLogDlg dialog(contents, this);
+        dialog.DoModal();
+    } catch (const std::exception& e) {
+        ShowError(std::string("Session diagnostics cannot be read: ") + e.what());
+    }
 }
 
 LRESULT CMainDlg::OnFirstRun(WPARAM, LPARAM) {
@@ -218,8 +304,9 @@ bool CMainDlg::ShowAppSettings(bool welcome, const std::string& notice) {
 void CMainDlg::OnSettings() { ShowAppSettings(false, ""); }
 
 void CMainDlg::OnConnectionHealth() {
-    if (!active_ || !active_->connected || !active_->health) return;
-    healthDialog_.UpdateSnapshot(active_->health->Snapshot(GetTickCount64(), healthPreferences_.historySeconds));
+    const Profile* selected = Selected();
+    if (!active_ || !active_->connected || !active_->health || !selected || selected->id != active_->profileId) return;
+    RefreshHealth();
     try {
         healthDialog_.ShowMonitor();
     } catch (const std::exception& e) {
@@ -304,6 +391,7 @@ void CMainDlg::RefreshSessions() {
     sessions_.EnableWindow(!sessionIds_.empty());
     SetDlgItemText(IDC_DETAILS, Widen(details).c_str());
     UpdateButtons();
+    RefreshHealth();
 }
 
 void CMainDlg::UpdateButtons() {
@@ -325,14 +413,8 @@ void CMainDlg::UpdateButtons() {
     GetDlgItem(IDC_DISCONNECT)->EnableWindow(active_ && !busy_);
     GetDlgItem(IDC_OPEN_GUI)->EnableWindow(connected);
     GetDlgItem(IDC_OPEN_SSH)->EnableWindow(verified && sshAllowed);
-    GetDlgItem(IDC_CONNECTION_HEALTH)->EnableWindow(active_ && active_->connected && !busy_);
-    if (active_ && active_->health) {
-        std::string health = "Health: ";
-        health += tlp::HealthStateName(active_->health->Snapshot(GetTickCount64(), healthPreferences_.historySeconds).state);
-        GetDlgItem(IDC_CONNECTION_HEALTH)->SetWindowTextW(Widen(health).c_str());
-    } else {
-        GetDlgItem(IDC_CONNECTION_HEALTH)->SetWindowTextW(L"Connection Health...");
-    }
+    GetDlgItem(IDC_CONNECTION_HEALTH)->EnableWindow(connected && selectedActive);
+    GetDlgItem(IDC_CONNECTION_HEALTH)->SetWindowTextW(L"Pop Out");
     GetDlgItem(IDC_SETTINGS)->EnableWindow(!busy_);
 }
 
@@ -405,6 +487,13 @@ void CMainDlg::OnAddPbx() {
     CPairDlg dialog(wireguard_, this);
     if (dialog.DoModal() != IDOK) return;
     profiles_.push_back(dialog.profile);
+    try {
+        tlp::win::WriteSessionEvent("ws-" + dialog.profile.pairing.workstationId, "", "pairing_saved", "info",
+            dialog.profile.pairing.mode == "persistent" ? "Administrator-approved authorization: Until revoked." :
+            "Administrator-approved temporary authorization expires at Unix UTC " + std::to_string(dialog.profile.pairing.expiresAt));
+    } catch (const std::exception& e) {
+        ShowError(std::string("Pairing diagnostics cannot be saved: ") + e.what());
+    }
     Persist();
     RefreshList();
 }
@@ -442,6 +531,12 @@ void CMainDlg::OnRemove() {
         ShowError(std::string("The saved key could not be deleted: ") + e.what());
         return;
     }
+    try {
+        tlp::win::WriteSessionEvent(profile->kind == ProfileKind::Administrator ? "ws-" + profile->pairing.workstationId : "support-" + profile->id,
+            "", "profile_removed", "info", "Local profile removed. This does not revoke authorization on the PBX.");
+    } catch (const std::exception& e) {
+        ShowError(std::string("Profile diagnostics cannot be saved: ") + e.what());
+    }
     profiles_.erase(profiles_.begin() + SelectedIndex());
     Persist();
     RefreshList();
@@ -455,7 +550,11 @@ void CMainDlg::OnConnect() {
     std::string configText;
     [[maybe_unused]] WipeString configTextWiper(configText);
     auto active = std::make_unique<Active>();
+    active->diagnosticId = profile->kind == ProfileKind::Administrator ? "ws-" + profile->pairing.workstationId : "support-" + profile->id;
     try {
+        active->attemptId = tlp::win::NewProfileId();
+        LogEvent("connection_attempt", "info", "Manual connection attempt. Correlation ID identifies this pairing; attempt ID is workstation-local.",
+                 active->diagnosticId, active->attemptId);
         if (profile->kind == ProfileKind::Administrator && profile->pairing.mode == "temporary" && profile->pairing.expiresAt <= now) {
             throw tlp::Error("This temporary pairing has expired. Remove it and pair this workstation again from the PBX.");
         }
@@ -480,12 +579,14 @@ void CMainDlg::OnConnect() {
         active->peerPublicKey = profile->kind == ProfileKind::Administrator ? profile->pairing.pbxPublicKey : profile->grant.gatewayPublicKey;
     } catch (const std::exception& e) {
         tlp::win::SecureWipe(configText);
+        LogEvent("connection_failed", "error", e.what(), active->diagnosticId, active->attemptId);
         ShowError(e.what());
         return;
     }
     std::string tunnelName = active->tunnelName;
     lastTelemetryTickMs_ = 0;
     active_ = std::move(active);
+    ++generation_;
     busy_ = true;
     RefreshList();
     SetState("Connecting...", "Windows will ask for administrative approval to start the WireGuard tunnel.");
@@ -506,6 +607,7 @@ void CMainDlg::OnConnect() {
             return installed;
         });
     } catch (const std::exception& e) {
+        LogEvent("connection_failed", "error", e.what());
         active_.reset();
         busy_ = false;
         SetState("Not connected", "The connection worker could not start.");
@@ -517,14 +619,22 @@ void CMainDlg::OnConnect() {
 void CMainDlg::StartDisconnect(const std::string& reason) {
     if (!active_ || busy_) return;
     busy_ = true;
+    LogEvent("disconnect_requested", "info", reason.empty() ? "User requested tunnel removal." : reason);
     ++generation_;
     UpdateButtons();
     SetState("Disconnecting...", reason);
     std::string tunnelName = active_->tunnelName;
-    RunInBackground(m_hWnd, OperationKind::Disconnect, reason, [tunnelName]() {
-        tlp::win::RemoveTunnel(tunnelName);
-        return true;
-    });
+    try {
+        RunInBackground(m_hWnd, OperationKind::Disconnect, reason, [tunnelName]() {
+            tlp::win::RemoveTunnel(tunnelName);
+            return true;
+        });
+    } catch (const std::exception& e) {
+        busy_ = false;
+        LogEvent("disconnect_failed", "error", e.what());
+        SetState("Disconnect worker unavailable", "The tunnel has not been removed. Choose Disconnect again: " + std::string(e.what()));
+        UpdateButtons();
+    }
 }
 
 void CMainDlg::OnDisconnect() { StartDisconnect(""); }
@@ -611,7 +721,15 @@ void CMainDlg::OnTimer(UINT_PTR id) {
     for (int row = 0; row < list_.GetItemCount() && static_cast<std::size_t>(row) < profiles_.size(); ++row) {
         list_.SetItemText(row, 2, Widen(AccessText(profiles_[static_cast<std::size_t>(row)], tlp::win::UnixNow())).c_str());
     }
-    if (!active_ || !active_->connected || busy_ || probing_) return;
+    if (!active_ || !active_->connected || busy_) return;
+    if (active_->expiresAt > 0 && tlp::win::UnixNow() >= active_->expiresAt) {
+        active_->verified = false;
+        RefreshHealth();
+        LogEvent("authorization_expired", "warning", "Local approved expiry reached; disconnecting tunnel.");
+        StartDisconnect("Temporary access expired.");
+        return;
+    }
+    if (probing_) return;
     probing_ = true;
     HWND window = m_hWnd;
     UINT_PTR generation = generation_;
@@ -624,10 +742,12 @@ void CMainDlg::OnTimer(UINT_PTR id) {
     bool collectTelemetry = lastTelemetryTickMs_ == 0 ||
                             tickNow - lastTelemetryTickMs_ >= tlp::ConnectionHealthMonitor::kTelemetryIntervalSeconds * 1000ULL;
     if (collectTelemetry) lastTelemetryTickMs_ = tickNow;
+    try {
     std::thread([window, generation, tunnelName, address, peerPublicKey, wgExecutable, expiresAt, collectTelemetry]() {
         auto* result = new ProbeResult;
-        result->sample.timestampMs = static_cast<std::int64_t>(GetTickCount64());
         result->sample.authorizationExpiresAt = expiresAt;
+        result->sample.authorizationKnown = true;
+        result->sample.authorizationPersistent = expiresAt == 0;
         try {
             tlp::win::TunnelState service = tlp::win::QueryTunnel(tunnelName);
             result->statusKnown = service == tlp::win::TunnelState::Running || service == tlp::win::TunnelState::Stopped ||
@@ -635,13 +755,16 @@ void CMainDlg::OnTimer(UINT_PTR id) {
             result->serviceRunning = service == tlp::win::TunnelState::Running;
             result->sample.tunnelKnown = result->statusKnown;
             result->sample.tunnelRunning = result->serviceRunning;
-            if (result->serviceRunning) {
+            if (result->serviceRunning && (expiresAt == 0 || tlp::win::UnixNow() < expiresAt)) {
                 tlp::win::TcpProbeMeasurement probe = tlp::win::MeasureTcpProbe(address, 443, 1200);
                 if (!probe.known || !probe.succeeded) {
+                    const std::string httpsError = probe.error;
                     tlp::win::TcpProbeMeasurement fallback = tlp::win::MeasureTcpProbe(address, 80, 1200);
                     if (fallback.known) probe = fallback;
+                    if (!probe.succeeded) probe.error = "HTTPS 443: " + httpsError + "; HTTP 80: " + fallback.error;
                 }
                 result->sample.probeKnown = probe.known;
+                result->error = probe.error;
                 result->sample.probeSucceeded = probe.known && probe.succeeded;
                 if (result->sample.probeSucceeded) result->sample.latencyMs = probe.latencyMs;
                 if (collectTelemetry) {
@@ -651,20 +774,37 @@ void CMainDlg::OnTimer(UINT_PTR id) {
                         result->sample.receivedBytes = counters.receivedBytes;
                         result->sample.transmittedBytes = counters.transmittedBytes;
                         result->sample.handshakeUnixSeconds = counters.handshakeUnixSeconds;
-                    } catch (const std::exception&) {
-                        // WireGuard telemetry is optional; the UI presents unavailable measurements as Unknown.
+                        result->sample.trafficSource = "WireGuard peer counters";
+                    } catch (const std::exception& e) {
+                        result->sample.telemetryReason = e.what();
+                        try {
+                            tlp::WireGuardCounters counters = tlp::win::ReadTunnelInterfaceCounters(tunnelName);
+                            result->sample.receivedBytes = counters.receivedBytes;
+                            result->sample.transmittedBytes = counters.transmittedBytes;
+                            result->sample.trafficSource = "Windows tunnel interface IP bytes";
+                        } catch (const std::exception& interfaceError) {
+                            result->sample.telemetryReason += std::string(" Interface counters: ") + interfaceError.what();
+                        }
                     }
                     result->sample.telemetryTimestampMs = static_cast<std::int64_t>(GetTickCount64());
                 }
             }
             result->probeSucceeded = result->sample.probeKnown && result->sample.probeSucceeded;
-        } catch (...) {
+        } catch (const std::exception& e) {
+            result->error = e.what();
             result->statusKnown = false;
             result->sample.tunnelKnown = false;
             result->sample.probeKnown = false;
         }
+        result->sample.timestampMs = static_cast<std::int64_t>(GetTickCount64());
+        result->sample.utcUnixSeconds = tlp::win::UnixNow();
         if (!::PostMessageW(window, WM_APP_PROBE_DONE, generation, reinterpret_cast<LPARAM>(result))) delete result;
     }).detach();
+    } catch (const std::exception& e) {
+        probing_ = false;
+        LogEvent("measurement_error", "error", e.what());
+        SetState("Monitoring worker unavailable", e.what());
+    }
 }
 
 LRESULT CMainDlg::OnProbeDone(WPARAM generation, LPARAM lparam) {
@@ -674,8 +814,69 @@ LRESULT CMainDlg::OnProbeDone(WPARAM generation, LPARAM lparam) {
     if (active_->health) {
         try {
             active_->health->AddSample(result->sample);
-            healthDialog_.UpdateSnapshot(active_->health->Snapshot(GetTickCount64(), healthPreferences_.historySeconds));
+            RefreshHealth();
+            const auto& health = healthSnapshot_;
+            const bool changed = active_->lastHealthState != health.state;
+            if (changed) {
+                LogEvent("health_changed", health.state == tlp::HealthState::Stable ? "info" : "warning",
+                    std::string("Health: ") + tlp::HealthStateName(health.state) +
+                    "; app failures=" + std::to_string(health.consecutiveFailures) +
+                    "; handshake age=" + (health.handshakeAgeSeconds ? std::to_string(*health.handshakeAgeSeconds) : "Unknown") +
+                    "; tunnel known=" + std::to_string(result->sample.tunnelKnown) +
+                    "; tunnel running=" + std::to_string(result->sample.tunnelRunning) +
+                    ". Probe failure is not proof of revocation or packet loss.");
+                if (health.state != tlp::HealthState::Stable) {
+                    std::string recent;
+                    const std::size_t start = health.samples.size() > 15 ? health.samples.size() - 15 : 0;
+                    for (std::size_t i = start; i < health.samples.size(); ++i) {
+                        const auto& sample = health.samples[i];
+                        const std::string row = "utc=" + std::to_string(sample.utcUnixSeconds) +
+                            " tick_ms=" + std::to_string(sample.timestampMs) +
+                            " probe=" + (sample.probeKnown ? (sample.probeSucceeded ? std::string("ok") : std::string("failed")) : std::string("Unknown")) +
+                            " latency_ms=" + (sample.latencyMs ? std::to_string(*sample.latencyMs) : "Unknown") +
+                            " rx=" + (sample.receivedBytes ? std::to_string(*sample.receivedBytes) : "Unknown") +
+                            " tx=" + (sample.transmittedBytes ? std::to_string(*sample.transmittedBytes) : "Unknown") +
+                            " hs_utc=" + (sample.handshakeUnixSeconds ? std::to_string(*sample.handshakeUnixSeconds) : "Unknown") + "; ";
+                        if (recent.size() + row.size() > 1800) {
+                            LogEvent("recent_measurements", "info", recent);
+                            recent.clear();
+                        }
+                        recent += row;
+                    }
+                    LogEvent("recent_measurements", "info", recent);
+                }
+                active_->lastHealthState = health.state;
+            }
+            if (result->sample.probeKnown &&
+                (!active_->lastProbeSucceeded || *active_->lastProbeSucceeded != result->sample.probeSucceeded)) {
+                LogEvent("probe_changed", result->sample.probeSucceeded ? "info" : "warning",
+                    result->sample.probeSucceeded ? "Authorized PBX answers TCP probes." : "PBX application probe failed: " + result->error);
+                active_->lastProbeSucceeded = result->sample.probeSucceeded;
+            }
+            if (!result->error.empty() && active_->lastMeasurementError != result->error) {
+                LogEvent("measurement_error", "warning", result->error);
+            }
+            active_->lastMeasurementError = result->error;
+            if (health.handshakeAgeSeconds) {
+                bool stale = *health.handshakeAgeSeconds > tlp::ConnectionHealthMonitor::kStaleHandshakeSeconds;
+                if (!active_->lastHandshakeStale || *active_->lastHandshakeStale != stale) {
+                    LogEvent("telemetry_changed", stale ? "warning" : "info",
+                        stale ? "WireGuard handshake older than configured freshness threshold; idle is not proof of disconnection."
+                              : "WireGuard handshake is recent.");
+                    active_->lastHandshakeStale = stale;
+                }
+            }
+            if (result->sample.wireGuardTelemetryAttempted && active_->lastTelemetryReason != result->sample.telemetryReason) {
+                LogEvent("telemetry_changed", result->sample.telemetryReason.empty() ? "info" : "warning",
+                    result->sample.telemetryReason.empty() ? "WireGuard peer counters and handshake available." : result->sample.telemetryReason);
+                active_->lastTelemetryReason = result->sample.telemetryReason;
+            }
+            if (GetTickCount64() - active_->lastSummaryTickMs >= 60000) {
+                LogEvent("session_summary", "info", ConnectionHealthSummary(health));
+                active_->lastSummaryTickMs = GetTickCount64();
+            }
         } catch (const std::exception& e) {
+            LogEvent("measurement_error", "error", e.what());
             SetState("Connection health unavailable", std::string("TELIPHONES discarded an invalid measurement: ") + e.what());
         }
     }
@@ -690,22 +891,18 @@ LRESULT CMainDlg::OnProbeDone(WPARAM generation, LPARAM lparam) {
     if (!result->statusKnown) {
         active_->verified = false;
         UpdateButtons();
-        std::string authorization = active_->expiresAt > now ? " Authorization still has " + tlp::FormatRemaining(active_->expiresAt - now) + "." : "";
         SetState("Connection status temporarily unavailable",
-                 "TELIPHONES will retry automatically; this is not being treated as a tunnel failure." + authorization);
+                 "TELIPHONES will retry automatically; this is not being treated as a tunnel failure.");
         return 0;
     }
     if (result->serviceRunning && !result->sample.probeKnown) {
         active_->verified = false;
         UpdateButtons();
-        std::string authorization = active_->expiresAt > now ? " Authorization still has " + tlp::FormatRemaining(active_->expiresAt - now) + "." : "";
-        SetState("PBX probe unavailable", "The local TCP probe could not be measured; this is not counted as a failed probe." + authorization);
+        SetState("PBX probe unavailable", "The local TCP probe could not be measured; this is not counted as a failed probe.");
         return 0;
     }
     tlp::MonitorDecision decision = active_->monitor->Observe(now, result->serviceRunning, result->probeSucceeded);
-    std::string state = decision.summary;
-    if (active_->expiresAt > now) state += "  (" + tlp::FormatRemaining(active_->expiresAt - now) + " remaining)";
-    SetState(state, decision.guidance);
+    SetState(decision.summary, decision.guidance);
     bool verified = decision.state == tlp::LinkState::Connected;
     if (verified != active_->verified) {
         active_->verified = verified;
@@ -714,7 +911,7 @@ LRESULT CMainDlg::OnProbeDone(WPARAM generation, LPARAM lparam) {
     if (decision.disconnect && decision.state == tlp::LinkState::Expired) StartDisconnect(decision.summary + " " + decision.guidance);
     else if (decision.state == tlp::LinkState::Lost || decision.state == tlp::LinkState::NoResponse ||
              decision.state == tlp::LinkState::Stopped) {
-        SetState(decision.summary + (active_->expiresAt > now ? " — authorization still has " + tlp::FormatRemaining(active_->expiresAt - now) : ""),
+        SetState(decision.summary,
                  decision.guidance + " The Connection Health monitor will keep checking; existing terminal windows are not closed.");
     }
     UpdateButtons();
@@ -735,6 +932,7 @@ LRESULT CMainDlg::OnOperationDone(WPARAM, LPARAM lparam) {
             break;
         case OperationKind::Connect:
             if (!result->error.empty() || result->declined) {
+                LogEvent("connection_failed", "error", result->declined ? "UAC declined." : result->error);
                 active_.reset();
                 lastTelemetryTickMs_ = 0;
                 tlp::HealthSnapshot disconnected;
@@ -751,14 +949,17 @@ LRESULT CMainDlg::OnOperationDone(WPARAM, LPARAM lparam) {
                 active_->health = std::make_unique<tlp::ConnectionHealthMonitor>(healthPreferences_.thresholds);
             }
             active_->connected = true;
+            LogEvent("tunnel_started", "info", "WireGuard tunnel service started. PBX application reachability not yet verified.");
             SetState("Tunnel started - waiting for the PBX to answer...", "");
             break;
         case OperationKind::Disconnect:
             if (!result->error.empty()) {
+                LogEvent("disconnect_failed", "error", result->error);
                 SetState("Disconnect failed", result->error + " The tunnel may still be installed; choose Disconnect again or remove it in WireGuard for Windows.");
                 ShowError(result->error);
                 break;
             }
+            LogEvent("tunnel_removed", "info", "Tunnel removed: " + result->reason);
             active_.reset();
             lastTelemetryTickMs_ = 0;
             {
@@ -785,15 +986,19 @@ void CMainDlg::OnCancel() {
     if (active_) {
         if (AfxMessageBox(L"Disconnect from the PBX and exit TELIPHONES?", MB_ICONQUESTION | MB_YESNO) != IDYES) return;
         CWaitCursor wait;
+        LogEvent("disconnect_requested", "info", "Application shutdown: removing active tunnel.");
         try {
             tlp::win::RemoveTunnel(active_->tunnelName);
         } catch (const std::exception& e) {
+            LogEvent("disconnect_failed", "error", e.what());
             ShowError(std::string("The tunnel could not be removed: ") + e.what() + " Remove it in WireGuard for Windows.");
             return;
         }
+        LogEvent("tunnel_removed", "info", "Tunnel removed during application shutdown.");
         active_.reset();
     }
     healthDialog_.PersistWindowState();
     KillTimer(kMonitorTimer);
+    LogEvent("shutdown", "info", "Application shutdown completed.");
     CDialogEx::OnCancel();
 }

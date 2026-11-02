@@ -40,8 +40,9 @@ struct ProcessResult {
     DWORD exitCode = 1;
     std::string output;
 };
-// Runs a program without a console window, optionally feeding stdin, capturing stdout. Throws on launch failure or timeout.
-ProcessResult RunProcess(const std::wstring& program, const std::vector<std::string>& arguments, const std::string& input, DWORD timeoutMs);
+// Runs without a console; captures bounded stdout and optionally stderr. Throws on launch failure or timeout.
+ProcessResult RunProcess(const std::wstring& program, const std::vector<std::string>& arguments, const std::string& input,
+                         DWORD timeoutMs, bool captureErrors = false);
 
 }  // namespace win
 }  // namespace tlp

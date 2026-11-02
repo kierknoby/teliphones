@@ -27,8 +27,8 @@ class BuildLayoutTests(unittest.TestCase):
         base = ".".join(map(str, parts[:3]))
         product = base
         numeric = ".".join(map(str, parts))
-        self.assertEqual(product, "0.5.0")
-        self.assertEqual(numeric, "0.5.0.0")
+        self.assertEqual(product, "0.5.1")
+        self.assertEqual(numeric, "0.5.1.0")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
         self.assertIn(f"# TELIPHONES {product} for Windows", readme)
@@ -42,7 +42,7 @@ class BuildLayoutTests(unittest.TestCase):
             "0.6.0 is reserved for the upcoming fully automated SSH authentication functionality",
             " ".join(changelog.split()),
         )
-        self.assertIn("FreePBX module version is independent and remains **0.3.1**", changelog)
+        self.assertIn("FreePBX module version is independent and remains **0.3.2**", changelog)
         registered = {
             item.attrib["Include"].replace("\\", "/")
             for item in project("TELIPHONES.vcxproj").findall("ms:ItemGroup/ms:ClInclude", NS)
@@ -94,17 +94,62 @@ class BuildLayoutTests(unittest.TestCase):
         self.assertIn("src/app/ConnectionHealthDlg.cpp", compiled)
         self.assertIn("src/core/ConnectionHealth.cpp", compiled)
 
-    def test_connection_health_popout_starts_compact(self):
+    def test_connection_health_popout_and_integrated_panel_are_wired(self):
         resource = (ROOT / "src/app/TELIPHONES.rc").read_text()
-        self.assertRegex(resource, r"IDD_CONNECTION_HEALTH DIALOGEX 0, 0, 160, 110")
+        self.assertRegex(resource, r"IDD_CONNECTION_HEALTH DIALOGEX 0, 0, 490, 350")
         for control in ("IDC_HEALTH_STATE", "IDC_HEALTH_AUTH", "IDC_HEALTH_GRAPH", "IDC_HEALTH_WARNING",
-                        "IDC_HEALTH_HISTORY", "IDC_HEALTH_TOPMOST", "IDC_HEALTH_THRESHOLDS"):
+                        "IDC_HEALTH_HISTORY", "IDC_HEALTH_TOPMOST", "IDC_HEALTH_THRESHOLDS",
+                        "IDC_HEALTH_INLINE_TEXT", "IDC_HEALTH_INLINE_GRAPH", "IDC_HEALTH_INLINE_HISTORY",
+                        "IDC_SESSION_LOG", "IDC_SESSION_LOG_TEXT", "IDC_SESSION_LOG_EXPORT"):
             self.assertIn(control, resource)
         dialog = (ROOT / "src/app/ConnectionHealthDlg.cpp").read_text()
+        main = (ROOT / "src/app/MainDlg.cpp").read_text()
         self.assertIn("width - limitsDlu.Width() - rightMarginDlu.right", dialog)
+        for source in (dialog, main):
+            self.assertIn("DrawConnectionHealthGraph(", source)
+        self.assertIn("ConnectionHealthSummary(healthSnapshot_)", main)
+        self.assertIn("healthDialog_.UpdateSnapshot(healthSnapshot_)", main)
+        self.assertIn('const bool showingActive = selected && active_ && selected->id == active_->profileId', main)
+        self.assertIn("ShowWindow(SW_HIDE)", dialog)
+
+    def test_diagnostics_sources_tests_and_export_are_registered(self):
+        compiled = {
+            item.attrib["Include"].replace("\\", "/")
+            for item in project("SessionDiagnosticsTests.vcxproj").findall("ms:ItemGroup/ms:ClCompile", NS)
+        }
+        self.assertIn("tests/session_diagnostics_tests.cpp", compiled)
+        self.assertIn("src/core/SessionDiagnostics.cpp", compiled)
+        solution = (ROOT / "TELIPHONES.sln").read_text()
+        workflow = (ROOT.parents[1] / ".github/workflows/windows-build.yml").read_text()
+        self.assertIn("SessionDiagnosticsTests.vcxproj", solution)
+        self.assertIn("SessionDiagnosticsTests.exe", workflow)
+        cmake = (ROOT / "CMakeLists.txt").read_text()
+        self.assertIn("add_test(NAME session_diagnostics", cmake)
+        main = (ROOT / "src/app/MainDlg.cpp").read_text()
+        self.assertIn("ReadSessionEvents", main)
+        self.assertIn('"ws-" +', main)
+        self.assertIn('"support-" +', main)
+        viewer = (ROOT / "src/app/SessionLogDlg.cpp").read_text()
+        self.assertIn("CFileDialog", viewer)
+        self.assertIn("contents_.data() + offset", viewer)
+
+    def test_connection_durations_share_snapshot_without_duplicate_countdowns(self):
+        main = (ROOT / "src/app/MainDlg.cpp").read_text()
+        dialog = (ROOT / "src/app/ConnectionHealthDlg.cpp").read_text()
+        monitor = (ROOT / "src/core/Monitor.cpp").read_text()
+        self.assertIn("healthDialog_.UpdateSnapshot(healthSnapshot_)", main)
+        self.assertIn("ConnectionHealthSummary(healthSnapshot_)", main)
+        for field in ("ConnectedDurationText", "HealthyDurationText"):
+            self.assertIn(f"tlp::{field}(snapshot)", dialog)
+            self.assertIn(f"tlp::{field}(snapshot_)", dialog)
+        self.assertIn("tlp::AuthorizationRemainingText(snapshot)", dialog)
+        self.assertNotIn("state +=", main)
+        self.assertNotIn("authorization still has", main)
+        self.assertNotIn("FormatRemaining", monitor)
+        self.assertIn('decision.summary = "Connected";', monitor)
 
     def test_project_inputs_exist(self):
-        for name in ("TELIPHONES.vcxproj", "TeliphonesCoreTests.vcxproj"):
+        for name in ("TELIPHONES.vcxproj", "TeliphonesCoreTests.vcxproj", "SessionDiagnosticsTests.vcxproj"):
             with self.subTest(project=name):
                 for group in project(name).findall("ms:ItemGroup", NS):
                     for item in group:
@@ -119,7 +164,7 @@ class BuildLayoutTests(unittest.TestCase):
         config = next(group for group in groups if group.get("Condition") == release)
         self.assertEqual(config.findtext("ms:UseOfMfc", namespaces=NS), "Static")
         self.assertEqual(config.findtext("ms:PlatformToolset", namespaces=NS), "v143")
-        for name in ("TELIPHONES.vcxproj", "TeliphonesCoreTests.vcxproj"):
+        for name in ("TELIPHONES.vcxproj", "TeliphonesCoreTests.vcxproj", "SessionDiagnosticsTests.vcxproj"):
             root = project(name)
             definitions = root.findall("ms:ItemDefinitionGroup", NS)
             release_definitions = next(group for group in definitions if group.get("Condition") == release)
@@ -130,7 +175,7 @@ class BuildLayoutTests(unittest.TestCase):
             self.assertEqual(root.findtext(".//ms:OutDir", namespaces=NS), "$(SolutionDir)build\\$(Configuration)\\")
             self.assertIsNone(root.find(".//ms:CLRSupport", NS))
         for deps in app.findall(".//ms:AdditionalDependencies", NS):
-            for library in ("uuid.lib", "shell32.lib", "comdlg32.lib", "advapi32.lib", "winhttp.lib", "wintrust.lib", "crypt32.lib", "bcrypt.lib"):
+            for library in ("uuid.lib", "shell32.lib", "comdlg32.lib", "advapi32.lib", "winhttp.lib", "wintrust.lib", "crypt32.lib", "bcrypt.lib", "iphlpapi.lib"):
                 self.assertIn(library, deps.text.split(";"))
 
     def test_application_sdk_header_order(self):
@@ -184,7 +229,7 @@ class BuildLayoutTests(unittest.TestCase):
                 used.update(re.findall(r"\bID[CD]_[A-Z0-9_]+\b", path.read_text()))
         self.assertEqual(used - declared, set())
         rc = (resource_dir / "TELIPHONES.rc").read_text()
-        for name in ("IDD_MAIN", "IDD_PAIR", "IDD_SUPPORT", "IDD_APP_SETTINGS", "IDD_CONNECTION_HEALTH", "IDD_HEALTH_LIMITS"):
+        for name in ("IDD_MAIN", "IDD_PAIR", "IDD_SUPPORT", "IDD_APP_SETTINGS", "IDD_CONNECTION_HEALTH", "IDD_HEALTH_LIMITS", "IDD_SESSION_LOG"):
             self.assertRegex(rc, rf"\b{name}\s+DIALOGEX\b")
         for name in ("IDC_CONNECTION_HEALTH", "IDC_HEALTH_GRAPH", "IDC_HEALTH_HISTORY", "IDC_HEALTH_TOPMOST",
                      "IDC_HEALTH_THRESHOLDS", "IDC_HEALTH_LIMIT_LATENCY", "IDC_HEALTH_LIMIT_JITTER", "IDC_HEALTH_LIMIT_FAILURES"):
@@ -198,7 +243,7 @@ class BuildLayoutTests(unittest.TestCase):
         self.assertIn("MeasureTcpProbe(address, 443, 1200)", main_source)
         self.assertIn("ReadWireGuardCounters(wgExecutable, tunnelName, peerPublicKey)", main_source)
         self.assertIn("The Connection Health monitor will keep checking; existing terminal windows are not closed.", main_source)
-        self.assertIn("Probes != packet loss", health_source)
+        self.assertIn("probes are not packet loss", health_source)
         self.assertIn("congestion not measured", health_source)
         self.assertNotIn("RT_MANIFEST", rc)
         app = project("TELIPHONES.vcxproj")

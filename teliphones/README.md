@@ -1,9 +1,9 @@
 # TELIPHONES for FreePBX 17: module guide
 
-This guide covers installing, configuring, operating, maintaining and troubleshooting the TELIPHONES FreePBX module (`teliphones`, version 0.3.1). For an introduction to the project, its architecture and its security model, see the project overview (`README.md`), `docs/ARCHITECTURE.md` and `docs/SECURITY.md` at the root of the TELIPHONES source repository; these are not included in the module package.
+This guide covers installing, configuring, operating, maintaining and troubleshooting the TELIPHONES FreePBX module (`teliphones`, version 0.3.2). For an introduction to the project, its architecture and its security model, see the project overview (`README.md`), `docs/ARCHITECTURE.md` and `docs/SECURITY.md` at the root of the TELIPHONES source repository; these are not included in the module package.
 
 > [!WARNING]
-> **Not currently suitable for production.** TELIPHONES 0.3.1 is an unreleased development correction for controlled testing on a **disposable** Debian 12 / FreePBX 17 system. Its nftables ownership-marker correction was separately tested by the operator on the FreePBX 17 PBX; repository regression tests are simulations/isolated namespace tests, not a repeat of that live test. See [Known limitations](#known-limitations) and [Outstanding 0.3.1 verification](#outstanding-031-verification).
+> **Not currently suitable for production.** TELIPHONES 0.3.2 is an unreleased development correction for controlled testing on a **disposable** Debian 12 / FreePBX 17 system. The 0.3.1 nftables ownership-marker correction was separately tested by the operator on the FreePBX 17 PBX; this task's diagnostics changes have only local regression coverage and have not been deployed to or tested on a live PBX. See [Known limitations](#known-limitations) and [Outstanding 0.3.1 verification](#outstanding-031-verification).
 
 ## Contents
 
@@ -85,10 +85,10 @@ TELIPHONES is a community module and is not listed in the FreePBX online module 
 
 ### Install through Module Admin (recommended)
 
-1. Obtain `TELIPHONES-0.3.1.tgz` and its SHA-256 checksum from a trusted source, then verify the archive:
+1. Obtain `TELIPHONES-0.3.2.tgz` and its SHA-256 checksum from a trusted source, then verify the archive:
 
    ```bash
-   sha256sum TELIPHONES-0.3.1.tgz
+   sha256sum TELIPHONES-0.3.2.tgz
    ```
 
 2. In FreePBX, open **Admin > Module Admin**, choose **Upload modules**, and upload the archive.
@@ -193,9 +193,9 @@ Update TELIPHONES in place. Do not uninstall the module first: uninstalling remo
 
 ### After upgrading TELIPHONES
 
-A Module Admin upgrade updates the FreePBX module files but does not necessarily update the separately installed, root-owned broker (`/usr/local/lib/teliphones-broker/support_broker.py`), because Module Admin runs as the web service account. After every TELIPHONES upgrade, confirm that no support session is active (as root: `fwconsole teliphones status`), then rerun the root bootstrap procedure from an existing root shell and refresh Connectivity > TELIPHONES. TELIPHONES 0.3.1 keeps broker protocol 3 and adds a hookless nftables ownership chain that remains visible when Debian 12 nftables 1.0.6 drops table comments. Module Admin does not update the root-owned broker automatically; until the bootstrap copies and restarts the corrected broker, existing firewall ownership may not be recognised. Disconnect Windows tunnels before the bootstrap; valid pairings are restored when the broker restarts, without extending temporary expiry.
+A Module Admin upgrade updates the FreePBX module files but does not necessarily update the separately installed, root-owned broker (`/usr/local/lib/teliphones-broker/support_broker.py`), because Module Admin runs as the web service account. After every TELIPHONES upgrade, confirm that no support session is active (as root: `fwconsole teliphones status`), then rerun the root bootstrap procedure from an existing root shell and refresh Connectivity > TELIPHONES. TELIPHONES 0.3.1 keeps broker protocol 3 and adds a hookless nftables ownership chain that remains visible when Debian 12 nftables 1.0.6 drops table comments. TELIPHONES 0.3.2 adds bounded, administrator-only workstation diagnostics and broker protocol 4 without changing the existing firewall or WireGuard policy. Module Admin does not update the root-owned broker automatically; until the bootstrap copies and restarts the current broker, workstation diagnostics may be unavailable. Disconnect Windows tunnels before the bootstrap; valid pairings are restored when the broker restarts, without extending temporary expiry.
 
-The 0.2.1 and 0.3.0 security/firewall changes, and the 0.3.1 nftables ownership correction, require rerunning this bootstrap even when an older broker already reports protocol 3; that number alone does not distinguish the implementation. Confirm the installed broker file and restart using the documented bootstrap rather than relying on protocol status alone.
+The 0.2.1 and 0.3.0 security/firewall changes, the 0.3.1 nftables ownership correction, and the 0.3.2 diagnostics require rerunning this bootstrap. Protocol 4 identifies diagnostics support; it does not replace checking the installed root-owned file and following the documented bootstrap.
 
 ### Upgrading from 0.2.0 or 0.2.1
 
@@ -690,6 +690,14 @@ The human contributor remains solely responsible for the contribution. AI tools 
 ## Release History
 
 Entries for 0.0.2 to 0.2.1 are summarised from the repository history. Release dates are recorded only where they were previously published.
+
+### 0.3.2, workstation diagnostics (unreleased)
+
+- Adds a pairing-lifetime diagnostic ID (`ws-` plus the existing workstation ID) and bounded PBX-side event records for administrator pairing decisions, server-observed peer/interface/firewall lifecycle, and compact WireGuard handshake/traffic observations.
+- Adds protocol 4 diagnostics retrieval and JSON export through the authenticated, CSRF-checked FreePBX AJAX handler; only full FreePBX administrators can read logs.
+- Rotates private broker logs at 1 MiB per file, retains at most three files for seven days, and filters exported events by diagnostic ID. Event fields are allowlisted; keys, pairing tokens and request bodies are excluded.
+- The PBX does not claim to observe Windows-local attempts or treat an idle peer as disconnected. No firewall, WireGuard access policy, pairing protocol or SSH authentication behavior changes.
+- Regression tests are local simulations. No live PBX deployment or FreePBX runtime test is claimed.
 
 ### 0.3.1, nftables ownership compatibility (unreleased)
 

@@ -18,3 +18,4 @@ if ($LASTEXITCODE -ne 0) {
 
 Write-Host "Application: $(Join-Path $PSScriptRoot "build\$Configuration\TELIPHONES.exe")"
 Write-Host "Core tests:  $(Join-Path $PSScriptRoot "build\$Configuration\TeliphonesCoreTests.exe")"
+Write-Host "Diagnostics tests: $(Join-Path $PSScriptRoot "build\$Configuration\SessionDiagnosticsTests.exe")"

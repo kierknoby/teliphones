@@ -2,6 +2,7 @@ import importlib.util
 import json
 import os
 import shlex
+import threading
 from pathlib import Path
 import tempfile
 import unittest
@@ -253,7 +254,7 @@ class SupportBrokerTests(unittest.TestCase):
         self.assertIn("operation", status)
         self.assertIsInstance(status["server_time"], int)
         web_support = (Path(broker_module.__file__).parent / "WebSupport.php").read_text()
-        self.assertIn("public const BROKER_PROTOCOL = %d;" % broker_module.PROTOCOL, web_support)
+        self.assertIn("public const DIAGNOSTICS_PROTOCOL = %d;" % broker_module.PROTOCOL, web_support)
 
     def test_status_never_starts_an_operation(self):
         self.broker.command = lambda arguments, **kwargs: self.calls.append(arguments)
@@ -427,6 +428,8 @@ class FakeNetwork:
             return "\n".join(self.peers)
         if name == "wg" and rest == ["show", broker_module.WORKSTATION_IFACE, "latest-handshakes"]:
             return "\n".join("%s\t%d" % (key, self.handshakes.get(key, 0)) for key in self.peers)
+        if name == "wg" and rest == ["show", broker_module.WORKSTATION_IFACE, "transfer"]:
+            return "\n".join("%s\t0\t0" % key for key in self.peers)
         if name == "wg" and rest[:1] == ["set"] and "peer" in rest:
             key = rest[rest.index("peer") + 1]
             if "remove" in rest:
@@ -585,6 +588,8 @@ class WorkstationPairingTests(unittest.TestCase):
         self.assertFalse(self.net.link)
         self.assertIsNone(self.net.ruleset)
         self.assertEqual(self.broker.status()["workstations"]["items"], [])
+        expired = self.broker.diagnostics.read("ws-" + response["workstation_id"])
+        self.assertIn("pairing.expired", [item["event"] for item in expired])
 
     def test_repairing_same_key_keeps_address_and_port_is_fixed(self):
         _, first = self.pair(mode="temporary")
@@ -672,10 +677,119 @@ class WorkstationPairingTests(unittest.TestCase):
         self.net.handshakes["A" * 42 + "E="] = 1790000000
         self.net.calls = []
         status = self.broker.status()
-        self.assertEqual(status["protocol"], 3)
+        self.assertEqual(status["protocol"], 4)
         self.assertEqual(status["workstations"]["items"][0]["last_handshake"], 1790000000)
-        self.assertEqual(self.net.calls, [("wg", ("show", broker_module.WORKSTATION_IFACE, "latest-handshakes"))])
+        self.assertEqual(self.net.calls, [("wg", ("show", broker_module.WORKSTATION_IFACE, "latest-handshakes")),
+                                          ("wg", ("show", broker_module.WORKSTATION_IFACE, "transfer"))])
         self.assertNotIn("A" * 42, json.dumps(status))
+        diagnostic_id = "ws-" + status["workstations"]["items"][0]["id"]
+        events = self.broker.diagnostics.read(diagnostic_id)
+        observations = [item for item in events if item["event"] == "peer.observation"]
+        self.assertTrue(observations)
+        self.assertEqual(observations[-1]["data"]["handshake_at"], 1790000000)
+        self.assertNotIn("disconnected", json.dumps(events).lower())
+        self.assertEqual({item["diagnostic_id"] for item in events}, {diagnostic_id})
+        exported = self.broker.dispatch({"action": "diagnostics", "diagnostic_id": diagnostic_id}, 1000)
+        self.assertEqual(exported["component_version"], "0.3.2")
+        self.assertEqual(exported["diagnostic_id"], diagnostic_id)
+        self.assertFalse(any("public_key" in item or "token" in json.dumps(item).lower() for item in exported["events"]))
+
+    def test_pairing_diagnostics_capture_server_lifecycle_and_filtering(self):
+        _, response = self.pair(mode="temporary")
+        diagnostic_id = "ws-" + response["workstation_id"]
+        self.broker.workstation_status()
+        events = self.broker.diagnostics.read(diagnostic_id)
+        names = [event["event"] for event in events]
+        self.assertIn("pairing.approved", names)
+        self.assertIn("interface.established", names)
+        self.assertIn("peer.admitted", names)
+        self.assertIn("peer.observation", names)
+        self.assertTrue(all(event["source"] == "pbx" and event["component_version"] == "0.3.2" for event in events))
+        self.broker.dispatch({"action": "unpair", "workstation_id": response["workstation_id"]}, 1000)
+        events = self.broker.diagnostics.read(diagnostic_id)
+        self.assertEqual(events[-1]["event"], "pairing.revoked")
+        self.assertEqual(self.broker.diagnostics.read("ws-ffffffffffffffff"), [])
+
+    def test_diagnostics_action_rejects_invalid_identifiers_and_extra_fields(self):
+        for request in ({"action": "diagnostics", "diagnostic_id": "0123456789abcdef"},
+                        {"action": "diagnostics", "diagnostic_id": "ws-../../"},
+                        {"action": "diagnostics", "diagnostic_id": "ws-0123456789abcdef", "path": "/etc/shadow"}):
+            with self.assertRaises(broker_module.BrokerError):
+                broker_module.validate(request)
+
+    def test_traffic_counters_are_logged_as_throttled_summaries(self):
+        _, response = self.pair()
+        state, _ = self.broker.workstation_state()
+        item = state["workstations"][0]
+        with patch.object(broker_module.time, "monotonic", side_effect=[100, 120, 399, 401]):
+            self.broker.observe_workstations(state, {item["public_key"]: 0}, {item["public_key"]: (0, 0)})
+            self.broker.observe_workstations(state, {item["public_key"]: 0}, {item["public_key"]: (10, 0)})
+            self.broker.observe_workstations(state, {item["public_key"]: 0}, {item["public_key"]: (10, 0)})
+            self.broker.observe_workstations(state, {item["public_key"]: 0}, {item["public_key"]: (10, 0)})
+        events = [event for event in self.broker.diagnostics.read("ws-" + response["workstation_id"])
+                  if event["event"] == "peer.observation"]
+        self.assertEqual(len(events), 2)
+        self.assertEqual(events[-1]["data"]["rx_bytes"], 10)
+
+    def test_diagnostic_log_rotates_retains_and_limits_export(self):
+        logger = broker_module.DiagnosticLog(self.state / "test-diagnostics")
+        self.assertEqual(logger.MAX_FILE_BYTES, 1024 * 1024)
+        logger.MAX_FILE_BYTES = 500
+        diagnostic_id = "ws-0123456789abcdef"
+        for index in range(20):
+            logger.record(diagnostic_id, "peer.observation", handshake_at=index, rx_bytes=index, tx_bytes=index)
+        files = [logger.directory / name for name in logger.FILES if (logger.directory / name).exists()]
+        self.assertLessEqual(len(files), 3)
+        self.assertTrue(all(path.stat().st_size <= 500 for path in files))
+        self.assertGreaterEqual(len(files), 2)
+        active = logger.directory / "events.jsonl"
+        lines = active.read_text().splitlines()
+        record = json.loads(lines[0])
+        record["unix_time"] = int(broker_module.time.time() - logger.RETENTION_SECONDS - 1)
+        lines[0] = json.dumps(record, separators=(",", ":"), sort_keys=True)
+        active.write_text("\n".join(lines) + "\n")
+        logger.read(diagnostic_id)
+        self.assertTrue(all(json.loads(line)["unix_time"] >= broker_module.time.time() - logger.RETENTION_SECONDS
+                            for line in active.read_text().splitlines()))
+
+    def test_diagnostic_log_concurrent_writes_and_field_redaction(self):
+        logger = broker_module.DiagnosticLog(self.state / "concurrent-diagnostics")
+        diagnostic_id = "ws-0123456789abcdef"
+        writers = [threading.Thread(target=lambda base=base: [
+            logger.record(diagnostic_id, "peer.observation", handshake_at=base + index, rx_bytes=index, tx_bytes=index)
+            for index in range(50)]) for base in range(8)]
+        for writer in writers:
+            writer.start()
+        for writer in writers:
+            writer.join()
+        active = logger.directory / "events.jsonl"
+        records = [json.loads(line) for line in active.read_text().splitlines()]
+        self.assertEqual(len(records), 400)
+        with self.assertRaises(ValueError):
+            logger.record(diagnostic_id, "peer.observation", handshake_at=0, rx_bytes=0, tx_bytes=0,
+                          private_key="private-secret")
+        self.assertNotIn("private-secret", active.read_text())
+
+    def test_diagnostic_storage_failure_does_not_block_revocation(self):
+        _, response = self.pair()
+        self.broker.diagnostics.record = lambda *args, **kwargs: (_ for _ in ()).throw(OSError("disk unavailable"))
+        with patch.object(broker_module.LOGGER, "warning") as warning:
+            result = self.broker.dispatch({"action": "unpair", "workstation_id": response["workstation_id"]}, 1000)
+        self.assertTrue(result["ok"])
+        self.assertFalse(self.net.link)
+        self.assertTrue(warning.called)
+
+    def test_diagnostic_storage_failure_does_not_block_expiry_cleanup(self):
+        _, response = self.pair(mode="temporary")
+        state = json.loads((self.state / "workstations.json").read_text())
+        state["workstations"][0]["expires_at"] = 1
+        (self.state / "workstations.json").write_text(json.dumps(state))
+        self.broker.diagnostics.record = lambda *args, **kwargs: (_ for _ in ()).throw(OSError("disk unavailable"))
+        with patch.object(broker_module.LOGGER, "warning") as warning:
+            self.broker.expire_workstations()
+        self.assertFalse(self.net.link)
+        self.assertEqual(self.broker.status()["workstations"]["items"], [])
+        self.assertTrue(warning.called)
 
     def test_handshake_query_failure_reports_unverified_status(self):
         self.pair()

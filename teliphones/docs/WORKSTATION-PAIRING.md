@@ -1,8 +1,8 @@
-# TELIPHONES 0.3.1 workstation pairing contract
+# TELIPHONES 0.3.2 workstation pairing contract
 
 Workstation pairing is for an administrator's own Windows workstation. It is separate from the customer-authorised Remote Support session workflow. The FreePBX module and root broker remain authoritative for peer enrollment, allowed traffic, expiry and revocation.
 
-The module requires broker status protocol 3 and a well-formed `workstations` block with boolean readiness/tool requirements and an items array. A protocol number alone is not sufficient. The packaged 0.1.3 broker used protocol 2; rerun the documented root bootstrap after Module Admin upgrade. Pairing and revocation are refused before dispatch when capability status is missing or malformed; missing tools or module disablement block new pairing, not revocation.
+The module requires broker status protocol 3 and a well-formed `workstations` block with boolean readiness/tool requirements and an items array. A protocol number alone is not sufficient. Workstation diagnostics require broker protocol 4. The packaged 0.1.3 broker used protocol 2; rerun the documented root bootstrap after Module Admin upgrade. Pairing and revocation are refused before dispatch when capability status is missing or malformed; missing tools or module disablement block new pairing, not revocation.
 
 ## User flow
 
@@ -31,12 +31,14 @@ The response is a copyable enrollment artifact, not proof that arbitrary access 
 - Every update first disables `tlp-admin` and verifies that it is down or absent, before changing rules or peers. Cleanup additionally verifies interface deletion before removing the owned table. Failed disable/deletion preserves the remaining rules, key and pairing metadata, and is reported as an error, never successful revocation. **Revoke all workstations** remains available for retry. A failed revocation is incomplete; retained entries may be restored after a broker restart.
 - Windows disconnection after revocation is detected through tunnel service and PBX reachability monitoring. There is no server-pushed Windows revocation channel in this version, so instantaneous client-side disconnect is not guaranteed. The PBX-side broker/firewall remains authoritative for access.
 - The GUI displays the last WireGuard handshake from a fixed read-only `wg show tlp-admin latest-handshakes` query, without peer keys. Zero means no handshake; an unavailable query is explicitly unverified. A past handshake is not proof of current GUI/SSH reachability. Workstation status is a page-load snapshot, separate from remote support operation polling.
+- Each pairing has a non-secret diagnostic ID `ws-` plus its existing 16-hex workstation ID. It is pairing-lifetime, not a connection-attempt ID. The administrator-only **Workstation diagnostics** panel accepts this ID, filters the PBX log to that pairing, and exports a bounded JSON record. Events are UTC-stamped PBX observations of pairing decisions, server-side peer/interface/firewall state, and compact handshake/traffic snapshots; idle peers are not called disconnected, and no Windows-side failures are fabricated. The workstation side records its own local attempts separately.
+- Diagnostic records are kept in a root-owned private directory under `/var/lib/teliphones`, rotated at 1 MiB per file with three files total and seven-day retention. The broker exposes only whitelisted event fields through the FreePBX authenticated, CSRF-checked AJAX handler. No keys, pairing tokens, or request payloads are exported.
 
 ## Upgrading from 0.2.0
 
 This also applies when upgrading from 0.2.1. Install the current module and rerun the root bootstrap before relying on the separately installed broker.
 
-Install `TELIPHONES-0.3.1.tgz` through Module Admin, then rerun the documented root bootstrap with no active support session and Windows tunnels disconnected. Installation does not delete `workstations.json`, `workstation-recovery.json` or `workstation-wg.key`. Valid pairings keep their identities, addresses, permissions and original deadlines.
+Install `TELIPHONES-0.3.2.tgz` through Module Admin, then rerun the documented root bootstrap with no active support session and Windows tunnels disconnected. Installation does not delete `workstations.json`, `workstation-recovery.json` or `workstation-wg.key`. Valid pairings keep their identities, addresses, permissions and original deadlines.
 
 The bootstrap copies the current broker into its protected root-owned installation and restarts it. Protocol 3 was already used in 0.2.0: an operational socket or protocol number alone does **not** prove these security corrections are installed. Rerunning the bootstrap is mandatory even if no update warning appears.
 
@@ -47,6 +49,10 @@ An unmarked legacy table is migrated only when its complete nft JSON exactly mat
 The 0.3.1 broker adds the hookless `teliphones_owner_v1` chain because Debian 12 nftables 1.0.6 drops table comments from kernel JSON readback. The operator reports that this ownership correction was tested successfully on the actual FreePBX 17 test PBX. The repository code still needs to be installed and verified on that PBX through the normal upgrade/bootstrap procedure; this document does not claim that deployment has occurred.
 
 Install `TELIPHONES-0.3.1.tgz`, confirm there is no active support session, disconnect Windows tunnels, then rerun [Complete Installation on FreePBX 17](../README.md#complete-installation-on-freepbx-17) from an existing root shell. Broker protocol remains 3, so protocol/status alone cannot prove the corrected root-owned broker is running. On restart, the broker verifies the tunnel is down, safely migrates only the exact known 0.3.0 policy, restores current policy from saved state and re-admits valid, unexpired pairings. Pairing identities, addresses, SSH permissions, deadlines and the PBX WireGuard key are preserved. If exact ownership cannot be established, migration is refused and recovery data remains intact.
+
+## Upgrading from 0.3.1
+
+The 0.3.2 broker adds bounded diagnostics and protocol 4. Install `TELIPHONES-0.3.2.tgz`, confirm there is no active support session, disconnect workstation tunnels, and rerun the root bootstrap. This upgrades the separately installed broker while preserving workstation pairing state and the WireGuard key. Firewall policy, permitted ports, and pairing protocol are unchanged. The diagnostics panel remains unavailable until status reports protocol 4.
 
 ## Network requirements
 

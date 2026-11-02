@@ -5,6 +5,10 @@
 
 #include "../core/ConnectionHealth.h"
 
+// Shared by the main window and detachable monitor; never samples or changes the connection.
+void DrawConnectionHealthGraph(CDC& dc, const CRect& rect, const tlp::HealthSnapshot& snapshot, int historySeconds);
+std::string ConnectionHealthSummary(const tlp::HealthSnapshot& snapshot);
+
 class CConnectionHealthDlg : public CDialogEx {
 public:
     explicit CConnectionHealthDlg(CWnd* parent = nullptr);
@@ -22,6 +26,7 @@ protected:
     void OnCancel() override;
     afx_msg void OnClose();
     afx_msg void OnSize(UINT type, int cx, int cy);
+    afx_msg void OnGetMinMaxInfo(MINMAXINFO* info);
     afx_msg void OnHistoryChanged();
     afx_msg void OnTopmostChanged();
     afx_msg void OnThresholds();

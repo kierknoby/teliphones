@@ -1,7 +1,5 @@
 #include "Monitor.h"
 
-#include "Profiles.h"
-
 namespace tlp {
 
 ConnectionMonitor::ConnectionMonitor(std::int64_t startedAt, std::int64_t expiresAt, std::string endpoint, bool viaGateway)
@@ -23,12 +21,11 @@ MonitorDecision ConnectionMonitor::Observe(std::int64_t now, bool serviceRunning
         decision.guidance = "The WireGuard tunnel service is no longer running. Connect again to restart it.";
         return decision;
     }
-    std::string remaining = expiresAt_ > 0 ? " (" + FormatRemaining(expiresAt_ - now) + " remaining)" : "";
     if (probeSucceeded) {
         everConnected_ = true;
         failures_ = 0;
         decision.state = LinkState::Connected;
-        decision.summary = "Connected" + remaining;
+        decision.summary = "Connected";
         decision.guidance = "The PBX is answering through the encrypted WireGuard tunnel.";
         return decision;
     }
@@ -52,7 +49,7 @@ MonitorDecision ConnectionMonitor::Observe(std::int64_t now, bool serviceRunning
     }
     if (failures_ < kLostAfterFailures) {
         decision.state = LinkState::NotResponding;
-        decision.summary = "PBX not responding — rechecking" + remaining;
+        decision.summary = "PBX not responding — rechecking";
         decision.guidance = "The last status check did not reach the PBX. TELIPHONES will keep checking; new SSH launches stay unavailable until reachability is verified. Existing terminal windows are not closed.";
         return decision;
     }

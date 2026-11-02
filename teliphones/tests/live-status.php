@@ -125,10 +125,10 @@ namespace {
     $result = $call('action', 'POST', ['action' => 'configure', 'token' => 'known-token', 'private_key' => 'SECRET-KEY'], null, null, [$ready, ['ok' => true, 'operation_id' => 'aa', 'echo' => 'SECRET-KEY'], $ready]);
     $assert(strpos($result['json'], 'SECRET-KEY') === false, 'Action responses must not echo submitted credentials.');
 
-    // The FreePBX module hook only exposes the two commands and keeps framework authentication.
+    // The FreePBX module hook exposes only authenticated status, action and diagnostics commands.
     $module = (new ReflectionClass(\FreePBX\modules\Teliphones::class))->newInstanceWithoutConstructor();
     $setting = ['authenticate' => true, 'allowremote' => false];
-    foreach (['status' => true, 'action' => true, 'exec' => false, '' => false, 'getState' => false] as $request => $allowed) {
+    foreach (['status' => true, 'action' => true, 'diagnostics' => true, 'exec' => false, '' => false, 'getState' => false] as $request => $allowed) {
         $assert($module->ajaxRequest($request, $setting) === $allowed, "ajaxRequest('$request') must " . ($allowed ? 'be allowed.' : 'be refused.'));
     }
     $assert($setting === ['authenticate' => true, 'allowremote' => false], 'ajaxRequest must not disable FreePBX authentication or allow remote access.');

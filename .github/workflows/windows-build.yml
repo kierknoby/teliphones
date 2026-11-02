@@ -126,15 +126,17 @@ jobs:
             throw "MSVC/MFC solution build failed with exit code $LASTEXITCODE."
           }
 
-      - name: Run native Windows core regression tests
+      - name: Run native Windows core and diagnostics regression tests
         run: |
-          $tests = Join-Path $env:GITHUB_WORKSPACE 'desktop\windows\build\Release\TeliphonesCoreTests.exe'
-          if (-not (Test-Path -LiteralPath $tests -PathType Leaf)) {
-            throw "The native test executable was not produced: $tests"
-          }
-          & $tests
-          if ($LASTEXITCODE -ne 0) {
-            throw "Native core regression tests failed with exit code $LASTEXITCODE."
+          foreach ($name in @('TeliphonesCoreTests.exe', 'SessionDiagnosticsTests.exe')) {
+            $tests = Join-Path $env:GITHUB_WORKSPACE "desktop\windows\build\Release\$name"
+            if (-not (Test-Path -LiteralPath $tests -PathType Leaf)) {
+              throw "The native test executable was not produced: $tests"
+            }
+            & $tests
+            if ($LASTEXITCODE -ne 0) {
+              throw "$name failed with exit code $LASTEXITCODE."
+            }
           }
 
       - name: Verify real x64 native executable and runtime dependencies

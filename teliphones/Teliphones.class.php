@@ -34,7 +34,7 @@ class Teliphones extends FreePBX_Helpers implements BMO
      */
     public function ajaxRequest($req, &$setting)
     {
-        return in_array($req, ['status', 'action'], true);
+        return in_array($req, ['status', 'action', 'diagnostics'], true);
     }
 
     public function ajaxHandler()

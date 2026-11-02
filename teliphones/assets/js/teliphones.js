@@ -707,6 +707,67 @@
         if (resume) {
             resume.addEventListener('click', function () { monitor.resume(); });
         }
+        var diagnosticsForm = find('#teliphones-diagnostics-form');
+        if (diagnosticsForm) {
+            var diagnosticsOutput = find('#teliphones-diagnostics-output');
+            var diagnosticsExport = find('#teliphones-diagnostics-export');
+            var diagnosticsUrl = null;
+            diagnosticsForm.addEventListener('submit', function (event) {
+                event.preventDefault();
+                var input = find('#teliphones-diagnostic-id');
+                var diagnosticId = input ? input.value.trim() : '';
+                if (!/^ws-[a-f0-9]{16}$/.test(diagnosticId)) {
+                    if (diagnosticsOutput) { diagnosticsOutput.textContent = 'Enter a valid diagnostic session ID.'; }
+                    return;
+                }
+                if (diagnosticsOutput) { diagnosticsOutput.textContent = 'Loading PBX diagnostics…'; }
+                if (diagnosticsExport) { diagnosticsExport.hidden = true; }
+                request(endpoint + '&command=diagnostics', {
+                    method: 'POST',
+                    body: new window.FormData(diagnosticsForm)
+                }).then(function (result) {
+                    if (result.kind !== 'ok' || !result.body || result.body.ok !== true
+                        || !result.body.diagnostics || result.body.diagnostics.diagnostic_id !== diagnosticId) {
+                        if (diagnosticsOutput) {
+                            diagnosticsOutput.textContent = result.kind === 'auth'
+                                ? (result.error || 'FreePBX administrator session is no longer authorised.')
+                                : (result.body && typeof result.body.error === 'string'
+                                    ? result.body.error : 'PBX diagnostics could not be loaded.');
+                        }
+                        return;
+                    }
+                    var report = result.body.diagnostics;
+                    var labels = {
+                        'pairing.approved': 'Administrator approved workstation pairing',
+                        'pairing.revoked': 'Administrator revoked workstation pairing',
+                        'pairing.expired': 'Temporary workstation pairing expired',
+                        'peer.admitted': 'Broker admitted workstation peer',
+                        'peer.observation': 'PBX-observed WireGuard peer telemetry',
+                        'interface.established': 'PBX workstation interface established',
+                        'interface.removed': 'PBX workstation interface removed',
+                        'firewall.integration': 'FreePBX Firewall integration state changed',
+                        'broker.error': 'TELIPHONES broker observed an error'
+                    };
+                    var lines = report.events.map(function (item) {
+                        return item.timestamp_utc + '  ' + (labels[item.event] || item.event)
+                            + (Object.keys(item.data || {}).length ? ' — ' + JSON.stringify(item.data) : '');
+                    });
+                    if (diagnosticsOutput) {
+                        diagnosticsOutput.textContent = 'TELIPHONES ' + report.component_version + ' · '
+                            + report.diagnostic_id + ' · exported ' + report.exported_at + '\n'
+                            + (lines.length ? lines.join('\n') : 'No retained PBX events match this diagnostic ID.');
+                    }
+                    if (diagnosticsExport && window.URL && typeof window.URL.createObjectURL === 'function') {
+                        if (diagnosticsUrl) { window.URL.revokeObjectURL(diagnosticsUrl); }
+                        diagnosticsUrl = window.URL.createObjectURL(new window.Blob(
+                            [JSON.stringify(report, null, 2)], { type: 'application/json' }));
+                        diagnosticsExport.href = diagnosticsUrl;
+                        diagnosticsExport.download = 'teliphones-' + diagnosticId + '-diagnostics.json';
+                        diagnosticsExport.hidden = false;
+                    }
+                });
+            });
+        }
         var expiryChecked = null;
         var countdown = window.setInterval(function () {
             if (!current || !current.available || !hasSession(current) || typeof current.session.expires_at !== 'number') {

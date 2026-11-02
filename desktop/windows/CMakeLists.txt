@@ -14,6 +14,7 @@ add_library(teliphones_core STATIC
     src/core/Monitor.cpp
     src/core/Pairing.cpp
     src/core/Profiles.cpp
+    src/core/SessionDiagnostics.cpp
     src/core/TunnelConfig.cpp
     src/core/Validation.cpp
     src/core/WireGuardSetup.cpp)
@@ -25,11 +26,15 @@ endif()
 
 add_executable(core_tests tests/core_tests.cpp)
 target_link_libraries(core_tests PRIVATE teliphones_core)
+find_package(Threads REQUIRED)
+add_executable(session_diagnostics_tests tests/session_diagnostics_tests.cpp)
+target_link_libraries(session_diagnostics_tests PRIVATE teliphones_core Threads::Threads)
 add_executable(contract_tool tests/contract_tool.cpp)
 target_link_libraries(contract_tool PRIVATE teliphones_core)
 
 enable_testing()
 add_test(NAME core_tests COMMAND core_tests)
+add_test(NAME session_diagnostics COMMAND session_diagnostics_tests)
 find_package(Python3 COMPONENTS Interpreter)
 if(Python3_FOUND)
     add_test(NAME build_layout COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/build_layout_test.py)

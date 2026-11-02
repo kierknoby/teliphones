@@ -34,47 +34,62 @@ BEGIN
     END
 END
 
-IDD_MAIN DIALOGEX 0, 0, 560, 390
+IDD_MAIN DIALOGEX 0, 0, 560, 460
 STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX
 CAPTION "TELIPHONES"
 FONT 9, "Segoe UI"
 BEGIN
-    LTEXT           "WireGuard for Windows: checking...", IDC_WG_STATUS, 10, 10, 540, 25
-    CONTROL         "", IDC_PROFILES, WC_LISTVIEW, WS_TABSTOP | WS_BORDER | LVS_REPORT | LVS_SINGLESEL, 10, 40, 540, 135
-    PUSHBUTTON      "Add my PBX...", IDC_ADD_PBX, 10, 182, 90, 22
-    PUSHBUTTON      "Remote Support...", IDC_ADD_SUPPORT, 105, 182, 105, 22
-    PUSHBUTTON      "Import grant...", IDC_UPDATE_GRANT, 215, 182, 85, 22
-    PUSHBUTTON      "Remove", IDC_REMOVE, 305, 182, 65, 22
-    LTEXT           "Support session:", -1, 10, 212, 75, 14
-    COMBOBOX        IDC_SESSION, 88, 209, 250, 100, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
-    LTEXT           "", IDC_DETAILS, 10, 234, 540, 58, SS_LEFT
-    LTEXT           "Not connected", IDC_STATE, 10, 298, 410, 20, SS_LEFT
-    PUSHBUTTON      "Connection Health...", IDC_CONNECTION_HEALTH, 425, 296, 125, 22
-    LTEXT           "", IDC_GUIDANCE, 10, 318, 540, 32, SS_LEFT
-    PUSHBUTTON      "Connect", IDC_CONNECT, 10, 358, 75, 22
-    PUSHBUTTON      "Disconnect", IDC_DISCONNECT, 90, 358, 75, 22
-    PUSHBUTTON      "Open FreePBX", IDC_OPEN_GUI, 170, 358, 90, 22
-    PUSHBUTTON      "Open SSH", IDC_OPEN_SSH, 265, 358, 75, 22
-    PUSHBUTTON      "Settings...", IDC_SETTINGS, 395, 358, 75, 22
-    DEFPUSHBUTTON   "Close", IDCANCEL, 475, 358, 75, 22
+    LTEXT           "WireGuard for Windows: checking...", IDC_WG_STATUS, 10, 10, 540, 20
+    CONTROL         "", IDC_PROFILES, WC_LISTVIEW, WS_TABSTOP | WS_BORDER | LVS_REPORT | LVS_SINGLESEL, 10, 34, 540, 80
+    PUSHBUTTON      "Add my PBX...", IDC_ADD_PBX, 10, 120, 90, 20
+    PUSHBUTTON      "Remote Support...", IDC_ADD_SUPPORT, 105, 120, 105, 20
+    PUSHBUTTON      "Import grant...", IDC_UPDATE_GRANT, 215, 120, 85, 20
+    PUSHBUTTON      "Remove", IDC_REMOVE, 305, 120, 65, 20
+    LTEXT           "Support session:", -1, 10, 149, 75, 14
+    COMBOBOX        IDC_SESSION, 88, 146, 250, 100, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "", IDC_DETAILS, 10, 170, 540, 42, SS_LEFT
+    LTEXT           "Not connected", IDC_STATE, 10, 216, 410, 18, SS_LEFT
+    PUSHBUTTON      "Pop Out", IDC_CONNECTION_HEALTH, 425, 214, 125, 20
+    LTEXT           "", IDC_GUIDANCE, 10, 236, 540, 24, SS_LEFT
+    LTEXT           "Connection Health: Unknown", IDC_HEALTH_INLINE_TEXT, 10, 264, 540, 62, SS_LEFT
+    CONTROL         "", IDC_HEALTH_INLINE_GRAPH, "Static", SS_OWNERDRAW, 10, 328, 540, 84
+    COMBOBOX        IDC_HEALTH_INLINE_HISTORY, 10, 416, 90, 70, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    PUSHBUTTON      "View Session Log", IDC_SESSION_LOG, 425, 416, 125, 16
+    PUSHBUTTON      "Connect", IDC_CONNECT, 10, 436, 75, 18
+    PUSHBUTTON      "Disconnect", IDC_DISCONNECT, 90, 436, 75, 18
+    PUSHBUTTON      "Open FreePBX", IDC_OPEN_GUI, 170, 436, 90, 18
+    PUSHBUTTON      "Open SSH", IDC_OPEN_SSH, 265, 436, 75, 18
+    PUSHBUTTON      "Settings...", IDC_SETTINGS, 395, 436, 75, 18
+    DEFPUSHBUTTON   "Close", IDCANCEL, 475, 436, 75, 18
 END
 
-IDD_CONNECTION_HEALTH DIALOGEX 0, 0, 160, 110
+IDD_CONNECTION_HEALTH DIALOGEX 0, 0, 490, 350
 STYLE DS_SETFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_MINIMIZEBOX
 EXSTYLE WS_EX_TOOLWINDOW
 CAPTION "TELIPHONES Connection Health"
 FONT 9, "Segoe UI"
 BEGIN
-    LTEXT           "Health: Unknown", IDC_HEALTH_STATE, 7, 7, 146, 11, SS_LEFT
-    LTEXT           "Authorization: Unknown", IDC_HEALTH_AUTH, 7, 20, 146, 10, SS_LEFT
-    LTEXT           "TCP RTT: Unknown   Jitter: Unknown", IDC_HEALTH_LATENCY, 7, 32, 146, 10, SS_LEFT
-    LTEXT           "App probes: Unknown", IDC_HEALTH_PROBES, 7, 44, 146, 10, SS_LEFT
-    LTEXT           "Rx Unknown   Tx Unknown   HS Unknown", IDC_HEALTH_TRAFFIC, 7, 56, 146, 10, SS_LEFT
-    CONTROL         "", IDC_HEALTH_GRAPH, "Static", SS_OWNERDRAW, 7, 68, 146, 16
-    LTEXT           "Probes != packet loss; bandwidth not measured.", IDC_HEALTH_WARNING, 7, 85, 146, 11, SS_LEFT
-    COMBOBOX        IDC_HEALTH_HISTORY, 7, 98, 48, 70, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
-    CONTROL         "Always on Top", IDC_HEALTH_TOPMOST, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 58, 98, 46, 11
-    PUSHBUTTON      "Limits...", IDC_HEALTH_THRESHOLDS, 107, 96, 46, 13
+    LTEXT           "Health: Unknown", IDC_HEALTH_STATE, 8, 8, 474, 12, SS_LEFT
+    LTEXT           "Authorization: Unknown", IDC_HEALTH_AUTH, 8, 23, 474, 12, SS_LEFT
+    LTEXT           "TCP RTT: Unknown   Jitter: Unknown", IDC_HEALTH_LATENCY, 8, 38, 474, 12, SS_LEFT
+    LTEXT           "App probes: Unknown", IDC_HEALTH_PROBES, 8, 53, 474, 12, SS_LEFT
+    LTEXT           "Rx Unknown   Tx Unknown   Handshake Unknown", IDC_HEALTH_TRAFFIC, 8, 68, 474, 12, SS_LEFT
+    CONTROL         "", IDC_HEALTH_GRAPH, "Static", SS_OWNERDRAW, 8, 86, 474, 197
+    LTEXT           "Application probes are not packet loss; traffic is not bandwidth capacity.", IDC_HEALTH_WARNING, 8, 287, 474, 37, SS_LEFT
+    COMBOBOX        IDC_HEALTH_HISTORY, 8, 329, 75, 70, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    CONTROL         "Always on Top", IDC_HEALTH_TOPMOST, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 96, 331, 110, 12
+    PUSHBUTTON      "Limits...", IDC_HEALTH_THRESHOLDS, 412, 328, 70, 16
+END
+
+IDD_SESSION_LOG DIALOGEX 0, 0, 540, 350
+STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME
+CAPTION "TELIPHONES Session Log"
+FONT 9, "Segoe UI"
+BEGIN
+    LTEXT           "Local diagnostics (redacted). Export saves this same snapshot as UTF-8.", -1, 8, 8, 524, 14
+    EDITTEXT        IDC_SESSION_LOG_TEXT, 8, 26, 524, 286, ES_MULTILINE | ES_AUTOVSCROLL | ES_AUTOHSCROLL | ES_READONLY | WS_VSCROLL | WS_HSCROLL | WS_TABSTOP
+    PUSHBUTTON      "Export...", IDC_SESSION_LOG_EXPORT, 372, 322, 75, 20
+    DEFPUSHBUTTON   "Close", IDOK, 457, 322, 75, 20
 END
 
 IDD_HEALTH_LIMITS DIALOGEX 0, 0, 205, 105

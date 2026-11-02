@@ -339,7 +339,8 @@ void testMonitor() {
     ConnectionMonitor monitor(1000, 1300, "pbx.example.net:51821", false);
     check(monitor.Observe(1005, true, false).state == LinkState::Connecting, "connecting while waiting for the first answer");
     MonitorDecision connected = monitor.Observe(1010, true, true);
-    check(connected.state == LinkState::Connected && !connected.disconnect && connected.summary.find("remaining") != std::string::npos, "connected");
+    check(connected.state == LinkState::Connected && !connected.disconnect && connected.summary == "Connected",
+          "connection status does not embed an authorization countdown");
     check(monitor.Observe(1015, true, false).state == LinkState::NotResponding, "single failure is not yet a loss");
     check(monitor.Observe(1020, true, true).state == LinkState::Connected, "recovery after a transient failure");
     monitor.Observe(1025, true, false);
@@ -395,6 +396,7 @@ void testConnectionHealth() {
     for (int i = 0; i < 5; ++i) {
         HealthSample sample;
         sample.timestampMs = 1000 + i * 2000;
+        sample.utcUnixSeconds = 1700000000 + i * 2;
         sample.tunnelKnown = true;
         sample.tunnelRunning = true;
         sample.probeKnown = true;
@@ -402,21 +404,23 @@ void testConnectionHealth() {
         sample.latencyMs = 100.0 + i * 10;
         sample.receivedBytes = static_cast<std::uint64_t>(i) * 1000;
         sample.transmittedBytes = static_cast<std::uint64_t>(i) * 500;
-        sample.handshakeUnixSeconds = 1;
+        sample.handshakeUnixSeconds = 1700000000;
         sample.wireGuardTelemetryAttempted = true;
         monitor.AddSample(sample);
     }
     HealthSnapshot stable = monitor.Snapshot(9000, 60);
-    check(stable.state == HealthState::Stable && stable.continuouslyHealthySeconds == 8,
+    check(stable.state == HealthState::Stable && stable.continuouslyHealthySeconds == 0,
           "connection is not declared stable until consecutive consistent measurements");
-    check(stable.latencyMs && std::abs(*stable.latencyMs - 120.0) < 0.01 &&
+    check(stable.latencyMs && std::abs(*stable.latencyMs - 140.0) < 0.01 &&
               stable.jitterMs && std::abs(*stable.jitterMs - 10.0) < 0.01,
-          "latency average and absolute-difference jitter are calculated from successful probes");
+          "current latency and recent absolute-difference jitter are calculated from successful probes");
     check(stable.probeSuccessPercent == 100.0 && stable.probeFailurePercent == 0.0,
           "application probe success and failure percentages are reported");
     check(stable.receiveBytesPerSecond == 500.0 && stable.transmitBytesPerSecond == 250.0,
           "actual WireGuard byte-counter deltas produce receive and transmit rates");
     check(stable.handshakeAgeSeconds == 8, "handshake age uses local WireGuard timestamp");
+    check(stable.connectedSeconds == 8 && stable.continuouslyHealthySeconds == 0,
+          "connection duration starts at first successful probe, independently of becoming healthy");
 
     HealthSample missingTelemetry;
     missingTelemetry.timestampMs = 11000;
@@ -473,6 +477,8 @@ void testConnectionHealth() {
     ConnectionHealthMonitor expiredAuthorization;
     HealthSample expired;
     expired.timestampMs = 1000;
+    expired.utcUnixSeconds = 1;
+    expired.authorizationKnown = true;
     expired.tunnelKnown = true;
     expired.tunnelRunning = true;
     expired.probeKnown = true;
@@ -483,6 +489,24 @@ void testConnectionHealth() {
     HealthSnapshot expiredSnapshot = expiredAuthorization.Snapshot(5000, 60);
     check(expiredSnapshot.state == HealthState::Disconnected && expiredSnapshot.authorizationRemainingSeconds == 0,
           "expired authorization is separate from reachability and reports Disconnected");
+
+    ConnectionHealthMonitor utcAuthorization;
+    HealthSample authorized = expired;
+    authorized.utcUnixSeconds = 1793646000;
+    authorized.authorizationExpiresAt = 1793649600;
+    utcAuthorization.AddSample(authorized);
+    auto temporary = utcAuthorization.Snapshot(3000, 60);
+    check(temporary.authorizationRemainingSeconds == 3598 && temporary.authorizationExpiresAt == 1793649600,
+          "temporary authorization uses UTC expiry, never machine uptime");
+    authorized.timestampMs = 4000;
+    authorized.authorizationPersistent = true;
+    authorized.authorizationExpiresAt = 0;
+    utcAuthorization.AddSample(authorized);
+    auto persistent = utcAuthorization.Snapshot(4000, 60);
+    check(persistent.authorizationKnown && persistent.authorizationPersistent && !persistent.authorizationRemainingSeconds,
+          "persistent authorization has no fabricated remaining duration");
+    check(utcAuthorization.Snapshot(20000, 60).state == HealthState::Unknown,
+          "stale local measurements cannot claim current Stable connectivity");
 
     ConnectionHealthMonitor bounded;
     for (int i = 0; i < 350; ++i) {
@@ -521,6 +545,72 @@ void testConnectionHealth() {
     for (int i = 0; i < 5; ++i) addRecoverySample(true);
     check(recovery.Snapshot(tick - 2000, 60).state == HealthState::Stable,
           "five fresh successful probes restore Stable after a network interruption");
+    for (int i = 0; i < 200; ++i) addRecoverySample(true);
+    check(recovery.Snapshot(tick - 2000, 60).continuouslyHealthySeconds == 400,
+          "continuous healthy duration is not capped by the graph history window");
+
+    ConnectionHealthMonitor sources;
+    HealthSample sourceSample;
+    sourceSample.timestampMs = 1000;
+    sourceSample.telemetryTimestampMs = 1000;
+    sourceSample.tunnelKnown = true;
+    sourceSample.tunnelRunning = true;
+    sourceSample.probeKnown = true;
+    sourceSample.probeSucceeded = true;
+    sourceSample.latencyMs = 20;
+    sourceSample.wireGuardTelemetryAttempted = true;
+    sourceSample.trafficSource = "WireGuard peer transport bytes";
+    sourceSample.receivedBytes = 100;
+    sourceSample.transmittedBytes = 200;
+    sources.AddSample(sourceSample);
+    sourceSample.timestampMs += 6000;
+    sourceSample.telemetryTimestampMs += 6000;
+    sourceSample.receivedBytes = 3100;
+    sourceSample.transmittedBytes = 6200;
+    sources.AddSample(sourceSample);
+    check(sources.Snapshot(sourceSample.timestampMs, 60).receiveBytesPerSecond == 500,
+          "current counter rate uses the latest measured interval");
+    sourceSample.timestampMs += 6000;
+    sourceSample.telemetryTimestampMs += 6000;
+    sourceSample.trafficSource = "Windows tunnel interface IP bytes";
+    sourceSample.receivedBytes = 9100;
+    sourceSample.transmittedBytes = 18200;
+    sources.AddSample(sourceSample);
+    check(!sources.Snapshot(sourceSample.timestampMs, 60).receiveBytesPerSecond,
+          "changing telemetry source resets the baseline instead of retaining the old current rate");
+    sourceSample.timestampMs += 6000;
+    sourceSample.telemetryTimestampMs += 6000;
+    sourceSample.receivedBytes = 10300;
+    sourceSample.transmittedBytes = 20600;
+    sources.AddSample(sourceSample);
+    check(sources.Snapshot(sourceSample.timestampMs, 60).receiveBytesPerSecond == 200,
+          "new telemetry source gets its own byte-counter baseline");
+    sourceSample.timestampMs += 6000;
+    sourceSample.telemetryTimestampMs += 6000;
+    sourceSample.receivedBytes = 10;
+    sourceSample.transmittedBytes = 20;
+    sources.AddSample(sourceSample);
+    check(!sources.Snapshot(sourceSample.timestampMs, 60).receiveBytesPerSecond,
+          "counter reset cannot retain an earlier current rate");
+    sourceSample.timestampMs += 6000;
+    sourceSample.telemetryTimestampMs += 6000;
+    sourceSample.receivedBytes = 1210;
+    sourceSample.transmittedBytes = 2420;
+    sourceSample.probeKnown = false;
+    sourceSample.probeSucceeded = false;
+    sourceSample.latencyMs.reset();
+    sources.AddSample(sourceSample);
+    auto unknownProbe = sources.Snapshot(sourceSample.timestampMs, 60);
+    check(unknownProbe.state == HealthState::Unknown && !unknownProbe.latencyMs &&
+              unknownProbe.receiveBytesPerSecond == 200,
+          "unavailable application probe does not hide independently measured current traffic");
+    ConnectionHealthMonitor initialFailure;
+    sourceSample.probeKnown = true;
+    sourceSample.probeSucceeded = false;
+    sourceSample.latencyMs.reset();
+    initialFailure.AddSample(sourceSample);
+    check(initialFailure.Snapshot(sourceSample.timestampMs, 60).state == HealthState::Degraded,
+          "one initial failed application check is not immediately unstable or disconnected");
 
     ConnectionHealthMonitor noTunnelTelemetry;
     HealthSample noProbe;
@@ -532,6 +622,109 @@ void testConnectionHealth() {
     check(unknownMeasurements.state == HealthState::Unknown && !unknownMeasurements.latencyMs &&
               !unknownMeasurements.receiveBytesPerSecond && !unknownMeasurements.probeSuccessPercent,
           "unavailable probe and counter measurements remain Unknown");
+
+    ConnectionHealthMonitor durations;
+    HealthSample timing;
+    timing.timestampMs = 1000;
+    timing.utcUnixSeconds = 1793646000;
+    timing.authorizationKnown = true;
+    timing.authorizationExpiresAt = 1793649600;
+    timing.tunnelKnown = true;
+    timing.tunnelRunning = true;
+    timing.probeKnown = true;
+    durations.AddSample(timing);
+    check(!durations.Snapshot(1000, 60).connectedSeconds,
+          "waiting for initial reachability is not counted as connected duration");
+    timing.timestampMs = 3000;
+    timing.utcUnixSeconds += 2;
+    timing.probeSucceeded = true;
+    timing.latencyMs = 20;
+    durations.AddSample(timing);
+    auto beginning = durations.Snapshot(3000, 60);
+    check(beginning.connectedSeconds == 0 && !beginning.continuouslyHealthySeconds &&
+              beginning.authorizationRemainingSeconds == 3598,
+          "successful connection starts at zero without restarting authorization expiry");
+    for (int i = 0; i < 4; ++i) {
+        timing.timestampMs += 2000;
+        timing.utcUnixSeconds += 2;
+        durations.AddSample(timing);
+    }
+    auto healthy = durations.Snapshot(timing.timestampMs, 60);
+    check(healthy.connectedSeconds == 8 && healthy.continuouslyHealthySeconds == 0,
+          "continuously healthy duration starts later than connection duration");
+    check(HealthyDurationText(healthy).find("Continuously healthy for: 0 s") != std::string::npos,
+          "zero healthy duration is not formatted as expired");
+    timing.timestampMs += 2000;
+    timing.utcUnixSeconds -= 120;
+    durations.AddSample(timing);
+    check(durations.Snapshot(timing.timestampMs, 60).connectedSeconds == 10,
+          "wall-clock changes cannot change monotonic connected duration");
+    timing.probeSucceeded = false;
+    timing.latencyMs.reset();
+    timing.timestampMs += 2000;
+    durations.AddSample(timing);
+    auto transient = durations.Snapshot(timing.timestampMs, 60);
+    check(transient.connectedSeconds == 12 && !transient.continuouslyHealthySeconds,
+          "brief probe failure resets health duration, not the current connection");
+    for (int i = 0; i < 2; ++i) {
+        timing.timestampMs += 2000;
+        durations.AddSample(timing);
+    }
+    check(!durations.Snapshot(timing.timestampMs, 60).connectedSeconds &&
+              !durations.Snapshot(timing.timestampMs + 2000, 60).connectedSeconds,
+          "declared connection loss stops connected duration even while tunnel remains installed");
+    timing.timestampMs += 2000;
+    timing.probeSucceeded = true;
+    timing.latencyMs = 20;
+    durations.AddSample(timing);
+    auto reconnected = durations.Snapshot(timing.timestampMs, 60);
+    check(reconnected.connectedSeconds == 0 &&
+              reconnected.authorizationExpiresAt == 1793649600 &&
+              !reconnected.continuouslyHealthySeconds,
+          "reconnection starts new duration and preserves original authorization expiry");
+    check(ConnectedDurationText(reconnected) == "Connected for: 0 s" &&
+              HealthyDurationText(reconnected).find("Continuously healthy for: Not currently healthy") != std::string::npos,
+          "shared UI duration text distinguishes connected and healthy time");
+    timing.timestampMs += 2000;
+    timing.tunnelRunning = false;
+    durations.AddSample(timing);
+    auto disconnected = durations.Snapshot(timing.timestampMs, 60);
+    check(!disconnected.connectedSeconds && ConnectedDurationText(disconnected) == "Connected for: Not connected",
+          "stopped tunnel never displays an advancing connected duration");
+    check(disconnected.authorizationExpiresAt == reconnected.authorizationExpiresAt &&
+              disconnected.authorizationRemainingSeconds == reconnected.authorizationRemainingSeconds,
+          "stopping the tunnel does not reset or extend authorization");
+    ConnectionHealthMonitor newAttempt;
+    timing.timestampMs += 2000;
+    timing.tunnelRunning = true;
+    newAttempt.AddSample(timing);
+    auto restarted = newAttempt.Snapshot(timing.timestampMs, 60);
+    check(restarted.connectedSeconds == 0 &&
+              restarted.authorizationExpiresAt == reconnected.authorizationExpiresAt &&
+              restarted.authorizationRemainingSeconds == reconnected.authorizationRemainingSeconds,
+          "manual reconnect uses a fresh connected timer and the same original expiry");
+    check(!newAttempt.Snapshot(timing.timestampMs + 11000, 60).connectedSeconds,
+          "missing fresh samples cannot present an advancing connected duration");
+    HealthSample expirySample = timing;
+    expirySample.timestampMs += 2000;
+    expirySample.utcUnixSeconds = expirySample.authorizationExpiresAt;
+    newAttempt.AddSample(expirySample);
+    auto expiry = newAttempt.Snapshot(expirySample.timestampMs, 60);
+    check(!expiry.connectedSeconds && expiry.state == HealthState::Disconnected &&
+              AuthorizationRemainingText(expiry) == "Expired",
+          "authorization expiry stops the connected timer even when a probe succeeds");
+    ConnectionHealthMonitor persistentDuration;
+    timing.timestampMs += 2000;
+    timing.tunnelRunning = true;
+    timing.authorizationPersistent = true;
+    timing.authorizationExpiresAt = 0;
+    persistentDuration.AddSample(timing);
+    auto persistentConnection = persistentDuration.Snapshot(timing.timestampMs, 60);
+    check(persistentConnection.connectedSeconds == 0 && persistentConnection.authorizationPersistent &&
+              !persistentConnection.authorizationRemainingSeconds &&
+              AuthorizationRemainingText(persistentConnection) == "Until revoked" &&
+              AuthorizationRemainingText(beginning) == "59 min 58 s",
+          "persistent authorization and connected duration remain independent");
 }
 
 const std::string kSsh = "C:\\Windows\\System32\\OpenSSH\\ssh.exe";
@@ -781,8 +974,8 @@ int main() {
     for (unsigned part : versionParts) check(part <= 65535, "Windows version component fits the resource WORD");
     check(TELIPHONES_VERSION_FILE_STRING == versionBase + "." + std::to_string(versionParts[3]), "file version expands consistently");
     check(TELIPHONES_VERSION_STRING == versionBase, "product version expands without a development suffix");
-    check(std::string(TELIPHONES_VERSION_STRING) == "0.5.0", "Windows application version is independent of the module");
-    check(std::string(TELIPHONES_VERSION_FILE_STRING) == "0.5.0.0", "Windows file version is 0.5.0.0");
+    check(std::string(TELIPHONES_VERSION_STRING) == "0.5.1", "Windows application version is independent of the module");
+    check(std::string(TELIPHONES_VERSION_FILE_STRING) == "0.5.1.0", "Windows file version is 0.5.1.0");
     testEncoding();
     testJson();
     testValidation();

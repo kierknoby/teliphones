@@ -34,6 +34,9 @@ protected:
     afx_msg void OnOpenSsh();
     afx_msg void OnSettings();
     afx_msg void OnConnectionHealth();
+    afx_msg void OnSessionLog();
+    afx_msg void OnInlineHistoryChanged();
+    afx_msg void OnDrawItem(int controlId, LPDRAWITEMSTRUCT drawItem);
     afx_msg void OnSelectionChanged(NMHDR* header, LRESULT* result);
     afx_msg void OnTimer(UINT_PTR id);
     afx_msg LRESULT OnOperationDone(WPARAM, LPARAM result);
@@ -48,6 +51,14 @@ private:
         std::string tunnelName;
         std::string pbxAddress;
         std::string peerPublicKey;
+        std::string diagnosticId;
+        std::string attemptId;
+        std::string lastTelemetryReason;
+        std::string lastMeasurementError;
+        std::optional<bool> lastHandshakeStale;
+        tlp::HealthState lastHealthState = tlp::HealthState::Unknown;
+        std::optional<bool> lastProbeSucceeded;
+        std::uint64_t lastSummaryTickMs = 0;
         std::int64_t expiresAt = 0;
         std::unique_ptr<tlp::ConnectionMonitor> monitor;
         std::unique_ptr<tlp::ConnectionHealthMonitor> health;
@@ -72,6 +83,9 @@ private:
     tlp::Preferences CurrentPreferences();
     bool ShowAppSettings(bool welcome, const std::string& notice);
     bool SshReady();
+    void RefreshHealth();
+    void LogEvent(const std::string& event, const std::string& severity, const std::string& detail,
+                  const std::string& diagnosticId = "", const std::string& attemptId = "");
 
     CListCtrl list_;
     CComboBox sessions_;
@@ -80,6 +94,8 @@ private:
     tlp::win::WireGuardInstallation wireguard_;
     CConnectionHealthDlg healthDialog_;
     tlp::HealthPreferences healthPreferences_;
+    tlp::HealthSnapshot healthSnapshot_;
+    bool logFailureShown_ = false;
     std::unique_ptr<Active> active_;
     std::optional<tlp::Preferences> storedPreferences_;
     tlp::SetupResult installation_;

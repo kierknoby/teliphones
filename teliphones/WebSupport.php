@@ -3,6 +3,9 @@ namespace FreePBX\modules\Teliphones;
 
 class WebSupport
 {
+    public const VERSION = '0.3.2';
+    public const DIAGNOSTIC_ID_PATTERN = '/^ws-[a-f0-9]{16}$/';
+
     public static function authorised($sessionUser, $frameworkUser = null): bool
     {
         return self::accessError($sessionUser, $frameworkUser) === null;
@@ -63,10 +66,18 @@ class WebSupport
     public const OPERATION_STATES = ['running', 'succeeded', 'failed'];
     /** Broker status protocol this module requires (support_broker.py PROTOCOL): 2 adds live operation records, 3 adds workstation pairing. */
     public const BROKER_PROTOCOL = 3;
+    public const DIAGNOSTICS_PROTOCOL = 4;
 
     public static function brokerOperational(array $response): bool
     {
         return ($response['ok'] ?? false) === true && is_array($response['status'] ?? null);
+    }
+
+    public static function supportsDiagnostics(array $response): bool
+    {
+        return self::brokerOperational($response)
+            && is_int($response['status']['protocol'] ?? null)
+            && $response['status']['protocol'] >= self::DIAGNOSTICS_PROTOCOL;
     }
 
     public function brokerState(array $support): array
@@ -237,7 +248,7 @@ class WebSupport
     public static function ajax(string $command, string $method, array $post, array $session, $frameworkUser, array $server, WebSupport $client): array
     {
         $body = ['teliphones_api' => 1];
-        if (!in_array($command, ['status', 'action'], true)) {
+        if (!in_array($command, ['status', 'action', 'diagnostics'], true)) {
             return ['code' => 400, 'body' => $body + ['ok' => false, 'error' => 'Unsupported TELIPHONES request.']];
         }
         $accessError = self::accessError($session['AMP_user'] ?? null, $frameworkUser);
@@ -252,6 +263,22 @@ class WebSupport
             return ['code' => 200, 'body' => $body + ['ok' => true, 'status' => self::publicStatus($support, $client->brokerState($support))]];
         }
         $token = is_string($session['teliphones_token'] ?? null) ? $session['teliphones_token'] : '';
+        if ($command === 'diagnostics') {
+            $diagnosticId = $post['diagnostic_id'] ?? null;
+            if (!self::validDiagnosticsRequest($post, $token) || !is_string($diagnosticId)
+                || !preg_match(self::DIAGNOSTIC_ID_PATTERN, $diagnosticId)) {
+                return ['code' => 403, 'body' => $body + ['ok' => false, 'error' => 'Invalid TELIPHONES diagnostic request.']];
+            }
+            if (!self::supportsDiagnostics($support)) {
+                return ['code' => 409, 'body' => $body + ['ok' => false, 'error' => 'The root broker must be upgraded before workstation diagnostics are available.']];
+            }
+            $reply = $client->request(['action' => 'diagnostics', 'diagnostic_id' => $diagnosticId]);
+            if (($reply['ok'] ?? false) !== true) {
+                return ['code' => 503, 'body' => $body + ['ok' => false, 'error' => 'The privileged broker could not return workstation diagnostics.']];
+            }
+            $diagnostics = self::sanitiseDiagnostics($reply, $diagnosticId);
+            return ['code' => 200, 'body' => $body + ['ok' => true, 'diagnostics' => $diagnostics]];
+        }
         $result = self::handleAction($client, $post, $token, $support, $server);
         if ($result['dispatched']) $support = $client->request(['action' => 'status']);
         $notice = $result['notice'];
@@ -263,6 +290,60 @@ class WebSupport
             'pairing_response' => self::validPairingResponse($notice['pairing_response'] ?? null) ? $notice['pairing_response'] : null];
         return ['code' => $result['code'], 'body' => $body + ['ok' => $publicNotice['ok'], 'notice' => $publicNotice,
             'status' => self::publicStatus($support, $client->brokerState($support))]];
+    }
+
+    public static function validDiagnosticsRequest(array $request, string $token): bool
+    {
+        return array_diff(array_keys($request), ['token', 'diagnostic_id']) === []
+            && isset($request['token'], $request['diagnostic_id'])
+            && is_string($request['token']) && $token !== '' && hash_equals($token, $request['token'])
+            && is_string($request['diagnostic_id']) && preg_match(self::DIAGNOSTIC_ID_PATTERN, $request['diagnostic_id']) === 1;
+    }
+
+    public static function sanitiseDiagnostics(array $reply, string $diagnosticId): array
+    {
+        $allowed = [
+            'pairing.approved' => ['mode' => ['temporary', 'persistent'], 'expires_at' => 'nullable-int', 'renewed' => 'bool'],
+            'pairing.revoked' => ['reason' => ['administrator']],
+            'pairing.expired' => ['reason' => ['deadline']],
+            'peer.admitted' => ['access' => ['web', 'web+ssh']],
+            'peer.observation' => ['handshake_at' => 'int', 'rx_bytes' => 'int', 'tx_bytes' => 'int'],
+            'interface.established' => ['listen_port' => 'int'],
+            'interface.removed' => [],
+            'firewall.integration' => ['state' => ['inactive', 'active', 'not-detected', 'error'],
+                'backend' => ['nf_tables', 'legacy', null]],
+            'broker.error' => ['category' => ['workstation-enforcement', 'firewall-integration', 'telemetry-unavailable', 'cleanup-unverified']],
+        ];
+        $events = [];
+        foreach (is_array($reply['events'] ?? null) ? array_slice($reply['events'], -200) : [] as $event) {
+            if (!is_array($event) || ($event['diagnostic_id'] ?? null) !== $diagnosticId
+                || ($event['source'] ?? null) !== 'pbx' || !is_string($event['event'] ?? null)
+                || !array_key_exists($event['event'], $allowed) || !is_int($event['unix_time'] ?? null)
+                || !is_string($event['timestamp_utc'] ?? null)
+                || preg_match('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/', $event['timestamp_utc']) !== 1) continue;
+            $fields = $allowed[$event['event']];
+            $data = is_array($event['data'] ?? null) ? $event['data'] : [];
+            if (array_diff(array_keys($data), array_keys($fields))) continue;
+            $clean = [];
+            $valid = true;
+            foreach ($data as $name => $value) {
+                $rule = $fields[$name];
+                if ($rule === 'int') $valid = is_int($value) && $value >= 0;
+                elseif ($rule === 'nullable-int') $valid = $value === null || (is_int($value) && $value >= 0);
+                elseif ($rule === 'bool') $valid = is_bool($value);
+                else $valid = in_array($value, $rule, true);
+                if (!$valid) break;
+                $clean[$name] = $value;
+            }
+            if (!$valid) continue;
+            $events[] = ['timestamp_utc' => $event['timestamp_utc'], 'unix_time' => $event['unix_time'],
+                'diagnostic_id' => $diagnosticId, 'source' => 'pbx', 'event' => $event['event'], 'data' => $clean];
+        }
+        $exportedAt = is_string($reply['exported_at'] ?? null)
+            && preg_match('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/', $reply['exported_at']) === 1
+            ? $reply['exported_at'] : gmdate('Y-m-d\TH:i:s\Z');
+        return ['component_version' => self::VERSION, 'diagnostic_id' => $diagnosticId,
+            'exported_at' => $exportedAt, 'events' => $events];
     }
 
     public static function validRequest(array $request, string $token): bool

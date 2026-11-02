@@ -190,7 +190,8 @@ void SecureWipe(std::string& secret) {
     secret.clear();
 }
 
-ProcessResult RunProcess(const std::wstring& program, const std::vector<std::string>& arguments, const std::string& input, DWORD timeoutMs) {
+ProcessResult RunProcess(const std::wstring& program, const std::vector<std::string>& arguments, const std::string& input,
+                         DWORD timeoutMs, bool captureErrors) {
     SECURITY_ATTRIBUTES inherit{sizeof(inherit), nullptr, TRUE};
     Handle outRead, outWrite, inRead, inWrite;
     if (!CreatePipe(outRead.put(), outWrite.put(), &inherit, 0) || !SetHandleInformation(outRead.get(), HANDLE_FLAG_INHERIT, 0) ||
@@ -205,7 +206,7 @@ ProcessResult RunProcess(const std::wstring& program, const std::vector<std::str
     startup.dwFlags = STARTF_USESTDHANDLES;
     startup.hStdInput = inRead.get();
     startup.hStdOutput = outWrite.get();
-    startup.hStdError = nul.get();
+    startup.hStdError = captureErrors ? outWrite.get() : nul.get();
     std::wstring commandLine = Widen(QuoteArgument(Narrow(program)) + (arguments.empty() ? "" : " " + JoinCommandLine(arguments)));
     PROCESS_INFORMATION process{};
     if (!CreateProcessW(program.c_str(), &commandLine[0], nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process)) {
@@ -228,9 +229,13 @@ ProcessResult RunProcess(const std::wstring& program, const std::vector<std::str
     while (true) {
         DWORD available = 0;
         while (PeekNamedPipe(outRead.get(), nullptr, 0, nullptr, &available, nullptr) && available > 0) {
+            if (GetTickCount64() > deadline) {
+                TerminateProcess(processHandle.get(), 1);
+                throw Error("A helper program did not finish in time.");
+            }
             DWORD read = 0;
             if (!ReadFile(outRead.get(), buffer, std::min<DWORD>(available, sizeof(buffer)), &read, nullptr) || read == 0) break;
-            if (result.output.size() < 65536) result.output.append(buffer, read);
+            if (result.output.size() < 65536) result.output.append(buffer, std::min<std::size_t>(read, 65536 - result.output.size()));
         }
         if (exited) break;
         DWORD wait = WaitForSingleObject(processHandle.get(), 50);

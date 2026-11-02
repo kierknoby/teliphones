@@ -31,6 +31,7 @@ struct HealthPreferences {
 
 struct HealthSample {
     std::int64_t timestampMs = 0;
+    std::int64_t utcUnixSeconds = 0;
     bool tunnelKnown = false;
     bool tunnelRunning = false;
     bool probeKnown = false;
@@ -42,6 +43,12 @@ struct HealthSample {
     bool wireGuardTelemetryAttempted = false;
     std::int64_t telemetryTimestampMs = 0;
     std::int64_t authorizationExpiresAt = 0;
+    bool authorizationKnown = false;
+    bool authorizationPersistent = false;
+    std::string telemetryReason;
+    std::string trafficSource;
+    std::optional<double> receiveBytesPerSecond;
+    std::optional<double> transmitBytesPerSecond;
 };
 
 struct HealthSnapshot {
@@ -56,7 +63,16 @@ struct HealthSnapshot {
     std::optional<std::int64_t> authorizationRemainingSeconds;
     int consecutiveFailures = 0;
     std::optional<std::int64_t> continuouslyHealthySeconds;
+    std::optional<std::int64_t> connectedSeconds;
     bool deterioration = false;
+    bool authorizationKnown = false;
+    bool authorizationPersistent = false;
+    std::int64_t authorizationExpiresAt = 0;
+    std::int64_t snapshotTimestampMs = 0;
+    std::string telemetryReason;
+    std::string trafficSource;
+    std::string sessionId;
+    std::string attemptId;
     std::deque<HealthSample> samples;
 };
 
@@ -73,6 +89,9 @@ constexpr const char* kHealthPreferencesSchema = "teliphones-connection-health/1
 std::string SerializeHealthPreferences(const HealthPreferences& preferences);
 HealthPreferences ParseHealthPreferences(const std::string& text);
 const char* HealthStateName(HealthState state);
+std::string ConnectedDurationText(const HealthSnapshot& snapshot);
+std::string HealthyDurationText(const HealthSnapshot& snapshot);
+std::string AuthorizationRemainingText(const HealthSnapshot& snapshot);
 
 class ConnectionHealthMonitor {
 public:
@@ -92,6 +111,8 @@ private:
     HealthThresholds thresholds_;
     std::deque<HealthSample> samples_;
     int consecutiveFailures_ = 0;
+    std::optional<std::int64_t> healthySinceMs_;
+    std::optional<std::int64_t> connectedSinceMs_;
 };
 
 }  // namespace tlp

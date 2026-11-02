@@ -283,7 +283,7 @@ $defaultHost = preg_replace('/:[0-9]+$/', '', (string)($_SERVER['HTTP_HOST'] ?? 
 <table class="table table-striped teliphones-workstations"><thead><tr><th>Workstation</th><th>Key fingerprint</th><th>Address</th><th>Access</th><th>Pairing</th><th>WireGuard status</th><th></th></tr></thead><tbody>
 <?php if (!$workstations['items']): ?><tr><td colspan="7">No workstations are paired.</td></tr><?php endif; ?>
 <?php foreach ($workstations['items'] as $item): ?>
-<tr><td><?=$escape($item['name'])?></td><td><code><?=$escape($item['fingerprint'])?></code></td><td><?=$escape($item['address'])?></td>
+<tr><td><?=$escape($item['name'])?><br><small>Diagnostic ID: <code>ws-<?=$escape($item['id'])?></code></small></td><td><code><?=$escape($item['fingerprint'])?></code></td><td><?=$escape($item['address'])?></td>
 <td><?=$item['ssh'] ? 'Web interface and SSH' : 'Web interface only'?></td>
 <td><?=$item['mode'] === 'persistent' ? 'Persistent (until revoked)' : 'Temporary, expires ' . $escape(gmdate('Y-m-d H:i', (int)$item['expires_at'])) . ' UTC'?></td>
 <td><?=$item['last_handshake'] === null ? 'Not verified (status unavailable)' : ($item['last_handshake'] === 0 ? 'Authorised; no handshake yet' : 'Last handshake ' . $escape(gmdate('Y-m-d H:i:s', $item['last_handshake'])) . ' UTC')?><?php if (is_int($item['last_handshake']) && $item['last_handshake'] > 0 && !$integrationActive && $integration['state'] !== 'not-detected'): ?><br><span class="text-danger teliphones-handshake-blocked">Handshake succeeded, but FreePBX Firewall integration is not active: HTTP/HTTPS may be dropped by FreePBX Firewall.</span><?php endif; ?></td>
@@ -295,6 +295,22 @@ $defaultHost = preg_replace('/:[0-9]+$/', '', (string)($_SERVER['HTTP_HOST'] ?? 
 <form method="post"><input type="hidden" name="token" value="<?=$escape($token ?? '')?>"><input type="hidden" name="workstation_id" value="all">
 <button class="btn btn-danger" type="submit" name="action" value="unpair"<?=$unpairOff?>>Revoke all workstations</button></form>
 <?php endif; ?>
+<details class="teliphones-diagnostics" id="teliphones-diagnostics">
+<summary><strong>Workstation diagnostics</strong></summary>
+<p>View or export the bounded PBX-side record for one pairing-lifetime diagnostic ID. This contains server-observed broker and WireGuard events only; it does not contain Windows-local attempts. No recent handshake or traffic is not evidence that a workstation is disconnected.</p>
+<?php if (!WebSupport::supportsDiagnostics($support)): ?>
+<div class="alert alert-warning">Workstation diagnostics require the updated root broker. Follow the root broker update procedure above, then refresh this page.</div>
+<?php else: ?>
+<form id="teliphones-diagnostics-form" method="post" action="ajax.php?module=teliphones&amp;command=diagnostics">
+<input type="hidden" name="token" value="<?=$escape($token ?? '')?>">
+<label for="teliphones-diagnostic-id">Diagnostic session ID (ws- followed by 16 hexadecimal characters)</label>
+<input id="teliphones-diagnostic-id" class="form-control" name="diagnostic_id" maxlength="19" pattern="ws-[a-f0-9]{16}" required placeholder="ws-0123456789abcdef">
+<button class="btn btn-default" type="submit">View diagnostics</button>
+<a id="teliphones-diagnostics-export" hidden download>Export JSON</a>
+<pre id="teliphones-diagnostics-output" aria-live="polite"></pre>
+</form>
+<?php endif; ?>
+</details>
 <details class="teliphones-pair"><summary><strong>Pair a workstation</strong></summary>
 <p>In the TELIPHONES Windows application, choose <strong>Add my PBX...</strong>, then <strong>Generate request</strong> and <strong>Copy request</strong>. Pairing explicitly authorises access to this PBX's web administration interface; SSH is a separate choice below and is not permitted by default. Check that the key fingerprint shown in the application matches the fingerprint listed above after pairing. Pairing must be performed over HTTPS.</p>
 <form method="post" autocomplete="off">

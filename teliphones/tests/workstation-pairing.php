@@ -11,7 +11,7 @@ $recorder = new class extends WebSupport {
     public array $reply = ['ok' => true, 'message' => 'paired', 'pairing_response' => 'TELIPHONES-PAIR-RESPONSE-1:eyJzY2hlbWEiOiJ0ZWxpcGhvbmVzIn0'];
     public function request(array $request): array
     {
-        if ($request['action'] === 'status') return ['ok' => true, 'status' => ['protocol' => 3, 'phase' => 'Ready',
+        if ($request['action'] === 'status') return ['ok' => true, 'status' => ['protocol' => 4, 'phase' => 'Ready',
             'workstations' => ['ready' => true, 'requirements' => ['wg' => true, 'ip' => true, 'nft' => true], 'items' => []]]];
         $this->sent[] = $request;
         return $this->reply;
@@ -73,10 +73,58 @@ $recorder->sent = [];
 $ajax = WebSupport::ajax('action', 'POST', $post, $session, $restricted, $https, $recorder);
 $assert($ajax['code'] === 403 && $recorder->sent === [], 'Restricted administrators must not pair workstations.');
 
+$diagnosticId = 'ws-0123456789abcdef';
+$diagnosticPost = ['token' => 'known', 'diagnostic_id' => $diagnosticId];
+$recorder->reply = ['ok' => true, 'component_version' => '0.3.2', 'diagnostic_id' => $diagnosticId,
+    'exported_at' => '2026-11-02T19:00:00Z', 'events' => [
+        ['component_version' => '0.3.2', 'timestamp_utc' => '2026-11-02T18:59:00Z', 'unix_time' => 1793645940,
+            'diagnostic_id' => $diagnosticId, 'source' => 'pbx', 'event' => 'peer.observation',
+            'data' => ['handshake_at' => 0, 'rx_bytes' => 1, 'tx_bytes' => 2, 'private_key' => 'must-not-leak']],
+        ['timestamp_utc' => '2026-11-02T18:59:00Z', 'unix_time' => 1793645940,
+            'diagnostic_id' => 'ws-ffffffffffffffff', 'source' => 'pbx', 'event' => 'pairing.approved',
+            'data' => ['mode' => 'persistent']],
+        ['timestamp_utc' => '2026-11-02T18:59:00Z', 'unix_time' => 1793645940,
+            'diagnostic_id' => $diagnosticId, 'source' => 'pbx', 'event' => 'pairing.approved',
+            'data' => ['mode' => 'temporary', 'expires_at' => 1793649540, 'renewed' => false, 'token' => 'secret']],
+        ['timestamp_utc' => '2026-11-02T18:59:00Z', 'unix_time' => 1793645940,
+            'diagnostic_id' => $diagnosticId, 'source' => 'pbx', 'event' => 'pairing.approved',
+            'data' => ['mode' => 'temporary', 'expires_at' => 1793649540, 'renewed' => false]],
+    ]];
+$recorder->sent = [];
+$ajax = WebSupport::ajax('diagnostics', 'POST', $diagnosticPost, $session, $admin, $https, $recorder);
+$assert($ajax['code'] === 200 && $ajax['body']['diagnostics']['diagnostic_id'] === $diagnosticId
+    && $recorder->sent === [['action' => 'diagnostics', 'diagnostic_id' => $diagnosticId]],
+    'Diagnostics request must pass only the validated session identifier to the broker.');
+$events = $ajax['body']['diagnostics']['events'];
+$assert(count($events) === 1 && $events[0]['event'] === 'pairing.approved'
+    && $events[0]['source'] === 'pbx' && !isset($events[0]['data']['token']),
+    'Diagnostics response must filter by session and drop non-whitelisted fields.');
+$recorder->sent = [];
+$ajax = WebSupport::ajax('diagnostics', 'POST', ['diagnostic_id' => $diagnosticId], $session, $admin, $https, $recorder);
+$assert($ajax['code'] === 403 && $recorder->sent === [], 'Diagnostics must reject missing CSRF tokens.');
+$ajax = WebSupport::ajax('diagnostics', 'POST', ['token' => 'wrong', 'diagnostic_id' => $diagnosticId], $session, $admin, $https, $recorder);
+$assert($ajax['code'] === 403 && $recorder->sent === [], 'Diagnostics must reject invalid CSRF tokens.');
+$ajax = WebSupport::ajax('diagnostics', 'POST', $diagnosticPost, $session, $restricted, $https, $recorder);
+$assert($ajax['code'] === 403 && $recorder->sent === [], 'Diagnostics must remain administrator-only.');
+$ajax = WebSupport::ajax('diagnostics', 'GET', $diagnosticPost, $session, $admin, $https, $recorder);
+$assert($ajax['code'] === 405 && $recorder->sent === [], 'Diagnostics must require POST.');
+$malformedId = WebSupport::ajax('diagnostics', 'POST', ['token' => 'known', 'diagnostic_id' => '../../secret'], $session, $admin, $https, $recorder);
+$assert($malformedId['code'] === 403 && $recorder->sent === [], 'Diagnostics session filters must be strict.');
+$extraDiagnostic = WebSupport::ajax('diagnostics', 'POST', $diagnosticPost + ['extra' => 'sensitive'], $session, $admin, $https, $recorder);
+$assert($extraDiagnostic['code'] === 403 && $recorder->sent === [], 'Diagnostics must reject unexpected request fields.');
+$legacySupport = ['ok' => true, 'status' => ['protocol' => 3]];
+$ajax = WebSupport::ajax('diagnostics', 'POST', $diagnosticPost, $session, $admin, $https,
+    new class($legacySupport) extends WebSupport {
+        private array $status;
+        public function __construct(array $status) { $this->status = $status; }
+        public function request(array $request): array { return $this->status; }
+    });
+$assert($ajax['code'] === 409, 'Diagnostics must require the updated broker protocol.');
+
 // Status sanitisation.
 $item = ['id' => '0123456789abcdef', 'name' => 'ADMIN-PC', 'address' => '100.70.1.2/32', 'mode' => 'temporary', 'ssh' => true,
     'created_at' => 1, 'expires_at' => 2000000000, 'last_handshake' => 0, 'fingerprint' => 'SHA256:abcdefghijklmnop', 'public_key' => 'LEAKED-PUBLIC-KEY'];
-$status = ['ok' => true, 'status' => ['protocol' => 3, 'phase' => 'Ready', 'workstations' => ['ready' => true, 'requirements' => ['wg' => true, 'ip' => true, 'nft' => true],
+$status = ['ok' => true, 'status' => ['protocol' => 4, 'phase' => 'Ready', 'workstations' => ['ready' => true, 'requirements' => ['wg' => true, 'ip' => true, 'nft' => true],
     'error' => '', 'listen_port' => 51821, 'pbx_address' => '100.70.1.1', 'items' => [$item, ['id' => '../../x', 'name' => 'bad']]]]];
 $workstations = WebSupport::workstations($status);
 $assert($workstations['supported'] && $workstations['ready'] && count($workstations['items']) === 1 && !isset($workstations['items'][0]['public_key']), 'Workstation status must be allowlisted.');
@@ -100,9 +148,14 @@ $html = $render($status);
 $assert(strpos($html, '<code>nft</code> CLI') !== false && strpos($html, '<code>nftables.service</code> does not need to be enabled or running') !== false
     && strpos($html, 'this page does not install nftables') !== false && strpos($html, 'not zero-exposure or truly fail-closed') !== false,
     'GUI must explain essential nft userspace tools, unnecessary service activation, administrator repair and external-flush exposure limits.');
-$assert(strpos($html, '<h3 id="teliphones-workstations">Windows workstations</h3>') !== false && strpos($html, '>ADMIN-PC</td>') !== false
+$assert(strpos($html, '<h3 id="teliphones-workstations">Windows workstations</h3>') !== false && strpos($html, '>ADMIN-PC<br><small>Diagnostic ID: <code>ws-0123456789abcdef</code></small></td>') !== false
     && strpos($html, 'Web interface and SSH') !== false && strpos($html, 'SHA256:abcdefghijklmnop') !== false
     && strpos($html, 'LEAKED-PUBLIC-KEY') === false && strpos($html, '../../x') === false, 'Paired workstations must be listed without keys.');
+$assert(strpos($html, 'Workstation diagnostics') !== false && strpos($html, 'does not contain Windows-local attempts') !== false,
+    'Administrator page must explain and expose bounded server-side diagnostics without fabricating Windows events.');
+$assert(strpos($html, 'id="teliphones-diagnostics-form" method="post"') !== false
+    && strpos($html, 'name="token" value="test-token"') !== false,
+    'Diagnostics form must use POST and include its session CSRF token even without JavaScript.');
 $assert(!$buttonDisabled($html, 'pair') && !$buttonDisabled($html, 'unpair') && strpos($html, 'value="pbx.example.net"') !== false
     && strpos($html, 'value="51821"') !== false, 'Ready broker must enable pairing and prefill the endpoint.');
 $assert(strpos($html, 'Authorised; no handshake yet') !== false && strpos($html, 'Add my PBX...') !== false, 'Pairing status must not claim connectivity and must name actual Windows controls.');
