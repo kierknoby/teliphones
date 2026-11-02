@@ -358,7 +358,7 @@ and [SSH key-management proposal for review](docs/SSH-KEY-MANAGEMENT-PROPOSAL.md
 | [Connect](teliphones/docs/CONNECT-CONTRACT.md), [Checker](teliphones/docs/CHECKER-CONTRACT.md) and [Console](teliphones/docs/CONSOLE-CONTRACT.md) contracts | Versioned message formats |
 | [Topologies](teliphones/docs/TOPOLOGIES.md) | On-PBX, On-net and Off-net definitions |
 | [Testing programme](teliphones/docs/TESTING.md) | Regression coverage and the staged disposable-PBX test programme |
-| [Windows application](desktop/windows/README.md) | Windows **0.4.0** (unreleased, independently versioned), build provenance, [Windows changelog](desktop/windows/CHANGELOG.md), application preferences, integrated WireGuard installation and test plan |
+| [Windows application](desktop/windows/README.md) | Windows **0.5.0** (unreleased, independently versioned), build provenance, [Windows changelog](desktop/windows/CHANGELOG.md), application preferences, integrated WireGuard installation, Connection Health monitor and test plan |
 | [Reference gateway](gateway/README.md) | Lab Connect gateway, engineer and Checker tools, namespace laboratory |
 | [Rendezvous design note](docs/RENDEZVOUS.md) | Future direct-first rendezvous and relay interface (not implemented) |
 
@@ -398,7 +398,7 @@ Where the environment permits unprivileged user and network namespaces, the Pyth
 
 ## Release history
 
-**0.3.1** is the current unreleased module correction. It replaces the nftables table-comment ownership marker that nftables 1.0.6 drops from JSON readback with a hookless chain and safely migrates only the exact known 0.3.0 policy while the interface is down. The Windows application remains independently versioned at **0.4.0**. Earlier versions are summarised in the [module release history](teliphones/README.md#release-history).
+**0.3.1** is the current unreleased module correction. It replaces the nftables table-comment ownership marker that nftables 1.0.6 drops from JSON readback with a hookless chain and safely migrates only the exact known 0.3.0 policy while the interface is down. The Windows application remains independently versioned at **0.5.0**. Earlier versions are summarised in the [module release history](teliphones/README.md#release-history).
 
 ## Contributing
 

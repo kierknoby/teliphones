@@ -27,8 +27,8 @@ class BuildLayoutTests(unittest.TestCase):
         base = ".".join(map(str, parts[:3]))
         product = base
         numeric = ".".join(map(str, parts))
-        self.assertEqual(product, "0.4.0")
-        self.assertEqual(numeric, "0.4.0.0")
+        self.assertEqual(product, "0.5.0")
+        self.assertEqual(numeric, "0.5.0.0")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
         self.assertIn(f"# TELIPHONES {product} for Windows", readme)
@@ -37,6 +37,12 @@ class BuildLayoutTests(unittest.TestCase):
         self.assertIn(f"## {product} — Unreleased", changelog)
         self.assertEqual(re.findall(r"^## (\d+\.\d+\.\d+) ", changelog, re.MULTILINE)[0], product)
         self.assertIn(f"**{numeric}**", changelog)
+        self.assertIn("0.6.0 is reserved for the upcoming fully automated SSH authentication functionality", readme)
+        self.assertIn(
+            "0.6.0 is reserved for the upcoming fully automated SSH authentication functionality",
+            " ".join(changelog.split()),
+        )
+        self.assertIn("FreePBX module version is independent and remains **0.3.1**", changelog)
         registered = {
             item.attrib["Include"].replace("\\", "/")
             for item in project("TELIPHONES.vcxproj").findall("ms:ItemGroup/ms:ClInclude", NS)
