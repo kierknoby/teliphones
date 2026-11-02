@@ -109,6 +109,18 @@ jobs:
 
       - name: Build TELIPHONES solution (Release x64)
         run: |
+          $ErrorActionPreference = 'Stop'
+          $source = Join-Path $env:GITHUB_WORKSPACE 'desktop\windows\src\app\ConnectionHealthDlg.cpp'
+          $runnerCommit = (& git -C $env:GITHUB_WORKSPACE rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or -not $runnerCommit) {
+            throw 'Unable to determine the runner checkout commit.'
+          }
+          Write-Host "Runner checkout commit: $runnerCommit"
+          Write-Host "GitHub event commit: $env:GITHUB_SHA"
+          $sourceLines = Get-Content -LiteralPath $source
+          for ($lineNumber = 205; $lineNumber -le 220; $lineNumber++) {
+            Write-Host ('{0,4}: {1}' -f $lineNumber, $sourceLines[$lineNumber - 1])
+          }
           & $env:MSBUILD_EXE desktop/windows/TELIPHONES.sln /m /t:Rebuild /p:Configuration=Release /p:Platform=x64 "/p:VCToolsVersion=$env:VCTOOLS_VERSION" "/p:WindowsTargetPlatformVersion=$env:WINDOWS_SDK_VERSION" /verbosity:minimal
           if ($LASTEXITCODE -ne 0) {
             throw "MSVC/MFC solution build failed with exit code $LASTEXITCODE."
