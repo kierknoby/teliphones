@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import importlib.util
+import copy
 import os
 import re
 import subprocess
@@ -21,6 +22,74 @@ def project(name):
 
 
 class BuildLayoutTests(unittest.TestCase):
+    @patch("builtins.print")
+    def test_fixture_acl_operations_and_descriptor_verification(self, _print):
+        spec = importlib.util.spec_from_file_location("fixture_acl", ROOT / "tests/ssh_native_check.py")
+        module = importlib.util.module_from_spec(spec)
+        with patch.dict(os.environ, {"SystemRoot": "C:/Windows"}), patch.object(sys, "argv", ["fixture", "host.exe"]):
+            spec.loader.exec_module(module)
+        sids = ["S-1-5-18", "S-1-5-32-544"]
+        descriptor = {"owner": sids[0], "protected": True, "rules": [
+            {"sid": sid, "allow": True, "inherited": False, "mask": 0x1F01FF,
+             "inheritance": 0, "propagation": 0} for sid in sids]}
+        with patch.object(module, "run") as run, patch.object(module, "security_state", return_value=descriptor):
+            module.secure_path("D:/fixture/host", sids[0], sids, remove_sid="S-1-5-21-1-2-3-1001")
+            commands = [call.args[0] for call in run.call_args_list]
+            self.assertEqual(commands, [
+                ["icacls.exe", "D:/fixture/host", "/grant:r", "*S-1-5-18:(F)", "*S-1-5-32-544:(F)"],
+                ["icacls.exe", "D:/fixture/host", "/setowner", "*S-1-5-18"],
+                ["icacls.exe", "D:/fixture/host", "/inheritance:r"],
+                ["icacls.exe", "D:/fixture/host", "/remove:g", "*S-1-5-21-1-2-3-1001"]])
+        for field, value in (("owner", "S-1-1-0"), ("protected", False)):
+            invalid = {**descriptor, field: value}
+            with self.subTest(field=field), self.assertRaises(AssertionError):
+                module.verify_security(invalid, sids[0], sids)
+        for field, value in (("sid", "S-1-1-0"), ("mask", 0x120089), ("inherited", True),
+                             ("allow", False), ("inheritance", 3), ("propagation", 1)):
+            invalid = copy.deepcopy(descriptor)
+            invalid["rules"][0][field] = value
+            with self.subTest(field=field), self.assertRaises(AssertionError):
+                module.verify_security(invalid, sids[0], sids)
+        task = {**descriptor, "principal": "S-1-5-18", "logon_type": 5, "run_level": 1}
+        module.verify_security(task, sids[0], sids, task=True)
+        with self.assertRaises(AssertionError):
+            module.verify_security({**task, "logon_type": 3}, sids[0], sids, task=True)
+        cls = module.WindowsSshTests
+        with patch("builtins.print"), patch.object(cls, "setUpClass") as setup, patch.object(cls, "doClassCleanups") as cleanup, \
+                patch.object(cls, "tearDown_exceptions", [], create=True):
+            module.fixture_preflight()
+            setup.assert_called_once()
+            cleanup.assert_called_once()
+            with patch.object(cls, "setUpClass"), patch.object(cls, "doClassCleanups"), \
+                    patch.object(cls, "tearDown_exceptions", [(RuntimeError, RuntimeError("cleanup failed"), None)], create=True), \
+                    self.assertRaisesRegex(RuntimeError, "cleanup failed"):
+                module.fixture_preflight()
+            with tempfile.TemporaryDirectory() as parent:
+                cls.root = Path(parent) / "owned-fixture"
+                cls.root.mkdir()
+                cls.task = "TELIPHONES-sshd-test-0123456789abcdef"
+                with patch.object(module, "fixture_task_state", return_value=4), \
+                        self.assertRaisesRegex(RuntimeError, "Preserving fixture directory"):
+                    cls.remove_temporary()
+                self.assertTrue(cls.root.is_dir())
+                pid_file = cls.root / "server.pid"
+                pid_file.write_text("123", encoding="ascii")
+                with patch.object(module, "alive", side_effect=[True, False]) as alive, \
+                        patch.object(module.time, "sleep") as sleep:
+                    module.wait_server_exit(pid_file)
+                    self.assertEqual(alive.call_count, 2)
+                    sleep.assert_called_once_with(0.1)
+                with patch.object(module, "fixture_task_state", return_value=None), \
+                        patch.object(module, "alive", return_value=False):
+                    cls.remove_temporary()
+                self.assertFalse(cls.root.exists())
+        with patch.object(cls, "setUpClass", side_effect=RuntimeError("setup operation failed")), \
+                patch.object(cls, "doClassCleanups") as cleanup, \
+                patch.object(cls, "tearDown_exceptions", [], create=True), \
+                self.assertRaisesRegex(RuntimeError, "setup operation failed"):
+            module.fixture_preflight()
+        cleanup.assert_called_once()
+
     def test_contract_stdout_rejects_windows_double_translation(self):
         spec = importlib.util.spec_from_file_location("portable_contract", ROOT / "tests/contract_check.py")
         module = importlib.util.module_from_spec(spec)
@@ -60,6 +129,11 @@ class BuildLayoutTests(unittest.TestCase):
             self.assertIn("if ($LASTEXITCODE -ne 0) { throw", step)
             self.assertIn("Tee-Object", step)
         self.assertIn("steps.native_preflight.outcome == 'success'", native)
+        self.assertIn("steps.fixture_preflight.outcome == 'success'", native)
+        fixture = steps["Preflight actual isolated Windows SSH fixture"]
+        self.assertIn("--fixture-preflight", fixture)
+        self.assertIn("!cancelled()", fixture)
+        self.assertNotIn("contract", fixture)
         self.assertNotIn("contract", native)
         self.assertNotIn("steps.native_preflight", ctest)
         self.assertIn("--verbose --output-on-failure --no-tests=error --output-junit", ctest)
@@ -143,7 +217,7 @@ endfunction()
         for required in ("disable_debug_privilege()", "SO_EXCLUSIVEADDRUSE", "StrictModes yes",
                          '"/RU", "SYSTEM"', '"S-1-5-18"', '"schtasks.exe", "/Create"',
                          '"schtasks.exe", "/Run"', '"schtasks.exe", "/Delete"', "cls.stop_file.touch()",
-                         'KEYGEN, "-Y", "verify"', 'SSHD, "-T"', '"/setowner", "*S-1-5-18"',
+                         'KEYGEN, "-Y", "verify"', 'SSHD, "-T"', '"/setowner", "*" + owner',
                          "Unrelated-process agent probe did not complete within five seconds"):
             self.assertIn(required, native)
         host = (ROOT / "tests/ssh_native_host.cpp").read_text(encoding="utf-8")

@@ -11,6 +11,8 @@
 #include <cstring>
 #include <memory>
 #include <thread>
+#include <filesystem>
+#include <fstream>
 
 namespace {
 std::wstring wide(const std::string& text) {
@@ -155,7 +157,7 @@ int fixtureServer(char** argv) {
 }
 }
 
-int main(int argc, char** argv) {
+int runMain(int argc, char** argv) {
     try {
         if (argc == 7 && std::string(argv[1]) == "--fixture-server") return fixtureServer(argv);
         if (argc == 2 && std::string(argv[1]) == "--preflight") { preflight(); return 0; }
@@ -263,7 +265,23 @@ int main(int argc, char** argv) {
         std::cout << "KEY_DESTROYED=" << agent.destroyed() << std::endl;
         return static_cast<int>(status);
     } catch (const std::exception& error) {
+        const auto windowsError = GetLastError();
+        if (argc == 7 && std::string(argv[1]) == "--fixture-server") {
+            std::ofstream log(std::filesystem::path(wide(argv[4])), std::ios::app);
+            if (log) log << "SYSTEM fixture wrapper failure: " << error.what()
+                         << "; Win32 error snapshot: " << windowsError << "\n";
+            else std::cerr << "Unable to write SYSTEM fixture failure log; Win32 error " << windowsError << "\n";
+        }
         std::cerr << "NATIVE SSH TEST FAILURE: " << error.what() << std::endl;
         return 1;
     }
+}
+
+int wmain(int argc, wchar_t** argv) {
+    std::vector<std::string> arguments;
+    for (int i = 0; i < argc; ++i) arguments.push_back(tlp::win::Narrow(argv[i]));
+    std::vector<char*> pointers;
+    for (auto& argument : arguments) pointers.push_back(argument.data());
+    pointers.push_back(nullptr);
+    return runMain(argc, pointers.data());
 }

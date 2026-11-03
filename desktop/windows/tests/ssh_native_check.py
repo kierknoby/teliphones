@@ -16,6 +16,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 import unittest
 import xml.etree.ElementTree as ET
 
@@ -24,6 +25,9 @@ OPENSSH = Path(os.environ["SystemRoot"]) / "System32/OpenSSH"
 SSH = OPENSSH / "ssh.exe"
 SSHD = OPENSSH / "sshd.exe"
 KEYGEN = OPENSSH / "ssh-keygen.exe"
+SECURITY = Path(__file__).with_name("fixture_security.ps1")
+SYSTEM_SID = "S-1-5-18"
+ADMIN_SID = "S-1-5-32-544"
 
 def kernel32():
     from ctypes import wintypes
@@ -73,11 +77,66 @@ def pipe_io(handle, data, writing):
         kernel.CloseHandle(operation.hEvent)
 
 def run(args, **kwargs):
-    result = subprocess.run([str(x) for x in args], capture_output=True, text=True, timeout=30, **kwargs)
+    command = [str(x) for x in args]
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=30, **kwargs)
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError(f"Native fixture command {subprocess.list2cmdline(command)} timed out "
+                           f"(no exit code):\nstdout:\n{error.stdout!r}\nstderr:\n{error.stderr!r}") from error
     if result.returncode:
-        raise RuntimeError(f"Native fixture command {args[0]} failed (exit {result.returncode}):\n"
-                           + result.stdout + result.stderr)
+        raise RuntimeError(f"Native fixture command {subprocess.list2cmdline(command)} failed "
+                           f"(exit {result.returncode}):\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}")
     return result.stdout
+
+
+def verify_security(observed, owner, sids, inheritance=0, task=False):
+    expected = {"owner": owner, "protected": True, "sids": sorted(sids),
+                "inheritance": inheritance, "full_control": True}
+    print("ACL expected: " + json.dumps(expected), flush=True)
+    print("ACL observed: " + json.dumps(observed), flush=True)
+    rules = observed["rules"]
+    valid = (observed["owner"] == owner and observed["protected"] is True
+             and len(rules) == len(sids) and {rule["sid"] for rule in rules} == set(sids))
+    for rule in rules:
+        valid = valid and (rule["allow"] is True and rule["inherited"] is False
+                           and rule["mask"] in ((0x10000000, 0x1F01FF) if task else (0x1F01FF,))
+                           and rule["inheritance"] == inheritance and rule["propagation"] == 0)
+    if not valid:
+        raise AssertionError("Fixture security descriptor does not match the exact restricted policy.")
+    if task and (observed["principal"].upper() not in ("SYSTEM", "NT AUTHORITY\\SYSTEM", SYSTEM_SID)
+                 or observed["logon_type"] != 5 or observed["run_level"] != 1):
+        raise AssertionError("Fixture task does not use a highest-privilege SYSTEM service-account token.")
+
+
+def security_state(kind, path, user_sid=None):
+    command = ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+               "-File", SECURITY, "-Kind", kind, "-Target", path]
+    if user_sid:
+        command += ["-UserSid", user_sid]
+    return json.loads(run(command))
+
+
+def secure_path(path, owner, sids, directory=False, remove_sid=None):
+    print(f"Securing fixture path: {path}", flush=True)
+    print(f"Expected owner={owner}; protected=True; full-control SIDs={sids}; directory={directory}", flush=True)
+    # ICACLS /setowner is a separate command form, not a /grant modifier.
+    commands = [
+        ["icacls.exe", path, "/grant:r",
+         *["*" + sid + (":(OI)(CI)(F)" if directory else ":(F)") for sid in sids]],
+        ["icacls.exe", path, "/setowner", "*" + owner],
+        ["icacls.exe", path, "/inheritance:r"],
+    ]
+    if remove_sid and remove_sid not in sids:
+        commands.append(["icacls.exe", path, "/remove:g", "*" + remove_sid])
+    try:
+        for command in commands:
+            print("ACL operation: " + subprocess.list2cmdline([str(x) for x in command]), flush=True)
+            run(command)
+    except Exception:
+        print("ACL state after failed operation:", flush=True)
+        print(json.dumps(security_state("File", path)), flush=True)
+        raise
+    verify_security(security_state("File", path), owner, sids, 3 if directory else 0)
 
 
 def disable_debug_privilege():
@@ -125,6 +184,7 @@ def task_xml(program, arguments):
 
     principal = element(element(task, "Principals"), "Principal", id="System")
     element(principal, "UserId", "S-1-5-18")
+    element(principal, "LogonType", "ServiceAccount")
     element(principal, "RunLevel", "HighestAvailable")
     settings = element(task, "Settings")
     element(settings, "ExecutionTimeLimit", "PT10M")
@@ -179,6 +239,24 @@ def alive(pid):
         kernel.CloseHandle(ctypes.c_void_p(process))
 
 
+def fixture_task_state(task):
+    remaining = json.loads(run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+        "ConvertTo-Json -InputObject @(Get-ScheduledTask -TaskPath '\\' -ErrorAction Stop | "
+        "Select-Object TaskName, @{Name='State'; Expression={[int]$_.State}}) -Compress"]))
+    return next((entry["State"] for entry in remaining if entry["TaskName"] == task), None)
+
+
+def wait_server_exit(pid_file):
+    if not pid_file.exists():
+        return
+    pid = int(pid_file.read_text())
+    for _ in range(100):
+        if not alive(pid):
+            return
+        time.sleep(0.1)
+    raise RuntimeError(f"Fixture server PID {pid} survived ten seconds after owned task shutdown.")
+
+
 def cleanup_interrupted_fixture():
     descriptor = Path(os.environ["STARTUP_DIAGNOSTICS"]) / "native-fixture.json"
     if not descriptor.exists():
@@ -198,21 +276,25 @@ def cleanup_interrupted_fixture():
             if (root / "server.pid.stopped").exists():
                 break
             time.sleep(0.1)
-    query = subprocess.run(["schtasks.exe", "/Query", "/TN", task], capture_output=True, text=True, timeout=20)
-    if query.returncode == 0:
+    task_state = fixture_task_state(task)
+    if task_state is not None:
         # End only this uniquely recorded task, never production services/process names.
-        end = subprocess.run(["schtasks.exe", "/End", "/TN", task], capture_output=True, text=True, timeout=20)
-        if end.returncode:
-            print("Fixture task End status: " + end.stdout + end.stderr, file=sys.stderr)
+        if task_state in (2, 4):  # Queued or running; ready tasks have no automatic trigger.
+            run(["schtasks.exe", "/End", "/TN", task])
         run(["schtasks.exe", "/Delete", "/TN", task, "/F"])
-    elif root.exists() and not (root / "server.pid.stopped").exists():
-        raise RuntimeError("Cannot verify interrupted task state:\n" + query.stdout + query.stderr)
-    pid_file = root / "server.pid"
-    if pid_file.exists() and alive(int(pid_file.read_text())):
-        raise RuntimeError("Interrupted fixture server is still alive after task termination.")
+    if fixture_task_state(task) is not None:
+        raise RuntimeError("Interrupted fixture scheduled task survived deletion.")
+    wait_server_exit(root / "server.pid")
     if root.exists():
         shutil.rmtree(root)
+    with socket.socket() as probe:
+        probe.settimeout(0.2)
+        if probe.connect_ex(("127.0.0.1", 22001)) == 0:
+            raise RuntimeError("Interrupted fixture loopback listener remains open.")
+    if root.exists():
+        raise RuntimeError("Interrupted fixture temporary directory survived removal.")
     descriptor.unlink()
+    print("Interrupted fixture cleanup verified: task absent, server stopped, listener closed, files removed.", flush=True)
 
 
 class WindowsSshTests(unittest.TestCase):
@@ -225,18 +307,22 @@ class WindowsSshTests(unittest.TestCase):
                 raise RuntimeError(f"Native prerequisite missing: {path}. No Unix substitute or silent skip is permitted.")
         print(subprocess.run([str(SSH), "-V"], capture_output=True, text=True).stderr.strip())
         disable_debug_privilege()
-        cls.temporary = tempfile.TemporaryDirectory(prefix="TELIPHONES-native-ssh-", dir=os.environ.get("RUNNER_TEMP"))
-        cls.addClassCleanup(cls.temporary.cleanup)
-        cls.root = Path(cls.temporary.name)
+        print("Fixture test-process identity/privileges:\n" + run(["whoami.exe", "/all"]), flush=True)
+        print("Installed ICACLS command syntax:\n" + run(["icacls.exe", "/?"]), flush=True)
+        cls.root = Path(tempfile.mkdtemp(prefix="TELIPHONES-native-ssh-", dir=os.environ.get("RUNNER_TEMP")))
+        cls.addClassCleanup(cls.remove_temporary)
+        cls.task = "TELIPHONES-sshd-test-" + secrets.token_hex(8)
+        if os.environ.get("STARTUP_DIAGNOSTICS") and os.environ.get("RUNNER_TEMP"):
+            (Path(os.environ["STARTUP_DIAGNOSTICS"]) / "native-fixture.json").write_text(
+                json.dumps({"root": str(cls.root), "task": cls.task}), encoding="utf-8")
         cls.user = os.environ["USERNAME"].lower()
         cls.sid = json.loads(run(["powershell.exe", "-NoProfile", "-Command",
                                  "[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value | ConvertTo-Json"]))
-        run(["icacls.exe", cls.root, "/inheritance:r", "/grant:r", f"*{cls.sid}:(OI)(CI)(F)",
-             "*S-1-5-18:(OI)(CI)(F)", "*S-1-5-32-544:(OI)(CI)(F)"])
+        secure_path(cls.root, cls.sid, [cls.sid, SYSTEM_SID, ADMIN_SID], directory=True)
         for name in ("ca", "host"):
             run([KEYGEN, "-q", "-t", "ed25519", "-N", "", "-C", "", "-f", cls.root / name])
-        run(["icacls.exe", cls.root / "host", "/inheritance:r", "/grant:r",
-             "*S-1-5-18:(F)", "*S-1-5-32-544:(F)", "/setowner", "*S-1-5-18"])
+        secure_path(cls.root / "host", SYSTEM_SID, [SYSTEM_SID, ADMIN_SID], remove_sid=cls.sid)
+        secure_path(cls.root / "ca", cls.sid, [cls.sid, SYSTEM_SID, ADMIN_SID])
         message = cls.root / "feature-probe"
         message.write_text("TELIPHONES Windows SSHSIG compatibility\n", encoding="ascii")
         run([KEYGEN, "-Y", "sign", "-f", cls.root / "ca", "-n", "teliphones-preflight", message])
@@ -265,25 +351,36 @@ class WindowsSshTests(unittest.TestCase):
             "AllowAgentForwarding no\nAllowTcpForwarding no\nPermitTunnel no\nLogLevel DEBUG2\n"
             "StrictModes yes\n",
             encoding="utf-8")
+        for path in (cls.config, cls.root / "ca.pub", cls.root / "host.pub", cls.root / "principals"):
+            secure_path(path, cls.sid, [cls.sid, SYSTEM_SID, ADMIN_SID])
         run([SSHD, "-t", "-f", cls.config])
         effective = run([SSHD, "-T", "-f", cls.config])
         if "listenaddress 127.0.0.1:" not in effective.lower() or "passwordauthentication no" not in effective.lower():
             raise RuntimeError("Fixture sshd effective configuration is not loopback-only certificate authentication.")
-        cls.task = "TELIPHONES-sshd-test-" + secrets.token_hex(8)
-        if os.environ.get("STARTUP_DIAGNOSTICS") and os.environ.get("RUNNER_TEMP"):
-            (Path(os.environ["STARTUP_DIAGNOSTICS"]) / "native-fixture.json").write_text(
-                json.dumps({"root": str(cls.root), "task": cls.task}), encoding="utf-8")
         cls.stop_file = cls.root / "stop-server"
         cls.server_pid = cls.root / "server.pid"
         xml = cls.root / "server-task.xml"
         xml.write_bytes(task_xml(HOST, ["--fixture-server", SSHD, cls.config, cls.root / "sshd-test.log",
                                         cls.stop_file, cls.server_pid]))
+        secure_path(xml, cls.sid, [cls.sid, SYSTEM_SID, ADMIN_SID])
         run(["schtasks.exe", "/Create", "/TN", cls.task, "/XML", xml, "/RU", "SYSTEM"])
         cls.addClassCleanup(cls.stop_server)
+        cls.server_requested = False
+        verify_security(security_state("Task", cls.task, cls.sid), ADMIN_SID,
+                        [cls.sid, SYSTEM_SID, ADMIN_SID], task=True)
+        cls.server_requested = True
         run(["schtasks.exe", "/Run", "/TN", cls.task])
         for _ in range(300):
             try:
-                with socket.create_connection(("127.0.0.1", cls.port), timeout=0.1):
+                with socket.create_connection(("127.0.0.1", cls.port), timeout=0.1) as connection:
+                    connection.settimeout(2)
+                    with connection.makefile("rb") as stream:
+                        banner = stream.readline(256)
+                    if not banner.startswith(b"SSH-2.0-"):
+                        raise RuntimeError(f"Fixture loopback endpoint returned an invalid SSH banner: {banner!r}")
+                    if not cls.server_pid.exists() or not alive(int(cls.server_pid.read_text())):
+                        raise RuntimeError("Fixture listener has no live owned server PID.")
+                    print(f"Fixture loopback listener ready: 127.0.0.1:{cls.port}", flush=True)
                     break
             except OSError:
                 time.sleep(0.1)
@@ -294,29 +391,54 @@ class WindowsSshTests(unittest.TestCase):
                                + (log.read_text(errors="replace") if log.exists() else "No server log produced."))
 
     @classmethod
+    def remove_temporary(cls):
+        if getattr(cls, "task", None) and fixture_task_state(cls.task) is not None:
+            raise RuntimeError("Preserving fixture directory for recovery: scheduled task remains.")
+        wait_server_exit(cls.root / "server.pid")
+        shutil.rmtree(cls.root)
+        if cls.root.exists():
+            raise RuntimeError("Fixture temporary directory survived cleanup: " + str(cls.root))
+        print("Fixture cleanup verified: temporary directory removed.", flush=True)
+
+    @classmethod
     def stop_server(cls):
-        cls.stop_file.touch()
         stopped = Path(str(cls.server_pid) + ".stopped")
+        graceful = False
         try:
-            for _ in range(100):
-                if stopped.exists() and cls.server_pid.exists() and not alive(int(cls.server_pid.read_text())):
-                    break
-                time.sleep(0.1)
-            else:
-                run(["schtasks.exe", "/End", "/TN", cls.task])
-                raise RuntimeError("SYSTEM fixture did not confirm zero Job processes before timeout; task forcibly ended.")
+            cls.stop_file.touch()
+            if cls.server_requested:
+                for _ in range(100):
+                    if stopped.exists() and cls.server_pid.exists() and not alive(int(cls.server_pid.read_text())):
+                        break
+                    time.sleep(0.1)
+                else:
+                    raise RuntimeError("SYSTEM fixture did not confirm zero Job processes before timeout; forcing owned task shutdown.")
             if cls.server_pid.exists() and alive(int(cls.server_pid.read_text())):
                 raise RuntimeError("Fixture sshd survived stop/Job cleanup.")
             with socket.socket() as probe:
                 probe.settimeout(0.2)
                 if probe.connect_ex(("127.0.0.1", cls.port)) == 0:
                     raise RuntimeError("Fixture listener remains open after teardown.")
+            print("Fixture cleanup verified: owned server stopped, zero-Job-process acknowledgement checked, listener closed."
+                  if cls.server_requested else "Fixture cleanup: server launch was never requested.", flush=True)
+            graceful = True
         finally:
-            run(["schtasks.exe", "/Delete", "/TN", cls.task, "/F"])
             log = cls.root / "sshd-test.log"
             diagnostics = os.environ.get("STARTUP_DIAGNOSTICS")
-            if diagnostics and log.exists():
-                shutil.copyfile(log, Path(diagnostics) / "native-sshd-test.log")
+            try:
+                if log.exists():
+                    print("Fixture OpenSSH/wrapper diagnostics:\n" + log.read_text(errors="replace"), flush=True)
+                    if diagnostics:
+                        shutil.copyfile(log, Path(diagnostics) / "native-sshd-test.log")
+            finally:
+                if not graceful and fixture_task_state(cls.task) in (2, 4):
+                    run(["schtasks.exe", "/End", "/TN", cls.task])
+                    wait_server_exit(cls.server_pid)
+                run(["schtasks.exe", "/Delete", "/TN", cls.task, "/F"])
+                # Enumerate task names: a failing /Query alone cannot prove absence.
+                if fixture_task_state(cls.task) is not None:
+                    raise RuntimeError("Fixture scheduled task survived deletion.")
+                print("Fixture cleanup verified: scheduled task deleted.", flush=True)
 
     def start(self, command="echo TELIPHONES_LOGIN_OK", expired=False, wrong_host=False, tamper=False, cert_from=None, crash=False):
         token = secrets.token_hex(16)
@@ -597,8 +719,27 @@ class WindowsSshTests(unittest.TestCase):
             (self.root / "principals").write_text(self.principal + "\n")
 
 
+def fixture_preflight():
+    failures = []
+    try:
+        WindowsSshTests.setUpClass()
+    except Exception as error:
+        failures.append(error)
+    finally:
+        WindowsSshTests.doClassCleanups()
+        failures.extend(error.with_traceback(trace)
+                        for _, error, trace in WindowsSshTests.tearDown_exceptions)
+    if failures:
+        details = "\n".join("".join(traceback.format_exception(type(error), error, error.__traceback__))
+                            for error in failures)
+        raise RuntimeError("Actual Windows SSH fixture preflight/cleanup failed:\n" + details) from failures[0]
+    print("FIXTURE PREFLIGHT PASS: real ACLs, host keys, config, SYSTEM task, loopback sshd, shutdown and cleanup.")
+
+
 if __name__ == "__main__":
     if sys.argv[1:] == ["--cleanup-only"]:
         cleanup_interrupted_fixture()
+    elif sys.argv[1:] == ["--fixture-preflight"]:
+        fixture_preflight()
     else:
         unittest.main()

@@ -22,6 +22,7 @@ Windows executes portable client contracts; Linux retains full broker contracts.
 | Native CMake build | Runner CMake/Python/compiler, same vcpkg toolchain | Compile production core plus isolated loopback fixture core, crypto and agent/session test host |
 | Win32 preflight | DPAPI, BCrypt/OpenSSL, VirtualAlloc/VirtualLock, local pipes, Jobs, process permissions | Actual native operations: locked seed/sign/destroy, user DPAPI round-trip, restrictive pipe creation, suspended child, Job assignment/process DACL/termination |
 | CTest | Dependencies listed below | All six Windows tests remain enabled; verbose output, JUnit and full stdout/stderr log retained; failure does not suppress independent native SSH integration |
+| Real fixture preflight | Same Python/C++ fixture, ICACLS, PowerShell ACL APIs, Task Scheduler COM and actual OpenSSH server | Separate grants/owner/inheritance commands; inspect exact file/task descriptors, generated keys/config, SYSTEM task, live server PID/SSH banner; verified teardown; no mocked replacement |
 | Native SSH integration | Windows OpenSSH, elevated task registration, current local Windows account, loopback ports | Actual SSHSIG sign/verify feature probe, generated Ed25519 host/CA, strict host key ACL, `sshd -t` and effective `sshd -T`; real authenticated login is mandatory |
 | Always-run cleanup | Python and uniquely recorded fixture task/path | Stop marker, verified zero-Job-process acknowledgement, exact task deletion; recovery for interrupted harness; no service-name/process-name killing |
 | Remaining native tests | Existing MFC tests, dumpbin, mt.exe, loader | Window tests, actual PE/version/manifest/import checks and helper startup tests retained |
@@ -29,8 +30,8 @@ Windows executes portable client contracts; Linux retains full broker contracts.
 
 Builds and test suites are separate Actions steps with explicit prerequisite
 outcome checks and `!cancelled()`. A failed contract suite does not prevent native
-SSH integration when OpenSSH provisioning, native compilation and Win32 preflight
-succeeded. Portable CTest does not depend on Win32 preflight success, so it still
+SSH integration when OpenSSH provisioning, native compilation, Win32 preflight
+and actual fixture preflight succeeded. Portable CTest does not depend on either preflight success, so it still
 collects its own results. MFC window, PE/manifest and startup suites also run after
 other test failures if the application build succeeded. Both standalone core and
 diagnostics executables are attempted even if the first fails.
@@ -38,7 +39,7 @@ diagnostics executables are attempted even if the first fails.
 No step uses `continue-on-error`: failures remain job failures. Application
 packaging/upload retain the default successful-job condition. Diagnostics upload
 runs on success or failure, collecting `ctest-results.xml`, `ctest-output.log`,
-`native-ssh-output.log` and the existing native/startup logs in
+`native-fixture-preflight.log`, `native-ssh-output.log` and the existing native/startup logs in
 `TELIPHONES-Windows-startup-diagnostics`. Verbose unittest names, unlimited contract
 diffs and raw transport-byte errors identify exact assertions in the same run.
 
@@ -59,6 +60,58 @@ Capability presence does not establish feature compatibility: the installed
 `ssh-keygen` must actually sign/verify SSHSIG and sign Ed25519 certificates; CTest
 and native login reject unsupported behaviour. Actual versions/hashes are logged
 on each runner, not assumed from the mutable runner label.
+
+## Native fixture ACL failure and preflight
+
+The supplied Windows traceback is an actual setup failure: ICACLS exit **87**,
+`Invalid parameter "/setowner"`, before any native test ran. The host-key command
+combined `/inheritance:r /grant:r ... /setowner ...`; `/setowner` is a separate
+ICACLS command form, not a grant option. This is a fixture defect, not an SSH
+provider defect.
+
+The fixture now issues **separate** `/grant:r`, `/setowner`, `/inheritance:r`
+and, for the host key, `/remove:g` operations. Explicit trusted grants are
+installed before inherited rights are removed, avoiding a transient ACL lockout.
+SID-based policy is read back through Windows security APIs in
+`fixture_security.ps1`, checking owner, protected DACL, exact allowed identities,
+full-control masks, inheritance and propagation. Unexpected ACEs fail the fixture.
+
+- Temporary root: current user owner; current user, SYSTEM and Administrators
+  have explicit inheritable full control.
+- Host private key: SYSTEM owner; only SYSTEM and Administrators have explicit,
+  noninherited full control; any explicit runner-user grant is removed.
+- CA private/public key, host public key, principals, configuration and task XML:
+  current user owner; only current user, SYSTEM and Administrators, protected
+  noninherited file grants. These are disposable fixture keys, not product
+  session private keys; fixture files are removed on teardown.
+- Task Scheduler security: Administrators owner; protected DACL allowing only
+  SYSTEM, Administrators and the runner user; actual SYSTEM SID, service-account
+  logon type and highest run level verified after task registration.
+
+`--fixture-preflight` calls the **same** `setUpClass` and class cleanups used by
+the ten native tests. It checks generated Ed25519 host keys, SSHSIG support,
+`sshd -t/-T`, the protected task, real SYSTEM wrapper and loopback SSH banner with
+a live recorded server PID. Success requires acknowledged zero Job processes,
+closed listener, absent scheduled task and removed temporary directory. Setup
+and cleanup errors are both reported. It does not claim an authenticated login:
+that remains mandatory in the unchanged ten-test integration suite.
+
+Diagnostics include ICACLS's installed `/?` help, exact failing
+argv/exit code/stdout/stderr, expected/observed ACLs and SDDL, `whoami /all`, and
+OpenSSH/wrapper logs. No private-key contents or private protocol input are logged.
+The C++ test host uses Unicode command-line input rather than treating Windows
+ANSI argv as UTF-8. SYSTEM-wrapper failures are written to the fixture log,
+because a scheduled task has no attached console. Failed shutdown does not
+silently erase evidence of a still-running server/task; interrupted recovery
+checks actual task enumeration instead of treating arbitrary `/Query` errors as
+proof that a task is absent.
+
+Local policy/command-construction/cleanup-error unit tests use mocks and do **not**
+validate Windows ACL semantics. This Linux workspace has no PowerShell or Windows
+runtime: the separate native fixture preflight, actual ICACLS commands, task
+descriptors, Unicode test-host build and all ten native SSH tests remain
+unexecuted locally. Runtime ICACLS help plus descriptor checks provide the
+on-runner syntax and permission validation; no external searches were used.
 
 ## All six Windows CTests
 

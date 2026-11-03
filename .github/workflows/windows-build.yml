@@ -212,8 +212,17 @@ jobs:
             Tee-Object -FilePath (Join-Path $env:STARTUP_DIAGNOSTICS 'ctest-output.log')
           if ($LASTEXITCODE -ne 0) { throw 'Native portable/cryptographic SSH tests failed.' }
 
-      - name: Run native Windows OpenSSH integration independently
+      - name: Preflight actual isolated Windows SSH fixture
+        id: fixture_preflight
         if: ${{ !cancelled() && steps.native_build.outcome == 'success' && steps.openssh.outcome == 'success' && steps.native_preflight.outcome == 'success' }}
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          python -u desktop/windows/tests/ssh_native_check.py desktop/windows/build/ssh-native/Release/ssh_native_host.exe --fixture-preflight 2>&1 |
+            Tee-Object -FilePath (Join-Path $env:STARTUP_DIAGNOSTICS 'native-fixture-preflight.log')
+          if ($LASTEXITCODE -ne 0) { throw 'Real Windows SSH fixture preflight failed; inspect operation, ACL, token, sshd and cleanup diagnostics.' }
+
+      - name: Run native Windows OpenSSH integration independently
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' && steps.openssh.outcome == 'success' && steps.native_preflight.outcome == 'success' && steps.fixture_preflight.outcome == 'success' }}
         run: |
           $PSNativeCommandUseErrorActionPreference = $false
           python -u desktop/windows/tests/ssh_native_check.py desktop/windows/build/ssh-native/Release/ssh_native_host.exe -v 2>&1 |

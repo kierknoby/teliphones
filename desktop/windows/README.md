@@ -112,7 +112,12 @@ validation remain separate outstanding requirements.
 
 Portable CTest and native SSH integration are separate steps. If CTest fails,
 native SSH tests still execute when their build, OpenSSH and Win32 preflight
-prerequisites succeeded. Independent window, executable and startup checks also
+prerequisites and the real isolated-fixture preflight succeeded. That preflight
+uses the integration fixture itself: separate SID-based ICACLS operations,
+read-back file/task security descriptors, generated keys/configuration, a
+temporary SYSTEM task, real loopback SSH banner and verified shutdown/removal.
+It preserves all ten authentication/security tests; it does not replace them.
+Actual Windows ACL/task execution remains unverified locally. Independent window, executable and startup checks also
 continue after test failures when their build succeeded. Any required failure
 still fails the job and prevents application artifact publication. Full verbose
 CTest/unittest output, CTest JUnit and native SSH logs are retained in the
