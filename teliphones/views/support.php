@@ -62,6 +62,7 @@ $markdown = static function (string $text) use ($escape): string {
 </style>
 <div class="container-fluid" id="teliphones-root" data-teliphones-ajax="ajax.php?module=teliphones">
 <h2>TELIPHONES</h2>
+<?php require __DIR__ . '/disclaimer.php'; ?>
 <p>Administrator-owned PBX connections and temporary, administrator-authorised remote support. Installation and module enablement do not authorise workstation or engineer access.</p>
 <?php if (!$available): ?>
 <div class="alert alert-danger teliphones-system-warning">

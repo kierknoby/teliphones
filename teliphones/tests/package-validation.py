@@ -39,10 +39,10 @@ class PackageTests(unittest.TestCase):
                 for name, source in expected.items():
                     self.assertEqual((Path(directory) / name).read_bytes(), source.read_bytes(), name)
                 metadata = ET.parse(Path(directory) / "teliphones/module.xml").getroot()
-                self.assertEqual(metadata.findtext("version"), "0.3.2")
+                self.assertEqual(metadata.findtext("version"), "0.3.3")
                 self.assertEqual(metadata.findtext("rawname"), "teliphones")
                 self.assertEqual(metadata.findtext("category"), "Connectivity")
-                for name in ("WebSupport.php", "views/support.php", "support_broker.py", "assets/js/teliphones.js", "install.php"):
+                for name in ("WebSupport.php", "views/support.php", "views/disclaimer.php", "support_broker.py", "assets/js/teliphones.js", "install.php"):
                     self.assertIn("teliphones/" + name, expected)
                 self.assertIn("def pair(", (Path(directory) / "teliphones/support_broker.py").read_text())
                 self.assertIn("Windows workstations", (Path(directory) / "teliphones/views/support.php").read_text())

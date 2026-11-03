@@ -42,7 +42,7 @@ class BuildLayoutTests(unittest.TestCase):
             "0.7.0 is reserved for the upcoming fully automated SSH authentication functionality",
             " ".join(changelog.split()),
         )
-        self.assertIn("FreePBX module version is independent and remains **0.3.2**", changelog)
+        self.assertIn("FreePBX module version is independent and is **0.3.3**", changelog)
         registered = {
             item.attrib["Include"].replace("\\", "/")
             for item in project("TELIPHONES.vcxproj").findall("ms:ItemGroup/ms:ClInclude", NS)
@@ -76,6 +76,28 @@ class BuildLayoutTests(unittest.TestCase):
             "Get-FileHash", "desktop/windows/build/artifact/CHANGELOG.md",
         ):
             self.assertIn(check, workflow)
+
+    def test_product_disclaimers_and_licence_packaging(self):
+        source = (ROOT / "src/app/AppSettingsDlg.cpp").read_text()
+        resource = (ROOT / "src/app/TELIPHONES.rc").read_text()
+        workflow = (ROOT.parents[1] / ".github/workflows/windows-build.yml").read_text()
+        self.assertIn('#include "Version.h"', source)
+        self.assertIn("ON_BN_CLICKED(IDC_APPS_ABOUT, &CAppSettingsDlg::OnAbout)", source)
+        self.assertIn('"About...", IDC_APPS_ABOUT', resource)
+        self.assertIn('"TELIPHONES " TELIPHONES_VERSION_STRING " for Windows is licensed under GPLv3.', source)
+        self.assertIn("TELIPHONES is a UK registered trademark.", source)
+        self.assertIn("does not grant trademark rights", source)
+        self.assertIn("desktop/windows/build/artifact/LICENSE", workflow)
+        module = ET.parse(ROOT.parents[1] / "teliphones/module.xml").getroot()
+        self.assertEqual(module.findtext("version"), "0.3.3")
+        for path, statement in (
+            (ROOT / "README.md", "TELIPHONES 0.6.2 for Windows is licensed under GPLv3."),
+            (ROOT.parents[1] / "teliphones/README.md", "TELIPHONES 0.3.3 for FreePBX is licensed under GPLv3."),
+        ):
+            text = path.read_text()
+            self.assertIn(statement, text)
+            self.assertIn("TELIPHONES is a UK registered trademark.", text)
+            self.assertIn("does not grant trademark rights", text)
 
     def test_application_compiles_every_native_source(self):
         app = project("TELIPHONES.vcxproj")

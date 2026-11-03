@@ -7,7 +7,7 @@ version numbers retrospectively.
 
 ## 0.6.2 — Unreleased
 
-Windows file version: **0.6.2.0**. FreePBX module version: **0.3.2**.
+Windows file version: **0.6.2.0**. FreePBX module version: **0.3.3**.
 Native MSVC/MFC compilation and visual validation of this patch remain pending.
 
 - Use the same selection renderer for full dropdown repainting and native
@@ -18,6 +18,9 @@ Native MSVC/MFC compilation and visual validation of this patch remain pending.
   focus state. Dropdown-list selection highlighting remains intact.
 - Add native rendering regression cases and update version consistency checks.
   Preserve the 0.6.1 native caption-frame correction and existing layout.
+- Add Settings > About with the UK registered trademark statement and Windows
+  GPLv3 statement derived from Version.h. Include the disclaimer in the distributed
+  README and the existing GPL licence text in the ZIP; no trademark rights are granted.
 
 ## 0.6.1 — Previous development version (not released)
 
@@ -167,7 +170,7 @@ These are source-history milestones, **not published Windows releases**:
   executable SHA-256 alongside the version to distinguish build provenance.
 - Keep the window title, executable metadata, README and current changelog entry
   consistent. Automated checks reject mismatches.
-- The FreePBX module version is independent and remains **0.3.2**. The manifest's
+- The FreePBX module version is independent and is **0.3.3**. The manifest's
   fixed assembly identity is not a release version and must not be bumped merely
   to change the product version.
 - An application version does not imply publication or production readiness.

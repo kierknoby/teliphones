@@ -11,6 +11,7 @@
 #include "../platform/Win.h"
 #include "../platform/WireGuardInstaller.h"
 #include "resource.h"
+#include "Version.h"
 
 using tlp::AppKind;
 using tlp::win::Widen;
@@ -24,6 +25,7 @@ bool Contains(const std::vector<std::string>& ids, const std::string& id) { retu
 }  // namespace
 
 BEGIN_MESSAGE_MAP(CAppSettingsDlg, CAppearanceDialog)
+    ON_BN_CLICKED(IDC_APPS_ABOUT, &CAppSettingsDlg::OnAbout)
     ON_BN_CLICKED(IDC_APPS_SKIP, &CAppSettingsDlg::OnSkip)
     ON_BN_CLICKED(IDC_APPS_LOCATE_BROWSER, &CAppSettingsDlg::OnLocateBrowser)
     ON_BN_CLICKED(IDC_APPS_LOCATE_TERMINAL, &CAppSettingsDlg::OnLocateTerminal)
@@ -135,6 +137,14 @@ void CAppSettingsDlg::UpdateStatus() {
 }
 
 void CAppSettingsDlg::OnSelectionChanged() { UpdateStatus(); }
+
+void CAppSettingsDlg::OnAbout() {
+    tlp::ui::ShowMessage(Widen(
+        "TELIPHONES is a UK registered trademark.\r\n\r\n"
+        "TELIPHONES " TELIPHONES_VERSION_STRING " for Windows is licensed under GPLv3.\r\n\r\n"
+        "GPLv3 licensing applies to the software and does not grant trademark rights. "
+        "See LICENSE for the full licence terms.").c_str(), MB_OK | MB_ICONINFORMATION);
+}
 
 void CAppSettingsDlg::OnAppearanceChanged() {
     const int row = static_cast<CComboBox*>(GetDlgItem(IDC_APPEARANCE))->GetCurSel();

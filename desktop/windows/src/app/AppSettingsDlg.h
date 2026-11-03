@@ -33,6 +33,7 @@ protected:
     void OnOK() override;
     void OnCancel() override;
     afx_msg void OnSkip();
+    afx_msg void OnAbout();
     afx_msg void OnLocateBrowser();
     afx_msg void OnLocateTerminal();
     afx_msg void OnSelectionChanged();

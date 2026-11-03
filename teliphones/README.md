@@ -1,9 +1,15 @@
 # TELIPHONES for FreePBX 17: module guide
 
-This guide covers installing, configuring, operating, maintaining and troubleshooting the TELIPHONES FreePBX module (`teliphones`, version 0.3.2). For an introduction to the project, its architecture and its security model, see the project overview (`README.md`), `docs/ARCHITECTURE.md` and `docs/SECURITY.md` at the root of the TELIPHONES source repository; these are not included in the module package.
+This guide covers installing, configuring, operating, maintaining and troubleshooting the TELIPHONES FreePBX module (`teliphones`, version 0.3.3). For an introduction to the project, its architecture and its security model, see the project overview (`README.md`), `docs/ARCHITECTURE.md` and `docs/SECURITY.md` at the root of the TELIPHONES source repository; these are not included in the module package.
+
+**TELIPHONES is a UK registered trademark.**
+
+**TELIPHONES 0.3.3 for FreePBX is licensed under GPLv3.**
+
+GPLv3 licensing applies to the software and does not grant trademark rights.
 
 > [!WARNING]
-> **Not currently suitable for production.** TELIPHONES 0.3.2 is an unreleased development correction for controlled testing on a **disposable** Debian 12 / FreePBX 17 system. The 0.3.1 nftables ownership-marker correction was separately tested by the operator on the FreePBX 17 PBX; this task's diagnostics changes have only local regression coverage and have not been deployed to or tested on a live PBX. See [Known limitations](#known-limitations) and [Outstanding 0.3.1 verification](#outstanding-031-verification).
+> **Not currently suitable for production.** TELIPHONES 0.3.3 is an unreleased development correction for controlled testing on a **disposable** Debian 12 / FreePBX 17 system. The 0.3.1 nftables ownership-marker correction was separately tested by the operator on the FreePBX 17 PBX; the subsequent diagnostics and disclaimer changes have only local regression coverage and have not been deployed to or tested on a live PBX. See [Known limitations](#known-limitations) and [Outstanding 0.3.1 verification](#outstanding-031-verification).
 
 ## Contents
 
@@ -85,10 +91,10 @@ TELIPHONES is a community module and is not listed in the FreePBX online module 
 
 ### Install through Module Admin (recommended)
 
-1. Obtain `TELIPHONES-0.3.2.tgz` and its SHA-256 checksum from a trusted source, then verify the archive:
+1. Obtain `TELIPHONES-0.3.3.tgz` and its SHA-256 checksum from a trusted source, then verify the archive:
 
    ```bash
-   sha256sum TELIPHONES-0.3.2.tgz
+   sha256sum TELIPHONES-0.3.3.tgz
    ```
 
 2. In FreePBX, open **Admin > Module Admin**, choose **Upload modules**, and upload the archive.
@@ -669,7 +675,12 @@ Never include private keys, credentials, pairing requests or responses, gateway 
 
 ## Licence
 
-GPLv3+. See [LICENSE](LICENSE).
+TELIPHONES is a UK registered trademark.
+
+TELIPHONES 0.3.3 for FreePBX is licensed under GPLv3.
+
+GPLv3 licensing does not grant trademark rights. The existing GPLv3-or-later
+software licence grant is unchanged. See [LICENSE](LICENSE).
 
 ## AI-Assisted Contributions and Disclosure
 
@@ -690,6 +701,15 @@ The human contributor remains solely responsible for the contribution. AI tools 
 ## Release History
 
 Entries for 0.0.2 to 0.2.1 are summarised from the repository history. Release dates are recorded only where they were previously published.
+
+### 0.3.3, trademark and licence disclaimer (unreleased)
+
+- Display the UK registered trademark statement and the FreePBX-specific GPLv3
+  statement in both module GUI views, deriving the displayed version from module.xml.
+- Distinguish software licensing from trademark rights; preserve the existing
+  GPLv3-or-later grant and all broker, WireGuard and authorisation behavior.
+- Package the updated module as TELIPHONES-0.3.3.tgz. The unchanged broker
+  implementation continues to identify its component version as 0.3.2, protocol 4.
 
 ### 0.3.2, workstation diagnostics (unreleased)
 
