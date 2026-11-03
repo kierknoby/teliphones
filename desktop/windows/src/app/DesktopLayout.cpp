@@ -7,6 +7,7 @@
 #include <stdexcept>
 #include "../platform/Win.h"
 #include "resource.h"
+#include "Version.h"
 
 namespace {
 const int contentIds[] = {
@@ -65,6 +66,9 @@ LRESULT CDesktopContent::WindowProc(UINT message, WPARAM wparam, LPARAM lparam) 
 
 void CDesktopLayout::Initialize(CWnd& window) {
     window_ = &window;
+    window.SetDlgItemText(IDC_PRODUCT_FOOTER, tlp::win::Widen(
+        "TELIPHONES is a UK registered trademark.\r\n"
+        "TELIPHONES " TELIPHONES_VERSION_STRING " for Windows is licensed under GPLv3.").c_str());
     content_.controller = &window;
     if (!content_.CreateEx(WS_EX_CONTROLPARENT, AfxRegisterWndClass(0, LoadCursor(nullptr, IDC_ARROW),
         GetSysColorBrush(COLOR_3DFACE)), L"", WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_VSCROLL,
@@ -101,6 +105,7 @@ void CDesktopLayout::SetDpi(UINT dpi) {
     for (int id : contentIds) Find(id)->SetFont(&font_);
     for (int id : actionIds) Find(id)->SetFont(&font_);
     Find(IDC_WG_STATUS)->SetFont(&font_);
+    Find(IDC_PRODUCT_FOOTER)->SetFont(&font_);
     font.lfWeight = FW_SEMIBOLD;
     headingFont_.DeleteObject();
     if (!headingFont_.CreateFontIndirect(&font)) tlp::win::ThrowLastError("Create TELIPHONES heading font");
@@ -146,6 +151,7 @@ void CDesktopLayout::Arrange() {
     const auto fixed = tlp::ArrangeDesktop(MulDiv(client.Width(), 96, static_cast<int>(dpi_)),
                                           MulDiv(client.Height(), 96, static_cast<int>(dpi_)));
     move(Find(IDC_WG_STATUS), fixed.wireguard);
+    move(Find(IDC_PRODUCT_FOOTER), fixed.disclaimer);
     for (std::size_t i = 0; i < std::size(actionIds); ++i) move(Find(actionIds[i]), fixed.actions[i]);
     CListCtrl* list = static_cast<CListCtrl*>(Find(IDC_PROFILES));
     CRect listRect;

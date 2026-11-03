@@ -460,7 +460,8 @@ private:
                 layout_.Arrange();
                 CRect client;
                 GetClientRect(&client);
-                const int fixed[] = {IDC_CONNECT, IDC_DISCONNECT, IDC_OPEN_GUI, IDC_OPEN_SSH, IDC_SETTINGS, IDCANCEL};
+                const int fixed[] = {IDC_CONNECT, IDC_DISCONNECT, IDC_OPEN_GUI, IDC_OPEN_SSH, IDC_SETTINGS, IDCANCEL,
+                    IDC_PRODUCT_FOOTER};
                 for (int id : fixed) {
                     CRect rectangle;
                     layout_.Find(id)->GetWindowRect(&rectangle);

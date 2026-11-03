@@ -374,7 +374,12 @@ void testConnectionHealth() {
             const int width = screen[0] * 100 / scale;
             const int height = screen[1] * 100 / scale;
             const auto layout = ArrangeDesktop(width, height);
+            check(layout.disclaimer.x >= 0 && layout.disclaimer.y >= 0 &&
+                      layout.disclaimer.x + layout.disclaimer.width <= width &&
+                      layout.disclaimer.bottom() <= height,
+                  "product footer remains within the screen/DPI matrix");
             for (const auto& action : layout.actions) {
+                check(action.bottom() <= layout.disclaimer.y, "fixed actions do not overlap product footer");
                 check(action.x >= 0 && action.y >= 0 && action.x + action.width <= width &&
                           action.bottom() <= height && action.width > 0 && action.height > 0,
                       "primary actions fit screen/DPI matrix without scrolling");
@@ -1117,8 +1122,8 @@ int main() {
     for (unsigned part : versionParts) check(part <= 65535, "Windows version component fits the resource WORD");
     check(TELIPHONES_VERSION_FILE_STRING == versionBase + "." + std::to_string(versionParts[3]), "file version expands consistently");
     check(TELIPHONES_VERSION_STRING == versionBase, "product version expands without a development suffix");
-    check(std::string(TELIPHONES_VERSION_STRING) == "0.6.2", "Windows application version is independent of the module");
-    check(std::string(TELIPHONES_VERSION_FILE_STRING) == "0.6.2.0", "Windows file version is 0.6.2.0");
+    check(std::string(TELIPHONES_VERSION_STRING) == "0.6.3", "Windows application version is independent of the module");
+    check(std::string(TELIPHONES_VERSION_FILE_STRING) == "0.6.3.0", "Windows file version is 0.6.3.0");
     testEncoding();
     testJson();
     testValidation();

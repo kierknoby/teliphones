@@ -62,7 +62,6 @@ $markdown = static function (string $text) use ($escape): string {
 </style>
 <div class="container-fluid" id="teliphones-root" data-teliphones-ajax="ajax.php?module=teliphones">
 <h2>TELIPHONES</h2>
-<?php require __DIR__ . '/disclaimer.php'; ?>
 <p>Administrator-owned PBX connections and temporary, administrator-authorised remote support. Installation and module enablement do not authorise workstation or engineer access.</p>
 <?php if (!$available): ?>
 <div class="alert alert-danger teliphones-system-warning">
@@ -334,4 +333,5 @@ $defaultHost = preg_replace('/:[0-9]+$/', '', (string)($_SERVER['HTTP_HOST'] ?? 
 </form></details>
 <script type="application/json" id="teliphones-initial-status"><?=json_encode($initial, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_UNICODE | JSON_PARTIAL_OUTPUT_ON_ERROR)?></script>
 <script src="modules/teliphones/assets/js/teliphones.js"></script>
+<?php require __DIR__ . '/disclaimer.php'; ?>
 </div>

@@ -76,6 +76,7 @@
 #define IDC_APPEARANCE_LABEL        1319
 #define IDC_APPEARANCE              1320
 #define IDC_APPS_ABOUT              1321
+#define IDC_PRODUCT_FOOTER          1322
 
 #define IDC_HEALTH_STATE            1400
 #define IDC_HEALTH_AUTH             1401

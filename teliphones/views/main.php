@@ -13,7 +13,6 @@ $engineerAccess=$stage==='ready'?'Ready for the authorised engineer':'Not availa
 ?>
 <div class="container-fluid">
 <h2>TELIPHONES</h2><p>Temporary, locally authorised support for FreePBX.</p>
-<?php require __DIR__ . '/disclaimer.php'; ?>
 <?php if(!$enabled): ?><div class="alert alert-warning"><strong>TELIPHONES is disabled.</strong> Local root must enable it before support can be authorised.</div>
 <?php elseif($hasSession): ?><div class="alert alert-info"><strong>Session status: <?=htmlspecialchars(ucfirst($stage),ENT_QUOTES,'UTF-8')?></strong><br>Topology: <strong><?=htmlspecialchars($topology,ENT_QUOTES,'UTF-8')?></strong><br>WireGuard transport: <?=htmlspecialchars($transport,ENT_QUOTES,'UTF-8')?><br>Verification: <?=htmlspecialchars($verification,ENT_QUOTES,'UTF-8')?><br>Engineer service access: <?=htmlspecialchars($engineerAccess,ENT_QUOTES,'UTF-8')?><br>Engineer presence: <strong>Not reliably reported</strong><br>Session: <code><?=htmlspecialchars($sessionId,ENT_QUOTES,'UTF-8')?></code><br>Expires: <?=htmlspecialchars(date(DATE_RFC3339,$expiresAt),ENT_QUOTES,'UTF-8')?><br>Remaining: <?=htmlspecialchars((string)max(0,$expiresAt-time()),ENT_QUOTES,'UTF-8')?> seconds<br><strong>Support is not implied by authorisation or transport connectivity.</strong></div>
 <?php else: ?><div class="alert alert-success"><strong>TELIPHONES is enabled.</strong> Remote support is off until local root explicitly authorises a temporary window.</div><?php endif; ?>
@@ -31,4 +30,6 @@ fwconsole teliphones checker-accept --evidence-file=/root/checker.json
 fwconsole teliphones open --ssh-key='ssh-ed25519 ...'
 fwconsole teliphones status
 fwconsole teliphones revoke</pre>
-<p>The GUI cannot create privileged support authority.</p></div>
+<p>The GUI cannot create privileged support authority.</p>
+<?php require __DIR__ . '/disclaimer.php'; ?>
+</div>

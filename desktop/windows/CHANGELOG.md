@@ -5,7 +5,16 @@ No Windows release is declared published by this document. Earlier development
 builds lacked embedded file/product versions and cannot be assigned reliable
 version numbers retrospectively.
 
-## 0.6.2 — Unreleased
+## 0.6.3 — Unreleased
+
+Windows file version: **0.6.3.0**. FreePBX module version: **0.3.4**.
+Native MSVC/MFC compilation and visual validation remain pending.
+
+- Display the version-derived trademark and GPLv3 statements in a fixed main-window
+  footer below the action buttons, with DPI scaling and narrow-window wrapping.
+- Retain Settings > About and the existing appearance, layout and connection behavior.
+
+## 0.6.2 — Previous development version (not released)
 
 Windows file version: **0.6.2.0**. FreePBX module version: **0.3.3**.
 Native MSVC/MFC compilation and visual validation of this patch remain pending.
@@ -170,7 +179,7 @@ These are source-history milestones, **not published Windows releases**:
   executable SHA-256 alongside the version to distinguish build provenance.
 - Keep the window title, executable metadata, README and current changelog entry
   consistent. Automated checks reject mismatches.
-- The FreePBX module version is independent and is **0.3.3**. The manifest's
+- The FreePBX module version is independent and is **0.3.4**. The manifest's
   fixed assembly identity is not a release version and must not be bumped merely
   to change the product version.
 - An application version does not imply publication or production readiness.

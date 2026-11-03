@@ -21,6 +21,7 @@ struct DesktopLayout {
     std::array<LayoutRect, 6> actions{};
     LayoutRect viewport;
     LayoutRect wireguard;
+    LayoutRect disclaimer;
     int contentHeight = 0;
 };
 
@@ -31,7 +32,9 @@ inline DesktopLayout ArrangeDesktop(int width, int height) {
     const int actionWidth = std::max(1, width - margin * 2);
     const int columns = std::clamp((actionWidth + gap) / 120, 1, 6);
     const int rows = (6 + columns - 1) / columns;
-    const int footerHeight = rows * 32 + (rows - 1) * gap + margin * 2;
+    const int disclaimerHeight = width >= 700 ? 28 : 56;
+    const int footerHeight = rows * 32 + (rows - 1) * gap + margin * 2 + disclaimerHeight;
+    layout.disclaimer = {margin, height - margin - disclaimerHeight, actionWidth, disclaimerHeight};
     for (int i = 0; i < 6; ++i) {
         const int col = i % columns, row = i / columns;
         const int cell = (actionWidth - (columns - 1) * gap) / columns;

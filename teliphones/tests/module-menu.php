@@ -11,7 +11,7 @@ $pageSource = is_readable($pageFile) ? file_get_contents($pageFile) : '';
 $assertions = [
     (string)$module->rawname === 'teliphones',
     (string)$module->name === 'TELIPHONES',
-    (string)$module->version === '0.3.3',
+    (string)$module->version === '0.3.4',
     (string)$module->category === 'Connectivity',
     count($menuItems) === 1,
     isset($module->menuitems->teliphones),
@@ -38,9 +38,14 @@ foreach ([
     }
 }
 foreach (['support', 'main'] as $view) {
-    if (strpos(file_get_contents(dirname(__DIR__) . '/views/' . $view . '.php'), "require __DIR__ . '/disclaimer.php'") === false) {
+    $viewSource = file_get_contents(dirname(__DIR__) . '/views/' . $view . '.php');
+    $footerPosition = strpos($viewSource, "require __DIR__ . '/disclaimer.php'");
+    if ($footerPosition === false || $footerPosition < strrpos($viewSource, '</form>')) {
         throw new RuntimeException('The disclaimer must appear in both FreePBX GUI views.');
     }
+}
+if (strpos($disclaimer, '<footer ') === false) {
+    throw new RuntimeException('The module disclaimer must be a footer.');
 }
 if ((string)$module->license !== 'GPLv3+') {
     throw new RuntimeException('The existing GPLv3-or-later licence grant must be preserved.');
