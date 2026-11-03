@@ -110,6 +110,15 @@ authorisation expiry. The workflow fails on native test failure; it does not
 replace those checks with the portable suite. Real FreePBX/systemd and reboot
 validation remain separate outstanding requirements.
 
+Portable CTest and native SSH integration are separate steps. If CTest fails,
+native SSH tests still execute when their build, OpenSSH and Win32 preflight
+prerequisites succeeded. Independent window, executable and startup checks also
+continue after test failures when their build succeeded. Any required failure
+still fails the job and prevents application artifact publication. Full verbose
+CTest/unittest output, CTest JUnit and native SSH logs are retained in the
+diagnostics artifact on success or failure. The [readiness audit](tests/WINDOWS-READINESS.md)
+records the reproduced three-assertion CRT output defect and its helper-only fix.
+
 The x64 manifest uses explicit `amd64` application and Common Controls version 6 identities. The workflow extracts and prints the actual embedded manifest, validates it using the SDK's `mt.exe`, and requires exactly one matching Common Controls dependency after linker manifest merging. It preserves `asInvoker`, `uiAccess="false"` and the DPI settings. The project disables automatic DPI manifest generation so the custom manifest is the sole source: exactly one legacy `dpiAware` (`true/pm`) and one modern `dpiAwareness` (`PerMonitorV2`) declaration, checked in the embedded manifest by Actions. The startup smoke test must launch both malformed helper invocations and receive exit code 2 (argument rejection before elevation/networking); a loader error or timeout fails the run.
 
 If startup fails with an incorrect side-by-side configuration, the workflow prints the `sxstrace` activation trace and recent Windows Application **SideBySide** events. Download **TELIPHONES-Windows-startup-diagnostics** from that failed run for the extracted manifest, DLL import list, startup error and available trace/event files. Diagnostic-tool failures are reported and do not bypass the executable startup test. The application artifact is uploaded only after all validation succeeds. A manifest correction is not Windows-validated until a new run passes the real smoke test.

@@ -4,6 +4,11 @@
 #include <iterator>
 #include <string>
 
+#ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
+#endif
+
 #include "../src/core/Json.h"
 #include "../src/core/Pairing.h"
 #include "../src/core/Profiles.h"
@@ -11,6 +16,10 @@
 
 int main(int argc, char** argv) {
     try {
+#ifdef _WIN32
+        // RenderTunnel already emits CRLF; CRT text mode would turn it into CRCRLF.
+        if (_setmode(_fileno(stdout), _O_BINARY) == -1) throw tlp::Error("Unable to set binary contract output.");
+#endif
         std::string mode = argc > 1 ? argv[1] : "";
         if (mode == "request" && argc == 5) {
             std::cout << tlp::BuildPairRequest(argv[2], argv[3], argv[4]) << "\n";

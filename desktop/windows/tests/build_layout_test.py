@@ -21,6 +21,57 @@ def project(name):
 
 
 class BuildLayoutTests(unittest.TestCase):
+    def test_contract_stdout_rejects_windows_double_translation(self):
+        spec = importlib.util.spec_from_file_location("portable_contract", ROOT / "tests/contract_check.py")
+        module = importlib.util.module_from_spec(spec)
+        importers = sys.meta_path[:]
+        try:
+            with patch.object(sys, "argv", ["contract_check.py", "contract_tool"]):
+                spec.loader.exec_module(module)
+        finally:
+            sys.meta_path[:] = importers
+        renderer = b"[Interface]\r\nAddress = 100.70.1.2/32\r\n\r\n[Peer]\r\n"
+        windows_text_stdout = renderer.replace(b"\n", b"\r\n")
+        for mode in ("administrator", "support"):
+            for output, accepted in ((renderer, True), (windows_text_stdout, False),
+                                     (renderer.replace(b"\r\n", b"\n"), False)):
+                with self.subTest(mode=mode, output=output):
+                    result = subprocess.CompletedProcess(["contract_tool", mode], 0, output, b"")
+                    with patch.object(module.subprocess, "run", return_value=result) as process:
+                        if accepted:
+                            self.assertEqual(module.tool(mode).stdout, renderer.decode().replace("\r\n", "\n"))
+                        else:
+                            with self.assertRaisesRegex(AssertionError, "must preserve renderer CRLF bytes"):
+                                module.tool(mode)
+                        self.assertNotIn("text", process.call_args.kwargs)
+        helper = (ROOT / "tests/contract_tool.cpp").read_text(encoding="utf-8")
+        self.assertIn("_setmode(_fileno(stdout), _O_BINARY)", helper)
+
+    def test_workflow_independent_suites_preserve_failures_and_diagnostics(self):
+        workflow = (ROOT.parents[1] / ".github/workflows/windows-build.yml").read_text(encoding="utf-8")
+        steps = {match.group(1): match.group(2) for match in
+                 re.finditer(r"      - name: ([^\n]+)\n(.*?)(?=\n      - name: |\Z)", workflow, re.DOTALL)}
+        ctest = steps["Run all portable CTests with complete diagnostics"]
+        native = steps["Run native Windows OpenSSH integration independently"]
+        for step in (ctest, native):
+            self.assertIn("!cancelled()", step)
+            self.assertIn("steps.native_build.outcome == 'success'", step)
+            self.assertIn("steps.openssh.outcome == 'success'", step)
+            self.assertIn("if ($LASTEXITCODE -ne 0) { throw", step)
+            self.assertIn("Tee-Object", step)
+        self.assertIn("steps.native_preflight.outcome == 'success'", native)
+        self.assertNotIn("contract", native)
+        self.assertNotIn("steps.native_preflight", ctest)
+        self.assertIn("--verbose --output-on-failure --no-tests=error --output-junit", ctest)
+        self.assertNotIn("continue-on-error", workflow)
+        self.assertIn("if: always()", steps["Upload startup diagnostics on failure"])
+        self.assertNotIn("if:", steps["Prepare application artifact"])
+        for name in ("Run native Windows core and diagnostics regression tests",
+                     "Run native appearance, layout and Connection Health window tests",
+                     "Verify real x64 native executable and runtime dependencies",
+                     "Smoke-test executable loading without UAC or networking"):
+            self.assertIn("!cancelled() && steps.application_build.outcome == 'success'", steps[name])
+
     def test_native_task_definition_preserves_windows_paths(self):
         spec = importlib.util.spec_from_file_location("native_fixture", ROOT / "tests/ssh_native_check.py")
         module = importlib.util.module_from_spec(spec)

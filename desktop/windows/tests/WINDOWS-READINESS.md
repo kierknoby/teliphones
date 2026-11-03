@@ -21,11 +21,26 @@ Windows executes portable client contracts; Linux retains full broker contracts.
 | MSBuild | Verified VS tools and restored static crypto | Build GUI, console helper, native core/diagnostics and MFC window tests; existing failures remain fatal |
 | Native CMake build | Runner CMake/Python/compiler, same vcpkg toolchain | Compile production core plus isolated loopback fixture core, crypto and agent/session test host |
 | Win32 preflight | DPAPI, BCrypt/OpenSSL, VirtualAlloc/VirtualLock, local pipes, Jobs, process permissions | Actual native operations: locked seed/sign/destroy, user DPAPI round-trip, restrictive pipe creation, suspended child, Job assignment/process DACL/termination |
-| CTest | Dependencies listed below | All six Windows tests remain enabled; any failure stops native integration |
+| CTest | Dependencies listed below | All six Windows tests remain enabled; verbose output, JUnit and full stdout/stderr log retained; failure does not suppress independent native SSH integration |
 | Native SSH integration | Windows OpenSSH, elevated task registration, current local Windows account, loopback ports | Actual SSHSIG sign/verify feature probe, generated Ed25519 host/CA, strict host key ACL, `sshd -t` and effective `sshd -T`; real authenticated login is mandatory |
 | Always-run cleanup | Python and uniquely recorded fixture task/path | Stop marker, verified zero-Job-process acknowledgement, exact task deletion; recovery for interrupted harness; no service-name/process-name killing |
 | Remaining native tests | Existing MFC tests, dumpbin, mt.exe, loader | Window tests, actual PE/version/manifest/import checks and helper startup tests retained |
 | Distribution | Both executables plus static OpenSSL copyright and GPL licence | Existing packaging and executable hashes unchanged; upload only after successful validation |
+
+Builds and test suites are separate Actions steps with explicit prerequisite
+outcome checks and `!cancelled()`. A failed contract suite does not prevent native
+SSH integration when OpenSSH provisioning, native compilation and Win32 preflight
+succeeded. Portable CTest does not depend on Win32 preflight success, so it still
+collects its own results. MFC window, PE/manifest and startup suites also run after
+other test failures if the application build succeeded. Both standalone core and
+diagnostics executables are attempted even if the first fails.
+
+No step uses `continue-on-error`: failures remain job failures. Application
+packaging/upload retain the default successful-job condition. Diagnostics upload
+runs on success or failure, collecting `ctest-results.xml`, `ctest-output.log`,
+`native-ssh-output.log` and the existing native/startup logs in
+`TELIPHONES-Windows-startup-diagnostics`. Verbose unittest names, unlimited contract
+diffs and raw transport-byte errors identify exact assertions in the same run.
 
 `provision_openssh.ps1` does not start/enable the global sshd or ssh-agent service,
 change public firewall rules or edit production SSH configuration. Official
@@ -60,6 +75,50 @@ The workflow provisions OpenSSH before these tests, so their existing
 OpenSSH-unavailable skips cannot be used to obtain success in this workflow.
 Linux additionally runs `broker_contract_check`; privileged OS/network calls in
 that contract test are doubled, not represented as a native Windows result.
+
+### Three contract assertions: locally reproduced Windows CRT behaviour
+
+The supplied Actions summary says five tests ran with three failures; the actual
+Windows assertion tracebacks were not available locally and no remote access was
+performed. The following are the **local reproduction results**, not invented
+values attributed to that Actions run.
+
+Running the uncorrected five-test suite with the real local C++ contract tool and
+the Windows CRT text-stdout rule (insert CR before each LF), followed by Python's
+universal-newline decoding, reproduces exactly five tests / three failures:
+
+| Test / subtest | Failing assertion | Expected | Reproduced actual |
+|---|---|---|---|
+| `test_response_profile_and_administrator_tunnel`, `mode='temporary'` | Rendered administrator configuration equals the expected complete configuration | `[Interface]\nPrivateKey = ...\nAddress = 100.70.1.2/32\n\n[Peer]\n...` | `[Interface]\n\nPrivateKey = ...\n\nAddress = 100.70.1.2/32\n\n\n\n[Peer]\n\n...` |
+| `test_response_profile_and_administrator_tunnel`, `mode='persistent'` | Same configuration assertion, independent persistent response/profile round-trip | Same administrator configuration as temporary mode | Same doubled line breaks as temporary mode |
+| `test_support_tunnel_matches_portable_gateway_renderer` | Rendered support configuration equals `engineer.render(...)` | `[Interface]\nPrivateKey = ...\nAddress = 10.99.0.2/32\n\n[Peer]\n...` | `[Interface]\n\nPrivateKey = ...\n\nAddress = 10.99.0.2/32\n\n\n\n[Peer]\n\n...` |
+
+Keys, endpoints, routes and keepalive fields are identical in the reproduction;
+only line termination differs. The administrator expected endpoint/routes are
+`pbx.example.net:51821` / `100.70.1.1/32`; support uses
+`gateway.example.net:51820` / `10.20.4.2/32`. All use keepalive 25. Ellipses in the
+table omit unchanged synthetic fixture keys and fields, not unknown observed data.
+
+Root cause for all three: production `RenderTunnel` intentionally returns CRLF
+bytes. The test-only `contract_tool` printed those bytes through Windows CRT text
+stdout, producing CRCRLF; Python `text=True` converted CRCRLF into two newlines.
+The one-line request/response/fingerprint assertions strip their final newline
+and were unaffected, explaining the exact failure count.
+
+Correction: set only the Windows contract helper's stdout to `_O_BINARY`, checking
+the result, before writing any output. Production tunnel rendering, files,
+authentication and route validation are unchanged. The Python contract adapter
+now captures bytes first, rejects CRCRLF/lone newline corruption, decodes UTF-8
+explicitly and converts valid CRLF to LF for the existing Python comparison.
+It does NOT collapse blank lines or strip rendered configurations to hide errors;
+the complete expected output includes its final newline.
+
+Regression coverage rejects the exact simulated CRT corruption for both
+administrator and support output, accepts unchanged renderer CRLF, and rejects
+LF-only transport. Actual helper bytes are checked during all three rendered
+configuration assertions on both platforms. This local byte-level reproduction
+does not execute MSVC or establish actual Windows/OpenSSH success; the next native
+run must confirm the fix and expose any distinct assertions in its full logs.
 
 ## Native fixture: account, configuration and lifetime
 

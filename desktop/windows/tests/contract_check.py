@@ -32,10 +32,21 @@ def encoded(prefix, value):
 
 
 def tool(*args, stdin=None):
-    return subprocess.run([TOOL, *args], input=stdin, text=True, capture_output=True, timeout=10)
+    result = subprocess.run([TOOL, *args], input=None if stdin is None else stdin.encode("utf-8"),
+                            capture_output=True, timeout=10)
+    if result.returncode == 0 and args[0] in ("administrator", "support"):
+        # Inspect transport bytes before newline decoding can hide CRT corruption.
+        remaining = result.stdout.replace(b"\r\n", b"")
+        if b"\r" in remaining or b"\n" in remaining:
+            raise AssertionError(f"{args[0]} stdout must preserve renderer CRLF bytes; got {result.stdout!r}")
+    result.stdout = result.stdout.decode("utf-8").replace("\r\n", "\n")
+    result.stderr = result.stderr.decode("utf-8").replace("\r\n", "\n")
+    return result
 
 
 class ClientContracts(unittest.TestCase):
+    maxDiff = None
+
     def setUp(self):
         self.key = base64.b64encode(hashlib.sha256(b"workstation").digest()).decode()
         self.pbx_key = base64.b64encode(hashlib.sha256(b"pbx").digest()).decode()
@@ -80,10 +91,10 @@ class ClientContracts(unittest.TestCase):
                                  f"0123456789abcdef 100.70.1.2/32 100.70.1.1 pbx.example.net:51821 {mode} {expiry or 0} nossh")
                 rendered = tool("administrator", code, self.nonce, self.key, self.private)
                 self.assertEqual(rendered.returncode, 0, rendered.stderr)
-                self.assertEqual(rendered.stdout.strip(),
+                self.assertEqual(rendered.stdout,
                                  f"[Interface]\nPrivateKey = {self.private}\nAddress = 100.70.1.2/32\n\n"
                                  f"[Peer]\nPublicKey = {self.pbx_key}\nEndpoint = pbx.example.net:51821\n"
-                                 "AllowedIPs = 100.70.1.1/32\nPersistentKeepalive = 25")
+                                 "AllowedIPs = 100.70.1.1/32\nPersistentKeepalive = 25\n")
 
     def test_response_rejects_wrong_binding_or_unsafe_routes(self):
         for code, nonce, key in (
@@ -116,7 +127,7 @@ class ClientContracts(unittest.TestCase):
         }
         rendered = tool("support", self.private, "session-1", str(self.now), stdin=json.dumps(grant))
         self.assertEqual(rendered.returncode, 0, rendered.stderr)
-        self.assertEqual(rendered.stdout.strip(), engineer.render(grant, self.private, self.key).strip())
+        self.assertEqual(rendered.stdout, engineer.render(grant, self.private, self.key))
         self.assertNotEqual(tool("support", self.private, "unauthorised", str(self.now),
                                  stdin=json.dumps(grant)).returncode, 0)
         self.assertNotEqual(tool("support", self.private, "session-1", str(self.now + 3601),
@@ -124,4 +135,4 @@ class ClientContracts(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    unittest.main(verbosity=2)

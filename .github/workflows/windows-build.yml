@@ -24,6 +24,7 @@ jobs:
           persist-credentials: false
 
       - name: Locate Visual Studio and verify MSVC, MFC and Windows SDK
+        id: toolchain
         run: |
           $ErrorActionPreference = 'Stop'
           $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
@@ -114,9 +115,13 @@ jobs:
           }
 
       - name: Provision official Windows OpenSSH capabilities
+        id: openssh
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
         run: ./desktop/windows/tests/provision_openssh.ps1
 
       - name: Restore declared static OpenSSL dependency
+        id: crypto
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
         run: |
           $ErrorActionPreference = 'Stop'
           $vcpkg = Join-Path $env:VCPKG_INSTALLATION_ROOT 'vcpkg.exe'
@@ -137,6 +142,8 @@ jobs:
           } finally { Pop-Location }
 
       - name: Build TELIPHONES solution (Release x64)
+        id: application_build
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' && steps.crypto.outcome == 'success' }}
         run: |
           $ErrorActionPreference = 'Stop'
           $source = Join-Path $env:GITHUB_WORKSPACE 'desktop\windows\src\app\ConnectionHealthDlg.cpp'
@@ -156,19 +163,28 @@ jobs:
           }
 
       - name: Run native Windows core and diagnostics regression tests
+        if: ${{ !cancelled() && steps.application_build.outcome == 'success' }}
         run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          $failedTests = @()
           foreach ($name in @('TeliphonesCoreTests.exe', 'SessionDiagnosticsTests.exe')) {
             $tests = Join-Path $env:GITHUB_WORKSPACE "desktop\windows\build\Release\$name"
             if (-not (Test-Path -LiteralPath $tests -PathType Leaf)) {
-              throw "The native test executable was not produced: $tests"
+              Write-Host "::error::The native test executable was not produced: $tests"
+              $failedTests += $name
+              continue
             }
-            & $tests
+            & $tests 2>&1 | Tee-Object -FilePath (Join-Path $env:STARTUP_DIAGNOSTICS "$name.log")
             if ($LASTEXITCODE -ne 0) {
-              throw "$name failed with exit code $LASTEXITCODE."
+              Write-Host "::error::$name failed with exit code $LASTEXITCODE."
+              $failedTests += $name
             }
           }
+          if ($failedTests.Count) { throw "Required native tests failed: $($failedTests -join ', ')" }
 
-      - name: Build and verify native memory-backed SSH authentication
+      - name: Build native memory-backed SSH test tools
+        id: native_build
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' && steps.crypto.outcome == 'success' }}
         run: |
           $ErrorActionPreference = 'Stop'
           $vcpkg = $env:VCPKG_INSTALLATION_ROOT
@@ -178,11 +194,30 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Native SSH CMake configuration failed.' }
           cmake --build desktop/windows/build/ssh-native --config Release
           if ($LASTEXITCODE -ne 0) { throw 'Native SSH compilation failed.' }
+
+      - name: Run native Windows security preflight
+        id: native_preflight
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
           & desktop/windows/build/ssh-native/Release/ssh_native_host.exe --preflight
           if ($LASTEXITCODE -ne 0) { throw 'Native DPAPI/locked-memory/named-pipe/Job preflight failed.' }
-          ctest --test-dir desktop/windows/build/ssh-native -C Release --output-on-failure
+
+      - name: Run all portable CTests with complete diagnostics
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' && steps.openssh.outcome == 'success' }}
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          $junit = Join-Path $env:STARTUP_DIAGNOSTICS 'ctest-results.xml'
+          ctest --test-dir desktop/windows/build/ssh-native -C Release --verbose --output-on-failure --no-tests=error --output-junit "$junit" 2>&1 |
+            Tee-Object -FilePath (Join-Path $env:STARTUP_DIAGNOSTICS 'ctest-output.log')
           if ($LASTEXITCODE -ne 0) { throw 'Native portable/cryptographic SSH tests failed.' }
-          python desktop/windows/tests/ssh_native_check.py desktop/windows/build/ssh-native/Release/ssh_native_host.exe -v
+
+      - name: Run native Windows OpenSSH integration independently
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' && steps.openssh.outcome == 'success' && steps.native_preflight.outcome == 'success' }}
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          python -u desktop/windows/tests/ssh_native_check.py desktop/windows/build/ssh-native/Release/ssh_native_host.exe -v 2>&1 |
+            Tee-Object -FilePath (Join-Path $env:STARTUP_DIAGNOSTICS 'native-ssh-output.log')
           if ($LASTEXITCODE -ne 0) { throw 'Native Windows named-pipe/OpenSSH integration failed.' }
 
       - name: Clean up interrupted isolated SSH fixture
@@ -195,6 +230,7 @@ jobs:
           }
 
       - name: Run native appearance, layout and Connection Health window tests
+        if: ${{ !cancelled() && steps.application_build.outcome == 'success' }}
         run: |
           $tests = Join-Path $env:GITHUB_WORKSPACE 'desktop\windows\build\Release\HealthWindowTests.exe'
           if (-not (Test-Path -LiteralPath $tests -PathType Leaf)) {
@@ -211,6 +247,7 @@ jobs:
           }
 
       - name: Verify real x64 native executable and runtime dependencies
+        if: ${{ !cancelled() && steps.application_build.outcome == 'success' }}
         run: |
           $ErrorActionPreference = 'Stop'
           $exe = Join-Path $env:GITHUB_WORKSPACE 'desktop\windows\build\Release\TELIPHONES.exe'
@@ -303,6 +340,7 @@ jobs:
           Get-FileHash -LiteralPath $exe -Algorithm SHA256 | Format-List
 
       - name: Smoke-test executable loading without UAC or networking
+        if: ${{ !cancelled() && steps.application_build.outcome == 'success' }}
         run: |
           $ErrorActionPreference = 'Stop'
           $exe = Join-Path $env:GITHUB_WORKSPACE 'desktop\windows\build\Release\TELIPHONES.exe'
@@ -372,7 +410,7 @@ jobs:
           }
 
       - name: Upload startup diagnostics on failure
-        if: failure() && env.STARTUP_DIAGNOSTICS != ''
+        if: always() && env.STARTUP_DIAGNOSTICS != ''
         uses: actions/upload-artifact@v4
         with:
           name: TELIPHONES-Windows-startup-diagnostics
