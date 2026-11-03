@@ -12,9 +12,9 @@ namespace tlp {
 std::string QuoteArgument(const std::string& argument);
 std::string JoinCommandLine(const std::vector<std::string>& arguments);
 
-// Arguments for the Windows OpenSSH client (excluding the program). Administrator profiles use the PBX's ordinary
-// SSH service on port 22 with the administrator's own account; Remote Support uses the temporary support SSH
-// service on port 22222 as root. HostKeyAlias keeps reused tunnel addresses from mixing host keys between PBXs.
+// Basic destination arguments only, not a complete managed authentication plan. New administrator pairings use
+// their isolated SSH port; legacy pairings retain port 22 metadata but the GUI requires re-pairing before SSH.
+// Remote Support remains on port 22222 as root. The platform supplies pinned, certificate-only configuration.
 std::vector<std::string> SshArguments(const Profile& profile, const std::string& sessionId);
 
 // The authorised SSH destination behind SshArguments, for terminals that do not use the OpenSSH client (PuTTY).

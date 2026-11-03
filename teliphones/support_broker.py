@@ -24,13 +24,18 @@ import time
 import uuid
 import sys
 from urllib.parse import urlsplit
+import importlib.util
+
+_ssh_spec = importlib.util.spec_from_file_location("teliphones_ssh", Path(__file__).with_name("ssh_authority.py"))
+ssh = importlib.util.module_from_spec(_ssh_spec)
+_ssh_spec.loader.exec_module(ssh)
 
 STATE = Path("/var/lib/teliphones")
 ENROLLMENT = Path("/etc/teliphones")
 SOCKET = "/run/teliphones/control.sock"
-# Version 4 adds bounded, administrator-readable workstation diagnostics.
-PROTOCOL = 4
-VERSION = "0.3.2"
+# Version 5 adds paired-key certificate issuance and isolated managed SSH.
+PROTOCOL = 5
+VERSION = "0.4.0"
 FWCONSOLE = "/usr/sbin/fwconsole"
 ACTIONS = {"status", "authorise", "revoke", "dependencies", "evidence", "configure", "pair", "unpair", "diagnostics"}
 ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C", "HOME": "/root", "DEBIAN_FRONTEND": "noninteractive"}
@@ -43,6 +48,8 @@ WORKSTATION_POOL = ipaddress.IPv4Network("100.64.0.0/10")
 WORKSTATION_EXCLUDED = ipaddress.IPv4Network("100.100.0.0/16")
 PAIR_REQUEST_PREFIX = "TELIPHONES-PAIR-REQUEST-1:"
 PAIR_RESPONSE_PREFIX = "TELIPHONES-PAIR-RESPONSE-1:"
+PAIR_REQUEST_V2 = "TELIPHONES-PAIR-REQUEST-2:"
+PAIR_RESPONSE_V2 = "TELIPHONES-PAIR-RESPONSE-2:"
 WG_PUBLIC_KEY = re.compile(r"[A-Za-z0-9+/]{42}[AEIMQUYcgkosw480]=")
 WORKSTATION_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._()-]{0,63}")
 HOSTNAME = re.compile(r"(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*")
@@ -102,6 +109,8 @@ class DiagnosticLog:
     MAX_RETURNED_EVENTS = 200
     FILES = ("events.jsonl", "events.1.jsonl", "events.2.jsonl")
     EVENT_FIELDS = {
+        "ssh.certificate": {"expires_at": ("int", None), "serial": ("int", None)},
+        "ssh.terminated": {"reason": ("enum", ("revoked", "shutdown", "rotation"))},
         "pairing.approved": {"mode": ("enum", ("temporary", "persistent")), "expires_at": ("nullable_int", None),
                              "renewed": ("bool", None)},
         "pairing.revoked": {"reason": ("enum", ("administrator",))},
@@ -313,7 +322,7 @@ def validate(request):
         "status": set(), "revoke": set(), "dependencies": set(),
         "authorise": {"minutes"}, "evidence": {"evidence"},
         "configure": {"url", "certificate", "private_key", "ca", "checker_key"},
-        "pair": {"request", "endpoint_host", "listen_port", "mode", "minutes", "ssh"}, "unpair": {"workstation_id"},
+        "pair": {"request", "endpoint_host", "listen_port", "mode", "minutes", "ssh", "ssh_user"}, "unpair": {"workstation_id"},
         "diagnostics": {"diagnostic_id"},
     }[action]
     if set(request) - fields - {"action"}:
@@ -339,6 +348,9 @@ def validate(request):
         if any(not isinstance(request.get(field), str) for field in ("request", "endpoint_host", "listen_port", "mode", "ssh")):
             raise BrokerError("Complete workstation pairing details are required.")
         parse_pair_request(request["request"])
+        if request["request"].strip().startswith(PAIR_REQUEST_V2) and request["ssh"] == "1":
+            if not isinstance(request.get("ssh_user"), str) or re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", request["ssh_user"]) is None:
+                raise BrokerError("Explicitly select the existing Linux account authorised for this workstation.")
         endpoint_host(request["endpoint_host"])
         if not re.fullmatch(r"[0-9]{4,5}", request["listen_port"]) or not 1024 <= int(request["listen_port"]) <= 65535:
             raise BrokerError("The WireGuard UDP port must be between 1024 and 65535.")
@@ -370,18 +382,25 @@ def parse_pair_request(code):
     """Parse the workstation-generated request; it carries only a public key, a name and a nonce."""
     try:
         code = code.strip()
-        if not code.startswith(PAIR_REQUEST_PREFIX) or len(code) > 4096:
+        version = 2 if code.startswith(PAIR_REQUEST_V2) else 1
+        prefix = PAIR_REQUEST_V2 if version == 2 else PAIR_REQUEST_PREFIX
+        if not code.startswith(prefix) or len(code) > 4096:
             raise ValueError("prefix")
-        value = json.loads(b64url_decode(code[len(PAIR_REQUEST_PREFIX):]).decode("utf-8"))
+        value = json.loads(b64url_decode(code[len(prefix):]).decode("utf-8"))
     except (ValueError, UnicodeDecodeError) as error:
         raise BrokerError("The pairing request is not a TELIPHONES workstation pairing request.") from error
-    if (not isinstance(value, dict) or set(value) != {"schema", "workstation", "public_key", "nonce"}
-            or value["schema"] != "teliphones-pair-request/1"
+    if (not isinstance(value, dict) or set(value) != ({"schema", "workstation", "public_key", "nonce"} | ({"ssh_public_key"} if version == 2 else set()))
+            or value["schema"] != "teliphones-pair-request/" + str(version)
             or not isinstance(value["workstation"], str) or not WORKSTATION_NAME.fullmatch(value["workstation"])
             or not isinstance(value["public_key"], str) or not WG_PUBLIC_KEY.fullmatch(value["public_key"])
             or base64.b64decode(value["public_key"]) == bytes(32)
             or not isinstance(value["nonce"], str) or not re.fullmatch(r"[A-Za-z0-9_-]{22}", value["nonce"])):
         raise BrokerError("The pairing request is malformed or incomplete.")
+    if version == 2:
+        try:
+            value["ssh_public_key"] = ssh.public_key(value["ssh_public_key"])
+        except ssh.SshError as error:
+            raise BrokerError(str(error)) from error
     return value
 
 
@@ -417,7 +436,7 @@ def workstation_ruleset(pbx_address, ssh_sources):
     return "\n".join(lines) + "\n"
 
 
-def workstation_policy(pbx_address, ssh_sources):
+def workstation_policy(pbx_address, ssh_sources, managed_sources=()):
     """Offline expected nft JSON, deliberately without sets, counters or implicit expressions."""
     family = {"family": "inet", "table": WORKSTATION_TABLE}
     # nftables 1.0.6 accepts table comments in JSON but drops them from kernel state.
@@ -440,6 +459,13 @@ def workstation_policy(pbx_address, ssh_sources):
     incoming = match(meta("iifname"), WORKSTATION_IFACE)
     destination = match(payload("ip", "daddr"), str(ipaddress.IPv4Address(pbx_address)))
     objects.append({"chain": {**family, "name": "input", "type": "filter", "hook": "input", "prio": -10, "policy": "accept"}})
+    for source, ssh_port in managed_sources:
+        for ssh_destination in (ssh.API_PORT, ssh_port):
+            # A local address is not an interface boundary on Linux (weak host model).
+            rule("input", [{"match": {"op": "!=", "left": meta("iifname"), "right": WORKSTATION_IFACE}},
+                           destination, match(payload("tcp", "dport"), ssh_destination), {"drop": None}])
+            rule("input", [incoming, match(payload("ip", "saddr"), str(ipaddress.IPv4Address(source))),
+                           destination, match(payload("tcp", "dport"), ssh_destination), {"accept": None}])
     for port in (80, 443):
         rule("input", [incoming, destination, match(payload("tcp", "dport"), port), {"accept": None}])
     for source in sorted(set(ssh_sources)):
@@ -505,7 +531,8 @@ def integration_rules(pbx_address, workstations):
         source = ipaddress.IPv4Network(item["address"])
         if source.prefixlen != 32:
             raise BrokerError("Workstation integration requires a single-address peer.")
-        for port in (80, 443, 22) if item.get("ssh") is True else (80, 443):
+        ports = (80, 443, ssh.API_PORT, ssh.port(item)) if ssh.managed(item) else ((80, 443, 22) if item.get("ssh") is True else (80, 443))
+        for port in ports:
             rules.append({"s": str(source), "d": pbx, "i": WORKSTATION_IFACE, "p": "tcp", "dport": str(port),
                           "comment": INTEGRATION_MARK, "j": "ACCEPT"})
     rules.append({"comment": INTEGRATION_MARK, "j": "RETURN"})
@@ -666,6 +693,7 @@ class Broker:
         self.diagnostic_interface_up = False
         self.diagnostic_observations = {}
         self.diagnostic_telemetry_error = False
+        self.ssh = ssh.Authority(ENROLLMENT / "ssh", self.workstation_state, self.wslock, self.diagnostic)
 
     def diagnostic(self, diagnostic_id, event, **fields):
         try:
@@ -950,7 +978,9 @@ class Broker:
         network = ipaddress.IPv4Network(state["subnet"])
         if not network.subnet_of(WORKSTATION_POOL) or network.prefixlen != 24 or network.overlaps(WORKSTATION_EXCLUDED):
             raise BrokerError("Invalid workstation subnet.")
-        return workstation_policy(str(network[1]), [item["address"].split("/")[0] for item in state["workstations"] if item.get("ssh") is True])
+        return workstation_policy(str(network[1]),
+                                  [item["address"].split("/")[0] for item in state["workstations"] if item.get("ssh") is True and not ssh.managed(item)],
+                                  [(item["address"].split("/")[0], ssh.port(item)) for item in state["workstations"] if ssh.managed(item)])
 
     def start_monitor(self):
         if self.monitor is None:
@@ -1141,6 +1171,10 @@ class Broker:
         """Shared by revoke, failure, shutdown and the trusted uninstall entry point."""
         interface_present = self.link_state() is not None
         self.disable_workstations()
+        try:
+            self.ssh.reconcile({"workstations": []})
+        except (ssh.SshError, OSError, subprocess.SubprocessError) as error:
+            raise BrokerError("Managed SSH cleanup could not be verified; retaining recovery state: " + str(error)) from error
         if interface_present:
             self.run([self.tool("ip"), "link", "del", "dev", WORKSTATION_IFACE], check=False)
             if self.link_state() is not None:
@@ -1168,6 +1202,10 @@ class Broker:
     def uninstall_workstations(self):
         with self.wslock:
             self.teardown_workstations()
+            try:
+                self.ssh.destroy()
+            except (ssh.SshError, OSError, subprocess.SubprocessError) as error:
+                raise BrokerError("Managed SSH removal could not be verified; retaining recovery state: " + str(error)) from error
             # Never remove either recovery file until link and owned-table absence are proven.
             for path in (STATE / "workstations.json", STATE / "workstation-recovery.json", ENROLLMENT / "workstation-wg.key"):
                 path.unlink(missing_ok=True)
@@ -1211,6 +1249,7 @@ class Broker:
             # Only after the nft restrictions are verified may the narrower FreePBX Firewall ACCEPTs be added.
             previous_integration = dict(self.integration)
             self.reconcile_integration(state)
+            self.ssh.reconcile(state)
             self.run([ip, "link", "set", "up", "dev", WORKSTATION_IFACE])
             if not interface_present:
                 self.diagnostic_interface_up = True
@@ -1228,7 +1267,7 @@ class Broker:
                     self.diagnostic(diagnostic_id, "peer.admitted", access="web+ssh" if item.get("ssh") is True else "web")
             self.diagnostic_active_peers = active_ids
             self.workstation_error = ""
-        except (BrokerError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+        except (BrokerError, ssh.SshError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
             category = "firewall-integration" if self.integration.get("state") == "error" else "workstation-enforcement"
             for diagnostic_id in workstation_ids:
                 self.diagnostic(diagnostic_id, "broker.error", category=category)
@@ -1292,17 +1331,26 @@ class Broker:
                     if link is not None and "UP" in link["flags"]:
                         # Repairs a FreePBX Firewall reload without re-admitting peers; a no-op when already exact.
                         self.reconcile_integration(state)
-            except (BrokerError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+                        if any(ssh.managed(item) for item in state["workstations"]):
+                            self.ssh.reconcile(state)
+            except (BrokerError, ssh.SshError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
                 self.workstation_error = str(error)
                 try:
                     self.disable_workstations()
-                except (BrokerError, OSError, ValueError, subprocess.SubprocessError) as cleanup_error:
+                    self.ssh.reconcile({"workstations": []})
+                except (BrokerError, ssh.SshError, OSError, ValueError, subprocess.SubprocessError) as cleanup_error:
                     self.workstation_error += " Cleanup could not be confirmed: " + str(cleanup_error)
 
     def pair(self, request, uid):
         if (STATE / "disabled").exists():
             raise BrokerError("TELIPHONES is disabled; workstation pairing is unavailable.")
         pairing = parse_pair_request(request["request"])
+        if pairing["schema"] == "teliphones-pair-request/2" and request["ssh"] == "1":
+            try:
+                self.ssh.initialise()
+                self.ssh.host_key()
+            except (ssh.SshError, OSError, subprocess.SubprocessError) as error:
+                raise BrokerError("Managed SSH is unavailable: " + str(error)) from error
         host, port = endpoint_host(request["endpoint_host"]), int(request["listen_port"])
         for name in TOOLS:
             self.tool(name)
@@ -1331,9 +1379,18 @@ class Broker:
                 raise BrokerError("No workstation addresses remain; revoke unused workstations first.")
             address = free[0]
         now = int(time.time())
-        entry = {"id": existing["id"] if existing else secrets.token_hex(8), "name": pairing["workstation"], "public_key": pairing["public_key"],
+        entry = {"id": existing["id"] if existing and pairing["schema"] == "teliphones-pair-request/1" else secrets.token_hex(8),
+                 "name": pairing["workstation"], "public_key": pairing["public_key"],
                  "address": address, "mode": request["mode"], "ssh": request["ssh"] == "1", "created_at": now,
                  "expires_at": now + int(request["minutes"]) * 60 if request["mode"] == "temporary" else None}
+        if pairing["schema"] == "teliphones-pair-request/2" and entry["ssh"]:
+            entry.update(ssh_public_key=pairing["ssh_public_key"], ssh_user=request["ssh_user"])
+            try:
+                self.ssh.account_policy(entry, str(network[1]))
+                if existing and existing["id"] in self.ssh.active:
+                    self.ssh.stop(existing["id"], "rotation")
+            except (ssh.SshError, OSError, subprocess.SubprocessError) as error:
+                raise BrokerError("Managed SSH account authorisation failed: " + str(error)) from error
         state["workstations"].append(entry)
         try:
             self.apply_workstations(state)
@@ -1361,7 +1418,15 @@ class Broker:
                     "pbx_name": re.sub(r"[^A-Za-z0-9._-]", "", socket.gethostname())[:64] or "FreePBX",
                     "pbx_public_key": pbx_public, "endpoint": host + ":" + str(port), "mode": entry["mode"],
                     "expires_at": entry["expires_at"], "ssh": entry["ssh"], "gui_url": "http://" + pbx_address + "/admin/"}
-        return PAIR_RESPONSE_PREFIX + b64url_encode(json.dumps(response, separators=(",", ":"), sort_keys=True).encode()), entry
+        prefix = PAIR_RESPONSE_PREFIX
+        if pairing["schema"] == "teliphones-pair-request/2":
+            prefix = PAIR_RESPONSE_V2
+            response.update(schema="teliphones-pair-response/2", ssh_user=entry.get("ssh_user", ""),
+                            ssh_host_key=self.ssh.host_key() if ssh.managed(entry) else "",
+                            ssh_ca_key=self.ssh.initialise() if ssh.managed(entry) else "",
+                            ssh_port=ssh.port(entry) if ssh.managed(entry) else 0,
+                            ssh_api_port=ssh.API_PORT if ssh.managed(entry) else 0)
+        return prefix + b64url_encode(json.dumps(response, separators=(",", ":"), sort_keys=True).encode()), entry
 
     def unpair(self, request, uid):
         state, _ = self.workstation_state()
@@ -1426,14 +1491,23 @@ class Broker:
                     for item in state["workstations"]:
                         self.diagnostic("ws-" + item["id"], "broker.error", category="telemetry-unavailable")
                 self.diagnostic_telemetry_error = True
+        ssh_error = ""
+        try:
+            self.ssh.prerequisites()
+            self.ssh.host_key()
+        except (ssh.SshError, OSError, subprocess.SubprocessError) as failure:
+            ssh_error = str(failure)
         return {"ready": all(requirements.values()) and not error and not (STATE / "disabled").exists(), "requirements": requirements, "error": error,
+                "ssh_ready": not ssh_error, "ssh_error": ssh_error,
                 "listen_port": state["listen_port"],
                 "firewall_integration": {"state": self.integration["state"] if state["workstations"] else "inactive",
                                          "message": self.integration["message"] if state["workstations"] else "",
                                          "backend": self.integration["backend"], "hook": FREEPBX_HOOK, "chain": INTEGRATION_CHAIN},
                 "pbx_address": str(ipaddress.IPv4Network(state["subnet"])[1]) if state["subnet"] and state["workstations"] else None,
                 "items": [{"id": item["id"], "name": item["name"], "address": item["address"], "mode": item["mode"],
-                           "ssh": item.get("ssh") is True, "created_at": item.get("created_at"), "expires_at": item.get("expires_at"),
+                           "ssh": item.get("ssh") is True, "ssh_managed": ssh.managed(item),
+                           "ssh_user": item.get("ssh_user", ""), "ssh_port": ssh.port(item) if ssh.managed(item) else 0,
+                           "created_at": item.get("created_at"), "expires_at": item.get("expires_at"),
                            "last_handshake": handshakes.get(item["public_key"]),
                            "fingerprint": key_fingerprint(item["public_key"])} for item in state["workstations"]]}
 
@@ -1634,6 +1708,8 @@ def serve():
     signal.signal(signal.SIGINT, stop)
     try:
         broker.disable_workstations()
+        with broker.wslock:
+            broker.ssh.reconcile({"workstations": []})
     except (BrokerError, OSError, ValueError, subprocess.SubprocessError) as error:
         broker.workstation_error = "Initial workstation shutdown unverified: " + str(error)
     # Interrupted broker jobs never resume/open access implicitly.

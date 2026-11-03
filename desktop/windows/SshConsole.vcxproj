@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64"><Configuration>Debug</Configuration><Platform>x64</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>17.0</VCProjectVersion><ProjectGuid>{FF47881E-AB14-4F8C-9212-15AAB265FA09}</ProjectGuid>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType><PlatformToolset>v143</PlatformToolset><CharacterSet>Unicode</CharacterSet>
+    <UseDebugLibraries Condition="'$(Configuration)'=='Debug'">true</UseDebugLibraries>
+    <UseDebugLibraries Condition="'$(Configuration)'!='Debug'">false</UseDebugLibraries>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup><OutDir>$(SolutionDir)build\$(Configuration)\</OutDir><IntDir>$(SolutionDir)build\obj\$(ProjectName)\$(Configuration)\</IntDir><TargetName>TELIPHONES-SSH</TargetName></PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <WarningLevel>Level4</WarningLevel><SDLCheck>true</SDLCheck><ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp17</LanguageStandard><ExceptionHandling>Sync</ExceptionHandling><AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+      <PreprocessorDefinitions>UNICODE;_UNICODE;WIN32_LEAN_AND_MEAN;NOMINMAX;_WIN32_WINNT=0x0A00;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <RuntimeLibrary Condition="'$(Configuration)'=='Debug'">MultiThreadedDebug</RuntimeLibrary>
+      <RuntimeLibrary Condition="'$(Configuration)'!='Debug'">MultiThreaded</RuntimeLibrary>
+    </ClCompile>
+    <Link><SubSystem>Console</SubSystem><TargetMachine>MachineX64</TargetMachine><AdditionalDependencies>bcrypt.lib;crypt32.lib;advapi32.lib;ws2_32.lib;iphlpapi.lib;shell32.lib;ole32.lib;uuid.lib;winhttp.lib;%(AdditionalDependencies)</AdditionalDependencies></Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="src\core\*.cpp" />
+    <ClCompile Include="src\platform\SshConsoleMain.cpp" />
+    <ClCompile Include="src\platform\SshSession.cpp" />
+    <ClCompile Include="src\platform\SshAgent.cpp" />
+    <ClCompile Include="src\platform\Ssh.cpp" />
+    <ClCompile Include="src\platform\Applications.cpp" />
+    <ClCompile Include="src\platform\Services.cpp" />
+    <ClCompile Include="src\platform\Win.cpp" />
+  </ItemGroup>
+  <Import Project="OpenSSL.props" />
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

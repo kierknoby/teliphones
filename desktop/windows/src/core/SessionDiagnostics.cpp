@@ -43,6 +43,7 @@ bool eventValid(const std::string& value) {
     static const std::vector<std::string> events{
         "startup", "shutdown", "pairing_saved", "profile_removed", "connection_attempt", "tunnel_started",
         "connection_failed", "disconnect_requested", "tunnel_removed", "disconnect_failed", "authorization_expired",
+        "ssh_requested", "ssh_failed", "ssh_launched",
         "health_changed", "probe_changed", "telemetry_changed", "session_summary", "recent_measurements", "measurement_error"};
     return std::find(events.begin(), events.end(), value) != events.end();
 }

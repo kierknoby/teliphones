@@ -106,9 +106,14 @@ bool IsExpectedExecutable(const AppInfo& app, const std::string& path) {
 }
 
 bool IsShellSafePath(const std::string& path) {
-    if (!isAbsoluteLocalPath(path) || !endsWithExe(path) || path.size() > 260) return false;
-    return std::all_of(path.begin(), path.end(), [](char c) {
-        return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '\\' || c == ':' || c == ' ' || c == '.' ||
+    return endsWithExe(path) && IsShellSafeFilePath(path) &&
+           std::all_of(path.begin(), path.end(), [](unsigned char c) { return c < 0x80; });
+}
+
+bool IsShellSafeFilePath(const std::string& path) {
+    if (!isAbsoluteLocalPath(path) || path.size() > 260) return false;
+    return std::all_of(path.begin(), path.end(), [](unsigned char c) {
+        return c >= 0x80 || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '\\' || c == ':' || c == ' ' || c == '.' ||
                c == '_' || c == '-' || c == '(' || c == ')';
     });
 }
@@ -261,7 +266,7 @@ LaunchPlan BrowserLaunch(const std::string& browserId, const std::string& execut
 }
 
 LaunchPlan TerminalLaunch(const std::string& terminalId, const std::string& terminalExecutable, const std::string& sshExecutable,
-                          const SshTarget& target) {
+                          const SshTarget& target, const std::string& configuration) {
     requireSafeTarget(target);
     const AppInfo* app = FindApp(AppKind::Terminal, terminalId);
     if (app == nullptr || !IsExpectedExecutable(*app, terminalExecutable)) throw AppUnavailable(AppKind::Terminal, terminalId);
@@ -269,6 +274,7 @@ LaunchPlan TerminalLaunch(const std::string& terminalId, const std::string& term
     plan.program = terminalExecutable;
     plan.newConsole = true;
     if (terminalId == "putty") {
+        if (!configuration.empty()) throw Error("Managed SSH certificates require a Windows OpenSSH terminal; choose PowerShell, Command Prompt or Windows Terminal.");
         // PuTTY's own options; -loghost keeps reused tunnel addresses from sharing a cached host key between PBXs.
         plan.commandLine = JoinCommandLine({terminalExecutable, "-ssh", "-P", std::to_string(target.port), "-l", target.user, "-loghost",
                                             target.hostKeyAlias, target.address});
@@ -279,6 +285,10 @@ LaunchPlan TerminalLaunch(const std::string& terminalId, const std::string& term
     std::vector<std::string> ssh = openSshArguments(target);
     for (const std::string& argument : ssh) {
         if (!IsShellSafeToken(argument)) throw Error("Refusing to start SSH with an unsafe argument.");
+    }
+    if (!configuration.empty()) {
+        if (!IsShellSafeFilePath(configuration)) throw Error("The managed SSH configuration path is not safe for this terminal.");
+        ssh.insert(ssh.begin(), {"-F", configuration});
     }
     if (terminalId == "powershell" || terminalId == "pwsh") {
         std::string command = "& " + powerShellLiteral(sshExecutable);
@@ -296,6 +306,29 @@ LaunchPlan TerminalLaunch(const std::string& terminalId, const std::string& term
     } else {
         throw AppUnavailable(AppKind::Terminal, terminalId);
     }
+    return plan;
+}
+
+LaunchPlan ManagedTerminalLaunch(const std::string& terminalId, const std::string& terminalExecutable,
+                                 const std::string& helper, const std::string& session) {
+    const auto* app = FindApp(AppKind::Terminal, terminalId);
+    if (!app || !IsExpectedExecutable(*app, terminalExecutable)) throw AppUnavailable(AppKind::Terminal, terminalId);
+    if (!IsShellSafeFilePath(helper) || session.size() != 32 || session.find_first_not_of("0123456789abcdef") != std::string::npos)
+        throw Error("Invalid managed SSH console invocation.");
+    LaunchPlan plan;
+    plan.program = terminalExecutable;
+    plan.newConsole = true;
+    if (terminalId == "powershell" || terminalId == "pwsh")
+        plan.commandLine = JoinCommandLine({terminalExecutable, "-NoLogo", "-NoProfile", "-Command",
+            "& " + powerShellLiteral(helper) + " '/ssh-console' '" + session + "'; exit $LASTEXITCODE"});
+    else if (terminalId == "windows-terminal") {
+        plan.commandLine = JoinCommandLine({terminalExecutable, "new-tab", "--title", "TELIPHONES SSH", "--",
+                                           helper, "/ssh-console", session});
+        plan.newConsole = false;
+    } else if (terminalId == "cmd")
+        plan.commandLine = QuoteArgument(terminalExecutable) + " /d /s /c \"\"" + helper + "\" /ssh-console " + session + "\"";
+    else
+        throw Error("Managed SSH requires PowerShell, Command Prompt or Windows Terminal; PuTTY is unsupported.");
     return plan;
 }
 

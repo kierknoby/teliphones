@@ -15,6 +15,7 @@
 #include "../core/TunnelConfig.h"
 #include "../platform/Applications.h"
 #include "../platform/Services.h"
+#include "../platform/Ssh.h"
 #include "../platform/Win.h"
 #include "AppSettingsDlg.h"
 #include "PairDlg.h"
@@ -33,7 +34,7 @@ namespace {
 constexpr UINT_PTR kMonitorTimer = 1;
 constexpr UINT kMonitorIntervalMs = 2000;
 
-enum class OperationKind { Connect, Disconnect, Cleanup };
+enum class OperationKind { Connect, Disconnect, Cleanup, Ssh };
 
 struct OperationResult {
     OperationKind kind = OperationKind::Connect;
@@ -180,6 +181,8 @@ BOOL CMainDlg::OnInitDialog() {
 
     try {
         profiles_ = tlp::win::LoadProfiles();
+        for (const auto& profile : profiles_)
+            if (profile.kind == ProfileKind::Administrator && !profile.pairing.sshPublicKey.empty()) tlp::win::RemoveSshRuntime(profile);
     } catch (const std::exception& e) {
         ShowError(std::string("Saved connections could not be loaded and were left unchanged: ") + e.what());
     }
@@ -638,12 +641,16 @@ void CMainDlg::OnRemove() {
     Profile* profile = Selected();
     if (profile == nullptr || (active_ && active_->profileId == profile->id)) return;
     std::wstring question = L"Remove \"" + Widen(profile->name) + L"\" and delete its WireGuard key from this computer?";
-    if (profile->kind == ProfileKind::Administrator) {
+    if (profile->kind == ProfileKind::Administrator && !profile->pairing.sshPublicKey.empty()) {
         question += L"\n\nThis does not revoke the workstation on the PBX. Revoke it in FreePBX > Connectivity > TELIPHONES > Windows workstations.";
     }
     if (tlp::ui::ShowMessage(question.c_str(), MB_ICONQUESTION | MB_YESNO) != IDYES) return;
     try {
         tlp::win::DeletePrivateKey(tlp::CredentialTargetFor(*profile));
+        if (profile->kind == ProfileKind::Administrator) {
+            tlp::win::DeleteSshPrivateKey(*profile);
+            tlp::win::RemoveSshRuntime(*profile);
+        }
     } catch (const std::exception& e) {
         ShowError(std::string("The saved key could not be deleted: ") + e.what());
         return;
@@ -743,8 +750,11 @@ void CMainDlg::StartDisconnect(const std::string& reason) {
     SetState("Disconnecting...", reason);
     std::string tunnelName = active_->tunnelName;
     try {
-        RunInBackground(m_hWnd, OperationKind::Disconnect, reason, [tunnelName]() {
+        const auto profile = *FindProfile(active_->profileId);
+        RunInBackground(m_hWnd, OperationKind::Disconnect, reason, [tunnelName, profile]() {
+            if (profile.kind == ProfileKind::Administrator) tlp::win::CloseManagedSsh(profile.id);
             tlp::win::RemoveTunnel(tunnelName);
+            if (profile.kind == ProfileKind::Administrator && !profile.pairing.sshPublicKey.empty()) tlp::win::RemoveSshRuntime(profile);
             return true;
         });
     } catch (const std::exception& e) {
@@ -816,17 +826,28 @@ bool CMainDlg::SshReady() {
 void CMainDlg::OnOpenSsh() {
     if (!SshReady()) return;
     try {
-        tlp::win::OpenSsh(*FindProfile(active_->profileId), active_->sessionId, CurrentPreferences());
-    } catch (const tlp::AppUnavailable& e) {
-        std::string text = std::string(e.what()) + "\n\nChoose OK to select another SSH terminal in Settings.";
-        if (tlp::ui::ShowMessage(Widen(text).c_str(), MB_OKCANCEL | MB_ICONWARNING) != IDOK) return;
-        if (!ShowAppSettings(false, e.what()) || !SshReady()) return;
+        const auto profile = *FindProfile(active_->profileId);
+        if (profile.kind == ProfileKind::Administrator) tlp::win::RequireManagedSsh(profile);
+        const auto session = active_->sessionId;
+        auto preferences = CurrentPreferences();
         try {
-            tlp::win::OpenSsh(*FindProfile(active_->profileId), active_->sessionId, CurrentPreferences());
-        } catch (const std::exception& again) {
-            ShowError(again.what());
+            tlp::ResolveApp(tlp::AppKind::Terminal, preferences.terminal, tlp::win::DetectApps(tlp::AppKind::Terminal, preferences));
+        } catch (const tlp::AppUnavailable& error) {
+            if (tlp::ui::ShowMessage(Widen(std::string(error.what()) + "\n\nChoose OK to select another SSH terminal in Settings.").c_str(),
+                                    MB_OKCANCEL | MB_ICONWARNING) != IDOK) return;
+            if (!ShowAppSettings(false, error.what()) || !SshReady()) return;
+            preferences = CurrentPreferences();
         }
+        busy_ = true;
+        UpdateButtons();
+        LogEvent("ssh_requested", "info", "Requesting SSH; terminal launch is not proof of terminal authentication.");
+        RunInBackground(m_hWnd, OperationKind::Ssh, "", [profile, session, preferences]() {
+            tlp::win::OpenSsh(profile, session, preferences);
+            return true;
+        });
     } catch (const std::exception& e) {
+        busy_ = false;
+        UpdateButtons();
         ShowError(e.what());
     }
 }
@@ -857,6 +878,9 @@ void CMainDlg::OnTimer(UINT_PTR id) {
     std::string tunnelName = active_->tunnelName;
     std::string address = active_->pbxAddress;
     std::string peerPublicKey = active_->peerPublicKey;
+    const auto* connectedProfile = FindProfile(active_->profileId);
+    std::string managedSshProfile = connectedProfile && connectedProfile->kind == ProfileKind::Administrator ?
+                                   connectedProfile->id : std::string();
     std::wstring wgExecutable = wireguard_.wgExe;
     std::int64_t expiresAt = active_->expiresAt;
     std::uint64_t tickNow = GetTickCount64();
@@ -864,13 +888,17 @@ void CMainDlg::OnTimer(UINT_PTR id) {
                             tickNow - lastTelemetryTickMs_ >= tlp::ConnectionHealthMonitor::kTelemetryIntervalSeconds * 1000ULL;
     if (collectTelemetry) lastTelemetryTickMs_ = tickNow;
     try {
-    std::thread([window, generation, tunnelName, address, peerPublicKey, wgExecutable, expiresAt, collectTelemetry]() {
+    std::thread([window, generation, tunnelName, address, peerPublicKey, managedSshProfile, wgExecutable, expiresAt, collectTelemetry]() {
         auto* result = new ProbeResult;
         result->sample.authorizationExpiresAt = expiresAt;
         result->sample.authorizationKnown = true;
         result->sample.authorizationPersistent = expiresAt == 0;
         try {
             tlp::win::TunnelState service = tlp::win::QueryTunnel(tunnelName);
+            if (!managedSshProfile.empty() &&
+                (service == tlp::win::TunnelState::Stopped || service == tlp::win::TunnelState::Absent)) {
+                tlp::win::CloseManagedSsh(managedSshProfile);
+            }
             result->statusKnown = service == tlp::win::TunnelState::Running || service == tlp::win::TunnelState::Stopped ||
                                   service == tlp::win::TunnelState::Absent;
             result->serviceRunning = service == tlp::win::TunnelState::Running;
@@ -1033,7 +1061,9 @@ LRESULT CMainDlg::OnProbeDone(WPARAM generation, LPARAM lparam) {
     else if (decision.state == tlp::LinkState::Lost || decision.state == tlp::LinkState::NoResponse ||
              decision.state == tlp::LinkState::Stopped) {
         SetState(decision.summary,
-                 decision.guidance + " The Connection Health monitor will keep checking; existing terminal windows are not closed.");
+                 decision.guidance + (decision.state == tlp::LinkState::Stopped ?
+                     " The Connection Health monitor will keep checking; managed My PBXs SSH sessions have been closed." :
+                     " The Connection Health monitor will keep checking; existing terminal windows are not closed."));
     }
     UpdateButtons();
     return 0;
@@ -1043,6 +1073,14 @@ LRESULT CMainDlg::OnOperationDone(WPARAM, LPARAM lparam) {
     std::unique_ptr<OperationResult> result(reinterpret_cast<OperationResult*>(lparam));
     busy_ = false;
     switch (result->kind) {
+        case OperationKind::Ssh:
+            if (!result->error.empty()) {
+                LogEvent("ssh_failed", "error", result->error);
+                ShowError(result->error);
+            } else {
+                LogEvent("ssh_launched", "info", "SSH terminal process launched; authentication is not yet observed.");
+            }
+            break;
         case OperationKind::Cleanup:
             if (!result->error.empty()) {
                 SetState("Not connected", "A TELIPHONES tunnel from a previous session could not be removed: " + result->error +
@@ -1116,7 +1154,10 @@ void CMainDlg::OnCancel() {
         CWaitCursor wait;
         LogEvent("disconnect_requested", "info", "Application shutdown: removing active tunnel.");
         try {
+            const auto* profile = FindProfile(active_->profileId);
+            if (profile && profile->kind == ProfileKind::Administrator) tlp::win::CloseManagedSsh(profile->id);
             tlp::win::RemoveTunnel(active_->tunnelName);
+            if (profile && profile->kind == ProfileKind::Administrator && !profile->pairing.sshPublicKey.empty()) tlp::win::RemoveSshRuntime(*profile);
         } catch (const std::exception& e) {
             LogEvent("disconnect_failed", "error", e.what());
             ShowError(std::string("The tunnel could not be removed: ") + e.what() + " Remove it in WireGuard for Windows.");

@@ -194,6 +194,51 @@ void testPairing() {
     check(throws([] { ParsePairResponse("TELIPHONES-PAIR-REQUEST-1:abc", kNonce, kWorkstationKey); }), "request pasted as response rejected");
     check(throws([] { ParsePairResponse(response({}).substr(0, 60), kNonce, kWorkstationKey); }), "truncated response rejected");
     check(KeyFingerprint(kWorkstationKey).size() == 23 && KeyFingerprint(kWorkstationKey).compare(0, 7, "SHA256:") == 0, "fingerprint format");
+    Bytes sshBlob{0, 0, 0, 11, 's', 's', 'h', '-', 'e', 'd', '2', '5', '5', '1', '9', 0, 0, 0, 32};
+    sshBlob.insert(sshBlob.end(), 32, 7);
+    const std::string sshKey = "ssh-ed25519 " + Base64Encode(sshBlob);
+    check(IsSshPublicKey(sshKey) && !IsSshPublicKey(sshKey + " comment") && !IsSshPublicKey("ssh-rsa AAAA"), "SSH public keys require canonical Ed25519 structure");
+    const auto sshRequest = BuildSshPairRequest("ADMIN-PC", kWorkstationKey, kNonce, sshKey);
+    check(sshRequest.rfind("TELIPHONES-PAIR-REQUEST-2:", 0) == 0, "managed SSH pairing uses version 2");
+    int keygenCalls = 0;
+    auto missingOpenSsh = [&keygenCalls]() -> std::string {
+        ++keygenCalls;
+        throw Error("Windows OpenSSH is absent.");
+    };
+    const auto webRequest = CreatePairRequest("ADMIN-PC", kWorkstationKey, kNonce, false, missingOpenSsh);
+    check(webRequest.code == BuildPairRequest("ADMIN-PC", kWorkstationKey, kNonce) &&
+              webRequest.sshPublicKey.empty() && keygenCalls == 0,
+          "new GUI-only pairing never invokes an absent Windows OpenSSH helper");
+    check(throws([&] { CreatePairRequest("ADMIN-PC", kWorkstationKey, kNonce, true, missingOpenSsh); }) && keygenCalls == 1,
+          "explicit SSH request reports missing OpenSSH rather than silently downgrading");
+    const auto requestedSsh = CreatePairRequest("ADMIN-PC", kWorkstationKey, kNonce, true, [&]() { return sshKey; });
+    check(requestedSsh.code == sshRequest && requestedSsh.sshPublicKey == sshKey, "SSH opt-in enrolls the separate key");
+    check(!ParsePairResponse(response({{"ssh", false}}), kNonce, kWorkstationKey).ssh,
+          "new web-only request accepts web-only PBX approval without any SSH key");
+    auto encoded = response({});
+    auto oldBody = Base64UrlDecode(encoded.substr(std::string(kPairResponsePrefix).size()));
+    auto object = json::Parse(std::string(oldBody.begin(), oldBody.end())).asObject();
+    object["schema"] = "teliphones-pair-response/2";
+    object["ssh_user"] = "root";
+    object["ssh_host_key"] = sshKey;
+    object["ssh_ca_key"] = sshKey;
+    object["ssh_port"] = 22002;
+    object["ssh_api_port"] = 8765;
+    auto v2 = [&object]() {
+        const auto text = json::Serialize(object);
+        return "TELIPHONES-PAIR-RESPONSE-2:" + Base64UrlEncode(Bytes(text.begin(), text.end()));
+    };
+    const auto managed = ParsePairResponse(v2(), kNonce, kWorkstationKey, sshKey);
+    check(managed.sshUser == "root" && managed.sshPort == 22002, "explicit administrator-approved root account retained");
+    check(throws([&] { ParsePairResponse(v2(), kNonce, kWorkstationKey); }), "managed SSH cannot use an unenrolled local key");
+    object["ssh_user"] = "";
+    check(throws([&] { ParsePairResponse(v2(), kNonce, kWorkstationKey, sshKey); }), "SSH account has no implicit root default");
+    object["ssh_user"] = "admin";
+    object["ssh_port"] = 22;
+    check(throws([&] { ParsePairResponse(v2(), kNonce, kWorkstationKey, sshKey); }), "managed SSH cannot target the system listener");
+    object["ssh_port"] = 22002;
+    object["ssh_api_port"] = 80;
+    check(throws([&] { ParsePairResponse(v2(), kNonce, kWorkstationKey, sshKey); }), "managed certificate API port is fixed");
 }
 
 void testTunnels() {
@@ -965,6 +1010,46 @@ void testLaunchers() {
           "Windows Terminal opens a tab running OpenSSH");
     const std::string cmd = "C:\\Windows\\System32\\cmd.exe";
     check(TerminalLaunch("cmd", cmd, kSsh, target).commandLine == cmd + " /s /k \"\"" + kSsh + "\" " + sshArgs + "\"", "Command Prompt runs OpenSSH");
+    Profile managedAdmin = admin;
+    managedAdmin.pairing.sshPort = 22002;
+    const auto managedTarget = SshTargetFor(managedAdmin, "");
+    check(managedTarget.port == 22002, "managed SSH targets the dedicated listener rather than system SSH");
+    const std::string config = "C:\\Users\\Ann Smith\\AppData\\Local\\TELIPHONES\\SSH\\0011223344556677\\0123456789abcdef\\config";
+    check(TerminalLaunch("powershell", kPowerShell, kSsh, managedTarget, config).commandLine ==
+              kPowerShell + " -NoLogo -NoExit -Command \"& '" + kSsh + "' '-F' '" + config +
+              "' '-o' 'ServerAliveInterval=15' '-o' 'HostKeyAlias=teliphones-0011223344556677' '-p' '22002' 'admin@100.70.1.1'\"",
+          "managed PowerShell launch quotes the private configuration as one literal argument");
+    for (const auto& app : std::vector<std::pair<std::string, std::string>>{{"windows-terminal", wt}, {"cmd", cmd}}) {
+        check(TerminalLaunch(app.first, app.second, kSsh, managedTarget, config).commandLine.find("-F \"" + config + "\"") != std::string::npos,
+              "managed terminal preserves spaces in the private configuration path");
+    }
+    check(throws([&] { TerminalLaunch("putty", kPutty, "", target, config); }), "managed SSH never falls back to PuTTY authentication");
+    const std::string helper = "C:\\Users\\Ann Smith\\TELIPHONES\\TELIPHONES-SSH.exe";
+    const std::string session = "0123456789abcdef0123456789abcdef";
+    const auto managedPowerShell = ManagedTerminalLaunch("powershell", kPowerShell, helper, session);
+    check(managedPowerShell.newConsole && managedPowerShell.commandLine.find("-NoProfile") != std::string::npos &&
+              managedPowerShell.commandLine.find("-NoExit") == std::string::npos &&
+              managedPowerShell.commandLine.find("'/ssh-console' '" + session + "'; exit $LASTEXITCODE") != std::string::npos,
+          "managed PowerShell runs the console companion without a persistent shell or profile");
+    check(ManagedTerminalLaunch("pwsh", pwsh, helper, session).commandLine.find(helper) != std::string::npos,
+          "managed PowerShell 7 preserves the companion path");
+    check(ManagedTerminalLaunch("cmd", cmd, helper, session).commandLine ==
+              cmd + " /d /s /c \"\"" + helper + "\" /ssh-console " + session + "\"",
+          "managed cmd disables AutoRun and quotes paths with spaces");
+    const auto managedWt = ManagedTerminalLaunch("windows-terminal", wt, helper, session);
+    check(!managedWt.newConsole && managedWt.commandLine.find("\"" + helper + "\" /ssh-console " + session) != std::string::npos,
+          "managed Windows Terminal launches the console companion directly");
+    check(throws([&] { ManagedTerminalLaunch("putty", kPutty, helper, session); }),
+          "managed console cannot fall back to PuTTY");
+    for (const char* invalid : {"x", "0123456789abcdef0123456789abcdeFGH", "0123456789abcdef0123456789abc';x'"})
+        check(throws([&] { ManagedTerminalLaunch("powershell", kPowerShell, helper, invalid); }),
+              "managed console rejects non-canonical control identifiers");
+    check(throws([&] { ManagedTerminalLaunch("cmd", cmd, "C:\\a&calc\\TELIPHONES-SSH.exe", session); }),
+          "managed companion path cannot inject shell commands");
+    for (const char* path : {"C:\\Users\\a&calc\\config", "C:\\Users\\a%PATH%\\config", "C:\\Users\\a;calc\\config",
+                             "C:\\Users\\..\\config", "\\\\server\\share\\config", "C:\\Users\\config:stream"}) {
+        check(throws([&] { TerminalLaunch("cmd", cmd, kSsh, target, path); }), "unsafe managed SSH configuration path refused");
+    }
     LaunchPlan puttyPlan = TerminalLaunch("putty", kPutty, "", target);
     check(!puttyPlan.newConsole && puttyPlan.program == kPutty &&
               puttyPlan.commandLine == "\"" + kPutty + "\" -ssh -P 22 -l admin -loghost teliphones-0011223344556677 100.70.1.1",
@@ -1125,8 +1210,8 @@ int main() {
     for (unsigned part : versionParts) check(part <= 65535, "Windows version component fits the resource WORD");
     check(TELIPHONES_VERSION_FILE_STRING == versionBase + "." + std::to_string(versionParts[3]), "file version expands consistently");
     check(TELIPHONES_VERSION_STRING == versionBase, "product version expands without a development suffix");
-    check(std::string(TELIPHONES_VERSION_STRING) == "0.6.5", "Windows application version is independent of the module");
-    check(std::string(TELIPHONES_VERSION_FILE_STRING) == "0.6.5.0", "Windows file version is 0.6.5.0");
+    check(std::string(TELIPHONES_VERSION_STRING) == "0.7.0", "Windows application version is independent of the module");
+    check(std::string(TELIPHONES_VERSION_FILE_STRING) == "0.7.0.0", "Windows file version is 0.7.0.0");
     testEncoding();
     testJson();
     testValidation();

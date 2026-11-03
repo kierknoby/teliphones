@@ -200,11 +200,11 @@ $assert(strpos($bootstrapSource, "copy(\$moduleDir . '/support_broker.py', \$bro
     'Root bootstrap must install the current broker as a protected root-owned file and restart it.');
 $brokerSource = (string)file_get_contents(dirname(__DIR__) . '/support_broker.py');
 $assert(strpos($brokerSource, 'WORKSTATION_OWNER_CHAIN = "teliphones_owner_v1"') !== false
-    && strpos(BrokerBootstrap::UPGRADE_NOTE, '0.3.1') !== false
-    && strpos(BrokerBootstrap::UPGRADE_NOTE, '0.3.2') !== false
-    && strpos(BrokerBootstrap::UPGRADE_NOTE, 'protocol 4') !== false
-    && strpos(BrokerBootstrap::UPGRADE_NOTE, 'nftables 1.0.6 drops table comments') !== false,
-    'The upgrade note must retain the 0.3.1 ownership correction and document 0.3.2 diagnostics.');
+    && strpos(BrokerBootstrap::UPGRADE_NOTE, '0.4.0 requires broker protocol 5') !== false
+    && strpos(BrokerBootstrap::UPGRADE_NOTE, '/usr/local/lib/teliphones-broker/ssh_authority.py') !== false
+    && strpos(BrokerBootstrap::UPGRADE_NOTE, 'normal system SSH service') !== false
+    && strpos(BrokerBootstrap::UPGRADE_NOTE, 'incomplete rollback') !== false,
+    'The upgrade note must document both protocol-5 helpers, rollback recovery and preservation of normal SSH.');
 $assert(strpos($bootstrapSource, 'workstations.json') === false && strpos($bootstrapSource, 'workstation-wg.key') === false,
     'Bootstrap must not recreate or delete workstation pairing state or the PBX key.');
 $assert(preg_match('/posix_geteuid\(\) !== 0\) \{\s*error_log\(\'[^\'\n]*Complete Installation on FreePBX 17[^\'\n]*\'\);\s*return false;/', $bootstrapSource) === 1,

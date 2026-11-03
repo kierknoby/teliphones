@@ -27,8 +27,8 @@ class BuildLayoutTests(unittest.TestCase):
         base = ".".join(map(str, parts[:3]))
         product = base
         numeric = ".".join(map(str, parts))
-        self.assertEqual(product, "0.6.5")
-        self.assertEqual(numeric, "0.6.5.0")
+        self.assertEqual(product, "0.7.0")
+        self.assertEqual(numeric, "0.7.0.0")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
         self.assertIn(f"# TELIPHONES {product} for Windows", readme)
@@ -37,12 +37,12 @@ class BuildLayoutTests(unittest.TestCase):
         self.assertIn(f"## {product} — Unreleased", changelog)
         self.assertEqual(re.findall(r"^## (\d+\.\d+\.\d+) ", changelog, re.MULTILINE)[0], product)
         self.assertIn(f"**{numeric}**", changelog)
-        self.assertIn("0.7.0 is reserved for the upcoming fully automated SSH authentication functionality", readme)
+        self.assertIn("Windows 0.7.0 introduces managed My PBXs SSH certificates", readme)
         self.assertIn(
-            "0.7.0 is reserved for the upcoming fully automated SSH authentication functionality",
+            "Windows 0.7.0 introduces managed My PBXs SSH certificates",
             " ".join(changelog.split()),
         )
-        self.assertIn("FreePBX module version is independent and is **0.3.5**", changelog)
+        self.assertIn("FreePBX module version is independent and is **0.4.0**", changelog)
         registered = {
             item.attrib["Include"].replace("\\", "/")
             for item in project("TELIPHONES.vcxproj").findall("ms:ItemGroup/ms:ClInclude", NS)
@@ -97,10 +97,10 @@ class BuildLayoutTests(unittest.TestCase):
         self.assertNotIn('"TELIPHONES is a UK registered trademark.\\r\\n"', layout)
         self.assertIn("desktop/windows/build/artifact/LICENSE", workflow)
         module = ET.parse(ROOT.parents[1] / "teliphones/module.xml").getroot()
-        self.assertEqual(module.findtext("version"), "0.3.5")
+        self.assertEqual(module.findtext("version"), "0.4.0")
         for path, statement in (
-            (ROOT / "README.md", "TELIPHONES 0.6.5 for Windows is licensed under GPLv3."),
-            (ROOT.parents[1] / "teliphones/README.md", "TELIPHONES 0.3.5 for FreePBX is licensed under GPLv3."),
+            (ROOT / "README.md", "TELIPHONES 0.7.0 for Windows is licensed under GPLv3."),
+            (ROOT.parents[1] / "teliphones/README.md", "TELIPHONES 0.4.0 for FreePBX is licensed under GPLv3."),
         ):
             text = path.read_text()
             self.assertIn(statement, text)
@@ -114,7 +114,13 @@ class BuildLayoutTests(unittest.TestCase):
             for item in app.findall("ms:ItemGroup/ms:ClCompile", NS)
         }
         expected = {path.relative_to(ROOT).as_posix() for path in (ROOT / "src").rglob("*.cpp")}
-        self.assertEqual(compiled, expected)
+        helper_main = "src/platform/SshConsoleMain.cpp"
+        self.assertEqual(compiled, expected - {helper_main})
+        helper = project("SshConsole.vcxproj")
+        self.assertIn(helper_main, {item.attrib["Include"].replace("\\", "/")
+                                   for item in helper.findall("ms:ItemGroup/ms:ClCompile", NS)})
+        self.assertIn("SshConsole.vcxproj", {item.attrib["Include"]
+                                          for item in project("TELIPHONES.vcxproj").findall("ms:ItemGroup/ms:ProjectReference", NS)})
         project_headers = {
             item.attrib["Include"].replace("\\", "/")
             for item in app.findall("ms:ItemGroup/ms:ClInclude", NS)
@@ -123,6 +129,48 @@ class BuildLayoutTests(unittest.TestCase):
         self.assertIn("src/core/ConnectionHealth.h", project_headers)
         self.assertIn("src/app/ConnectionHealthDlg.cpp", compiled)
         self.assertIn("src/core/ConnectionHealth.cpp", compiled)
+
+    def test_pairing_ssh_capability_is_opt_in(self):
+        source = (ROOT / "src/app/PairDlg.cpp").read_text()
+        resource = (ROOT / "src/app/TELIPHONES.rc").read_text()
+        self.assertIn("CheckDlgButton(IDC_PAIR_SSH_CAPABILITY, BST_UNCHECKED);", source)
+        self.assertIn("tlp::CreatePairRequest(", source)
+        self.assertIn("IsDlgButtonChecked(IDC_PAIR_SSH_CAPABILITY) == BST_CHECKED", source)
+        self.assertIn("[this]() { return tlp::win::GenerateWorkstationSshIdentity(profile); }", source)
+        self.assertNotIn("RequireEphemeralSshProvider", source)
+        self.assertIn("pairing.ssh && sshPublicKey_.empty()", source)
+        self.assertIn("if (sshKeyRequested_) {", source)
+        self.assertIn('IDC_PAIR_SSH_CAPABILITY, "Button", BS_AUTOCHECKBOX', resource)
+
+    def test_managed_ssh_has_no_file_or_shared_agent_fallback(self):
+        source = (ROOT / "src/platform/Ssh.cpp").read_text()
+        services = (ROOT / "src/platform/Services.cpp").read_text()
+        apps = (ROOT / "src/platform/Applications.cpp").read_text()
+        for forbidden in ("WriteNewFile(", "ReadSmallFile(", "RunProcess(", "WinHttp", "ssh-keygen", "CryptUnprotectData(",
+                          "CreateProcess", "IdentityAgent", "ssh-add", "PrepareManagedSsh"):
+            self.assertNotIn(forbidden, source)
+        self.assertNotIn("LoadSshPrivateKey(", services)
+        self.assertNotIn("SaveSshPrivateKey(", services)
+        launch = apps[apps.index("void OpenSsh("):]
+        self.assertLess(launch.index("StartManagedSsh(profile, preferences)"), launch.index("SshTargetFor("))
+        session = (ROOT / "src/platform/SshSession.cpp").read_text()
+        agent = (ROOT / "src/platform/SshAgent.cpp").read_text()
+        for required in ("JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE", "AssignProcessToJobObject", "IsProcessInJob",
+                         "CRYPTPROTECT_UI_FORBIDDEN", "teliphones-ssh-request/2", "VerifySshCertificateSignature"):
+            self.assertIn(required, session)
+        for required in ("GetNamedPipeClientProcessId", "GetProcessId(client_)", "key_->destroy()",
+                         "ValidateSshAuthentication", "PIPE_REJECT_REMOTE_CLIENTS", "FILE_FLAG_FIRST_PIPE_INSTANCE"):
+            self.assertIn(required, agent)
+        helper = session[session.index("int RunSshConsole("):]
+        self.assertLess(helper.index("ProtectSshProcess(GetCurrentProcess(), true)"), helper.index("CreateProcessW("))
+        solution = (ROOT / "TELIPHONES.sln").read_text()
+        self.assertIn('"TELIPHONES-SSH", "SshConsole.vcxproj"', solution)
+        for configuration in ("Debug", "Release"):
+            self.assertIn(f"{{FF47881E-AB14-4F8C-9212-15AAB265FA09}}.{configuration}|x64.Build.0", solution)
+        main = (ROOT / "src/app/MainDlg.cpp").read_text()
+        self.assertIn("tlp::win::CloseManagedSsh(managedSshProfile)", main)
+        action = main[main.index("void CMainDlg::OnOpenSsh()"):main.index("void CMainDlg::OnTimer(")]
+        self.assertLess(action.index("RequireManagedSsh(profile)"), action.index("tlp::ResolveApp("))
 
     def test_connection_health_popout_and_integrated_panel_are_wired(self):
         resource = (ROOT / "src/app/TELIPHONES.rc").read_text()

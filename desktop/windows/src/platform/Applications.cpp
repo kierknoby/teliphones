@@ -1,5 +1,6 @@
 #include "Applications.h"
 #include "Win.h"
+#include "Ssh.h"
 
 #include <shellapi.h>
 
@@ -200,6 +201,10 @@ void OpenFreePbx(const Profile& profile, const std::string& sessionId, const Pre
 }
 
 void OpenSsh(const Profile& profile, const std::string& sessionId, const Preferences& preferences) {
+    if (profile.kind == ProfileKind::Administrator) {
+        StartManagedSsh(profile, preferences);
+        return;
+    }
     SshTarget target = SshTargetFor(profile, sessionId);
     std::string executable = ResolveApp(AppKind::Terminal, preferences.terminal, DetectApps(AppKind::Terminal, preferences));
     std::string ssh;

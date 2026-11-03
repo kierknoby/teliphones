@@ -44,7 +44,7 @@ SshTarget SshTargetFor(const Profile& profile, const std::string& sessionId) {
         if (!profile.pairing.ssh) throw Error("SSH was not approved for this workstation. Pair again on the PBX with SSH enabled.");
         if (!IsLinuxUser(profile.sshUser)) throw Error("Set a valid PBX SSH user name for this PBX first.");
         if (!IsProfileId(profile.id)) throw Error("Invalid saved connection.");
-        return {profile.sshUser, address, 22, "teliphones-" + profile.id};
+        return {profile.sshUser, address, profile.pairing.sshPort != 0 ? profile.pairing.sshPort : 22, "teliphones-" + profile.id};
     }
     if (!IsSessionId(sessionId)) throw Error("Invalid support session.");
     return {"root", address, 22222, "teliphones-support-" + sessionId};

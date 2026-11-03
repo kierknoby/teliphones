@@ -113,6 +113,21 @@ jobs:
             throw "Native build layout checks failed with exit code $LASTEXITCODE."
           }
 
+      - name: Restore declared static OpenSSL dependency
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vcpkg = Join-Path $env:VCPKG_INSTALLATION_ROOT 'vcpkg.exe'
+          if (-not (Test-Path -LiteralPath $vcpkg)) {
+            throw 'The runner must provide vcpkg; no bootstrap script will be downloaded.'
+          }
+          Push-Location desktop/windows
+          try {
+            & $vcpkg install --triplet x64-windows-static --disable-metrics
+            if ($LASTEXITCODE -ne 0) { throw 'Declared OpenSSL dependency restore failed.' }
+            & $vcpkg list
+            if ($LASTEXITCODE -ne 0) { throw 'Unable to record installed dependency versions.' }
+          } finally { Pop-Location }
+
       - name: Build TELIPHONES solution (Release x64)
         run: |
           $ErrorActionPreference = 'Stop'
@@ -144,6 +159,25 @@ jobs:
               throw "$name failed with exit code $LASTEXITCODE."
             }
           }
+
+      - name: Build and verify native memory-backed SSH authentication
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vcpkg = $env:VCPKG_INSTALLATION_ROOT
+          $toolchain = Join-Path $vcpkg 'scripts/buildsystems/vcpkg.cmake'
+          $installed = Join-Path $env:GITHUB_WORKSPACE 'desktop/windows/vcpkg_installed'
+          cmake -S desktop/windows -B desktop/windows/build/ssh-native -A x64 "-DCMAKE_TOOLCHAIN_FILE=$toolchain" "-DVCPKG_INSTALLED_DIR=$installed" -DVCPKG_TARGET_TRIPLET=x64-windows-static -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+          if ($LASTEXITCODE -ne 0) { throw 'Native SSH CMake configuration failed.' }
+          cmake --build desktop/windows/build/ssh-native --config Release
+          if ($LASTEXITCODE -ne 0) { throw 'Native SSH compilation failed.' }
+          ctest --test-dir desktop/windows/build/ssh-native -C Release --output-on-failure
+          if ($LASTEXITCODE -ne 0) { throw 'Native portable/cryptographic SSH tests failed.' }
+          $sshd = Join-Path $env:SystemRoot 'System32/OpenSSH/sshd.exe'
+          if (-not (Test-Path -LiteralPath $sshd)) {
+            throw 'Native OpenSSH Server is missing. Provision this runner prerequisite before claiming integration success; no Unix substitute or silent skip is permitted.'
+          }
+          python desktop/windows/tests/ssh_native_check.py desktop/windows/build/ssh-native/Release/ssh_native_host.exe -v
+          if ($LASTEXITCODE -ne 0) { throw 'Native Windows named-pipe/OpenSSH integration failed.' }
 
       - name: Run native appearance, layout and Connection Health window tests
         run: |
@@ -336,6 +370,8 @@ jobs:
           $ErrorActionPreference = 'Stop'
           New-Item -ItemType Directory -Path 'desktop/windows/build/artifact' | Out-Null
           Copy-Item -LiteralPath 'desktop/windows/build/Release/TELIPHONES.exe' -Destination 'desktop/windows/build/artifact/TELIPHONES.exe'
+          Copy-Item -LiteralPath 'desktop/windows/build/Release/TELIPHONES-SSH.exe' -Destination 'desktop/windows/build/artifact/TELIPHONES-SSH.exe'
+          Copy-Item -LiteralPath 'desktop/windows/vcpkg_installed/x64-windows-static/share/openssl/copyright' -Destination 'desktop/windows/build/artifact/OpenSSL-LICENSE.txt'
           Copy-Item -LiteralPath 'desktop/windows/README.md' -Destination 'desktop/windows/build/artifact/README.md'
           Copy-Item -LiteralPath 'desktop/windows/CHANGELOG.md' -Destination 'desktop/windows/build/artifact/CHANGELOG.md'
           Copy-Item -LiteralPath 'LICENSE' -Destination 'desktop/windows/build/artifact/LICENSE'
@@ -348,6 +384,7 @@ jobs:
             runId = $env:GITHUB_RUN_ID
             runAttempt = $env:GITHUB_RUN_ATTEMPT
             sha256 = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+            sshHelperSha256 = (Get-FileHash -LiteralPath 'desktop/windows/build/Release/TELIPHONES-SSH.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
           } | ConvertTo-Json | Set-Content -LiteralPath 'desktop/windows/build/artifact/build-info.json' -Encoding utf8
 
       - name: Upload Windows application
@@ -356,6 +393,8 @@ jobs:
           name: TELIPHONES-Windows-x64
           path: |
             desktop/windows/build/artifact/TELIPHONES.exe
+            desktop/windows/build/artifact/TELIPHONES-SSH.exe
+            desktop/windows/build/artifact/OpenSSL-LICENSE.txt
             desktop/windows/build/artifact/README.md
             desktop/windows/build/artifact/CHANGELOG.md
             desktop/windows/build/artifact/LICENSE

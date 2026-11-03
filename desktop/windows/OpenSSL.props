@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <VcpkgEnabled>false</VcpkgEnabled>
+    <OpenSslRoot Condition="'$(OpenSslRoot)'==''">$(ProjectDir)vcpkg_installed\x64-windows-static</OpenSslRoot>
+    <OpenSslLibrary>$(OpenSslRoot)\lib\libcrypto.lib</OpenSslLibrary>
+    <OpenSslLibrary Condition="'$(Configuration)'=='Debug'">$(OpenSslRoot)\debug\lib\libcrypto.lib</OpenSslLibrary>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <AdditionalIncludeDirectories>$(OpenSslRoot)\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>OPENSSL_USE_STATIC_LIBS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <Link>
+      <AdditionalDependencies>$(OpenSslLibrary);crypt32.lib;ws2_32.lib;advapi32.lib;user32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <Target Name="VerifyOpenSsl" BeforeTargets="ClCompile">
+    <Error Condition="!Exists('$(OpenSslRoot)\include\openssl\evp.h') Or !Exists('$(OpenSslLibrary)')" Text="Restore the OpenSSL manifest dependency with vcpkg install --triplet x64-windows-static from desktop/windows, or supply OpenSslRoot. No key-file fallback is available." />
+  </Target>
+</Project>

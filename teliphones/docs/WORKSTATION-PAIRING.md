@@ -1,4 +1,90 @@
-# TELIPHONES 0.3.2 workstation pairing contract
+# TELIPHONES 0.4.0 workstation pairing contract
+
+## Version 2: managed My PBXs SSH
+
+Broker protocol **5** adds managed SSH alongside the preserved version-1 contract
+below. **Windows 0.7.0 now implements a session-isolated memory agent in source;
+native Windows tests have not run yet.** Its old plaintext session-key path
+remains removed. GUI-only pairing is available without OpenSSH.
+The preserved SSH-capable pairing contract uses `TELIPHONES-PAIR-REQUEST-2:` and schema
+`teliphones-pair-request/2`: the existing four fields plus `ssh_public_key`, a
+canonical Ed25519 OpenSSH public key. An HTTPS/CSRF-authenticated full
+administrator must explicitly provide `ssh_user` when granting SSH.
+GUI-only pairing defaults to the version-1 request without generating SSH keys or
+requiring Windows OpenSSH. The Windows client refuses SSH approval for a web-only
+request rather than falling back to legacy credentials. Existing SSH pairing
+identities and authorisations are retained, not used as disposable session keys.
+
+The matching `TELIPHONES-PAIR-RESPONSE-2:` carries schema
+`teliphones-pair-response/2`, all version-1 response fields plus `ssh_user`,
+`ssh_host_key`, `ssh_ca_key`, integer `ssh_port` and integer `ssh_api_port`.
+Web-only responses use empty strings and zero ports. Managed ports are TCP 8765
+for certificate issuance and `22000 + workstation IPv4 last octet` for SSH.
+Both listeners bind the WireGuard address and device; firewall integration grants
+only that workstation's required ports, never ordinary TCP 22 for new pairings.
+
+`GET /ssh/challenge?workstation_id=<16hex>` returns schema
+`teliphones-ssh-challenge/1`, workstation_id, a 64-hex challenge and Unix
+expires_at (30 seconds). `POST /ssh/certificate` accepts exactly schema
+`teliphones-ssh-request/2`, workstation_id, challenge, session_id, ssh_public_key
+and SSHSIG signature. `session_id` is 32 lowercase hex characters; `ssh_public_key`
+is a canonical Ed25519 **ephemeral session** public key distinct from the
+persistent enrolled SSH identity. No private-key field is accepted.
+The signed bytes are
+`TELIPHONES-SSH-REQUEST-2\n<id>\n<challenge>\n<session_id>\n<ssh_public_key>\n`;
+the OpenSSH signature namespace is `teliphones-ssh`. Challenges are bounded,
+one-use and source/identity-bound. The enrolled SSH key must verify the signature.
+WireGuard membership alone is never sufficient. Old request/1 issuance is
+rejected. A bounded in-memory ledger rejects duplicate live session IDs or public
+keys; it is not a durable uniqueness ledger across broker restarts.
+
+Success has schema `teliphones-ssh-certificate/2`, workstation_id, session_id,
+ssh_public_key, certificate, expires_at, ssh_user, ssh_host_key, ssh_ca_key and
+ssh_port. Certificates bind the **session** public key, source `/32` and principal
+`tlp-eph-<id>-<first16hex SHA256(canonical enrolled identity public-key string)>`,
+with key ID `ws-<id>/<session_id>`, PTY permission only and validity capped at 300
+seconds and the original pairing expiry. The portable client parser checks these
+bindings structurally; the separate production OpenSSL verifier checks the
+certificate's digital signature before launching Windows OpenSSH. The Windows
+client signs once through its process-bound memory agent and immediately destroys
+the session key; no reusable-key preflight is performed. Native interoperability
+remains unverified. Genuine Linux OpenSSH rejects tampered signatures.
+Errors are explicit JSON `{ok:false,error:string}`.
+
+Recognised legacy principal files migrate only after new configuration validation
+and verified owned-unit termination. The changed principal rejects previously
+issued persistent-identity certificates without destroying CA, host or workstation
+identity. Unknown trust files fail closed. Actual systemd migration remains a
+disposable-host validation gate.
+
+Each listener has a separately owned systemd/cgroup service. Revocation and
+expiry kill only that service's sessions and verify cleanup before dropping
+recovery metadata. A certificate's expiry prevents new logins; established
+sessions are bounded by the pairing's administrator-approved lifetime.
+Unsupported existing account/root/multi-factor/forced-command policies fail
+closed. System SSH configuration and unrelated sessions are untouched.
+The system policy must be identical when evaluated at port 22 and the actual
+managed port for the approved user, source and PBX address; context-dependent
+differences fail closed. Generated configuration is checked with `sshd -T` at
+the actual managed port before installation. Owned CA/principal trust replaces
+ordinary authorized keys, while supported root/PAM/algorithm/revoked-key policy
+is retained. Custom PAM service names and external principal restrictions are
+unsupported. Actual PAM/account and service lifecycle behaviour is a test-host
+release gate, not established by these checks.
+
+Version-1 pairings retain their original network permissions. New Windows
+requires explicit SSH-capable pairing before adding managed SSH; host/CA rotation
+also requires re-pairing.
+PuTTY is unsupported for managed My PBXs certificates. Remote Support is
+independent and unchanged. Missing SSH prerequisites do not block web-only PBX
+pairing. Native Windows and real systemd/FreePBX lifecycle validation remain
+outstanding; namespace tests substitute the service supervisor. Linux tmpfs test
+keys are not evidence of memory-backed Windows credentials or native lifecycle
+destruction. The full key inventory and outstanding gates are in
+`docs/SSH-KEY-MANAGEMENT-PROPOSAL.md` at the source repository root; that document
+is not included in the module-only package.
+
+## Preserved version-1 contract
 
 Workstation pairing is for an administrator's own Windows workstation. It is separate from the customer-authorised Remote Support session workflow. The FreePBX module and root broker remain authoritative for peer enrollment, allowed traffic, expiry and revocation.
 

@@ -42,6 +42,7 @@ using DetectedApps = std::map<std::string, std::string>;
 bool IsExpectedExecutable(const AppInfo& app, const std::string& path);
 // Stricter: safe to embed inside a PowerShell or Command Prompt command (only the OpenSSH client path is embedded).
 bool IsShellSafePath(const std::string& path);
+bool IsShellSafeFilePath(const std::string& path);
 // Characters that cannot alter PowerShell, Command Prompt or Windows Terminal parsing.
 bool IsShellSafeToken(const std::string& text);
 
@@ -102,6 +103,8 @@ LaunchPlan BrowserLaunch(const std::string& browserId, const std::string& execut
 
 // sshExecutable is the Windows OpenSSH client; it is required for every terminal except PuTTY.
 LaunchPlan TerminalLaunch(const std::string& terminalId, const std::string& terminalExecutable, const std::string& sshExecutable,
-                          const SshTarget& target);
+                          const SshTarget& target, const std::string& configuration = "");
+LaunchPlan ManagedTerminalLaunch(const std::string& terminalId, const std::string& terminalExecutable,
+                                 const std::string& helper, const std::string& session);
 
 }  // namespace tlp

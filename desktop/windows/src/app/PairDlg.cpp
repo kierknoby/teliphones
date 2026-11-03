@@ -9,6 +9,7 @@
 #include "../core/Pairing.h"
 #include "../core/Validation.h"
 #include "../platform/Services.h"
+#include "../platform/Ssh.h"
 #include "../platform/Win.h"
 #include "resource.h"
 
@@ -91,6 +92,7 @@ BOOL CPairDlg::OnInitDialog() {
     CAppearanceDialog::OnInitDialog();
     SetDlgItemText(IDC_PAIR_WORKSTATION, tlp::win::Widen(ComputerName()).c_str());
     SetDlgItemText(IDC_PAIR_SSHUSER, L"");
+    CheckDlgButton(IDC_PAIR_SSH_CAPABILITY, BST_UNCHECKED);
     SetDlgItemText(IDC_PAIR_REQUEST, L"Generate a key and pairing request first.");
     SetDlgItemText(IDC_PAIR_FINGERPRINT, L"");
     return TRUE;
@@ -100,6 +102,7 @@ void CPairDlg::OnGenerate() {
     try {
         if (!DiscardKey()) return;
         publicKey_.clear();
+        sshPublicKey_.clear();
         nonce_.clear();
         request_.clear();
         SetDlgItemText(IDC_PAIR_REQUEST, L"");
@@ -120,9 +123,14 @@ void CPairDlg::OnGenerate() {
         profile.workstationName = name;
         profile.createdAt = tlp::win::UnixNow();
         nonce_ = tlp::MakeNonce(tlp::win::RandomBytes(16));
-        request_ = tlp::BuildPairRequest(name, publicKey_, nonce_);
         tlp::win::SavePrivateKey(tlp::CredentialTargetFor(profile), privateKey);
         keyStored_ = true;
+        sshKeyRequested_ = IsDlgButtonChecked(IDC_PAIR_SSH_CAPABILITY) == BST_CHECKED;
+        const auto request = tlp::CreatePairRequest(name, publicKey_, nonce_,
+            sshKeyRequested_,
+            [this]() { return tlp::win::GenerateWorkstationSshIdentity(profile); });
+        sshPublicKey_ = request.sshPublicKey;
+        request_ = request.code;
         SetEdit(this, IDC_PAIR_REQUEST, request_);
         SetDlgItemText(IDC_PAIR_FINGERPRINT, tlp::win::Widen("Workstation public-key fingerprint: " + tlp::KeyFingerprint(publicKey_)).c_str());
         tlp::ui::ShowMessage(L"Copy this pairing request and paste it into the Windows workstations section of the TELIPHONES page on your PBX. Then copy the pairing response back into this dialog.", MB_ICONINFORMATION);
@@ -146,13 +154,18 @@ void CPairDlg::OnCopy() {
 
 void CPairDlg::OnOK() {
     try {
-        if (!keyStored_) throw tlp::Error("Generate a WireGuard key and pairing request first.");
+        if (!keyStored_ || request_.empty()) throw tlp::Error("Generate a WireGuard key and pairing request first.");
         std::string responseText = GetEdit(this, IDC_PAIR_RESPONSE);
         if (responseText.empty()) throw tlp::Error("Paste the pairing response from the TELIPHONES page on your PBX.");
-        tlp::PairResponse pairing = tlp::ParsePairResponse(responseText, nonce_, publicKey_);
-        std::string sshUser = GetEdit(this, IDC_PAIR_SSHUSER);
+        tlp::PairResponse pairing = tlp::ParsePairResponse(responseText, nonce_, publicKey_, sshPublicKey_);
+        if (pairing.ssh && sshPublicKey_.empty())
+            throw tlp::Error("This request is web-only. Leave SSH disabled on the PBX, or request SSH in a new pairing request.");
+        std::string sshUser = pairing.sshUser;
+        SetEdit(this, IDC_PAIR_SSHUSER, sshUser);
+        if (pairing.ssh && pairing.sshPort == 0)
+            throw tlp::Error("The PBX returned legacy SSH permission. Upgrade the PBX TELIPHONES broker and approve this request again.");
         if (pairing.ssh && !tlp::IsLinuxUser(sshUser)) {
-            throw tlp::Error("This pairing allows SSH. Enter the Linux account name that you are authorised to use.");
+            throw tlp::Error("The PBX must supply the explicitly approved Linux SSH account.");
         }
         if (!pairing.ssh && !sshUser.empty() && !tlp::IsLinuxUser(sshUser)) {
             throw tlp::Error("The SSH account name is invalid.");
@@ -171,12 +184,17 @@ bool CPairDlg::DiscardKey() {
     if (!keyStored_) return true;
     try {
         tlp::win::DeletePrivateKey(tlp::CredentialTargetFor(profile));
+        if (sshKeyRequested_) {
+            tlp::win::DeleteSshPrivateKey(profile);
+            tlp::win::RemoveSshRuntime(profile);
+        }
     } catch (const std::exception& e) {
         tlp::ui::ShowMessage((std::wstring(L"The unused workstation key could not be removed from Windows Credential Manager: ") + tlp::win::Widen(e.what())).c_str(),
                       MB_ICONERROR);
         return false;
     }
     keyStored_ = false;
+    sshKeyRequested_ = false;
     return true;
 }
 

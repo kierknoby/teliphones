@@ -28,6 +28,30 @@ $assert($result['dispatched'] && $recorder->sent === [['action' => 'pair', 'requ
     'listen_port' => '51821', 'mode' => 'temporary', 'minutes' => '60', 'ssh' => '1']], 'Pairing must forward exactly its own allowlisted fields.');
 $assert($result['notice']['pairing_response'] === $recorder->reply['pairing_response'], 'Pairing response must reach the page.');
 
+$modern = $operational;
+$modern['status']['protocol'] = 5;
+$modern['status']['workstations']['ssh_ready'] = true;
+$managedPost = ['request' => 'TELIPHONES-PAIR-REQUEST-2:abc', 'ssh_user' => 'root'] + $post;
+$recorder->sent = [];
+$result = WebSupport::handleAction($recorder, $managedPost, 'known', $modern, $https);
+$assert($result['dispatched'] && count($recorder->sent) === 1 && $recorder->sent[0]['ssh_user'] === 'root'
+    && !isset($recorder->sent[0]['private_key']), 'Managed SSH must forward an explicitly approved account, never secret or unrelated fields.');
+foreach (['', '-root', "root\n", 'administrator;id', ['root']] as $invalidUser) {
+    $recorder->sent = [];
+    $result = WebSupport::handleAction($recorder, ['ssh_user' => $invalidUser] + $managedPost, 'known', $modern, $https);
+    $assert(!$result['dispatched'] && $recorder->sent === [], 'Missing or invalid account approval must fail before broker dispatch.');
+}
+foreach ([$operational, ['status' => ['workstations' => ['ssh_ready' => false] + $modern['status']['workstations']] + $modern['status']] + $modern] as $unready) {
+    $recorder->sent = [];
+    $result = WebSupport::handleAction($recorder, $managedPost, 'known', $unready, $https);
+    $assert(!$result['dispatched'] && $recorder->sent === [], 'An old broker or missing SSH readiness must not grant managed SSH.');
+}
+$noSsh = $modern;
+$noSsh['status']['workstations']['ssh_ready'] = false;
+$result = WebSupport::handleAction($recorder, ['ssh' => '0', 'ssh_user' => ''] + $managedPost, 'known', $noSsh, $https);
+$assert($result['dispatched'], 'Missing SSH prerequisites must not disable web-only pairing.');
+$assert(WebSupport::validPairingResponse('TELIPHONES-PAIR-RESPONSE-2:' . str_repeat('a', 200)), 'Version-2 pairing responses must survive the browser allowlist.');
+
 $recorder->sent = [];
 $result = WebSupport::handleAction($recorder, ['token' => 'known', 'action' => 'unpair', 'workstation_id' => '0123456789abcdef', 'request' => 'x'], 'known', $operational, $https);
 $assert($recorder->sent === [['action' => 'unpair', 'workstation_id' => '0123456789abcdef']], 'Revocation must forward only the workstation identifier.');
@@ -149,7 +173,7 @@ $assert(strpos($html, '<code>nft</code> CLI') !== false && strpos($html, '<code>
     && strpos($html, 'this page does not install nftables') !== false && strpos($html, 'not zero-exposure or truly fail-closed') !== false,
     'GUI must explain essential nft userspace tools, unnecessary service activation, administrator repair and external-flush exposure limits.');
 $assert(strpos($html, '<h3 id="teliphones-workstations">Windows workstations</h3>') !== false && strpos($html, '>ADMIN-PC<br><small>Diagnostic ID: <code>ws-0123456789abcdef</code></small></td>') !== false
-    && strpos($html, 'Web interface and SSH') !== false && strpos($html, 'SHA256:abcdefghijklmnop') !== false
+    && strpos($html, 'Web interface and legacy SSH') !== false && strpos($html, 'SHA256:abcdefghijklmnop') !== false
     && strpos($html, 'LEAKED-PUBLIC-KEY') === false && strpos($html, '../../x') === false, 'Paired workstations must be listed without keys.');
 $assert(strpos($html, 'Workstation diagnostics') !== false && strpos($html, 'does not contain Windows-local attempts') !== false,
     'Administrator page must explain and expose bounded server-side diagnostics without fabricating Windows events.');

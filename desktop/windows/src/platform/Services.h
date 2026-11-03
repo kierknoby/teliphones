@@ -16,6 +16,7 @@ void SavePrivateKey(const std::string& target, const std::string& privateKey);
 // Empty when no key is stored for the target.
 std::string LoadPrivateKey(const std::string& target);
 void DeletePrivateKey(const std::string& target);
+void DeleteSshPrivateKey(const Profile& profile);
 
 std::vector<Profile> LoadProfiles();
 void SaveProfiles(const std::vector<Profile>& profiles);

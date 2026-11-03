@@ -6,6 +6,7 @@
 #include "Win.h"
 
 #include <wincred.h>
+#include <wincrypt.h>
 #include <iphlpapi.h>
 #include <netioapi.h>
 
@@ -24,6 +25,13 @@ namespace {
 
 std::wstring profileFile() { return EnsureDirectory(KnownFolder(FOLDERID_RoamingAppData) + L"\\TELIPHONES") + L"\\profiles.json"; }
 std::wstring healthPreferencesFile() { return EnsureDirectory(KnownFolder(FOLDERID_LocalAppData) + L"\\TELIPHONES") + L"\\connection-health.json"; }
+
+std::wstring sshSecretFile(const Profile& profile) {
+    if (!IsProfileId(profile.id)) throw Error("Invalid SSH profile identity.");
+    const std::wstring sddl = L"D:P(A;;FA;;;SY)(A;;FA;;;" + Widen(CurrentUserSid()) + L")";
+    return EnsureDirectory(KnownFolder(FOLDERID_LocalAppData) + L"\\TELIPHONES\\SSH", sddl.c_str()) +
+           L"\\" + Widen(profile.id) + L".dpapi";
+}
 
 SessionDiagnostics& sessionDiagnostics() {
     static SessionDiagnostics diagnostics(std::filesystem::path(
@@ -95,6 +103,11 @@ void DeletePrivateKey(const std::string& target) {
     if (!CredDeleteW(Widen(target).c_str(), CRED_TYPE_GENERIC, 0) && GetLastError() != ERROR_NOT_FOUND) {
         ThrowLastError("Unable to remove the WireGuard key from Windows Credential Manager");
     }
+}
+
+void DeleteSshPrivateKey(const Profile& profile) {
+    if (!DeleteFileW(sshSecretFile(profile).c_str()) && GetLastError() != ERROR_FILE_NOT_FOUND)
+        ThrowLastError("Unable to remove the protected SSH private key");
 }
 
 std::vector<Profile> LoadProfiles() {

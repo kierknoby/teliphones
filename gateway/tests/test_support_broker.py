@@ -3,6 +3,7 @@ import json
 import os
 import shlex
 import threading
+import base64
 from pathlib import Path
 import tempfile
 import unittest
@@ -254,7 +255,8 @@ class SupportBrokerTests(unittest.TestCase):
         self.assertIn("operation", status)
         self.assertIsInstance(status["server_time"], int)
         web_support = (Path(broker_module.__file__).parent / "WebSupport.php").read_text()
-        self.assertIn("public const DIAGNOSTICS_PROTOCOL = %d;" % broker_module.PROTOCOL, web_support)
+        self.assertIn("public const DIAGNOSTICS_PROTOCOL = 4;", web_support)
+        self.assertIn("public const SSH_PROTOCOL = %d;" % broker_module.PROTOCOL, web_support)
 
     def test_status_never_starts_an_operation(self):
         self.broker.command = lambda arguments, **kwargs: self.calls.append(arguments)
@@ -533,6 +535,41 @@ class WorkstationPairingTests(unittest.TestCase):
             with self.assertRaises(broker_module.BrokerError):
                 broker_module.validate({"action": "unpair", "workstation_id": workstation_id})
 
+    def test_managed_ssh_has_explicit_account_and_no_system_ssh_permission(self):
+        blob = b"\0\0\0\x0bssh-ed25519\0\0\0\x20" + bytes(range(32))
+        key = "ssh-ed25519 " + base64.b64encode(blob).decode()
+        request = broker_module.parse_pair_request(pair_request())
+        request.update(schema="teliphones-pair-request/2", ssh_public_key=key)
+        code = broker_module.PAIR_REQUEST_V2 + broker_module.b64url_encode(json.dumps(request).encode())
+        action = {"action": "pair", "request": code, "endpoint_host": "pbx.example.net", "listen_port": "51821",
+                  "mode": "temporary", "minutes": "60", "ssh": "1"}
+        for user in ("", "-root", "root\n"):
+            with self.assertRaises(broker_module.BrokerError):
+                broker_module.validate({**action, "ssh_user": user})
+        with patch.object(self.broker.ssh, "initialise", return_value=key), \
+                patch.object(self.broker.ssh, "host_key", return_value=key), \
+                patch.object(self.broker.ssh, "account_policy", return_value={}), \
+                patch.object(self.broker.ssh, "reconcile") as reconcile:
+            response = self.broker.dispatch({**action, "ssh_user": "root"}, 1000)
+            self.assertTrue(response["ok"])
+            encoded = response["pairing_response"].removeprefix(broker_module.PAIR_RESPONSE_V2)
+            paired = json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)))
+            self.assertEqual(paired["ssh_user"], "root")
+            self.assertEqual(paired["ssh_port"], 22002)
+            self.assertEqual(paired["ssh_api_port"], 8765)
+            self.assertEqual(paired["ssh_ca_key"], key)
+            self.assertEqual(reconcile.call_args[0][0]["workstations"][0]["ssh_public_key"], key)
+            ports = [match["match"]["right"] for entry in self.net.table["nftables"] if "rule" in entry
+                     for match in entry["rule"]["expr"]
+                     if match.get("match", {}).get("left") == {"payload": {"protocol": "tcp", "field": "dport"}}]
+            self.assertIn(8765, ports)
+            self.assertIn(22002, ports)
+            self.assertNotIn(22, ports)
+            with patch.object(self.broker.ssh, "reconcile", side_effect=broker_module.ssh.SshError("cleanup not verified")):
+                with self.assertRaisesRegex(broker_module.BrokerError, "cleanup"):
+                    self.broker.dispatch({"action": "unpair", "workstation_id": "all"}, 1000)
+            self.assertEqual(len(broker_module.read_json(self.state / "workstations.json")["workstations"]), 1)
+
     def test_pairing_applies_port_policy_before_admitting_the_peer(self):
         result, response = self.pair(ssh="1")
         self.assertTrue(result["ok"])
@@ -664,10 +701,11 @@ class WorkstationPairingTests(unittest.TestCase):
     def test_status_reports_workstations_without_keys(self):
         self.pair(mode="temporary", ssh="1")
         status = self.broker.status()["workstations"]
-        self.assertEqual(set(status), {"ready", "requirements", "error", "listen_port", "firewall_integration", "pbx_address", "items"})
+        self.assertEqual(set(status), {"ready", "requirements", "error", "listen_port", "firewall_integration", "pbx_address", "items", "ssh_ready", "ssh_error"})
         self.assertEqual(status["firewall_integration"]["state"], "not-detected")
         item = status["items"][0]
-        self.assertEqual(set(item), {"id", "name", "address", "mode", "ssh", "created_at", "expires_at", "fingerprint", "last_handshake"})
+        self.assertEqual(set(item), {"id", "name", "address", "mode", "ssh", "created_at", "expires_at", "fingerprint", "last_handshake",
+                                     "ssh_user", "ssh_port", "ssh_managed"})
         self.assertTrue(item["fingerprint"].startswith("SHA256:"))
         self.assertEqual(item["last_handshake"], 0)
         self.assertNotIn("A" * 42, json.dumps(status))
@@ -677,7 +715,7 @@ class WorkstationPairingTests(unittest.TestCase):
         self.net.handshakes["A" * 42 + "E="] = 1790000000
         self.net.calls = []
         status = self.broker.status()
-        self.assertEqual(status["protocol"], 4)
+        self.assertEqual(status["protocol"], 5)
         self.assertEqual(status["workstations"]["items"][0]["last_handshake"], 1790000000)
         self.assertEqual(self.net.calls, [("wg", ("show", broker_module.WORKSTATION_IFACE, "latest-handshakes")),
                                           ("wg", ("show", broker_module.WORKSTATION_IFACE, "transfer"))])
@@ -690,7 +728,7 @@ class WorkstationPairingTests(unittest.TestCase):
         self.assertNotIn("disconnected", json.dumps(events).lower())
         self.assertEqual({item["diagnostic_id"] for item in events}, {diagnostic_id})
         exported = self.broker.dispatch({"action": "diagnostics", "diagnostic_id": diagnostic_id}, 1000)
-        self.assertEqual(exported["component_version"], "0.3.2")
+        self.assertEqual(exported["component_version"], "0.4.0")
         self.assertEqual(exported["diagnostic_id"], diagnostic_id)
         self.assertFalse(any("public_key" in item or "token" in json.dumps(item).lower() for item in exported["events"]))
 
@@ -704,7 +742,7 @@ class WorkstationPairingTests(unittest.TestCase):
         self.assertIn("interface.established", names)
         self.assertIn("peer.admitted", names)
         self.assertIn("peer.observation", names)
-        self.assertTrue(all(event["source"] == "pbx" and event["component_version"] == "0.3.2" for event in events))
+        self.assertTrue(all(event["source"] == "pbx" and event["component_version"] == "0.4.0" for event in events))
         self.broker.dispatch({"action": "unpair", "workstation_id": response["workstation_id"]}, 1000)
         events = self.broker.diagnostics.read(diagnostic_id)
         self.assertEqual(events[-1]["event"], "pairing.revoked")

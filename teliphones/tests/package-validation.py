@@ -39,10 +39,10 @@ class PackageTests(unittest.TestCase):
                 for name, source in expected.items():
                     self.assertEqual((Path(directory) / name).read_bytes(), source.read_bytes(), name)
                 metadata = ET.parse(Path(directory) / "teliphones/module.xml").getroot()
-                self.assertEqual(metadata.findtext("version"), "0.3.5")
+                self.assertEqual(metadata.findtext("version"), "0.4.0")
                 self.assertEqual(metadata.findtext("rawname"), "teliphones")
                 self.assertEqual(metadata.findtext("category"), "Connectivity")
-                for name in ("WebSupport.php", "views/support.php", "views/disclaimer.php", "support_broker.py", "assets/js/teliphones.js", "install.php"):
+                for name in ("WebSupport.php", "views/support.php", "views/disclaimer.php", "support_broker.py", "ssh_authority.py", "assets/js/teliphones.js", "install.php"):
                     self.assertIn("teliphones/" + name, expected)
                 self.assertIn("def pair(", (Path(directory) / "teliphones/support_broker.py").read_text())
                 self.assertIn("Windows workstations", (Path(directory) / "teliphones/views/support.php").read_text())
@@ -51,11 +51,12 @@ class PackageTests(unittest.TestCase):
                                 "def start_monitor(", "def uninstall_workstations(", "def policy_equal(",
                                 "TELIPHONES workstation integration v1", 'FREEPBX_HOOK = "fpbxfirewall"',
                                 'FAIL2BAN_PREFIXES = ("fail2ban-", "f2b-")', "def reconcile_integration(",
-                                "class DiagnosticLog", "PROTOCOL = 4"):
+                                "class DiagnosticLog", "PROTOCOL = 5"):
                     self.assertIn(feature, broker)
                 bootstrap = (Path(directory) / "teliphones/BrokerBootstrap.php").read_text()
                 self.assertIn("copy($moduleDir . '/support_broker.py', $brokerFile)", bootstrap)
-                self.assertIn("systemctl restart teliphones-broker.service", bootstrap)
+                self.assertIn("'restart teliphones-broker.service'", bootstrap)
+                self.assertIn("Previous broker files restored", bootstrap)
                 self.assertIn("BrokerBootstrap::", (Path(directory) / "teliphones/uninstall.php").read_text())
 
 

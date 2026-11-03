@@ -53,6 +53,9 @@
     <ResourceCompile><AdditionalIncludeDirectories>$(ProjectDir)src\app;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories></ResourceCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="src\core\SshCrypto.cpp" />
+    <ClCompile Include="src\platform\SshAgent.cpp" />
+    <ClCompile Include="src\platform\SshSession.cpp" />
     <ClCompile Include="src\app\TeliphonesApp.cpp" />
     <ClCompile Include="src\app\Appearance.cpp" />
     <ClCompile Include="src\app\MainDlg.cpp" />
@@ -77,10 +80,13 @@
     <ClCompile Include="src\platform\Win.cpp" />
     <ClCompile Include="src\platform\WireGuard.cpp" />
     <ClCompile Include="src\platform\Services.cpp" />
+    <ClCompile Include="src\platform\Ssh.cpp" />
     <ClCompile Include="src\platform\Applications.cpp" />
     <ClCompile Include="src\platform\WireGuardInstaller.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="src\core\SshCrypto.h" />
+    <ClInclude Include="src\platform\SshAgent.h" />
     <ClInclude Include="src\app\framework.h" />
     <ClInclude Include="src\app\Appearance.h" />
     <ClInclude Include="src\core\Appearance.h" />
@@ -112,9 +118,17 @@
     <ClInclude Include="src\platform\Win.h" />
     <ClInclude Include="src\platform\WireGuard.h" />
     <ClInclude Include="src\platform\Services.h" />
+    <ClInclude Include="src\platform\Ssh.h" />
     <ClInclude Include="src\platform\Applications.h" />
     <ClInclude Include="src\platform\WireGuardInstaller.h" />
   </ItemGroup>
   <ItemGroup><ResourceCompile Include="src\app\TELIPHONES.rc" /></ItemGroup>
+  <Import Project="OpenSSL.props" />
+  <ItemGroup>
+    <ProjectReference Include="SshConsole.vcxproj">
+      <Project>{FF47881E-AB14-4F8C-9212-15AAB265FA09}</Project>
+      <LinkLibraryDependencies>false</LinkLibraryDependencies>
+    </ProjectReference>
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

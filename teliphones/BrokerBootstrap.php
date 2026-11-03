@@ -18,7 +18,8 @@ class BrokerBootstrap
     public const SOCKET = '/run/teliphones/control.sock';
 
     /**
-     * Verified on Debian 12 / FreePBX 17. Must be run from an existing root shell.
+     * For Debian 12 / FreePBX 17, from an existing root shell.
+     * The 0.4.0 upgrade/rollback lifecycle still requires disposable-host validation.
      * README.md must contain this text verbatim (enforced by tests/web-support.php).
      */
     public const ROOT_BOOTSTRAP_SCRIPT = <<<'SCRIPT'
@@ -31,6 +32,7 @@ DEST=/root/teliphones-bootstrap
 test "$(id -u)" -eq 0
 test -f "$SRC/install.php"
 test -f "$SRC/support_broker.py"
+test -f "$SRC/ssh_authority.py"
 
 mkdir -p "$DEST"
 cp -a "$SRC"/. "$DEST"/
@@ -54,7 +56,7 @@ echo "TELIPHONES broker is ready."
 SCRIPT;
 
     /** Shared by the GUI and README; tests require both to contain this text verbatim. */
-    public const UPGRADE_NOTE = 'A Module Admin upgrade updates the FreePBX module files but does not necessarily update the separately installed, root-owned broker (`/usr/local/lib/teliphones-broker/support_broker.py`), because Module Admin runs as the web service account. After every TELIPHONES upgrade, confirm that no support session is active (as root: `fwconsole teliphones status`), then rerun the root bootstrap procedure from an existing root shell and refresh Connectivity > TELIPHONES. TELIPHONES 0.3.1 keeps broker protocol 3 and adds a hookless nftables ownership chain that remains visible when Debian 12 nftables 1.0.6 drops table comments. TELIPHONES 0.3.2 adds bounded, administrator-only workstation diagnostics and broker protocol 4 without changing the existing firewall or WireGuard policy. Module Admin does not update the root-owned broker automatically; until the bootstrap copies and restarts the current broker, workstation diagnostics may be unavailable. Disconnect Windows tunnels before the bootstrap; valid pairings are restored when the broker restarts, without extending temporary expiry.';
+    public const UPGRADE_NOTE = 'A Module Admin upgrade updates the FreePBX module files but does not necessarily update the separately installed, root-owned broker. TELIPHONES 0.4.0 requires broker protocol 5 and both `/usr/local/lib/teliphones-broker/support_broker.py` and `/usr/local/lib/teliphones-broker/ssh_authority.py`; an older broker or a missing SSH helper cannot provide managed SSH. Confirm that no support session is active (as root: `fwconsole teliphones status`), disconnect Windows tunnels and expect existing TELIPHONES-managed SSH sessions to terminate, then rerun the root bootstrap from an existing root shell. The bootstrap retains the previous helper files and broker unit, validates the installed helpers, and enables and restarts `teliphones-broker.service`. Verify that service is active, `/run/teliphones/control.sock` exists, and the refreshed Connectivity > TELIPHONES page reports the current broker and managed SSH readiness. On failure, rollback attempts to restore prior files and the previous enabled/active state; an incomplete rollback is an error requiring recovery from the existing root shell. Do not restart, reconfigure or disable the normal system SSH service or change administrator accounts. Valid pairings retain their original deadlines; legacy SSH pairings need explicit re-pairing for managed SSH.';
 
     public const RECONCILE_UNIT_CONTENTS = <<<'UNIT'
 [Unit]
@@ -149,7 +151,7 @@ UNIT;
         @chmod($dir, 0700);
         $config = self::CONFIG;
         if (!file_exists($config)) {
-            @file_put_contents($config, "; TELIPHONES 0.3.2 development configuration\n; Support transport is temporary and session-scoped.\n; On-PBX uses local ephemeral WireGuard. On-net/Off-net require an external Connect implementation.\n");
+            @file_put_contents($config, "; TELIPHONES 0.4.0 development configuration\n; Support transport is temporary and session-scoped.\n; On-PBX uses local ephemeral WireGuard. On-net/Off-net require an external Connect implementation.\n");
             @chmod($config, 0600);
         }
 
@@ -193,19 +195,65 @@ UNIT;
             throw new \RuntimeException('TELIPHONES broker directory must be root-owned and not writable by group or other users.');
         }
         $brokerFile = self::BROKER_FILE;
-        if (is_link($brokerFile) || !copy($moduleDir . '/support_broker.py', $brokerFile) || !chown($brokerFile, 0) || !chmod($brokerFile, 0600)) {
-            throw new \RuntimeException('Unable to install the root-owned TELIPHONES broker.');
-        }
+        $sshHelper = $brokerDirectory . '/ssh_authority.py';
         $brokerService = self::BROKER_UNIT;
-        if (is_link($brokerService) || file_put_contents($brokerService, self::BROKER_UNIT_CONTENTS . "\n", LOCK_EX) === false || !chown($brokerService, 0) || !chmod($brokerService, 0644)) {
-            throw new \RuntimeException('Unable to install the TELIPHONES broker service.');
+        $previous = [];
+        foreach ([$brokerFile, $sshHelper, $brokerService] as $path) {
+            if (is_link($path) || (file_exists($path) && !self::trustedBroker($path))) {
+                throw new \RuntimeException('Existing TELIPHONES broker artifact is not safely root-owned.');
+            }
+            $previous[$path] = file_exists($path) ? file_get_contents($path) : null;
+            if ($previous[$path] === false) throw new \RuntimeException('Unable to retain the previous broker for rollback.');
         }
-        exec('/usr/bin/systemctl daemon-reload 2>&1', $brokerOutput, $brokerResult);
-        if ($brokerResult !== 0) throw new \RuntimeException('Unable to reload systemd for TELIPHONES broker.');
-        exec('/usr/bin/systemctl enable teliphones-broker.service 2>&1', $brokerOutput, $brokerResult);
-        if ($brokerResult !== 0) throw new \RuntimeException('Unable to enable TELIPHONES broker.');
-        exec('/usr/bin/systemctl restart teliphones-broker.service 2>&1', $brokerOutput, $brokerResult);
-        if ($brokerResult !== 0) throw new \RuntimeException('Unable to start TELIPHONES broker.');
+        exec('/usr/bin/systemctl is-active --quiet teliphones-broker.service', $unused, $activeResult);
+        $wasActive = $activeResult === 0;
+        exec('/usr/bin/systemctl is-enabled --quiet teliphones-broker.service', $unused, $enabledResult);
+        $wasEnabled = $enabledResult === 0;
+        try {
+            if ($wasActive) {
+                exec('/usr/bin/systemctl stop teliphones-broker.service 2>&1', $unused, $stopResult);
+                if ($stopResult !== 0) throw new \RuntimeException('Unable to stop the existing TELIPHONES broker safely.');
+            }
+            if (!copy($moduleDir . '/support_broker.py', $brokerFile) || !chown($brokerFile, 0) || !chmod($brokerFile, 0600)
+                || !copy($moduleDir . '/ssh_authority.py', $sshHelper) || !chown($sshHelper, 0) || !chmod($sshHelper, 0600)) {
+                throw new \RuntimeException('Unable to install the root-owned TELIPHONES broker and SSH authority.');
+            }
+            $check = 'import runpy,sys; runpy.run_path(sys.argv[1], run_name="teliphones_validation")';
+            exec('/usr/bin/python3 -B -I -c ' . escapeshellarg($check) . ' ' . escapeshellarg($brokerFile) . ' 2>&1', $unused, $checkResult);
+            if ($checkResult !== 0) throw new \RuntimeException('The installed TELIPHONES broker failed import validation.');
+            if (file_put_contents($brokerService, self::BROKER_UNIT_CONTENTS . "\n", LOCK_EX) === false
+                || !chown($brokerService, 0) || !chmod($brokerService, 0644)) {
+                throw new \RuntimeException('Unable to install the TELIPHONES broker service.');
+            }
+            foreach (['daemon-reload', 'enable teliphones-broker.service', 'restart teliphones-broker.service',
+                'is-active --quiet teliphones-broker.service'] as $operation) {
+                exec('/usr/bin/systemctl ' . $operation . ' 2>&1', $unused, $result);
+                if ($result !== 0) throw new \RuntimeException('TELIPHONES broker activation failed: ' . $operation);
+            }
+        } catch (\Throwable $error) {
+            exec('/usr/bin/systemctl stop teliphones-broker.service 2>&1', $unused, $stopResult);
+            $restored = $stopResult === 0 || !$wasActive;
+            if (!$wasEnabled) {
+                exec('/usr/bin/systemctl disable teliphones-broker.service 2>&1', $unused, $disableResult);
+                $restored = $restored && $disableResult === 0;
+            }
+            foreach ($previous as $path => $content) {
+                if ($content === null) {
+                    if (file_exists($path) && !unlink($path)) $restored = false;
+                } elseif (file_put_contents($path, $content, LOCK_EX) === false || !chown($path, 0)
+                    || !chmod($path, $path === $brokerService ? 0644 : 0600)) {
+                    $restored = false;
+                }
+            }
+            exec('/usr/bin/systemctl daemon-reload 2>&1', $unused, $reloadResult);
+            if ($wasActive && $restored && $reloadResult === 0) {
+                exec('/usr/bin/systemctl restart teliphones-broker.service 2>&1', $unused, $restoreResult);
+                $restored = $restoreResult === 0;
+            }
+            throw new \RuntimeException($error->getMessage() . ($restored && $reloadResult === 0
+                ? ' Previous broker files restored; system SSH and administrator accounts were not changed.'
+                : ' Broker rollback is incomplete: repair from an existing root shell; system SSH was not changed.'), 0, $error);
+        }
         return true;
     }
 }

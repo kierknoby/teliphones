@@ -26,7 +26,7 @@
     <ClCompile Include="src\app\Appearance.cpp" />
     <ClCompile Include="src\app\DesktopLayout.cpp" />
     <ClCompile Include="src\platform\Win.cpp" />
-    <ClCompile Include="src\core\*.cpp" />
+    <ClCompile Include="src\core\*.cpp" Exclude="src\core\SshCrypto.cpp" />
     <ResourceCompile Include="src\app\TELIPHONES.rc" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

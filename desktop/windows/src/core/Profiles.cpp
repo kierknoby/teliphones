@@ -58,15 +58,22 @@ SupportGrant grantFromJson(const Value& value) {
 
 Value pairingToJson(const PairResponse& p) {
     Value expires = p.mode == "persistent" ? Value(nullptr) : Value(p.expiresAt);
-    return Value(Value::Object{{"workstation_id", p.workstationId}, {"workstation_public_key", p.workstationPublicKey}, {"address", p.address},
+    Value::Object result{{"workstation_id", p.workstationId}, {"workstation_public_key", p.workstationPublicKey}, {"address", p.address},
                                {"pbx_address", p.pbxAddress}, {"pbx_name", p.pbxName}, {"pbx_public_key", p.pbxPublicKey},
-                               {"endpoint", p.endpoint}, {"mode", p.mode}, {"expires_at", expires}, {"ssh", p.ssh}, {"gui_url", p.guiUrl}});
+                               {"endpoint", p.endpoint}, {"mode", p.mode}, {"expires_at", expires}, {"ssh", p.ssh}, {"gui_url", p.guiUrl}};
+    if (p.sshPort != 0) {
+        result.insert({{"ssh_user", p.sshUser}, {"ssh_public_key", p.sshPublicKey}, {"ssh_host_key", p.sshHostKey},
+                       {"ssh_ca_key", p.sshCaKey}, {"ssh_port", p.sshPort}, {"ssh_api_port", p.sshApiPort}});
+    }
+    return Value(result);
 }
 
 PairResponse pairingFromJson(const Value& value) {
-    json::RequireExactKeys(value, {"workstation_id", "workstation_public_key", "address", "pbx_address", "pbx_name", "pbx_public_key", "endpoint",
-                                   "mode", "expires_at", "ssh", "gui_url"},
-                           "A saved pairing");
+    std::vector<std::string> keys{"workstation_id", "workstation_public_key", "address", "pbx_address", "pbx_name", "pbx_public_key", "endpoint",
+                                   "mode", "expires_at", "ssh", "gui_url"};
+    if (value.has("ssh_port")) for (const char* key : {"ssh_user", "ssh_public_key", "ssh_host_key", "ssh_ca_key", "ssh_port", "ssh_api_port"})
+        keys.emplace_back(key);
+    json::RequireExactKeys(value, keys, "A saved pairing");
     PairResponse p;
     p.workstationId = requireString(value, "workstation_id");
     p.workstationPublicKey = requireString(value, "workstation_public_key");
@@ -86,6 +93,17 @@ PairResponse pairingFromJson(const Value& value) {
     }
     p.ssh = value.at("ssh").asBool();
     p.guiUrl = requireString(value, "gui_url");
+    if (value.has("ssh_port")) {
+        p.sshUser = requireString(value, "ssh_user");
+        p.sshPublicKey = requireString(value, "ssh_public_key");
+        p.sshHostKey = requireString(value, "ssh_host_key");
+        p.sshCaKey = requireString(value, "ssh_ca_key");
+        auto port = value.at("ssh_port").asInteger(), api = value.at("ssh_api_port").asInteger();
+        if (port <= 0 || port > 65535 || api <= 0 || api > 65535) throw Error("Invalid saved SSH ports.");
+        p.sshPort = static_cast<int>(port);
+        p.sshApiPort = static_cast<int>(api);
+        ValidateManagedPairing(p);
+    }
     std::uint32_t address = 0, pbx = 0;
     if (!IsWorkstationId(p.workstationId) || !IsWireGuardKey(p.workstationPublicKey) || !IsWireGuardKey(p.pbxPublicKey) ||
         !ParseHostRoute(p.address, address) || !ParseIPv4(p.pbxAddress, pbx) || !IsEndpoint(p.endpoint) || !IsPbxName(p.pbxName) ||
@@ -150,7 +168,8 @@ std::vector<Profile> ParseProfiles(const std::string& text) {
             profile.sshUser = requireString(item, "ssh_user");
             profile.pairing = pairingFromJson(item.at("pairing"));
             if (!IsWorkstationName(profile.workstationName) ||
-                (profile.pairing.ssh ? !IsLinuxUser(profile.sshUser) : !profile.sshUser.empty())) {
+                (profile.pairing.ssh ? !IsLinuxUser(profile.sshUser) : !profile.sshUser.empty()) ||
+                (profile.pairing.sshPort != 0 && profile.sshUser != profile.pairing.sshUser)) {
                 throw Error("An administrator profile is invalid.");
             }
         } else if (kind == "support") {

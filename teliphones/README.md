@@ -1,17 +1,56 @@
 # TELIPHONES for FreePBX 17: module guide
 
-This guide covers installing, configuring, operating, maintaining and troubleshooting the TELIPHONES FreePBX module (`teliphones`, version 0.3.5). For an introduction to the project, its architecture and its security model, see the project overview (`README.md`), `docs/ARCHITECTURE.md` and `docs/SECURITY.md` at the root of the TELIPHONES source repository; these are not included in the module package.
+This guide covers installing, configuring, operating, maintaining and troubleshooting the TELIPHONES FreePBX module (`teliphones`, version 0.4.0). For an introduction to the project, its architecture and its security model, see the project overview (`README.md`), `docs/ARCHITECTURE.md` and `docs/SECURITY.md` at the root of the TELIPHONES source repository; these are not included in the module package.
 
 **TELIPHONES is a UK registered trademark.**
 
-**TELIPHONES 0.3.5 for FreePBX is licensed under GPLv3.**
+**TELIPHONES 0.4.0 for FreePBX is licensed under GPLv3.**
 
 GPLv3 licensing applies to the software and does not grant trademark rights.
 
 > [!WARNING]
-> **Not currently suitable for production.** TELIPHONES 0.3.5 is an unreleased development correction for controlled testing on a **disposable** Debian 12 / FreePBX 17 system. The 0.3.1 nftables ownership-marker correction was separately tested by the operator on the FreePBX 17 PBX; the subsequent diagnostics and disclaimer changes have only local regression coverage and have not been deployed to or tested on a live PBX. See [Known limitations](#known-limitations) and [Outstanding 0.3.1 verification](#outstanding-031-verification).
+> **Not currently suitable for production.** TELIPHONES 0.4.0's ephemeral SSH certificate endpoint is for **disposable** Debian 12 / FreePBX 17 testing. Windows 0.7.0 has a memory-backed provider implemented in source, but its added native tests have not run; there is no plaintext session-key fallback. Real OpenSSH namespace tests cover server authentication, restrictions and expiry, but substitute process-tree teardown for systemd. Native Windows and real systemd/cgroup lifecycle validation remain outstanding. Nothing has been deployed to a live PBX. See [Known limitations](#known-limitations) and [Outstanding 0.3.1 verification](#outstanding-031-verification).
+
+## Secure Administration Without Exposing Your PBX
+
+**TELIPHONES for FreePBX 0.4.0** brings access approval into FreePBX so that
+restricting public management access need not mean losing convenient remote
+administration. With **TELIPHONES for Windows 0.7.0**, an approved workstation
+can reach the GUI privately through an encrypted WireGuard tunnel and still
+sign in using normal FreePBX authentication.
+
+- **My PBXs** is for administrators' own workstations. Manage pairing,
+  permissions, temporary or persistent authorisation and revocation under
+  **Windows workstations**. The managed SSH design adds explicitly approved
+  existing accounts and temporary certificates through the tunnel. Windows now
+  implements a process-bound memory agent and owned console/SSH lifecycle;
+  native validation is pending and provider errors fail closed.
+- **Remote Support** is a separate customer-authorised, time-limited workflow
+  for enrolled engineers. It avoids distributing permanent administrator
+  credentials to obtain temporary support. It is not the administrator's
+  workstation pairing and still requires end-to-end testing.
+
+Independent administrators get a more approachable private administration
+route; MSPs and support engineers get an explicit approval and access-lifetime
+workflow. The aim is to reduce routine VPN, SSH and firewall complexity, not to
+make secure configuration optional.
+
+TELIPHONES **does not replace FreePBX Firewall or automatically remove public
+management exposure**. Configure and verify appropriate router, host and
+FreePBX Firewall restrictions; test the private route before restricting the
+existing administration route. Public telephony requirements, including SIP
+and RTP where needed, are separate from private GUI/SSH access.
+
+The PBX still requires a reachable WireGuard UDP endpoint, potentially with
+router port forwarding. Universal NAT traversal and relay connectivity are not
+provided. Reducing public management exposure reduces attack surface, but neither
+a tunnel nor temporary access guarantees protection against every attack.
+These versions remain experimental: local SSH tests do not establish native
+Windows operation or production-certified FreePBX revocation/session teardown.
 
 ## Contents
+
+[Secure Administration Without Exposing Your PBX](#secure-administration-without-exposing-your-pbx)
 
 1. [What the module provides](#what-the-module-provides)
 2. [Requirements](#requirements)
@@ -91,10 +130,10 @@ TELIPHONES is a community module and is not listed in the FreePBX online module 
 
 ### Install through Module Admin (recommended)
 
-1. Obtain `TELIPHONES-0.3.5.tgz` and its SHA-256 checksum from a trusted source, then verify the archive:
+1. Obtain `TELIPHONES-0.4.0.tgz` and its SHA-256 checksum from a trusted source, then verify the archive:
 
    ```bash
-   sha256sum TELIPHONES-0.3.5.tgz
+   sha256sum TELIPHONES-0.4.0.tgz
    ```
 
 2. In FreePBX, open **Admin > Module Admin**, choose **Upload modules**, and upload the archive.
@@ -142,6 +181,7 @@ DEST=/root/teliphones-bootstrap
 test "$(id -u)" -eq 0
 test -f "$SRC/install.php"
 test -f "$SRC/support_broker.py"
+test -f "$SRC/ssh_authority.py"
 
 mkdir -p "$DEST"
 cp -a "$SRC"/. "$DEST"/
@@ -199,9 +239,16 @@ Update TELIPHONES in place. Do not uninstall the module first: uninstalling remo
 
 ### After upgrading TELIPHONES
 
-A Module Admin upgrade updates the FreePBX module files but does not necessarily update the separately installed, root-owned broker (`/usr/local/lib/teliphones-broker/support_broker.py`), because Module Admin runs as the web service account. After every TELIPHONES upgrade, confirm that no support session is active (as root: `fwconsole teliphones status`), then rerun the root bootstrap procedure from an existing root shell and refresh Connectivity > TELIPHONES. TELIPHONES 0.3.1 keeps broker protocol 3 and adds a hookless nftables ownership chain that remains visible when Debian 12 nftables 1.0.6 drops table comments. TELIPHONES 0.3.2 adds bounded, administrator-only workstation diagnostics and broker protocol 4 without changing the existing firewall or WireGuard policy. Module Admin does not update the root-owned broker automatically; until the bootstrap copies and restarts the current broker, workstation diagnostics may be unavailable. Disconnect Windows tunnels before the bootstrap; valid pairings are restored when the broker restarts, without extending temporary expiry.
+A Module Admin upgrade updates the FreePBX module files but does not necessarily update the separately installed, root-owned broker. TELIPHONES 0.4.0 requires broker protocol 5 and both `/usr/local/lib/teliphones-broker/support_broker.py` and `/usr/local/lib/teliphones-broker/ssh_authority.py`; an older broker or a missing SSH helper cannot provide managed SSH. Confirm that no support session is active (as root: `fwconsole teliphones status`), disconnect Windows tunnels and expect existing TELIPHONES-managed SSH sessions to terminate, then rerun the root bootstrap from an existing root shell. The bootstrap retains the previous helper files and broker unit, validates the installed helpers, and enables and restarts `teliphones-broker.service`. Verify that service is active, `/run/teliphones/control.sock` exists, and the refreshed Connectivity > TELIPHONES page reports the current broker and managed SSH readiness. On failure, rollback attempts to restore prior files and the previous enabled/active state; an incomplete rollback is an error requiring recovery from the existing root shell. Do not restart, reconfigure or disable the normal system SSH service or change administrator accounts. Valid pairings retain their original deadlines; legacy SSH pairings need explicit re-pairing for managed SSH.
 
-The 0.2.1 and 0.3.0 security/firewall changes, the 0.3.1 nftables ownership correction, and the 0.3.2 diagnostics require rerunning this bootstrap. Protocol 4 identifies diagnostics support; it does not replace checking the installed root-owned file and following the documented bootstrap.
+Protocol 5 identifies the 0.4.0 certificate endpoint and managed SSH contract;
+protocol 4 identifies older diagnostics support only. A matching module version
+does not establish that either root-owned helper was upgraded. Preserve an
+independent administrator/root shell until service, socket and readiness checks
+succeed. If rollback reports incomplete recovery, retain all recovery artifacts
+and repair the TELIPHONES installation from that shell rather than removing the
+module or changing the normal SSH service. Actual Debian 12 / FreePBX 17
+systemd upgrade, failure recovery and uninstall validation remains a release gate.
 
 ### Upgrading from 0.2.0 or 0.2.1
 
@@ -211,7 +258,12 @@ The 0.2.1 and 0.3.0 security/firewall changes, the 0.3.1 nftables ownership corr
 
 ## Windows workstations: install, pair and connect
 
-This workflow pairs an administrator's own Windows workstation with this PBX. A paired workstation can reach the FreePBX web interface through WireGuard, and the PBX's existing SSH service if that is explicitly approved. It does not require the reference gateway, Checker or any external service.
+This workflow pairs an administrator's own Windows workstation with this PBX.
+A web-only pairing needs WireGuard, not Windows OpenSSH. For automatic SSH,
+select **Request SSH in next generated request** in Windows before generating
+the request, then explicitly approve an existing account on the PBX. New SSH
+pairings use an isolated managed listener, never the ordinary system SSH port.
+It does not require the reference gateway, Checker or any external service.
 
 **Key concepts**
 
@@ -247,17 +299,17 @@ Keep the **Pair my PBX** dialog open. The response will be bound to this request
 4. Choose the access period:
    - **Temporary**, with a **Temporary pairing duration** of 60, 240, 480 or 1440 minutes; or
    - **Persistent trusted workstation (until revoked)**.
-5. Choose **SSH access through the tunnel**. Leave **Not permitted** unless SSH is genuinely required. Otherwise, select **Permit SSH (TCP 22) with existing PBX credentials**.
+5. Choose **SSH access through the tunnel**. Leave **Not permitted** for GUI-only requests. An SSH-capable request requires explicitly selecting **Authorise SSH for this workstation** and an existing Linux account; there is no default account or implicit root. Windows 0.7.0 generates a separate DPAPI-protected workstation identity for SSH opt-in, not a reusable session private-key file. Native verification remains pending.
 6. Select **Pair workstation**. Compare the key fingerprint shown on the PBX with the one shown in the Windows dialog. They must match.
 
 ### 4. Complete pairing on Windows
 
 1. On the PBX, select **Copy pairing response**.
 2. Paste the response into the waiting Windows dialog.
-3. If SSH was approved, enter the existing Linux account you will use; otherwise leave it blank.
+3. If SSH was approved, its administrator-approved account is supplied automatically by the pairing response.
 4. Select **Save connection**.
 
-Pairing creates no SSH account, root password or SSH key.
+Pairing creates no SSH account or password. The SSH-capable server contract enrols a permanent workstation authentication public key, separate from disposable session keys, and pins the PBX's Ed25519 host key and certificate authority. Neither private key belongs in a pairing or certificate request. Existing saved identities remain preserved and can be imported from their encrypted DPAPI store in memory.
 
 ### 5. Connect and open FreePBX
 
@@ -270,14 +322,13 @@ The workstation routes only the PBX's tunnel address (`/32`); other traffic does
 
 ### 6. Use SSH (only when approved)
 
-SSH through the tunnel reaches the PBX's existing SSH service on TCP 22, with its existing accounts and authentication policy. TELIPHONES does not change SSH configuration.
+New managed pairings use a separate listener at `22000 + workstation address's last octet`, never the system SSH listener. The certificate API is TCP 8765. Both are bound to the exact WireGuard address **and device**; firewall rules admit only authorised peer/service combinations. Do not publish these ports or forward them from the Internet. Ordinary system SSH, accounts and unrelated sessions are untouched.
 
-- **Open SSH** becomes available once the PBX has answered through the tunnel. It opens your preferred SSH terminal against the PBX tunnel address on port 22, using the account saved with the profile.
-  - Windows PowerShell, PowerShell 7, Windows Terminal and Command Prompt run the Windows OpenSSH Client. If it is missing, install **OpenSSH Client** from **Settings > System > Optional features**.
-  - PuTTY is opened directly with the address, port and account, and uses its own credentials, such as Pageant or a `.ppk` key.
-- **Another SSH client:** while connected, connect to the PBX tunnel address shown in the profile on port 22, with your existing PBX credentials.
+- **Open SSH in Windows 0.7.0 now implements** fresh in-memory session keys, signed certificate requests, independent certificate-signature verification, strict pinned host checks and an owned console/SSH lifecycle. Its private named-pipe agent accepts only the owned SSH process, signs once for the exact approved account/certificate and destroys the key. It never writes a session private-key file or uses a shared agent. Provider errors fail closed. Native compilation and actual Windows interoperability remain unverified; use only disposable test systems.
+- The server's request/2 API verifies the permanent paired identity's signature over a one-use challenge, fresh session ID and distinct ephemeral public key, then issues a certificate lasting at most five minutes (capped by pairing expiry). It refuses the persistent identity as certificate subject and rejects old request/1 issuance. Only public key material is sent to the server. Pinned host/CA verification remains required before a future Windows implementation can be enabled.
+- Existing legacy pairing network permissions are preserved, but Windows requires re-pairing for automated SSH. It never silently falls back to existing passwords, keys or host-key prompts.
 
-The operator reports that PuTTY reaches the real PBX SSH server, which requires public-key authentication; successful SSH authentication has not been completed. See [Outstanding 0.3.1 verification](#outstanding-031-verification). A separate SSH key-management proposal remains repository documentation and is not included in this module package. Choosing a terminal never grants SSH access.
+Managed SSH requires OpenSSH tools, a working root systemd manager and unified cgroup v2. Each workstation listener has its own service with `KillMode=control-group`; temporary authorisations additionally use `RuntimeMaxSec`. Revocation, expiry, failure and removal stop only owned units and verify empty cgroups before state can be discarded. Recognised legacy principal migration requires a verified owned-unit stop before enabling the new ephemeral principal; old persistent-key certificates are rejected without destroying the permanent identities. Existing SSH account restrictions, multi-factor requirements and forced commands are not weakened: unsupported policies fail closed. Native Windows implementation/lifecycle tests and real systemd/cgroup termination, upgrade, rollback and uninstall tests remain mandatory. Linux tests substitute service supervision and are not proof of those behaviours. Deleting legacy files does not establish secure destruction; SSD, paging-file, crash-dump and OS-memory erasure is not guaranteed.
 
 #### Browser and SSH terminal preferences
 
@@ -288,7 +339,7 @@ On first start, the Windows application shows **Welcome to TELIPHONES**. It offe
 
 You can save your choices, skip and keep the defaults, or cancel. Change them later with **Settings...**. The preferences apply to every saved PBX. They are stored only for the Windows user on that workstation, and are never sent to the PBX or stored in this module. If a selected application is uninstalled or moved, the application reports it and offers another choice rather than silently launching something else. Full details are in the Windows application README (`desktop/windows/README.md` in the source repository).
 
-Workstations that were not approved for SSH cannot reach TCP 22; the connection simply times out. To grant SSH later, revoke the pairing and pair again from a new request, with SSH permitted.
+Workstations not approved for SSH receive no certificate and cannot reach any managed SSH listener. To grant SSH later, revoke and pair again with explicit account approval.
 
 ### 7. Disconnect
 
@@ -518,7 +569,7 @@ If TELIPHONES reports an unfamiliar `inet teliphones_workstations` table or `tel
 
 ### SSH does not connect
 
-- Check the **Access** column: it must read **Web interface and SSH**. Otherwise, TCP 22 is blocked by design.
+- Check the **Access** column: new pairings must show **Web interface and managed SSH** with the explicitly approved account. Check managed SSH readiness and the root broker; do not open public TCP ports to work around an error. Legacy pairings require re-pairing for automated SSH.
 - **Open SSH** stays unavailable until the PBX has answered through the tunnel and the status shows the connection as connected.
 - Windows PowerShell, PowerShell 7, Windows Terminal and Command Prompt need Windows OpenSSH Client. Install it from **Settings > System > Optional features**, or choose PuTTY in the Windows application's **Settings...**.
 - If the application reports that your selected SSH terminal could not be found, choose another in **Settings...**.
@@ -614,7 +665,7 @@ On a disposable FreePBX 17 system only:
 2. Approve WireGuard tools, and confirm that the readiness row updates without a refresh.
 3. Pair a Windows workstation, then connect, open FreePBX, disconnect and reconnect it repeatedly. Check `iptables -S INPUT` ordering and the `teliphones-ws` counters.
 4. Reload and restart FreePBX Firewall and restart Fail2Ban while connected. Confirm that access is restored and that bans remain effective.
-5. With SSH approved, connect using **Open SSH** and PuTTY. Without approval, confirm that TCP 22 is refused.
+5. With managed SSH approved, use **Open SSH** and an OpenSSH-backed terminal. Test wrong keys/accounts, expiry, revocation and active-session termination while an unrelated system SSH session remains alive. Without SSH approval, issuance and managed SSH must be refused. PuTTY is not supported for managed certificates.
 6. Confirm that SIP, AMI, database and other services are unreachable through the tunnel.
 7. Revoke the workstation while it is connected, and let a temporary pairing expire. Confirm that access ends.
 8. For Remote Support, first prove the local lifecycle with no external integrations:
@@ -677,7 +728,7 @@ Never include private keys, credentials, pairing requests or responses, gateway 
 
 TELIPHONES is a UK registered trademark.
 
-TELIPHONES 0.3.5 for FreePBX is licensed under GPLv3.
+TELIPHONES 0.4.0 for FreePBX is licensed under GPLv3.
 
 GPLv3 licensing does not grant trademark rights. The existing GPLv3-or-later
 software licence grant is unchanged. See [LICENSE](LICENSE).
@@ -701,6 +752,31 @@ The human contributor remains solely responsible for the contribution. AI tools 
 ## Release History
 
 Entries for 0.0.2 to 0.2.1 are summarised from the repository history. Release dates are recorded only where they were previously published.
+
+### 0.4.0, managed My PBXs SSH (unreleased)
+
+- Add version-2 pairing with an explicitly approved existing Linux account,
+  pinned host/CA keys and independent workstation SSH keys.
+- Add a paired-key-authenticated, WireGuard-device-bound certificate API and
+  isolated, per-workstation SSH listeners. Keep system SSH and Remote Support
+  unchanged. Short certificates never extend the original pairing deadline.
+- Require request/2 signatures to bind a distinct ephemeral public key and fresh
+  session ID; reject old reusable-subject issuance and duplicate live credentials.
+  Migrate recognised old principals only after verified owned-session termination,
+  preserving CA, host identity and enrolled workstations.
+- Add owned systemd/cgroup teardown and expiry bounds; retain recovery state
+  whenever cleanup cannot be verified.
+- Reject system SSH policy differences between port 22 and the managed listener,
+  and verify the generated effective policy at the actual account/source/port.
+- Update the shared protocol-5/two-helper bootstrap guidance, expected states
+  and failure recovery; do not touch the normal SSH service.
+- Add real isolated OpenSSH authentication, restriction, expiry and termination
+  tests. Native Windows and real systemd/FreePBX lifecycle validation remain
+  outstanding. Windows now has a session-isolated memory agent, protected
+  permanent identity signing and owned console helper implemented in source;
+  the former plaintext session-key export path remains removed. This is
+  not a complete or production-ready SSH release.
+- Build TELIPHONES-0.4.0.tgz; retain both products' independent histories.
 
 ### 0.3.5, disclaimer footer presentation (unreleased)
 

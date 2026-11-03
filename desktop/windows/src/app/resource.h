@@ -45,6 +45,7 @@
 #define IDC_PAIR_COPY               1105
 #define IDC_PAIR_RESPONSE           1106
 #define IDC_PAIR_FINGERPRINT        1107
+#define IDC_PAIR_SSH_CAPABILITY     1108
 
 #define IDC_SUP_NAME                1200
 #define IDC_SUP_GENERATE            1201

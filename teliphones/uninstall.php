@@ -51,7 +51,8 @@ if ($sshClean && $wireguardClean && $attestationClean && $checkerClean && $remot
     throw new RuntimeException('TELIPHONES uninstall cleanup incomplete; broker artifacts and recovery state retained.');
 }
 
-foreach (['/etc/systemd/system/teliphones-broker.service', '/usr/local/lib/teliphones-broker/support_broker.py', '/run/teliphones/control.sock'] as $brokerFile) {
+foreach (['/etc/systemd/system/teliphones-broker.service', '/usr/local/lib/teliphones-broker/support_broker.py',
+    '/usr/local/lib/teliphones-broker/ssh_authority.py', '/run/teliphones/control.sock'] as $brokerFile) {
     if (file_exists($brokerFile) && !unlink($brokerFile)) throw new RuntimeException('Unable to remove TELIPHONES broker artifact.');
 }
 

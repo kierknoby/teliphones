@@ -5,7 +5,42 @@ No Windows release is declared published by this document. Earlier development
 builds lacked embedded file/product versions and cannot be assigned reliable
 version numbers retrospectively.
 
-## 0.6.5 — Unreleased
+## 0.7.0 — Unreleased
+
+Windows file version: **0.7.0.0**. FreePBX module version: **0.4.0**.
+Native MSVC/MFC compilation and real Windows tunnel/terminal validation remain pending.
+
+- Remove the previous DPAPI SSH key save/decrypt and plaintext runtime-key export
+  paths. Preserve existing permanent encrypted identities and authorisations.
+- Implement Ed25519 session keys in memory using static OpenSSL, with locked seed
+  pages and no session-key export API. The per-session named-pipe agent accepts
+  only its owned Windows OpenSSH process and signs one account/certificate-bound
+  authentication request before destroying the key.
+- Restore SSH-capable pairing with a separately DPAPI-protected permanent identity,
+  request/2 certificate issuance, independent Ed25519 certificate signature
+  verification, pinned host keys and automatic terminal launching.
+- Add the TELIPHONES-SSH console helper and non-inheritable kill-on-close Jobs;
+  app/helper/SSH exit, disconnect and authorisation expiry end owned sessions.
+  Bound uncompleted authentication to 30 seconds; never use the shared agent.
+- Keep GUI-only pairing independent of OpenSSH; SSH capability is an unchecked,
+  explicit request before generation and still requires PBX approval.
+- Name certificate binding validation separately from OpenSSH signature checks;
+  test actual rejection of signature tampering without claiming the parser is cryptographic.
+- Add the server-side request/2 contract: the permanent paired identity signs a
+  challenge, fresh session ID and distinct disposable public key. Reject the old
+  reusable-subject issuance contract and duplicate live session IDs/public keys.
+- Bind portable certificate checks to the ephemeral subject and session ID,
+  pinned CA, principal, source and expiry; test real Linux OpenSSH session isolation.
+- Pin the PBX host key and certificate authority from administrator-approved
+  pairing; never fall back to passwords, default SSH configuration or host prompts.
+- Preserve Remote Support, appearance, layout and the centred licence footer.
+- Add native Windows OpenSSH login, process/agent access, concurrent sessions,
+  controller/SSH crash, expiry and production DPAPI/API/console/disconnect tests
+  to Actions. They have not run yet; native builds, the terminal/reboot matrix
+  and real systemd/FreePBX termination still require validation. No physical
+  memory/pagefile/SSD-erasure guarantee or production security sign-off is made.
+
+## 0.6.5 — Previous development version (not released)
 
 Windows file version: **0.6.5.0**. FreePBX module version: **0.3.5**.
 Native MSVC/MFC compilation and visual validation remain pending.
@@ -197,7 +232,7 @@ These are source-history milestones, **not published Windows releases**:
   executable SHA-256 alongside the version to distinguish build provenance.
 - Keep the window title, executable metadata, README and current changelog entry
   consistent. Automated checks reject mismatches.
-- The FreePBX module version is independent and is **0.3.5**. The manifest's
+- The FreePBX module version is independent and is **0.4.0**. The manifest's
   fixed assembly identity is not a release version and must not be bumped merely
   to change the product version.
 - An application version does not imply publication or production readiness.
@@ -207,5 +242,5 @@ These are source-history milestones, **not published Windows releases**:
   the changelog, resource flags and validation.
 - New features increment the minor version; bug fixes increment the patch version.
   Preserve previous version history when advancing either.
-- Windows 0.7.0 is reserved for the upcoming fully automated SSH
-  authentication functionality. That functionality is not part of 0.6.0.
+- Windows 0.7.0 introduces managed My PBXs SSH certificates. The 0.6.x history
+  remains unchanged; the new functionality is not retrospectively part of 0.6.0.

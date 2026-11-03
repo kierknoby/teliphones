@@ -14,6 +14,18 @@ int main(int argc, char** argv) {
         std::string mode = argc > 1 ? argv[1] : "";
         if (mode == "request" && argc == 5) {
             std::cout << tlp::BuildPairRequest(argv[2], argv[3], argv[4]) << "\n";
+        } else if (mode == "certificate" && argc == 10) {
+            tlp::PairResponse pairing = tlp::ParsePairResponse(argv[2], argv[3], argv[4], argv[5]);
+            tlp::Profile profile;
+            profile.id = "0011223344556677";
+            profile.name = "PBX";
+            profile.workstationName = "ADMIN-PC";
+            profile.pairing = pairing;
+            profile.sshUser = pairing.sshUser;
+            const auto saved = tlp::ParseProfiles(tlp::SerializeProfiles({profile}));
+            std::string certificate((std::istreambuf_iterator<char>(std::cin)), std::istreambuf_iterator<char>());
+            tlp::ValidateSshCertificateBindings(certificate, saved.at(0).pairing, {argv[6], argv[7]}, std::stoll(argv[8]), std::stoll(argv[9]));
+            std::cout << "validated\n";
         } else if (mode == "response" && argc == 5) {
             tlp::PairResponse r = tlp::ParsePairResponse(argv[2], argv[3], argv[4]);
             std::cout << r.workstationId << " " << r.address << " " << r.pbxAddress << " " << r.endpoint << " " << r.mode << " " << r.expiresAt << " "

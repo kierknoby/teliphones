@@ -25,7 +25,9 @@ private:
     bool DiscardKey();
     tlp::win::WireGuardInstallation wireguard_;
     std::string publicKey_;
+    std::string sshPublicKey_;
     std::string nonce_;
     std::string request_;
     bool keyStored_ = false;
+    bool sshKeyRequested_ = false;
 };

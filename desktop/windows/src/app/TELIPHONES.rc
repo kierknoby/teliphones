@@ -126,9 +126,9 @@ BEGIN
     LTEXT           "", IDC_PAIR_FINGERPRINT, 110, 152, 325, 18, SS_LEFT
     LTEXT           "Paste the response produced by the PBX:", -1, 10, 178, 300, 14
     EDITTEXT        IDC_PAIR_RESPONSE, 10, 195, 425, 52, ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL
-    LTEXT           "Linux SSH account (only if SSH was approved):", -1, 10, 255, 260, 14
-    EDITTEXT        IDC_PAIR_SSHUSER, 275, 252, 160, 18, ES_AUTOHSCROLL
-    LTEXT           "Pairing does not grant SSH unless the PBX administrator explicitly enabled it.", -1, 10, 278, 425, 20, SS_LEFT
+    LTEXT           "SSH account (assigned automatically by the PBX):", -1, 10, 255, 260, 14
+    EDITTEXT        IDC_PAIR_SSHUSER, 275, 252, 160, 18, ES_AUTOHSCROLL | ES_READONLY
+    CONTROL         "Request SSH in next generated request (OpenSSH and PBX approval required)", IDC_PAIR_SSH_CAPABILITY, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 10, 278, 425, 20
     DEFPUSHBUTTON   "Save connection", IDOK, 265, 304, 90, 20
     PUSHBUTTON      "Cancel", IDCANCEL, 360, 304, 75, 20
 END

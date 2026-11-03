@@ -1,8 +1,8 @@
-# TELIPHONES 0.6.5 for Windows (experimental)
+# TELIPHONES 0.7.0 for Windows (experimental)
 
 **TELIPHONES is a UK registered trademark.**
 
-**TELIPHONES 0.6.5 for Windows is licensed under GPLv3.**
+**TELIPHONES 0.7.0 for Windows is licensed under GPLv3.**
 
 GPLv3 licensing applies to the software and does not grant trademark rights.
 The main window displays both statements in a fixed footer beneath the connection
@@ -12,19 +12,59 @@ padding and stays outside the scrolling content. Narrow windows use end ellipsis
 the complete wording remains in Settings > About. The existing GPLv3-or-later software licence grant is unchanged;
 see LICENSE in the distributed application ZIP for the full licence text.
 
-The native Windows client is under active development and versioned independently of the FreePBX module, now **0.3.5**. The current unreleased Windows version is **0.6.5**, shown in the main window title and embedded product version, with Windows file version **0.6.5.0**. This patch corrects conflicting dropdown selection/focus painting while preserving native Windows caption-frame theming and the 0.6.0 appearance feature; it does not implement SSH authentication or establish that Chrome's download warning is resolved. Windows **0.7.0 is reserved for the upcoming fully automated SSH authentication functionality**. Individual builds are identified by Git commit SHA and Actions provenance. See the [Windows change history and versioning policy](CHANGELOG.md). The manifest's `assemblyIdentity` is a fixed side-by-side identity, not the release number. Earlier operator tests of 0.4.0 established a WireGuard tunnel and reached SSH using PuTTY; they do not validate this new version or its monitor. The native C++17 Win32/MFC application has two independent profile types:
+The Windows client is versioned independently of the FreePBX module, now **0.4.0**. The unreleased Windows version is **0.7.0**, with file version **0.7.0.0**, derived from `Version.h`. My PBXs SSH now has a session-specific memory agent, automated certificates and owned terminal lifecycle implemented in source. **Native Windows compilation and the added interoperability tests have not run yet; this is not a validated or production-ready SSH release.** There is no plaintext session-key fallback. GUI-only pairing and FreePBX access remain independent of OpenSSH. The existing appearance, footer and saved-connections layout are unchanged. See the [change history](CHANGELOG.md) and [managed SSH design](../../docs/SSH-KEY-MANAGEMENT-PROPOSAL.md). The manifest assembly identity is not the product version. The native C++17 Win32/MFC application has two independent profile types:
 
 - **My PBX** pairs a workstation with a PBX using an approval in the PBX's TELIPHONES page. Persistent pairing remains revocable from that page. Temporary pairings expire on the PBX.
 - **Remote Support** keeps a locally generated engineer key and imports an operator-issued `teliphones-engineer-grant/1` JSON file. The grant must name that exact engineer public key.
 
 Both use WireGuard for Windows and the existing TELIPHONES PBX/gateway contracts. TELIPHONES does not create SSH accounts, expose ordinary PBX ports to the Internet, bundle WireGuard, or provide a relay. Direct WireGuard requires the configured PBX/gateway UDP endpoint to be reachable; restrictive NAT/firewalls can prevent it.
 
+## Secure Administration Without Exposing Your PBX
+
+**TELIPHONES for Windows 0.7.0**, paired with **TELIPHONES for FreePBX 0.4.0**,
+is intended to make private remote administration a straightforward workflow
+rather than a reason to leave management services publicly reachable.
+
+- **My PBXs:** pair your workstation with administrator approval, connect over
+  WireGuard and open the FreePBX GUI privately using your preferred browser.
+  Normal FreePBX authentication remains required. Permissions, authorisation
+  expiry and revocation are managed centrally on the PBX.
+- **Private SSH:** the server contract uses an explicitly approved account and
+  temporary certificates instead of manually distributed administrative keys.
+  Windows now implements this through a session-specific memory agent and
+  certificate/host-key verification. Native build and interoperability validation
+  remain outstanding; provider errors fail closed. GUI-only pairing needs no OpenSSH.
+- **Remote Support:** a separate profile and engineer-grant workflow provides
+  customer-authorised, time-limited support access without sharing permanent
+  administrator credentials. It is not My PBXs pairing.
+
+For an independent administrator, this reduces routine connection setup.
+For MSPs and support engineers, it makes the customer's approval and intended
+access lifetime explicit. Administrators do not need to become VPN, SSH or
+firewall specialists to use the workflow, but installation, network policy and
+verification still require appropriate administrative care.
+
+The private route lets administrators tighten public GUI/SSH access policies;
+TELIPHONES **does not replace FreePBX Firewall or automatically close those
+services to the internet**. The PBX administrator must configure and verify the
+router, host and FreePBX Firewall restrictions, testing the tunnel before
+restricting an existing administration route. Required public telephony traffic
+(such as SIP and RTP) is separate from private management access.
+
+A reachable WireGuard UDP endpoint is still required and may need port
+forwarding. There is no universal NAT traversal or relay connectivity.
+Reducing public management exposure reduces attack surface, not every security
+risk. Native Windows and real FreePBX/systemd testing remain outstanding;
+temporary access, revocation and SSH session termination are not
+production-certified by the local tests. See the [current security limitations](#security).
+
 ## Requirements and build
 
 - Windows 10/11 x64.
 - Visual Studio 2022 with the **Desktop development with C++** workload, Windows 10/11 SDK, and the optional **C++ MFC for latest v143 build tools (x86 & x64)** component.
+- Static OpenSSL 3 Crypto, declared in `vcpkg.json`, for maintained Ed25519 generation/signing/verification. Set `VCPKG_INSTALLATION_ROOT` to an existing vcpkg installation; `build.ps1` restores the manifest's `x64-windows-static` dependency. For direct MSBuild, restore it first from this directory or supply `OpenSslRoot`. No dependencies were downloaded during local implementation.
 - WireGuard for Windows is required for pairing and connections. TELIPHONES can retrieve and verify the official installer after you choose **Install WireGuard**, then ask for administrator approval through UAC. Existing verified installations are reused unchanged. WireGuard is not bundled.
-- Windows OpenSSH Client is needed for **Open SSH** with Windows PowerShell, PowerShell 7, Windows Terminal or Command Prompt. PuTTY uses its own SSH implementation and does not need it.
+- GUI-only My PBXs pairing requires no OpenSSH. **Request SSH in next generated request** is unchecked by default and creates only the separate persistent workstation identity, encrypted with user DPAPI. Open SSH requires the Windows system OpenSSH Client and PowerShell, PowerShell 7, Windows Terminal or Command Prompt; PuTTY is not supported for managed certificates. Remote Support keeps its separate workflow.
 
 Open `TELIPHONES.sln` in Visual Studio, select **x64**, then build. Or run `build.ps1` in a Visual Studio 2022 Developer PowerShell:
 
@@ -46,15 +86,15 @@ The [Windows build workflow](../../.github/workflows/windows-build.yml) builds t
 
 The workflow discovers Visual Studio 2022 with `vswhere`, verifies the installed x64 MSVC tools, static Unicode MFC libraries and Windows SDK, and reports the selected versions. If anything is missing, it fails with the missing component or file path; it does not install Visual Studio components, drivers or other dependencies.
 
-The workflow runs standard-library Python project/resource layout checks before building. After a successful MSVC build, it runs `TeliphonesCoreTests.exe` and `SessionDiagnosticsTests.exe`, checks that `TELIPHONES.exe` is an AMD64 Windows GUI PE executable without a .NET CLR header, verifies its embedded manifest and runtime imports, and launches malformed tunnel-helper requests to verify that the real executable loads and rejects them without UAC, networking or tunnel installation. This is not an interactive GUI or WireGuard integration test. The Python broker-contract tests are Linux-only because the root broker imports `pwd`; they are not run in this Windows job.
+The workflow runs standard-library Python project/resource layout checks, restores static OpenSSL, and builds the application and its `TELIPHONES-SSH.exe` console helper. It also builds the production cryptographic/agent/session code with CMake and runs native OpenSSH/DPAPI/Job tests, including a loopback certificate issuer that verifies actual workstation SSHSIG signatures. Missing native OpenSSH Server is an explicit prerequisite failure, not a Linux substitution or silent skip. These newly added native steps have not run yet. Existing core, diagnostics, PE/manifest and malformed tunnel-helper checks remain. This is not an interactive GUI or WireGuard integration test. Broker-contract tests are Linux-only because the root broker imports `pwd`.
 
 The x64 manifest uses explicit `amd64` application and Common Controls version 6 identities. The workflow extracts and prints the actual embedded manifest, validates it using the SDK's `mt.exe`, and requires exactly one matching Common Controls dependency after linker manifest merging. It preserves `asInvoker`, `uiAccess="false"` and the DPI settings. The project disables automatic DPI manifest generation so the custom manifest is the sole source: exactly one legacy `dpiAware` (`true/pm`) and one modern `dpiAwareness` (`PerMonitorV2`) declaration, checked in the embedded manifest by Actions. The startup smoke test must launch both malformed helper invocations and receive exit code 2 (argument rejection before elevation/networking); a loader error or timeout fails the run.
 
 If startup fails with an incorrect side-by-side configuration, the workflow prints the `sxstrace` activation trace and recent Windows Application **SideBySide** events. Download **TELIPHONES-Windows-startup-diagnostics** from that failed run for the extracted manifest, DLL import list, startup error and available trace/event files. Diagnostic-tool failures are reported and do not bypass the executable startup test. The application artifact is uploaded only after all validation succeeds. A manifest correction is not Windows-validated until a new run passes the real smoke test.
 
-Download **TELIPHONES-Windows-x64** from the successful run's **Artifacts** section. It contains `TELIPHONES.exe`, this README, the Windows changelog, `LICENSE` and `build-info.json`, not source archives, test binaries, keys, profiles, caches or tunnel configurations. The build information records the embedded product/file version, source commit, Actions run/attempt and executable SHA-256. The workflow checks both textual and fixed numeric executable versions against `Version.h` and requires the prerelease flag before publishing the artefact. The version is also visible in **Properties > Details** on the executable and in the main window title. Artefacts are retained for 14 days. It creates no GitHub Release and deploys nothing.
+Download **TELIPHONES-Windows-x64** only from a successful run. It contains `TELIPHONES.exe`, the required adjacent `TELIPHONES-SSH.exe`, this README, the changelog, `LICENSE`, `OpenSSL-LICENSE.txt` and `build-info.json`; no keys, profiles or runtime configurations are included. Keep both executables together. OpenSSL is statically linked, not a separately installed DLL. Build information records the source/Actions provenance and hashes of both executables. Existing embedded-version/prerelease checks remain. Artefacts are retained for 14 days; the workflow creates no release and deploys nothing. No new native artifact has been validated locally.
 
-Extract the artifact and run `TELIPHONES.exe` on Windows 10/11 x64. Release builds statically link MFC and the MSVC C/C++ runtime (`/MT`), so no separate Visual C++ Redistributable or MFC DLL is expected; Windows system DLLs remain required. No .NET runtime is used. The application offers [WireGuard installation](#secure-connectivity-and-wireguard-installation) if needed. **Open SSH** requires Windows OpenSSH Client unless PuTTY is selected. An unsigned test executable may trigger Windows SmartScreen; the workflow does not code-sign it.
+Extract the artifact and run `TELIPHONES.exe` on Windows 10/11 x64. Release builds statically link MFC and the MSVC C/C++ runtime (`/MT`), so no separate Visual C++ Redistributable or MFC DLL is expected; Windows system DLLs remain required. No .NET runtime is used. The application offers [WireGuard installation](#secure-connectivity-and-wireguard-installation) if needed. OpenSSH-backed terminals require the Windows system OpenSSH Client; only Remote Support supports PuTTY. Unsigned test executables may trigger Windows SmartScreen; the workflow does not code-sign them.
 
 ## Appearance
 
@@ -88,7 +128,9 @@ New dialogs must derive from `CAppearanceDialog`; runtime-created content window
 enrol through `tlp::ui::ThemeWindow`. Rendering and environment notifications live
 in `src/app/Appearance.cpp`, with portable preferences/palettes in
 `src/core/Appearance.h`. New features advance the minor Windows version; fixes
-advance the patch version. Windows 0.7.0 is reserved for the upcoming fully automated SSH authentication functionality.
+advance the patch version. Windows 0.7.0 introduces managed My PBXs SSH certificates.
+The credential provider is implemented in source; native verification remains
+pending. Provider errors fail closed rather than using plaintext session-key files.
 
 ## Secure connectivity and WireGuard installation
 
@@ -136,12 +178,12 @@ During installation the dialog cannot be closed until the worker finishes; cance
 
 ## Pair an administrator workstation
 
-1. Install `TELIPHONES-0.3.5.tgz` through FreePBX Module Admin and complete its [documented root broker bootstrap](../../teliphones/README.md#complete-installation-on-freepbx-17). After upgrading the module, rerun the bootstrap with no active support session and Windows tunnels disconnected so the separately installed broker is current. A module upgrade alone does not replace the privileged broker.
-2. In TELIPHONES for Windows, select **Add my PBX...**, enter a workstation name, and choose **Generate request**. Copy the request.
+1. Install `TELIPHONES-0.4.0.tgz` through FreePBX Module Admin and complete its [documented root broker bootstrap](../../teliphones/README.md#complete-installation-on-freepbx-17). After upgrading the module, rerun the bootstrap with no active support session and Windows tunnels disconnected so the separately installed broker is current. A module upgrade alone does not replace the privileged broker.
+2. Select **Add my PBX...** and enter a workstation name. Leave **Request SSH in next generated request** unchecked for GUI-only access (no OpenSSH dependency), or select it to enrol an independent DPAPI-protected workstation SSH identity. Choose **Generate request** and copy it. This identity authenticates future certificate requests; it is never used as the session certificate subject.
 3. In the PBX web interface, open **Connectivity > TELIPHONES > Windows workstations**, paste the request, provide the PBX's externally reachable WireGuard hostname/IP and UDP port, select temporary or persistent access, and explicitly choose whether SSH is allowed. The pairing operation requires HTTPS.
-4. Click **Copy pairing response**, paste it into the still-open Windows pairing dialog, enter an existing authorised Linux account only if SSH was approved, and click **Save connection**. The client verifies the response nonce and workstation public key before saving it.
-5. Select the saved profile and click **Connect**. Windows requests administrative approval to install/start the individual tunnel service. The **Connection Health...** control reports whether the authorised PBX is responding separately from the pairing's remaining authorisation time. Use **Open FreePBX** through the tunnel to open the PBX in your [preferred browser](#browser-and-ssh-terminal-preferences). **Open SSH** is offered only after the PBX has answered through the tunnel (the status shows **Connected**), and only when the PBX administrator approved SSH and an SSH account was supplied; it opens your preferred SSH terminal. Click **Disconnect** to stop/remove the tunnel service.
-6. To revoke access, use **Revoke** in the PBX's Windows workstations table. Persistent pairings do not expire automatically. Removing the local profile deletes its local private key but does **not** revoke the PBX-side pairing.
+4. Leave SSH **Not permitted** for a GUI-only request. For SSH-capable requests the PBX administrator explicitly selects the existing account; root is never implicit. Copy the response into Windows and **Save connection**. The response supplies the account and pinned host/CA keys; no manual username or fingerprint acceptance is needed.
+5. Select the profile and **Connect**, approving Windows tunnel setup. Use **Open FreePBX** through the tunnel. After Connection Health confirms the PBX is reachable, **Open SSH** automatically requests a certificate for a fresh in-memory session key and opens the selected supported terminal. Closing the terminal ends its owned SSH processes; the signing key is actually destroyed earlier, immediately after its single authentication signature. **Disconnect** terminates owned SSH before removing the tunnel. This workflow still needs native end-to-end validation.
+6. To revoke access, use **Revoke** in the PBX's Windows workstations table. Persistent pairings do not expire automatically. Removing the local profile deletes its local secrets but does **not** prove physical erasure or revoke the PBX-side pairing.
 
 The PBX's WireGuard UDP listener must be reachable from the workstation. The pairing firewall rules restrict the paired peer to the PBX web interface and optionally SSH; they do not enable forwarding. From 0.3.0, the PBX also maintains a narrowly scoped `teliphones-ws` iptables chain so FreePBX Firewall does not drop that permitted traffic; this has not yet been verified on a real PBX. If the handshake succeeds but FreePBX does not load, check the FreePBX Firewall integration status in **Windows workstations**. Review the FreePBX Firewall and router policy for the selected UDP port. The client does not alter network routes beyond the per-PBX host route.
 
@@ -221,15 +263,21 @@ Detection uses the Windows registrations for installed applications (App Paths a
 | Command Prompt | A new Command Prompt window running the Windows OpenSSH client |
 | PuTTY | PuTTY with `-ssh`, the tunnel address, the approved SSH port (`-P`), the user name (`-l`) and a per-PBX `-loghost` name for host-key checking |
 
-The FreePBX address is unchanged: `http://<PBX tunnel address>/admin/`. TELIPHONES opens only that address, built from the validated tunnel address. SSH always targets the PBX tunnel address and approved port: the administrator's Linux account on port 22 for **My PBX**, or `root` on the support SSH service at port `22222` for Remote Support. TELIPHONES validates the user name, address, port and host-key alias before launching any terminal, passes them as separate arguments, and refuses characters that a shell could interpret.
+The FreePBX address is unchanged: `http://<PBX tunnel address>/admin/`. Managed My PBXs uses the approved account and dedicated per-workstation port, with `TELIPHONES-SSH.exe` hosted by the selected OpenSSH-backed terminal. The helper is controlled by the app and never holds a private key. Remote Support retains its independent service on port `22222` and its existing terminal/credential workflow.
 
 Earlier builds opened the Windows default browser and ran `ssh.exe` directly in a new console window.
 
 ### Security
 
-Choosing a terminal never grants SSH access. **Open SSH** still requires an active connection that the PBX has answered, SSH approval in the pairing (or the Remote Support grant), and an SSH account. TELIPHONES creates no SSH users, passwords or keys. The OpenSSH-based terminals use your existing OpenSSH credentials. PuTTY uses its own credentials and settings, for example Pageant or a `.ppk` key, and keeps its own host-key cache.
+Choosing a terminal never grants SSH access. SSH-capable pairing creates a permanent workstation Ed25519 identity encrypted with user DPAPI; existing encrypted OpenSSH-format identities can be read in memory without changing their public key or approval. Each Open SSH creates a different, non-exportable session seed in a dedicated `VirtualAlloc`/`VirtualLock` page. OpenSSL temporarily imports it for Ed25519 operations. No session private key is written to a file, command line, log or request, or added to the system agent. Public certificates, public keys, pinned known_hosts and an isolated configuration are the only runtime files.
 
-If PuTTY reports **No supported authentication methods available (server sent: publickey)**, it has reached an SSH server that requires public-key authentication; the selected account has not authenticated with an accepted key. TELIPHONES currently neither generates/enrols SSH keys nor passes a managed identity file to the terminal. Its Credential Manager keys are for WireGuard, not SSH. Do not enable password fallback or copy server private keys to resolve this. A separate workstation SSH key-management workflow is proposed for review, not implemented in 0.6.0; fully automated SSH authentication is reserved for Windows 0.7.0.
+The permanent identity signs the request/2 challenge, session ID and public key. Response bindings are checked structurally and OpenSSL independently verifies the Ed25519 certificate signature against the pinned CA. The private named-pipe agent accepts only the live, retained handle/PID of its owned Windows OpenSSH child. It rejects key import/export and arbitrary signing: only one userauth signature for the exact account/certificate (and pinned host for hostbound requests) is allowed, then the seed is cleared and released. Strict host-key checking and certificate-only authentication are mandatory; there is no password, shared-agent or host-prompt fallback.
+
+The app alone retains each non-inheritable kill-on-close Job handle. The console helper must join that Job before it can create its suspended SSH child; the app checks image, membership and process identity before allowing execution/signing. SSH/helper exit, disconnect or authorisation expiry terminate the owned Job and destroy the agent; failed/incomplete authentication is bounded to 30 seconds. The Connection Health probe also closes managed SSH when it observes the tunnel stopped or absent, including an external WireGuard stop; an HTTP probe failure alone does not close terminals. App termination or restart closes its handles and cannot restore a session key. Remote server termination ends the SSH child independently of the Windows UI. Runtime file deletion is cleanup, not credential destruction.
+
+Process DACLs restrict new memory-reading, thread-creation and handle-duplication access; agent pipes are user/SYSTEM-only, reject remote clients and enforce client PID ownership. These controls are not protection against administrators/debug privileges, a compromised OS, tampered binaries, malicious code already inside the app or previously obtained privileged handles. Logical signing-capability destruction is not guaranteed physical erasure of OpenSSL/OS copies, paging files, crash dumps or SSD blocks. Legacy plaintext exposure still requires explicit PBX revocation/re-pairing.
+
+**Validation pending:** the native Actions harness must pass actual Windows OpenSSH login, DPAPI/API/console integration, process/agent access denial, simultaneous-session isolation, certificate refusal, local authorisation expiry and crash cleanup. The all-terminal/Unicode-path, Windows reboot and disposable FreePBX/systemd revocation/expiry/rollback matrix is not yet demonstrated. The loopback issuer is a test fixture, not FreePBX; local expiry testing is not proof of server-side termination. Linux tests and source assertions do not prove these native guarantees. See the [material inventory and outstanding gates](../../docs/SSH-KEY-MANAGEMENT-PROPOSAL.md). Remote Support is unchanged.
 
 ### When an application is missing
 
@@ -238,7 +286,7 @@ If a selected browser or terminal has been uninstalled or moved, TELIPHONES says
 - For a missing browser, choose **Yes** to switch to the Windows default browser, **No** to choose another in Settings, or **Cancel**.
 - For a missing terminal, choose **OK** to choose another in Settings.
 
-A missing selection stays visible in Settings, marked **(not found)**, until you replace it. If the Windows OpenSSH Client is not installed, Settings and **Open SSH** explain how to add it, or you can choose PuTTY.
+A missing selection stays visible in Settings, marked **(not found)**, until replaced. Remote Support can use PuTTY without OpenSSH. Managed My PBXs requires Windows OpenSSH and its adjacent TELIPHONES console helper; missing prerequisites produce an explicit error, never a fallback.
 
 ### Where preferences are stored
 
@@ -297,7 +345,7 @@ The following require real Windows and a disposable FreePBX/gateway environment:
    - Use **Locate...** with a portable PuTTY.
    - Confirm preferences persist across a restart and an update.
    - Confirm **Open FreePBX** works with each browser.
-   - Confirm **Open SSH** works with each terminal, including a user profile path containing spaces.
+   - Confirm Remote Support **Open SSH** works with each terminal. Confirm managed My PBXs works with each OpenSSH-backed terminal and the adjacent console helper, including profile paths with spaces/Unicode; PuTTY must fail explicitly.
    - Uninstall or rename a selected application and confirm the error and recovery choices.
    - Confirm Open SSH stays unavailable without SSH approval.
 9. On disposable fresh Windows 10/11 x64 machines, test the complete installer UI with a standard user and a separate administrator account, cancellation/UAC refusal, blocked downloads and revocation servers, unexpected signatures/hashes, post-install detection, retries, safe temporary-file cleanup and connection controls becoming available. Repeat with WireGuard already installed and confirm profiles, preferences and pre-existing tunnels remain unchanged. No live Windows installer validation has been performed locally.

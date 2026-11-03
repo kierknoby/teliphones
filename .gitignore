@@ -51,3 +51,6 @@ teliphones-*-dev.zip
 # Language/runtime output
 __pycache__/
 *.py[cod]
+
+# Restored native dependencies
+desktop/windows/vcpkg_installed/

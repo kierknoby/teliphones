@@ -3,7 +3,7 @@ namespace FreePBX\modules\Teliphones;
 
 class WebSupport
 {
-    public const VERSION = '0.3.2';
+    public const VERSION = '0.4.0';
     public const DIAGNOSTIC_ID_PATTERN = '/^ws-[a-f0-9]{16}$/';
 
     public static function authorised($sessionUser, $frameworkUser = null): bool
@@ -47,7 +47,7 @@ class WebSupport
     ];
     /** Exact fields forwarded for workstation pairing actions; other actions keep their existing forwarding. */
     public const PAIRING_FIELDS = [
-        'pair' => ['request', 'endpoint_host', 'listen_port', 'mode', 'minutes', 'ssh'],
+        'pair' => ['request', 'endpoint_host', 'listen_port', 'mode', 'minutes', 'ssh', 'ssh_user'],
         'unpair' => ['workstation_id'],
     ];
 
@@ -67,6 +67,7 @@ class WebSupport
     /** Broker status protocol this module requires (support_broker.py PROTOCOL): 2 adds live operation records, 3 adds workstation pairing. */
     public const BROKER_PROTOCOL = 3;
     public const DIAGNOSTICS_PROTOCOL = 4;
+    public const SSH_PROTOCOL = 5;
 
     public static function brokerOperational(array $response): bool
     {
@@ -121,6 +122,21 @@ class WebSupport
         // A pairing request names the WireGuard key that will be admitted; it must not be alterable in transit.
         if ($request['action'] === 'pair' && strtolower((string)($server['HTTPS'] ?? '')) !== 'on' && (string)($server['SERVER_PORT'] ?? '') !== '443') {
             return ['code' => 200, 'dispatched' => false, 'notice' => ['ok' => false, 'action_failed' => true, 'action' => 'pair', 'operation' => $operation, 'error' => 'Workstations may only be paired over HTTPS. Open the FreePBX administration interface using https:// and try again.']];
+        }
+        if ($request['action'] === 'pair' && ($request['ssh'] ?? '') === '1'
+            && strpos($request['request'] ?? '', 'TELIPHONES-PAIR-REQUEST-2:') === 0) {
+            $account = $request['ssh_user'] ?? '';
+            if (preg_match('/^[a-z_][a-z0-9_-]{0,31}$/D', $account) !== 1) {
+                return ['code' => 400, 'dispatched' => false, 'notice' => ['ok' => false, 'action_failed' => true,
+                    'action' => 'pair', 'operation' => $operation,
+                    'error' => 'Select the existing Linux SSH account explicitly. Root is never selected automatically.']];
+            }
+            if (($support['status']['protocol'] ?? 0) < self::SSH_PROTOCOL
+                || ($support['status']['workstations']['ssh_ready'] ?? false) !== true) {
+                return ['code' => 409, 'dispatched' => false, 'notice' => ['ok' => false, 'action_failed' => true,
+                    'action' => 'pair', 'operation' => $operation,
+                    'error' => 'Managed SSH is unavailable. Update the root broker and resolve its SSH readiness errors before authorising SSH. Web-only pairing remains available.']];
+            }
         }
         $notice = $client->request($request);
         $notice['action'] = $request['action'];
@@ -303,6 +319,8 @@ class WebSupport
     public static function sanitiseDiagnostics(array $reply, string $diagnosticId): array
     {
         $allowed = [
+            'ssh.certificate' => ['expires_at' => 'int', 'serial' => 'int'],
+            'ssh.terminated' => ['reason' => ['revoked', 'shutdown', 'rotation']],
             'pairing.approved' => ['mode' => ['temporary', 'persistent'], 'expires_at' => 'nullable-int', 'renewed' => 'bool'],
             'pairing.revoked' => ['reason' => ['administrator']],
             'pairing.expired' => ['reason' => ['deadline']],
@@ -377,6 +395,9 @@ class WebSupport
             if (!is_array($item) || !is_string($item['id'] ?? null) || !preg_match('/^[a-f0-9]{16}$/', $item['id'])) continue;
             $items[] = ['id' => $item['id'], 'name' => substr((string)($item['name'] ?? ''), 0, 64), 'address' => substr((string)($item['address'] ?? ''), 0, 18),
                 'mode' => ($item['mode'] ?? '') === 'persistent' ? 'persistent' : 'temporary', 'ssh' => ($item['ssh'] ?? false) === true,
+                'ssh_managed' => ($item['ssh_managed'] ?? false) === true,
+                'ssh_user' => is_string($item['ssh_user'] ?? null) && preg_match('/^[a-z_][a-z0-9_-]{0,31}$/D', $item['ssh_user']) === 1 ? $item['ssh_user'] : '',
+                'ssh_port' => is_int($item['ssh_port'] ?? null) && $item['ssh_port'] >= 1 && $item['ssh_port'] <= 65535 ? $item['ssh_port'] : null,
                 'expires_at' => is_int($item['expires_at'] ?? null) ? $item['expires_at'] : null,
                 'last_handshake' => is_int($item['last_handshake'] ?? null) && $item['last_handshake'] >= 0 ? $item['last_handshake'] : null,
                 'fingerprint' => substr((string)($item['fingerprint'] ?? ''), 0, 40)];
@@ -392,6 +413,8 @@ class WebSupport
             'message' => is_string($integration['message'] ?? null) ? substr($integration['message'], 0, 500) : '',
             'backend' => in_array($integration['backend'] ?? null, ['nf_tables', 'legacy'], true) ? $integration['backend'] : null];
         return ['supported' => $supported, 'ready' => $supported && $raw['ready'] === true && !in_array(false, $requirements, true) && ($status['enabled'] ?? true) === true, 'requirements' => $requirements,
+            'ssh_ready' => $supported && ($status['protocol'] ?? 0) >= self::SSH_PROTOCOL && ($raw['ssh_ready'] ?? false) === true,
+            'ssh_error' => $supported && is_string($raw['ssh_error'] ?? null) ? substr($raw['ssh_error'], 0, 500) : '',
             'error' => $supported && is_string($raw['error'] ?? null) ? substr($raw['error'], 0, 500) : '',
             'firewall_integration' => $firewallIntegration,
             'listen_port' => $supported && is_int($raw['listen_port'] ?? null) ? $raw['listen_port'] : null, 'items' => $items];
@@ -399,7 +422,7 @@ class WebSupport
 
     public static function validPairingResponse($value): bool
     {
-        return is_string($value) && preg_match('/^TELIPHONES-PAIR-RESPONSE-1:[A-Za-z0-9_-]{20,4000}$/', $value) === 1;
+        return is_string($value) && preg_match('/^TELIPHONES-PAIR-RESPONSE-[12]:[A-Za-z0-9_-]{20,16000}$/D', $value) === 1;
     }
 
     /**
