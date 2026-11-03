@@ -378,6 +378,9 @@ void testConnectionHealth() {
                       layout.disclaimer.x + layout.disclaimer.width <= width &&
                       layout.disclaimer.bottom() <= height,
                   "product footer remains within the screen/DPI matrix");
+            const int lastActionBottom = layout.actions.back().bottom();
+            check(layout.disclaimer.y * 2 + layout.disclaimer.height == lastActionBottom + height,
+                  "footer text is centred between the last action row and the window bottom");
             for (const auto& action : layout.actions) {
                 check(action.bottom() <= layout.disclaimer.y, "fixed actions do not overlap product footer");
                 check(action.x >= 0 && action.y >= 0 && action.x + action.width <= width &&
@@ -1122,8 +1125,8 @@ int main() {
     for (unsigned part : versionParts) check(part <= 65535, "Windows version component fits the resource WORD");
     check(TELIPHONES_VERSION_FILE_STRING == versionBase + "." + std::to_string(versionParts[3]), "file version expands consistently");
     check(TELIPHONES_VERSION_STRING == versionBase, "product version expands without a development suffix");
-    check(std::string(TELIPHONES_VERSION_STRING) == "0.6.4", "Windows application version is independent of the module");
-    check(std::string(TELIPHONES_VERSION_FILE_STRING) == "0.6.4.0", "Windows file version is 0.6.4.0");
+    check(std::string(TELIPHONES_VERSION_STRING) == "0.6.5", "Windows application version is independent of the module");
+    check(std::string(TELIPHONES_VERSION_FILE_STRING) == "0.6.5.0", "Windows file version is 0.6.5.0");
     testEncoding();
     testJson();
     testValidation();

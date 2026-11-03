@@ -34,7 +34,7 @@ inline DesktopLayout ArrangeDesktop(int width, int height) {
     const int rows = (6 + columns - 1) / columns;
     const int disclaimerHeight = 30;
     const int footerHeight = rows * 32 + (rows - 1) * gap + margin * 2 + disclaimerHeight;
-    layout.disclaimer = {margin, height - margin - disclaimerHeight, actionWidth, disclaimerHeight};
+    layout.disclaimer = {margin, height - margin / 2 - disclaimerHeight, actionWidth, disclaimerHeight};
     for (int i = 0; i < 6; ++i) {
         const int col = i % columns, row = i / columns;
         const int cell = (actionWidth - (columns - 1) * gap) / columns;

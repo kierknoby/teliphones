@@ -5,7 +5,16 @@ No Windows release is declared published by this document. Earlier development
 builds lacked embedded file/product versions and cannot be assigned reliable
 version numbers retrospectively.
 
-## 0.6.4 — Unreleased
+## 0.6.5 — Unreleased
+
+Windows file version: **0.6.5.0**. FreePBX module version: **0.3.5**.
+Native MSVC/MFC compilation and visual validation remain pending.
+
+- Rename the profile-list heading to "Saved connections".
+- Balance the footer text spacing between the action buttons and bottom edge
+  without increasing the allocated space or moving the buttons.
+
+## 0.6.4 — Previous development version (not released)
 
 Windows file version: **0.6.4.0**. FreePBX module version: **0.3.5**.
 Native MSVC/MFC compilation and visual validation remain pending.

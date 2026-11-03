@@ -27,8 +27,8 @@ class BuildLayoutTests(unittest.TestCase):
         base = ".".join(map(str, parts[:3]))
         product = base
         numeric = ".".join(map(str, parts))
-        self.assertEqual(product, "0.6.4")
-        self.assertEqual(numeric, "0.6.4.0")
+        self.assertEqual(product, "0.6.5")
+        self.assertEqual(numeric, "0.6.5.0")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
         self.assertIn(f"# TELIPHONES {product} for Windows", readme)
@@ -80,6 +80,8 @@ class BuildLayoutTests(unittest.TestCase):
     def test_product_disclaimers_and_licence_packaging(self):
         source = (ROOT / "src/app/AppSettingsDlg.cpp").read_text()
         resource = (ROOT / "src/app/TELIPHONES.rc").read_text()
+        self.assertIn('"Saved connections", IDC_PBX_HEADING', resource)
+        self.assertNotIn('"My PBXs & Remote Support"', resource)
         workflow = (ROOT.parents[1] / ".github/workflows/windows-build.yml").read_text()
         self.assertIn('#include "Version.h"', source)
         self.assertIn("ON_BN_CLICKED(IDC_APPS_ABOUT, &CAppSettingsDlg::OnAbout)", source)
@@ -97,7 +99,7 @@ class BuildLayoutTests(unittest.TestCase):
         module = ET.parse(ROOT.parents[1] / "teliphones/module.xml").getroot()
         self.assertEqual(module.findtext("version"), "0.3.5")
         for path, statement in (
-            (ROOT / "README.md", "TELIPHONES 0.6.4 for Windows is licensed under GPLv3."),
+            (ROOT / "README.md", "TELIPHONES 0.6.5 for Windows is licensed under GPLv3."),
             (ROOT.parents[1] / "teliphones/README.md", "TELIPHONES 0.3.5 for FreePBX is licensed under GPLv3."),
         ):
             text = path.read_text()

@@ -39,7 +39,7 @@ STYLE DS_SETFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXI
 CAPTION "TELIPHONES"
 FONT 9, "Segoe UI"
 BEGIN
-    LTEXT           "My PBXs & Remote Support", IDC_PBX_HEADING, 8, 28, 230, 15
+    LTEXT           "Saved connections", IDC_PBX_HEADING, 8, 28, 230, 15
     LTEXT           "Connection", IDC_CONNECTION_HEADING, 250, 28, 360, 15
     LTEXT           "WireGuard for Windows: checking...", IDC_WG_STATUS, 8, 8, 604, 14
     CONTROL         "", IDC_PROFILES, WC_LISTVIEW, WS_TABSTOP | WS_BORDER | LVS_REPORT | LVS_SINGLESEL, 8, 48, 230, 110

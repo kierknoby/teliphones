@@ -2,7 +2,7 @@
 
 **TELIPHONES is a UK registered trademark.**
 
-**TELIPHONES 0.6.4 for Windows is licensed under GPLv3.**
+**TELIPHONES 0.6.5 for Windows is licensed under GPLv3.**
 
 **TELIPHONES 0.3.5 for FreePBX is licensed under GPLv3.**
 
@@ -367,7 +367,7 @@ and [SSH key-management proposal for review](docs/SSH-KEY-MANAGEMENT-PROPOSAL.md
 | [Connect](teliphones/docs/CONNECT-CONTRACT.md), [Checker](teliphones/docs/CHECKER-CONTRACT.md) and [Console](teliphones/docs/CONSOLE-CONTRACT.md) contracts | Versioned message formats |
 | [Topologies](teliphones/docs/TOPOLOGIES.md) | On-PBX, On-net and Off-net definitions |
 | [Testing programme](teliphones/docs/TESTING.md) | Regression coverage and the staged disposable-PBX test programme |
-| [Windows application](desktop/windows/README.md) | Windows **0.6.4** (unreleased, independently versioned), build provenance, [Windows changelog](desktop/windows/CHANGELOG.md), dropdown painting and native caption-frame corrections, System/Light/Dark appearance, landscape responsive layout, selectable health graphs, correlated session diagnostics and test plan |
+| [Windows application](desktop/windows/README.md) | Windows **0.6.5** (unreleased, independently versioned), build provenance, [Windows changelog](desktop/windows/CHANGELOG.md), dropdown painting and native caption-frame corrections, System/Light/Dark appearance, landscape responsive layout, selectable health graphs, correlated session diagnostics and test plan |
 | [Reference gateway](gateway/README.md) | Lab Connect gateway, engineer and Checker tools, namespace laboratory |
 | [Rendezvous design note](docs/RENDEZVOUS.md) | Future direct-first rendezvous and relay interface (not implemented) |
 

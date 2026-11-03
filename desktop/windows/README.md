@@ -1,8 +1,8 @@
-# TELIPHONES 0.6.4 for Windows (experimental)
+# TELIPHONES 0.6.5 for Windows (experimental)
 
 **TELIPHONES is a UK registered trademark.**
 
-**TELIPHONES 0.6.4 for Windows is licensed under GPLv3.**
+**TELIPHONES 0.6.5 for Windows is licensed under GPLv3.**
 
 GPLv3 licensing applies to the software and does not grant trademark rights.
 The main window displays both statements in a fixed footer beneath the connection
@@ -12,7 +12,7 @@ padding and stays outside the scrolling content. Narrow windows use end ellipsis
 the complete wording remains in Settings > About. The existing GPLv3-or-later software licence grant is unchanged;
 see LICENSE in the distributed application ZIP for the full licence text.
 
-The native Windows client is under active development and versioned independently of the FreePBX module, now **0.3.5**. The current unreleased Windows version is **0.6.4**, shown in the main window title and embedded product version, with Windows file version **0.6.4.0**. This patch corrects conflicting dropdown selection/focus painting while preserving native Windows caption-frame theming and the 0.6.0 appearance feature; it does not implement SSH authentication or establish that Chrome's download warning is resolved. Windows **0.7.0 is reserved for the upcoming fully automated SSH authentication functionality**. Individual builds are identified by Git commit SHA and Actions provenance. See the [Windows change history and versioning policy](CHANGELOG.md). The manifest's `assemblyIdentity` is a fixed side-by-side identity, not the release number. Earlier operator tests of 0.4.0 established a WireGuard tunnel and reached SSH using PuTTY; they do not validate this new version or its monitor. The native C++17 Win32/MFC application has two independent profile types:
+The native Windows client is under active development and versioned independently of the FreePBX module, now **0.3.5**. The current unreleased Windows version is **0.6.5**, shown in the main window title and embedded product version, with Windows file version **0.6.5.0**. This patch corrects conflicting dropdown selection/focus painting while preserving native Windows caption-frame theming and the 0.6.0 appearance feature; it does not implement SSH authentication or establish that Chrome's download warning is resolved. Windows **0.7.0 is reserved for the upcoming fully automated SSH authentication functionality**. Individual builds are identified by Git commit SHA and Actions provenance. See the [Windows change history and versioning policy](CHANGELOG.md). The manifest's `assemblyIdentity` is a fixed side-by-side identity, not the release number. Earlier operator tests of 0.4.0 established a WireGuard tunnel and reached SSH using PuTTY; they do not validate this new version or its monitor. The native C++17 Win32/MFC application has two independent profile types:
 
 - **My PBX** pairs a workstation with a PBX using an approval in the PBX's TELIPHONES page. Persistent pairing remains revocable from that page. Temporary pairings expire on the PBX.
 - **Remote Support** keeps a locally generated engineer key and imports an operator-issued `teliphones-engineer-grant/1` JSON file. The grant must name that exact engineer public key.
