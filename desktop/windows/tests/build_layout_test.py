@@ -27,8 +27,8 @@ class BuildLayoutTests(unittest.TestCase):
         base = ".".join(map(str, parts[:3]))
         product = base
         numeric = ".".join(map(str, parts))
-        self.assertEqual(product, "0.6.0")
-        self.assertEqual(numeric, "0.6.0.0")
+        self.assertEqual(product, "0.6.1")
+        self.assertEqual(numeric, "0.6.1.0")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
         self.assertIn(f"# TELIPHONES {product} for Windows", readme)
@@ -305,6 +305,13 @@ class BuildLayoutTests(unittest.TestCase):
         health = (ROOT / "src/app/ConnectionHealthDlg.cpp").read_text()
         self.assertIn("Download: solid / Upload: dashed", health)
         self.assertIn("Latency: line / Jitter: dots", health)
+
+    def test_captioned_windows_keep_native_frame_theming(self):
+        source = (ROOT / "src/app/Appearance.cpp").read_text()
+        self.assertIn("const bool nativeFrame = (style & WS_CAPTION) == WS_CAPTION;", source)
+        self.assertIn("const bool nativeTheme = highContrast_ || nativeFrame;", source)
+        self.assertIn('SetWindowTheme(window, nativeTheme ? nullptr : L"", nativeTheme ? nullptr : L"");', source)
+        self.assertIn("DwmSetWindowAttribute(window, DWMWA_USE_IMMERSIVE_DARK_MODE", source)
 
     def test_installer_is_fixed_verified_and_does_not_change_profiles(self):
         source = (ROOT / "src/platform/WireGuardInstaller.cpp").read_text()

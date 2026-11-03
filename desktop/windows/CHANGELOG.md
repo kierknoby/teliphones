@@ -5,7 +5,19 @@ No Windows release is declared published by this document. Earlier development
 builds lacked embedded file/product versions and cannot be assigned reliable
 version numbers retrospectively.
 
-## 0.6.0 — Unreleased
+## 0.6.1 — Unreleased
+
+Windows file version: **0.6.1.0**. FreePBX module version: **0.3.2**.
+Native MSVC/MFC compilation and interactive validation of this patch are pending.
+
+- Preserve native Windows visual styles on captioned windows instead of disabling
+  their frame theming when applying client-control colours. Windows retains
+  ownership of title bars and minimize/maximize/close buttons; the documented
+  DWM dark-title-bar preference remains in use.
+- Add a source regression guard for native caption-frame theming. This does not
+  establish visual correctness or resolve the separate Chrome download warning.
+
+## 0.6.0 — Previous development version (not released)
 
 Windows file version: **0.6.0.0**. FreePBX module version: **0.3.2**.
 Native MSVC/MFC compilation and visual validation remain pending.

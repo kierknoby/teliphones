@@ -214,9 +214,12 @@ public:
 
     bool Apply(HWND window) {
         if (!SetWindowSubclass(window, WindowProcedure, kSubclass, 0)) return false;
+        const auto style = GetWindowLongPtrW(window, GWL_STYLE);
+        const bool nativeFrame = (style & WS_CAPTION) == WS_CAPTION;
         // Empty theme names use supported classic rendering underneath our painting;
-        // high contrast restores native theming and all native accessibility behavior.
-        SetWindowTheme(window, highContrast_ ? nullptr : L"", highContrast_ ? nullptr : L"");
+        // captioned windows must retain Windows-owned frames and caption buttons.
+        const bool nativeTheme = highContrast_ || nativeFrame;
+        SetWindowTheme(window, nativeTheme ? nullptr : L"", nativeTheme ? nullptr : L"");
         if (IsClass(window, WC_LISTVIEWW)) {
             ListView_SetBkColor(window, palette_.surface);
             ListView_SetTextBkColor(window, palette_.surface);
@@ -233,7 +236,6 @@ public:
             SendMessageW(window, TTM_SETTIPBKCOLOR, palette_.surface, 0);
             SendMessageW(window, TTM_SETTIPTEXTCOLOR, palette_.text, 0);
         }
-        const auto style = GetWindowLongPtrW(window, GWL_STYLE);
         if ((style & WS_CHILD) == 0 && (style & WS_CAPTION) == WS_CAPTION) {
             const BOOL dark = dark_ && !highContrast_;
             // This documented attribute is optional on older Windows 10 builds.
