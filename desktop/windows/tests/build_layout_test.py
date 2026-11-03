@@ -634,7 +634,7 @@ endfunction()
             "Windows 0.7.0 introduces managed My PBXs SSH certificates",
             " ".join(changelog.split()),
         )
-        self.assertIn("FreePBX module version is independent and is **0.4.0**", changelog)
+        self.assertIn("FreePBX module version is independent and is **0.4.1**", changelog)
         registered = {
             item.attrib["Include"].replace("\\", "/")
             for item in project("TELIPHONES.vcxproj").findall("ms:ItemGroup/ms:ClInclude", NS)
@@ -689,10 +689,10 @@ endfunction()
         self.assertNotIn('"TELIPHONES is a UK registered trademark.\\r\\n"', layout)
         self.assertIn("desktop/windows/build/artifact/LICENSE", workflow)
         module = ET.parse(ROOT.parents[1] / "teliphones/module.xml").getroot()
-        self.assertEqual(module.findtext("version"), "0.4.0")
+        self.assertEqual(module.findtext("version"), "0.4.1")
         for path, statement in (
             (ROOT / "README.md", "TELIPHONES 0.7.0 for Windows is licensed under GPLv3."),
-            (ROOT.parents[1] / "teliphones/README.md", "TELIPHONES 0.4.0 for FreePBX is licensed under GPLv3."),
+            (ROOT.parents[1] / "teliphones/README.md", "TELIPHONES 0.4.1 for FreePBX is licensed under GPLv3."),
         ):
             text = path.read_text()
             self.assertIn(statement, text)

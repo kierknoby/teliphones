@@ -1,8 +1,266 @@
-# Windows SSH workflow readiness audit
+# Windows developer builds, testing and readiness
 
-Targets: TELIPHONES for Windows **0.7.0**, TELIPHONES for FreePBX **0.4.0**.
+Targets: TELIPHONES for Windows **0.7.0**, TELIPHONES for FreePBX **0.4.1**.
+The module-only firewall correction increments the installed/tested 0.4.0 build
+to 0.4.1 without Windows application changes. References below to keeping the
+module at 0.4.0 describe earlier Windows-only work, not the current module target.
 
-## Deliberately corrupted certificate diagnostic
+## Current evidence
+
+The operator reports successful Windows Actions builds, **all ten native
+OpenSSH integration tests passing**, authenticated Windows-to-FreePBX 17 SSH
+and automatic owned-terminal closure on disconnect. No run URL, commit/build
+hash or raw logs were supplied with this update; no remote logs were fetched.
+Earlier nine-of-ten and seven-failure records below are historical.
+
+These are initial native/live milestones, not complete server-side revocation,
+expiry, systemd/cgroup, reboot or recovery evidence. Real module 0.4.1 firewall
+watchdog validation, the full terminal/display matrix and production readiness
+remain outstanding. See the [evidence register](../../../docs/SECURITY.md#verification-evidence).
+
+## Developer builds and testing
+
+This section preserves the detailed build and test reference formerly in the Windows README. Commands below run from `desktop/windows/`. Test registration describes coverage, not execution evidence; see [verification evidence](../../../docs/SECURITY.md#verification-evidence) for the current results and remaining gates.
+
+
+- Windows 10/11 x64.
+- Visual Studio 2022 with the **Desktop development with C++** workload, Windows 10/11 SDK, and the optional **C++ MFC for latest v143 build tools (x86 & x64)** component.
+- Static OpenSSL 3 Crypto, declared in `vcpkg.json`, for maintained Ed25519 generation/signing/verification. Set `VCPKG_INSTALLATION_ROOT` to an existing vcpkg installation; `build.ps1` restores the manifest's `x64-windows-static` dependency. For direct MSBuild, restore it first from this directory or supply `OpenSslRoot`. No dependencies were downloaded during local implementation.
+- WireGuard for Windows is required for pairing and connections. TELIPHONES can retrieve and verify the official installer after you choose **Install WireGuard**, then ask for administrator approval through UAC. Existing verified installations are reused unchanged. WireGuard is not bundled.
+- GUI-only My PBXs pairing requires no OpenSSH. **Request SSH in next generated request** is unchecked by default and creates only the separate persistent workstation identity, encrypted with user DPAPI. Open SSH requires the Windows system OpenSSH Client and PowerShell, PowerShell 7, Windows Terminal or Command Prompt; PuTTY is not supported for managed certificates. Remote Support keeps its separate workflow.
+
+Open `TELIPHONES.sln` in Visual Studio, select **x64**, then build. Or run `build.ps1` in a Visual Studio 2022 Developer PowerShell:
+
+```powershell
+.\build.ps1 -Configuration Release -Platform x64
+```
+
+The application and portable tests are written to `build\Release\`. Run `build\Release\TeliphonesCoreTests.exe` and `build\Release\SessionDiagnosticsTests.exe` for the core and diagnostic-storage regressions. The portable tests and broker contracts can also be run on Linux with CMake:
+
+```sh
+cmake -S . -B /tmp/teliphones-windows-core
+cmake --build /tmp/teliphones-windows-core
+ctest --test-dir /tmp/teliphones-windows-core --output-on-failure
+```
+
+### GitHub Actions build and download
+
+The [Windows build workflow](../../../.github/workflows/windows-build.yml) builds the existing Visual Studio solution in **Release x64** on a GitHub-hosted `windows-2022` runner. It runs automatically when changes under `desktop/windows/` or the workflow itself are pushed. It can also be run from **Actions > Windows build > Run workflow** once the workflow is available on the repository's default branch.
+
+The workflow discovers Visual Studio 2022 with `vswhere`, verifies the installed x64 MSVC tools, static Unicode MFC libraries and Windows SDK, and reports the selected versions. If anything is missing, it fails with the missing component or file path; it does not install Visual Studio components, drivers or other dependencies.
+
+The workflow runs standard-library Python project/resource layout checks, explicitly provisions missing official Windows OpenSSH Client and Server capabilities using Windows servicing, restores static OpenSSL, and builds the application and its `TELIPHONES-SSH.exe` console helper. Capability state is re-queried, reboot requirements rejected and actual executable loading checked; versions/hashes and servicing failures are reported. The Windows OpenSSH directory is placed first on PATH. No alternate package is downloaded if servicing fails.
+
+It also builds the production cryptographic/agent/session code with CMake, performs native DPAPI/locked-memory/pipe/Job preflight and runs real OpenSSH tests. The loopback-only server uses a unique temporary SYSTEM scheduled task and kill-on-close Job for Windows logon-token support, not the global sshd service. Generated test keys/configuration and all owned processes are cleaned up, including an always-run interrupted-fixture recovery step. A separate test-only core permits exactly the loopback fixture source; the application and production core tests retain their non-loopback policy. Successful native credential-provider/OpenSSH validation is still required; portable success alone is insufficient. Existing core, diagnostics, PE/manifest and malformed tunnel-helper checks remain. This is not an interactive GUI or WireGuard integration test. See the [complete execution-order and sixteen-test readiness audit](#historical-investigations) for dependencies, cleanup and remaining native/systemd validation.
+
+Windows CTest runs `core_tests`, `session_diagnostics`, `build_layout`,
+`contract_check`, `managed_ssh_check` and `ssh_crypto_check`. The portable
+`contract_check` verifies client pairing schemas, response/key/nonce binding,
+profile/tunnel rendering, route rejection, fingerprints and parity with the
+gateway's portable Remote Support renderer without importing the root broker.
+Linux additionally runs `broker_contract_check`, preserving the complete real
+broker approval/revocation and peer/firewall contract tests with privileged OS
+operations doubled. The broker imports Linux-only `fcntl` and `pwd`; it is not
+loaded in Windows tests. Python is required by CMake so these checks cannot
+silently disappear.
+
+After CTest, Windows runs all ten tests in `ssh_native_check.py`: actual
+OpenSSH login/key destruction/public-only runtime files, unrelated-process agent
+denial, process-memory/handle restrictions, concurrent-session isolation and wrong
+certificates, expiry/wrong host/tampering, controller crash, SSH crash, production
+DPAPI/certificate API/console/disconnect, certificate refusal and local
+authorisation expiry. The workflow fails on native test failure; it does not
+replace those checks with the portable suite. Real FreePBX/systemd and reboot
+validation remain separate outstanding requirements.
+
+Portable CTest and native SSH integration are separate steps. If CTest fails,
+native SSH tests still execute when their build, OpenSSH and Win32 preflight
+prerequisites and the real isolated-fixture preflight succeeded. That preflight
+uses the integration fixture itself: complete SID-based protected DACL replacement
+and separate owner assignment,
+native Win32/Task Scheduler read-back of file/task security descriptors, actual
+negative ACL probes, generated keys/configuration, a
+temporary SYSTEM task, real loopback SSH banner and verified shutdown/removal.
+It preserves all ten authentication/security tests; it does not replace them.
+Actual Windows ACL/task execution remains unverified locally. Independent window, executable and startup checks also
+continue after test failures when their build succeeded. Any required failure
+still fails the job and prevents application artifact publication. Full verbose
+CTest/unittest output, CTest JUnit and native SSH logs are retained in the
+diagnostics artifact on success or failure. The [readiness audit](#historical-investigations)
+records the reproduced three-assertion CRT output defect and its helper-only fix.
+The fixture no longer invokes PowerShell for ACL, identity or task inspection.
+A separate diagnostic step records inherited versus reset Windows PowerShell
+module discovery; its loader results are not used as security-test results.
+
+The x64 manifest uses explicit `amd64` application and Common Controls version 6 identities. The workflow extracts and prints the actual embedded manifest, validates it using the SDK's `mt.exe`, and requires exactly one matching Common Controls dependency after linker manifest merging. It preserves `asInvoker`, `uiAccess="false"` and the DPI settings. The project disables automatic DPI manifest generation so the custom manifest is the sole source: exactly one legacy `dpiAware` (`true/pm`) and one modern `dpiAwareness` (`PerMonitorV2`) declaration, checked in the embedded manifest by Actions. The startup smoke test must launch both malformed helper invocations and receive exit code 2 (argument rejection before elevation/networking); a loader error or timeout fails the run.
+
+If startup fails with an incorrect side-by-side configuration, the workflow prints the `sxstrace` activation trace and recent Windows Application **SideBySide** events. Download **TELIPHONES-Windows-startup-diagnostics** from that failed run for the extracted manifest, DLL import list, startup error and available trace/event files. Diagnostic-tool failures are reported and do not bypass the executable startup test. The application artifact is uploaded only after all validation succeeds. A manifest correction is not Windows-validated until a new run passes the real smoke test.
+
+Download **TELIPHONES-Windows-x64** only from a successful run. It contains `TELIPHONES.exe`, the required adjacent `TELIPHONES-SSH.exe`, this README, the changelog, `LICENSE`, `OpenSSL-LICENSE.txt` and `build-info.json`; no keys, profiles or runtime configurations are included. Keep both executables together. OpenSSL is statically linked, not a separately installed DLL. Build information records the source/Actions provenance and hashes of both executables. Existing embedded-version/prerelease checks remain. Artefacts are retained for 14 days; the workflow creates no release and deploys nothing. No new native artifact has been validated locally.
+
+Extract the artifact and run `TELIPHONES.exe` on Windows 10/11 x64. Release builds statically link MFC and the MSVC C/C++ runtime (`/MT`), so no separate Visual C++ Redistributable or MFC DLL is expected; Windows system DLLs remain required. No .NET runtime is used. The application offers [WireGuard installation](../README.md#secure-connectivity-and-wireguard-installation) if needed. OpenSSH-backed terminals require the Windows system OpenSSH Client; only Remote Support supports PuTTY. Unsigned test executables may trigger Windows SmartScreen; the workflow does not code-sign them.
+
+
+## Test coverage and manual validation
+
+
+The C++ core tests and contract tests check parsing, key/request binding, grant binding, narrow host routes, tunnel rendering, command construction, connection monitor behavior, and parity with the broker/gateway contracts. They also simulate health threshold persistence, WireGuard counter parsing, latency/jitter/rate calculations, stable/degraded/unstable/disconnected/unknown transitions, bounded 60-second/5-minute history, and recovery after measurement interruptions. These are deterministic model tests, not live WireGuard measurements. They also simulate browser and terminal preferences: first-run save, skip and cancel; detection-driven choices and defaults; saving, restoring and changing preferences; missing and mismatched applications; and the exact command line for each supported browser and terminal, including paths with spaces and rejection of unsafe arguments. They do not execute Win32 APIs, so registry detection, the dialogs and real application launches are untested on Linux.
+
+The build-layout checks also verify SDK header ordering (`Win.h`, which includes `windows.h`, before `shellapi.h`), the Settings dialog's explicit `commdlg.h` include, and the required shell, file-dialog and registry libraries in both native build configurations. These are source checks, not a substitute for compiling and linking with MSVC, MFC and the Windows SDK.
+
+Appearance regressions cover all three persisted modes, legacy preferences,
+strict invalid-value rejection, simulated system/high-contrast policy and measured
+palette contrast (4.5:1 normal/status/selection text; 3:1 graph series and disabled
+text). `HealthWindowTests.exe` additionally exercises real MFC dialog resources,
+buttons, dropdowns, menus, message response codes, hidden pop-outs and graph pixel
+output with 96/120/144/192 DPI font/layout inputs. Its system/accessibility change
+events are simulated through the same UI-thread notification handler, without
+activating the real WinRT event provider in the test executable. It does not
+change Windows settings and is not an interactive visual or real DPI-transition
+test. Actions builds and runs it; no native appearance validation has been
+performed in the Linux workspace.
+
+The pre-build review also adds native regressions for owner-drawn menu mnemonics
+(including duplicate/disabled/escaped entries), PBX column text clipping and
+high-contrast combo item/selection sizing after font changes. Scrollbar frames are
+repainted after native keyboard, paint and tracking updates. Graph legends name
+line/marker patterns so they remain accurate in high contrast. These native tests
+are registered for Actions; their individual results have not been independently
+audited from the supplied aggregate build/SSH report.
+
+Portable installer tests simulate existing/missing/untrusted installations, approval and deferral, successful installation, UAC refusal, MSI cancellation, download/verification/launch errors, success followed by failed detection, restart requests, cleanup failures and retry. Native source checks guard the official source/hash, verification policy, project dependencies, onboarding wiring and the absence of profile/tunnel mutation. They do **not** execute WinHTTP, Authenticode, UAC or MSI, and do not prove a successful live Windows installation.
+
+The following require real Windows and a disposable FreePBX/gateway environment:
+
+1. Build the Visual Studio solution with the selected Visual Studio/MFC components.
+2. Install and signature-check the expected WireGuard for Windows distribution; verify `wg.exe` availability and CLI behavior.
+3. Approve a UAC prompt and validate tunnel service installation, ACLs, start, stop, and removal, including cancellation and an over-the-shoulder administrator account.
+4. Verify Credential Manager persistence, profile file permissions, multiple profiles, and cleanup.
+5. Pair with a disposable FreePBX 17 system, test HTTP/HTTPS redirection, selected UDP forwarding and FreePBX Firewall behavior, and confirm the PBX's interface and peer are removed on revocation/expiry.
+6. Test Remote Support only with an explicitly enrolled test engineer key, a current grant and an authorised disposable session. Confirm gateway policy blocks access after expiry/revocation.
+7. Test direct connectivity across representative NAT/firewall configurations. No universal NAT traversal or relay is implemented.
+8. Test application preferences:
+   - Check the welcome dialog's Save, Skip and Cancel.
+   - Confirm detection of each installed browser and terminal, including per-user and 32-bit installs.
+   - Use **Locate...** with a portable PuTTY.
+   - Confirm preferences persist across a restart and an update.
+   - Confirm **Open FreePBX** works with each browser.
+   - Confirm Remote Support **Open SSH** works with each terminal. Confirm managed My PBXs works with each OpenSSH-backed terminal and the adjacent console helper, including profile paths with spaces/Unicode; PuTTY must fail explicitly.
+   - Uninstall or rename a selected application and confirm the error and recovery choices.
+   - Confirm Open SSH stays unavailable without SSH approval.
+9. On disposable fresh Windows 10/11 x64 machines, test the complete installer UI with a standard user and a separate administrator account, cancellation/UAC refusal, blocked downloads and revocation servers, unexpected signatures/hashes, post-install detection, retries, safe temporary-file cleanup and connection controls becoming available. Repeat with WireGuard already installed and confirm profiles, preferences and pre-existing tunnels remain unchanged. No live Windows installer validation has been performed locally.
+10. With a disposable PBX and Windows workstation, verify the Connection Health dialog's resize, position/topmost/history/threshold persistence, sampling responsiveness, measured WireGuard counters/handshake age, disconnected/recovery states, network changes, and temporary authorization expiry. Compare displayed rates and TCP measurements with local Windows/WireGuard observations. Confirm an existing SSH terminal remains open during degradation and that no stale PBX address is probed. Linux tests only simulate the health algorithms; they do not establish native UI responsiveness or real Windows telemetry behavior.
+11. Compare the integrated and pop-out graphs at both history lengths; test persistent Until revoked and temporary UTC expiry with a fresh workstation uptime. As a standard user, verify exact-interface IP byte counters and the actual WireGuard CLI diagnostic reason. Export both sides' logs, check matching `ws-` identifiers and clock differences, exercise concurrent instances/rotation/retention, and verify another Windows user and a non-administrator FreePBX session cannot read them. Access-control/GUI tests here are not a substitute for this native/live exercise.
+12. On Windows 10 and 11, test System/Light/Dark at 100%, 125%, 150% and 200%
+    scaling on 1024x768, 1366x768 and 1920x1080 work areas, including moving between
+    differently scaled monitors. Open Settings, pairing, Remote Support, thresholds,
+    Session Log and the pop-out together; switch Windows' **application** theme in
+    System mode and verify immediate updates, no white flashes, readable controls,
+    selected PBX rows, disabled actions, dropdown lists, scrolling and all graph
+    modes. Repeat with high contrast enabled/disabled and keyboard-only navigation.
+    Save/restart to verify persistence; Cancel to verify preview rollback. Repeat
+    while connected/disconnected and with temporary, expired and persistent access:
+    theme changes must leave connection timers, authorisation, monitoring, history,
+    SSH windows and tunnel state unchanged. This manual matrix is still pending.
+
+No Windows executable is included in the module package. The operator reports
+successful Actions builds, all ten native SSH tests and an initial authenticated
+Windows SSH session into FreePBX 17, with owned-terminal closure on disconnect.
+The complete UAC, Credential Manager, WireGuard lifecycle, display and
+server-side revocation/expiry matrix is not established by that report.
+The Linux workspace has no MSVC, MFC or Windows SDK; its tests do not prove
+native compilation. Existing Actions artefacts remain subject to retention.
+
+## WireGuard installer verification
+
+
+TELIPHONES uses the built-in **Windows Installer**, not a shell script or an assumed WinGet configuration:
+
+1. Only the explicit **Install WireGuard** button starts retrieval.
+2. WinHTTP retrieves the fixed official x64 MSI over HTTPS, using normal Windows certificate validation and proxy discovery. Redirects are refused. Downloads have time and size limits.
+3. The file is placed in a new, randomly named directory under `%LOCALAPPDATA%\TELIPHONES\Installer-*`, with a protected ACL for the current user, SYSTEM and administrator read access. Existing files are never reused.
+4. TELIPHONES checks the pinned SHA-256, then uses `WinVerifyTrust` to verify Authenticode trust and certificate revocation, and checks that both the signer's common name and organisation are **WireGuard LLC**. Verification failure prevents execution; revocation-service access may be required.
+5. The verified file stays locked against writes/deletion while the system `msiexec.exe` is launched with the normal UAC `runas` mechanism. The MSI uses basic Windows Installer progress and cancellation UI, `DO_NOT_LAUNCH=1` and `/norestart`. TELIPHONES also shows retrieval, verification and installation stages without freezing the dialog.
+6. After Windows Installer exits, TELIPHONES checks again for `wireguard.exe` and `wg.exe` and verifies their signatures using the existing detection path. An exit code of zero is not sufficient. The readiness indicator and connection controls refresh without restarting TELIPHONES. A requested Windows restart is reported, not performed automatically.
+7. Normal completion, cancellation and failure all attempt targeted file and directory cleanup. Cleanup failures are reported. Abrupt process termination or Windows shutdown may leave a private installer directory; TELIPHONES does not recursively remove unrelated files or sweep other installations.
+
+The reviewed package is **WireGuard for Windows 1.1.1, x64**:
+
+- Official MSI: `https://download.wireguard.com/windows-client/wireguard-amd64-1.1.1.msi`
+- SHA-256: `7bfed60ad61b785c914b38b61555a975488e1d3ec472dbfb2fcdf498fca75242`
+- Expected Authenticode publisher common name and organisation: `WireGuard LLC`
+
+Historical source checks, not repeated during this documentation review: the [official installation page](https://www.wireguard.com/install/), [WireGuard enterprise installation guidance](https://git.zx2c4.com/wireguard-windows/about/docs/enterprise.md), the [Microsoft WinGet x64 installer manifest](https://raw.githubusercontent.com/microsoft/winget-pkgs/master/manifests/w/WireGuard/WireGuard/1.1.1/WireGuard.WireGuard.installer.yaml) and [Windows Installer command-line documentation](https://learn.microsoft.com/en-us/windows/win32/msi/command-line-options). The official MSI was downloaded for read-only inspection: its hash matched the manifest and its embedded signer certificate named WireGuard LLC. This was **not** Windows Authenticode trust validation or an installation test.
+
+The fixed package avoids silently following an unreviewed newer release. If it is withdrawn, changes hash or fails signature verification, installation stops until the application is updated with a reviewed package. Integrated installation requires native Intel/AMD x64 Windows; it refuses an emulated x64 application on ARM64. TELIPHONES does not update, uninstall or repair an existing installation, change existing WireGuard tunnels, synchronise profiles or change PBX pairing. No WireGuard installer or binary is redistributed in TELIPHONES.
+
+
+## Native appearance implementation
+
+
+**Settings > Appearance** offers **System (follow Windows)**, **Light** and
+**Dark**. System is the default, including when reading older preferences.
+Changes preview immediately in the main window and all open TELIPHONES dialogs,
+including pairing, Remote Support, Settings, thresholds, Session Log and the
+Connection Health pop-out. **Save** persists the choice; **Cancel** restores the
+previously saved choice. Welcome's **Save & Next** and **Skip** retain it too.
+
+The shared native renderer covers backgrounds, text, disabled controls, lists and
+selection, headers, buttons, checkboxes, dropdowns, menus, borders, scrollbars and
+graph series. Theme switching does not recreate connection objects, clear history,
+stop monitoring, restart a tunnel or change authorisation. Closed/hidden monitors
+stay closed/hidden and use the latest appearance when reopened.
+
+System uses the supported Windows Runtime `UISettings.ColorValuesChanged` event
+and reads Windows' application foreground colour; notifications are marshalled
+to the UI thread. Windows accessibility/high-contrast colours override every
+appearance preference, with native control rendering (owner-drawn dropdown items
+and graphs use the same system palette). Keyboard/focus and standard control
+accessibility roles are retained; graph line patterns and textual state labels
+do not rely on colour alone. Metrics/spacing follow the existing DPI-aware layout.
+No private dark-mode ordinals, external services or third-party UI libraries are
+used. Windows-owned file pickers, UAC, credential prompts and unsupported older
+Windows title-bar decorations remain OS-rendered; TELIPHONES does not attempt to
+override security/system UI. The documented dark title-bar attribute is optional
+on older Windows 10 builds.
+
+New dialogs must derive from `CAppearanceDialog`; runtime-created content windows
+enrol through `tlp::ui::ThemeWindow`. Rendering and environment notifications live
+in `src/app/Appearance.cpp`, with portable preferences/palettes in
+`src/core/Appearance.h`. New features advance the minor Windows version; fixes
+advance the patch version. Windows 0.7.0 introduces managed My PBXs SSH certificates.
+The credential provider is implemented in source; native integration success is now operator-reported; the complete display and lifecycle matrix remains pending. Provider errors fail closed rather than using plaintext session-key files.
+
+
+## Connection Health implementation and measurements
+
+
+The main window starts at approximately **1050 x 620 logical pixels**, scaled for the current DPI and clamped to the monitor work area. The left column contains the profile list, pairing/removal, Remote Support/grant actions and selected-profile details. The right contains connection status, distinct connected/authorization/healthy durations, measurements, the live graph, **Pop Out** and **View Session Log**. The list and graph grow with the window. Under narrow/high-DPI work areas the columns stack in a vertically scrollable viewport, with scrollbar, mouse wheel and automatic keyboard-focus reveal. **Connect**, **Disconnect**, **Open FreePBX**, **Open SSH**, **Settings** and **Close** remain in a fixed wrapping action bar outside that viewport. Read-only details and diagnostic guidance can also be scrolled/copied rather than being silently truncated. The main window does not restore stale saved geometry; each launch is positioned within the current work area, and DPI transitions relayout controls and fonts.
+
+The main window shows the selected PBX's health, current TCP latency, recent jitter, application probe failures, upload/download rates, handshake freshness and continuously healthy duration. A plot selector switches between **Latency & jitter**, **Upload / download** and **Failures & interruptions**, using one compact plot instead of vertically stacked graphs. Axes and traffic rates auto-scale; unavailable observations are gaps rather than zero latency. History can be 60 seconds or five minutes. **Pop Out** opens a separate compact resizable monitor using the same samples and plot choices. Recent bounded history for each profile remains available in either display after disconnecting, until application exit or profile removal; no stale history initiates probes or restores authorization. Closing the pop-out never stops sampling. **Always on Top**, pop-out position, history length and thresholds persist locally; restarting the application starts fresh measurements.
+
+The monitor is a separate modeless window explicitly owned by the main TELIPHONES window, which stays visible and enabled. It has a task-switcher/taskbar entry. Opening it again reuses the same window and restores it if minimised; Close, Escape and Enter hide only the monitor. Every opening checks its position against the current display work area, clamps partial/off-screen geometry and falls back to the main window's monitor after a display is removed. Native MFC tests are registered in Actions, but the reported SSH 10/10 result alone does not establish their detailed results or visual correctness.
+
+Native tests now exercise the layout adapter at 1024/1366/1920 display sizes, reduced work-area heights, minimum/large windows and 96/120/144/192 DPI layout inputs, including command forwarding, Tab focus, wheel/scrollbar bounds and pop-out lifecycle. Injected DPI inputs are not changes to the runner's display scaling. Manual inspection at actual 100%, 125%, 150% and 200% Windows scaling, multi-monitor DPI transitions and real connected/expired/persistent sessions remains required. No visual correctness or successful MSVC/MFC compilation is claimed from the Linux tests.
+
+The monitor samples every two seconds when the UI is active; WireGuard counters/handshake are queried every six seconds to keep process and CPU overhead low. Its TCP connection-establishment time to the currently authorised PBX's tunnel address on port 443 (with port 80 as a fallback) is labelled **TCP RTT**; it is not ICMP ping. Probe success/failure percentages and consecutive failures are application-level TCP checks. A failed TCP application probe is **not** a measurement of network packet loss. It never probes an old pairing address, an Internet service, the SSH port, or any host other than the active profile's PBX.
+
+Transmit/receive rates use actual interval byte-counter deltas, not an estimate of bandwidth. The preferred source is `wg.exe show <active tunnel> transfer`; handshake age uses `latest-handshakes`. These WireGuard Windows management reads can require administrator permission independently of PBX traffic. If unavailable, the Windows IP Helper `GetIfTable2` API reads the exact active tunnel interface alias's IP-byte counters, labelled separately from WireGuard peer transport counters. No service/pipe ACLs are widened and no automatic elevation is introduced. Handshake remains **Unknown** when its source is inaccessible. Diagnostics preserve the command stage, exit code and sanitized error, or the specific interface lookup failure. A source change resets rate baselines rather than mixing incompatible counters.
+
+Stable requires five consistent successful checks. Defaults warn at 300 ms current TCP latency or 100 ms recent jitter; **Limits...** allows 200/300/500 ms latency, 50/100/200 ms jitter and 2/3/4 consecutive failures before Unstable. Five consecutive failures or a known stopped tunnel produce Disconnected health, but application-probe failures do not remove the WireGuard tunnel. Expired authorization does remove it. Unknown local measurements are not failures. A handshake older than 180 seconds is a freshness warning, not proof an idle peer disconnected. No packet loss, total available bandwidth, network saturation or guaranteed SSH command safety is claimed.
+
+Authorization remaining time is displayed separately from reachability: for example, an unexpired pairing can still have 44 minutes remaining while the PBX is disconnected or no longer answering. A degraded connection disables starting a new SSH session until TELIPHONES verifies the PBX again. Health warnings do not close existing terminal windows or automatically remove the tunnel; authorization expiry continues to use the existing disconnect behavior. Recovery is observed through subsequent successful checks.
+
+Persistent authorization displays **Until revoked**. Temporary expiry and WireGuard handshake timestamps use UTC, while graph history, intervals and healthy duration use a monotonic clock. Mixing Unix expiry with Windows uptime caused the previous enormous remaining-time display; it is no longer used.
+
+The main panel and pop-out share three separate values: **Connected for** starts at zero on the first successful PBX reachability check and uses monotonic elapsed time; **Authorisation remaining** uses the original UTC expiry (or **Until revoked**); **Connection health** shows the independent continuously healthy duration, beginning only when Stable is established. Brief failed checks reset healthy time but keep the connected timer running. Declared connection loss (three consecutive failed checks), a stopped tunnel or expiry stops connected time; subsequent successful recovery starts it at zero. Manual disconnect/reconnect also starts a fresh duration without renewing authorization. Missing fresh measurements do not display an advancing connected duration.
+
+
+## Historical investigations
+
+The records below describe earlier failures and fixes. They are retained for diagnosis, not as the current readiness verdict.
+
+### Deliberately corrupted certificate diagnostic
 
 The subsequent user-reported Windows run passes nine of ten native tests. Its
 remaining error is fingerprint diagnostics treating `ssh-keygen -l` rejection
@@ -39,7 +297,7 @@ and signing/authentication rules are unchanged. The revised native host's
 execution still requires Windows. Windows remains 0.7.0 (test-only correction);
 FreePBX remains 0.4.0 (module untouched). Existing build provenance is unchanged.
 
-## Seven native authentication/process failures
+### Seven native authentication/process failures
 
 The earlier user-reported Windows run executes all ten native tests: three pass
 and seven fail. Four positive fixture tests report `Load key "identity.pub":
@@ -125,7 +383,7 @@ lacked `System32/OpenSSH/sshd.exe`. Checking that file without provisioning it
 was insufficient. The previous Unix broker import failure is separately fixed:
 Windows executes portable client contracts; Linux retains full broker contracts.
 
-## Execution order and prerequisites
+### Execution order and prerequisites
 
 | Stage | Dependency / source | Verification and failure handling |
 |---|---|---|
@@ -179,7 +437,7 @@ Capability presence does not establish feature compatibility: the installed
 and native login reject unsupported behaviour. Actual versions/hashes are logged
 on each runner, not assumed from the mutable runner label.
 
-## Native fixture ACL failure and preflight
+### Native fixture ACL failure and preflight
 
 The supplied Windows traceback is an actual setup failure: ICACLS exit **87**,
 `Invalid parameter "/setowner"`, before any native test ran. The host-key command
@@ -217,7 +475,7 @@ been removed; the fixture does not spawn PowerShell.
   SYSTEM, Administrators and the runner user; actual SYSTEM SID, service-account
   logon type and highest run level verified after task registration.
 
-### SYSTEM task XML registration correction
+#### SYSTEM task XML registration correction
 
 The supplied Server 2022 failure identifies the exact invalid XML element:
 `LogonType:ServiceAccount`. `TASK_LOGON_SERVICE_ACCOUNT` (numeric value 5) is a
@@ -244,7 +502,7 @@ registration, SYSTEM execution and the ten SSH tests remain Windows validation
 requirements. Windows stays 0.7.0 (test-only correction); FreePBX stays 0.4.0
 (module unchanged). No distribution is created.
 
-### Identification readiness probe and bounded diagnostics
+#### Identification readiness probe and bounded diagnostics
 
 The reported run starts SYSTEM sshd and binds port 22001 but repeatedly fails
 during identification. The old readiness probe never sent a client
@@ -283,7 +541,7 @@ new diagnostics expose a genuine server-side failure rather than retrying it.
 All ten actual Windows SSH tests, ACLs, Task Scheduler registration, authentication
 policy and process ownership/cleanup remain unchanged.
 
-### SYSTEM process access-denied correction
+#### SYSTEM process access-denied correction
 
 The supplied `alive(pid)` failure is `OpenProcess(SYNCHRONIZE, FALSE, pid)`
 returning Win32 5, not a TCP or SSH failure. `SYNCHRONIZE` is `0x00100000`,
@@ -356,7 +614,7 @@ descriptors, Unicode test-host build and all ten native SSH tests remain
 unexecuted locally. Runtime ICACLS help plus descriptor checks provide the
 on-runner syntax and permission validation; no external searches were used.
 
-### Latest PowerShell loader failure: evidence and correction
+#### Latest PowerShell loader failure: evidence and correction
 
 The supplied error, `Get-Acl: Microsoft.PowerShell.Security could not be loaded`,
 establishes a module/command-loader failure **before** descriptor inspection. It
@@ -411,7 +669,7 @@ the feature probe using exact bytes. Production cryptography is unchanged.
 Local transport tests verify no text-mode stdin translation; native signature
 verification/login remains a required Windows result.
 
-### Complete fixture dependency audit
+#### Complete fixture dependency audit
 
 | Phase / operation | Essential dependency and handling |
 |---|---|
@@ -444,7 +702,7 @@ SSH tests have **not** been compiled/executed in this Linux workspace. No
 disposable Windows runtime, Windows SDK/compiler or authorised remote Windows
 execution environment is available here; no dependencies were downloaded.
 
-## All six Windows CTests
+### All six Windows CTests
 
 | Test | Runtime dependencies / provisioning | Windows behaviour and cleanup |
 |---|---|---|
@@ -460,7 +718,7 @@ OpenSSH-unavailable skips cannot be used to obtain success in this workflow.
 Linux additionally runs `broker_contract_check`; privileged OS/network calls in
 that contract test are doubled, not represented as a native Windows result.
 
-### Three contract assertions: locally reproduced Windows CRT behaviour
+#### Three contract assertions: locally reproduced Windows CRT behaviour
 
 The supplied Actions summary says five tests ran with three failures; the actual
 Windows assertion tracebacks were not available locally and no remote access was
@@ -504,7 +762,7 @@ configuration assertions on both platforms. This local byte-level reproduction
 does not execute MSVC or establish actual Windows/OpenSSH success; the next native
 run must confirm the fix and expose any distinct assertions in its full logs.
 
-## Native fixture: account, configuration and lifetime
+### Native fixture: account, configuration and lifetime
 
 Foreground sshd running as the ordinary runner account is not an adequate
 Windows logon-token environment. The harness registers a unique demand-start
@@ -549,7 +807,7 @@ debug bypass. Privileged/debugger resistance is not a product guarantee.
 Unrelated-process agent I/O is overlapped and bounded rather than an unbounded
 synchronous read. Authentication/crash failures still fail the test.
 
-## All ten native SSH tests
+### All ten native SSH tests
 
 All rows require the common fixture above, real Windows client/server and compiled
 production crypto/agent/session code. Dependencies are verified on the runner;
@@ -572,7 +830,7 @@ The issuer's HTTP errors retain exception details in the failing test output;
 sshd logs and task status make fixture startup failures actionable. Those logs
 contain public fingerprints/session metadata, not private-key material.
 
-## Remaining validation gates
+### Remaining validation gates
 
 - Official capability servicing, its installed version/features, PowerShell
   execution, SYSTEM task/logon privileges, MSVC test-host compilation and all

@@ -19,7 +19,7 @@ MARK = broker.INTEGRATION_MARK
 CHAIN = broker.INTEGRATION_CHAIN
 JUMP = ["-i", broker.WORKSTATION_IFACE, "-m", "comment", "--comment", MARK, "-j", CHAIN]
 BANS = helpers.FREEPBX17_FAIL2BAN
-EXPECTED = BANS + [CHAIN, "fpbxfirewall"]
+EXPECTED = BANS + ["fpbxfirewall"]
 BASELINE = BANS + ["fpbxfirewall"]
 
 
@@ -31,6 +31,14 @@ class IntegrationTests(unittest.TestCase):
     def setUp(self):
         self.setUp_base()
         self.net.freepbx()
+        original = self.net.iptables
+        def guarded(rest):
+            if rest[:2] == ["-w", "5"] and rest[2] in ("-F", "-X"):
+                self.assertEqual(rest[3:], [CHAIN], "broker must never flush/delete a foreign chain")
+            if rest[:3] == ["-w", "5", "-I"]:
+                self.assertEqual(rest[3], "fpbxfirewall", "broker must never insert INPUT rules")
+            return original(rest)
+        self.net.iptables = guarded
 
     def rules(self):
         return [broker.iptables_rule(rule) for rule in self.net.filter.get(CHAIN, [])]
@@ -40,6 +48,20 @@ class IntegrationTests(unittest.TestCase):
 
     def input_targets(self):
         return [broker.iptables_target(rule) for rule in self.net.filter["INPUT"]]
+
+    def assert_placement(self):
+        self.assertNotIn(CHAIN, self.input_targets())
+        self.assertEqual(self.net.filter["fpbxfirewall"][0], JUMP)
+        self.assertEqual(self.net.filter["fpbxfirewall"].count(JUMP), 1)
+
+    def watchdog_reset(self):
+        # Model only the reported above-hook check, not FreePBX's full implementation.
+        inputs = self.net.filter["INPUT"]
+        hook = inputs.index(["-j", "fpbxfirewall"])
+        if JUMP in inputs[:hook]:
+            self.net.freepbx()
+            return True
+        return False
 
     def baseline_input(self):
         return [helpers.fail2ban_hook(name) for name in BANS] + [["-j", "fpbxfirewall"]]
@@ -53,10 +75,10 @@ class IntegrationTests(unittest.TestCase):
     def unpair(self, workstation_id):
         return self.broker.dispatch({"action": "unpair", "workstation_id": workstation_id}, 1000)
 
-    def test_pairing_installs_exact_rules_after_fail2ban_and_before_freepbx(self):
+    def test_pairing_installs_exact_rules_inside_freepbx_after_fail2ban(self):
         _, response = self.pair()
         self.assertEqual(self.input_targets(), EXPECTED)
-        self.assertEqual(self.net.filter["INPUT"][len(BANS)], JUMP)
+        self.assert_placement()
         pbx = response["pbx_address"] + "/32"
         self.assertEqual(self.rules(), [
             {"s": response["address"], "d": pbx, "i": broker.WORKSTATION_IFACE, "p": "tcp", "dport": "80", "comment": MARK, "j": "ACCEPT"},
@@ -64,7 +86,7 @@ class IntegrationTests(unittest.TestCase):
             {"comment": MARK, "j": "RETURN"}])
         status = self.broker.status()["workstations"]["firewall_integration"]
         self.assertEqual((status["state"], status["backend"], status["hook"], status["chain"]), ("active", "nf_tables", "fpbxfirewall", CHAIN))
-        self.assertEqual(self.net.filter["fpbxfirewall"], [["-i", "lo", "-j", "ACCEPT"], ["-j", "DROP"]])
+        self.assertEqual(self.net.filter["fpbxfirewall"][1:], [["-i", "lo", "-j", "ACCEPT"], ["-j", "DROP"]])
         self.assertEqual(self.net.filter["INPUT"][:len(BANS)], [helpers.fail2ban_hook(name) for name in BANS])
         for name in BANS:
             self.assertEqual(self.net.filter[name], [["-j", "RETURN"]])
@@ -72,7 +94,7 @@ class IntegrationTests(unittest.TestCase):
     def test_nft_is_verified_before_integration_and_link_up_follows(self):
         self.pair()
         calls = self.net.calls
-        insert = calls.index(("iptables", ("-w", "5", "-I", "INPUT", str(len(BANS) + 1), *JUMP)))
+        insert = calls.index(("iptables", ("-w", "5", "-I", "fpbxfirewall", "1", *JUMP)))
         last_nft_check = max(index for index, call in enumerate(calls[:insert]) if call[0] == "nft" and call[1][:2] == ("-j", "list"))
         mutation = max(index for index, call in enumerate(calls[:insert]) if call == ("nft", ("-j", "-f", "-")))
         self.assertLess(mutation, last_nft_check)
@@ -94,34 +116,35 @@ class IntegrationTests(unittest.TestCase):
         self.broker.restore_workstations()
         self.broker.expire_workstations()
         self.assertEqual(json.dumps(self.net.filter), before)
-        self.assertEqual(self.input_targets().count(CHAIN), 1)
+        self.assert_placement()
 
     def test_firewall_reload_is_repaired_without_rebouncing_peers(self):
         self.pair()
         for reload in ("flush", "jump-last", "chain-flushed", "fail2ban-restart", "rule-between", "fail2ban-between"):
-            rules = self.net.filter["INPUT"]
+            rules = self.net.filter["fpbxfirewall"]
             if reload == "flush":
-                self.net.filter["INPUT"] = self.baseline_input()
+                self.net.freepbx()
             elif reload == "jump-last":
                 rules.append(rules.pop(rules.index(JUMP)))
             elif reload == "chain-flushed":
                 self.net.filter[CHAIN] = []
             elif reload == "fail2ban-restart":
                 # Fail2Ban re-inserts its hooks at INPUT position 1 on restart.
-                hooks = [item for item in rules if broker.is_fail2ban_hook(broker.iptables_target(item))]
-                self.net.filter["INPUT"] = list(reversed(hooks)) + [item for item in rules if item not in hooks]
+                inputs = self.net.filter["INPUT"]
+                hooks = [item for item in inputs if broker.is_fail2ban_hook(broker.iptables_target(item))]
+                self.net.filter["INPUT"] = list(reversed(hooks)) + [item for item in inputs if item not in hooks]
             elif reload == "rule-between":
-                rules.insert(rules.index(["-j", "fpbxfirewall"]), ["-i", "lo", "-j", "ACCEPT"])
+                rules.insert(0, ["-i", "lo", "-j", "ACCEPT"])
             else:
                 hook = helpers.fail2ban_hook("fail2ban-PBX-GUI")
-                rules.remove(hook)
-                rules.insert(rules.index(["-j", "fpbxfirewall"]), hook)
+                inputs = self.net.filter["INPUT"]
+                inputs.remove(hook)
+                inputs.insert(inputs.index(["-j", "fpbxfirewall"]), hook)
             self.net.calls = []
             self.broker.expire_workstations()
             targets = self.input_targets()
-            self.assertEqual(targets.count(CHAIN), 1, reload)
-            self.assertEqual(targets.index(CHAIN), targets.index("fpbxfirewall") - 1, reload)
-            self.assertTrue(all(targets.index(name) < targets.index(CHAIN) for name in BANS), reload)
+            self.assert_placement()
+            self.assertTrue(all(targets.index(name) < targets.index("fpbxfirewall") for name in BANS), reload)
             self.assertEqual(len(self.rules()), 3)
             self.assertTrue(self.net.up)
             self.assertNotIn(("ip", ("link", "set", "down", "dev", broker.WORKSTATION_IFACE)), self.net.calls)
@@ -143,6 +166,7 @@ class IntegrationTests(unittest.TestCase):
     def test_complete_chain_deletion_is_repaired_without_monitor_event(self):
         self.pair()
         self.net.filter["INPUT"] = self.baseline_input()
+        self.net.filter["fpbxfirewall"].remove(JUMP)
         del self.net.filter[CHAIN]
         self.broker.wake.clear()
         self.broker.enforcement_event.clear()
@@ -209,10 +233,97 @@ class IntegrationTests(unittest.TestCase):
     def test_periodic_cleanup_failure_disables_interface(self):
         self.pair()
         self.net.filter["INPUT"] = self.baseline_input()
+        self.net.filter["fpbxfirewall"].remove(JUMP)
         self.net.fail = lambda name, rest: name == "iptables" and ("-I" in rest or "-X" in rest)
         self.broker.expire_workstations()
         self.assertFalse(self.net.up)
         self.assertIn("could not be verified or removed", self.broker.workstation_error)
+
+    def test_watchdog_cycles_leave_input_and_unrelated_rules_unchanged(self):
+        self.net.filter["FORWARD"] = [["-i", "eth0", "-j", "DROP"]]
+        self.net.filter["OUTPUT"] = [["-p", "udp", "--dport", "5060", "-j", "ACCEPT"]]
+        original = json.loads(json.dumps(self.net.filter))
+        self.pair()
+        for _ in range(10):
+            self.assertFalse(self.watchdog_reset())
+            self.broker.expire_workstations()
+            self.assertEqual(self.net.filter["INPUT"], original["INPUT"])
+            self.assertEqual(self.net.filter["fpbxfirewall"][1:], original["fpbxfirewall"])
+        self.net.calls = []
+        self.broker.expire_workstations()
+        mutations = [call for call in self.net.calls if call[0] == "iptables"
+                     and call[1] != ("--version",) and call[1][2] != "-S"]
+        self.assertEqual(mutations, [])
+        self.broker.teardown_workstations()
+        self.assertEqual(self.net.filter, original)
+
+    def test_watchdog_model_reproduces_legacy_reset_but_not_corrected_placement(self):
+        self.pair()
+        self.net.filter["fpbxfirewall"].remove(JUMP)
+        self.net.filter["INPUT"].insert(len(BANS), JUMP[:])
+        self.assertTrue(self.watchdog_reset())
+        self.broker.expire_workstations()
+        self.assertFalse(self.watchdog_reset())
+        self.assert_placement()
+
+    def test_legacy_input_jumps_migrate_and_never_return_after_rebuild(self):
+        self.pair()
+        self.net.filter["fpbxfirewall"].remove(JUMP)
+        self.net.filter["INPUT"][len(BANS):len(BANS)] = [JUMP, JUMP]
+        self.broker.expire_workstations()
+        self.assert_placement()
+        self.assertEqual(self.input_targets(), BASELINE)
+        for _ in range(3):
+            self.net.freepbx()
+            before_input = json.loads(json.dumps(self.net.filter["INPUT"]))
+            self.broker.expire_workstations()
+            self.assert_placement()
+            self.assertEqual(self.net.filter["INPUT"], before_input)
+        self.broker.teardown_workstations()
+        self.assertNotIn(CHAIN, self.net.filter)
+
+    def test_cleanup_removes_both_legacy_and_current_duplicate_jumps(self):
+        self.pair()
+        self.net.filter["INPUT"].insert(len(BANS), JUMP[:])
+        self.net.filter["fpbxfirewall"].append(JUMP[:])
+        self.broker.teardown_workstations()
+        self.assertEqual(self.input_targets(), BASELINE)
+        self.assertEqual(self.net.filter["fpbxfirewall"], [["-i", "lo", "-j", "ACCEPT"], ["-j", "DROP"]])
+        self.assertNotIn(CHAIN, self.net.filter)
+
+    def test_broker_restart_restores_exact_policy_without_extending_expiry(self):
+        self.pair(mode="temporary")
+        saved = (self.state / "workstations.json").read_text()
+        replacement = broker.Broker()
+        replacement.run = self.net.run
+        replacement.tool = self.broker.tool
+        replacement.iptables_tool = self.broker.iptables_tool
+        replacement.audit = lambda *args: None
+        try:
+            replacement.restore_workstations()
+            self.assertEqual(replacement.integration["state"], "active")
+            self.assertEqual((self.state / "workstations.json").read_text(), saved)
+            self.assert_placement()
+            replacement.teardown_workstations()
+        finally:
+            if replacement.monitor:
+                replacement.monitor.close()
+
+    def test_rebuild_during_insert_withdraws_without_input_repair_loop(self):
+        original = self.net.iptables
+        def racing(rest):
+            result = original(rest)
+            if rest[2:4] == ["-I", "fpbxfirewall"]:
+                self.net.freepbx()
+            return result
+        self.net.iptables = racing
+        self.pair()
+        self.assertEqual(self.input_targets(), BASELINE)
+        self.assertNotIn(CHAIN, self.net.filter)
+        self.assertEqual(self.broker.integration["state"], "error")
+        self.net.iptables = original
+        self.broker.expire_workstations()
+        self.assert_placement()
 
     def test_listing_failure_is_not_treated_as_absence(self):
         self.pair()
@@ -224,6 +335,7 @@ class IntegrationTests(unittest.TestCase):
     def test_unfamiliar_chain_and_references_are_never_modified(self):
         for change in ({CHAIN: [["-j", "ACCEPT"]]},
                        {CHAIN: [], "fpbxfirewall": [["-j", CHAIN]]},
+                       {CHAIN: [], "FORWARD": [JUMP]},
                        {CHAIN: [], "INPUT": [["-i", "eth0", "-m", "comment", "--comment", MARK, "-j", CHAIN], ["-j", "fpbxfirewall"]]},
                        {CHAIN: [["-s", "0.0.0.0/0", "-m", "conntrack", "--ctstate", "NEW", "-m", "comment", "--comment", MARK, "-j", "ACCEPT"]]}):
             self.net.freepbx()
@@ -254,7 +366,8 @@ class IntegrationTests(unittest.TestCase):
         for layout in (["f2b-sshd"], ["f2b-sshd", "fail2ban-SIP", "F2B-Custom", "Fail2Ban-PBX-GUI"], []):
             self.net.freepbx(layout)
             self.pair(nonce=("%s" % len(layout)) * 22)
-            self.assertEqual(self.input_targets(), layout + [CHAIN, "fpbxfirewall"], layout)
+            self.assertEqual(self.input_targets(), layout + ["fpbxfirewall"], layout)
+            self.assert_placement()
             self.assertEqual(self.broker.integration["state"], "active")
             self.broker.teardown_workstations()
 
@@ -284,17 +397,17 @@ class IntegrationTests(unittest.TestCase):
         rules = self.net.filter["INPUT"]
         rules.insert(0, rules.pop())
         self.broker.expire_workstations()
-        self.assertEqual(self.input_targets()[-2:], [CHAIN, "fpbxfirewall"])
+        self.assert_placement()
         self.assertEqual(self.broker.integration["state"], "active")
 
     def test_fail2ban_hook_inserted_during_integration_fails_safe(self):
         original = self.net.iptables
 
         def racing(rest):
-            if rest[2:4] == ["-I", "INPUT"]:
+            if rest[2:4] == ["-I", "fpbxfirewall"]:
                 # A Fail2Ban hook is appended just before the FreePBX hook between inspection and insertion.
                 rules = self.net.filter["INPUT"]
-                rules.insert(rules.index(["-j", "fpbxfirewall"]), ["-j", "fail2ban-late"])
+                rules.append(["-j", "fail2ban-late"])
                 self.net.filter.setdefault("fail2ban-late", [["-j", "RETURN"]])
             return original(rest)
         self.net.iptables = racing

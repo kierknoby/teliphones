@@ -12,6 +12,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shlex
 import socket
 import subprocess
 import sys
@@ -39,7 +40,7 @@ broker.IPTABLES = [IPTABLES]
 broker.ENV = {**broker.ENV, "XTABLES_LOCKFILE": LOCK}
 ENV = {**os.environ, "XTABLES_LOCKFILE": LOCK}
 PBX, SSH_PEER, WEB_PEER, STRANGER = "100.70.1.1", "100.70.1.2", "100.70.1.4", "100.70.1.3"
-PORTS = (22, 80, 443, 3306, 5038, 5060)
+PORTS = (22, 80, 443, 3306, 5038, 5060, broker.ssh.API_PORT, 22002, 22004)
 
 
 def run(*arguments, check=True):
@@ -63,6 +64,8 @@ def freepbx(reload_order="normal"):
     for chain in BANS:
         ipt("-A", chain, "-j", "RETURN")
     ipt("-A", "fpbxfirewall", "-i", "lo", "-j", "ACCEPT")
+    ipt("-A", "fpbxfirewall", "-i", "lan0", "-p", "udp", "-m", "multiport", "--dports", "5060,10000:10010", "-j", "ACCEPT")
+    ipt("-A", "fpbxfirewall", "-i", "lan0", "-p", "tcp", "-m", "multiport", "--dports", "22,443", "-j", "ACCEPT")
     ipt("-A", "fpbxfirewall", "-i", broker.WORKSTATION_IFACE, "-j", "zone-external")
     ipt("-A", "fpbxfirewall", "-j", "DROP")
     if reload_order == "hook-first":
@@ -77,7 +80,9 @@ def freepbx(reload_order="normal"):
 
 
 def freepbx_snapshot():
-    return [ipt("-S", chain) for chain in ("fpbxfirewall", "zone-external", *BANS)] + [ipt("-S").splitlines()[:3]]
+    return [[line for line in ipt("-S", chain).splitlines()
+             if broker.iptables_rule(shlex.split(line)[2:]) != broker.INTEGRATION_JUMP]
+            for chain in ("INPUT", "fpbxfirewall", "zone-external", *BANS)] + [ipt("-S").splitlines()[:3]]
 
 
 def input_targets():
@@ -86,9 +91,10 @@ def input_targets():
 
 def valid_order():
     targets = input_targets()
-    return (targets.count(broker.INTEGRATION_CHAIN) == 1 and targets.count("fpbxfirewall") == 1
-            and targets.index(broker.INTEGRATION_CHAIN) == targets.index("fpbxfirewall") - 1
-            and all(targets.index(chain) < targets.index(broker.INTEGRATION_CHAIN) for chain in BANS))
+    rules = ipt("-S", "fpbxfirewall").splitlines()[1:]
+    return (broker.INTEGRATION_CHAIN not in targets and targets.count("fpbxfirewall") == 1
+            and len(jumps()) == 1 and rules[0] == jumps()[0]
+            and all(targets.index(chain) < targets.index("fpbxfirewall") for chain in BANS))
 
 
 def move_hook(chain, before=None):
@@ -152,7 +158,34 @@ def check(condition, message):
 
 
 def jumps():
-    return [line for line in ipt("-S", "INPUT").splitlines() if "-j " + broker.INTEGRATION_CHAIN in line]
+    return [line for line in ipt("-S", "fpbxfirewall").splitlines() if "-j " + broker.INTEGRATION_CHAIN in line]
+
+
+def udp_echo(port):
+    server = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    server.bind(("0.0.0.0", port))
+    def echo():
+        while True:
+            data, address = server.recvfrom(1024)
+            server.sendto(data, address)
+    threading.Thread(target=echo, daemon=True).start()
+
+
+def check_unrelated(workstation):
+    results = reachable(workstation, [("192.0.2.2", "192.0.2.1", port) for port in PORTS])
+    check({port for (_, _, port), ok in results.items() if ok} == {22, 443},
+          "unrelated management permits/denies changed")
+    output = run("nsenter", "--net=/proc/%d/ns/net" % workstation.pid, sys.executable, "-c", r"""
+import socket
+for port in (5060, 10000):
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client:
+        client.settimeout(1)
+        client.bind(("192.0.2.2", 0))
+        client.sendto(b"teliphones-lab", ("192.0.2.1", port))
+        assert client.recv(1024) == b"teliphones-lab"
+print("ok")
+""")
+    check(output.strip() == "ok", "normal SIP/RTP UDP traffic changed")
 
 
 def expect_raises(function, message):
@@ -181,9 +214,17 @@ with tempfile.TemporaryDirectory(prefix=".firewall-lab-", dir=ROOT) as directory
             run(*enter, "ip", "address", "add", address + "/24", "dev", "ws0")
         run(*enter, "ip", "address", "add", "fd7e::2/64", "dev", "ws0", "nodad")
         run(*enter, "ip", "link", "set", "ws0", "up")
+        run("ip", "link", "add", "lan0", "type", "veth", "peer", "name", "lan1")
+        run("ip", "link", "set", "lan1", "netns", str(workstation.pid))
+        run("ip", "address", "add", "192.0.2.1/24", "dev", "lan0")
+        run("ip", "link", "set", "lan0", "up")
+        run(*enter, "ip", "address", "add", "192.0.2.2/24", "dev", "lan1")
+        run(*enter, "ip", "link", "set", "lan1", "up")
         for port in PORTS:
             listen(port)
             listen(port, socket.AF_INET6)
+        for port in (5060, 10000):
+            udp_echo(port)
 
         state = {"subnet": "100.70.1.0/24", "listen_port": 51821, "workstations": [
             {"id": "a" * 16, "name": "ssh", "public_key": "A" * 42 + "A=", "address": SSH_PEER + "/32", "mode": "persistent", "ssh": True},
@@ -202,17 +243,51 @@ with tempfile.TemporaryDirectory(prefix=".firewall-lab-", dir=ROOT) as directory
         freepbx()
         before = freepbx_snapshot()
         check(open_set(workstation) == set(), "reproduction: nft ACCEPT must not override the simulated FreePBX DROP")
+        check_unrelated(workstation)
 
         instance.firewall_integration(state)
+        output = run(*enter, sys.executable, "-c", r"""
+import socket
+for port in (5060, 10000):
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client:
+        client.settimeout(0.3)
+        client.bind(("100.70.1.2", 0))
+        client.sendto(b"denied", ("100.70.1.1", port))
+        try:
+            client.recv(1024)
+        except socket.timeout:
+            continue
+        raise AssertionError("SIP/RTP admitted over workstation interface")
+print("ok")
+""")
+        check(output.strip() == "ok", "workstation SIP/RTP restriction changed")
+
         expected_open = {(SSH_PEER, 80), (SSH_PEER, 443), (SSH_PEER, 22), (WEB_PEER, 80), (WEB_PEER, 443)}
         check(instance.integration["state"] == "active", instance.integration)
         check(open_set(workstation) == expected_open, "integration must open exactly authorised web/SSH flows")
         listing = ipt("-S", "INPUT").splitlines()
-        check([line.split()[-1] for line in listing[1:]] == BANS + [broker.INTEGRATION_CHAIN, "fpbxfirewall"], listing)
-        check(freepbx_snapshot() == before, "FreePBX chains or policy were modified")
+        check([line.split()[-1] for line in listing[1:]] == BANS + ["fpbxfirewall"], listing)
+        check(freepbx_snapshot() == before, "unrelated FreePBX rules or policy were modified")
         stable = ipt("-S")
+        for _ in range(5):
+            instance.firewall_integration(state)
+            check(ipt("-S") == stable and valid_order(), "watchdog/reconcile cycles changed INPUT or duplicated rules")
+        check_unrelated(workstation)
+
+        # A remote disconnect changes no PBX authorization. Reconnection must reuse the exact same policy.
+        run(*enter, "ip", "link", "set", "ws0", "down")
         instance.firewall_integration(state)
-        check(ipt("-S") == stable and len(jumps()) == 1, "integration is not idempotent")
+        check(ipt("-S") == stable, "disconnect rewrote firewall authorization")
+        run(*enter, "ip", "link", "set", "ws0", "up")
+        instance.firewall_integration(state)
+        check(ipt("-S") == stable and open_set(workstation) == expected_open,
+              "reconnect duplicated rules or changed access")
+
+        # Migrate the exact old intrusive rule without installing any new INPUT rule.
+        ipt("-D", "fpbxfirewall", *broker.iptables_arguments(broker.INTEGRATION_JUMP))
+        ipt("-I", "INPUT", str(len(BANS) + 1), *broker.iptables_arguments(broker.INTEGRATION_JUMP))
+        instance.firewall_integration(state)
+        check(valid_order() and freepbx_snapshot() == before, "legacy INPUT migration failed")
 
         # "active" verifies the owned rules, not reachability through every independent firewall decision.
         early_drop = ("-i", broker.WORKSTATION_IFACE, "-s", WEB_PEER, "-p", "tcp", "--dport", "80", "-j", "DROP")
@@ -258,10 +333,12 @@ with tempfile.TemporaryDirectory(prefix=".firewall-lab-", dir=ROOT) as directory
             if order in ("flush", "chain-deleted"):
                 ipt("-F", "INPUT")
             if order == "chain-deleted":
+                for jump in jumps():
+                    ipt("-D", "fpbxfirewall", *shlex.split(jump)[2:])
                 ipt("-F", broker.INTEGRATION_CHAIN)
                 ipt("-X", broker.INTEGRATION_CHAIN)
             freepbx("hook-first" if order == "hook-first" else "normal")
-            check(freepbx_snapshot()[:3] == before[:3], "simulated reload changed FreePBX rules")
+            check(freepbx_snapshot()[1:] == before[1:], "simulated reload changed FreePBX rules")
             check(open_set(workstation, (SSH_PEER,)) == set(), "reload must fall back to FreePBX policy (fail closed)")
             if BACKEND == "nft":
                 check(instance.wake.wait(3), "FreePBX iptables-nft reload did not wake the enforcement worker")
@@ -269,6 +346,7 @@ with tempfile.TemporaryDirectory(prefix=".firewall-lab-", dir=ROOT) as directory
             check(instance.integration["state"] == "active" and len(jumps()) == 1, instance.integration)
             check(valid_order(), input_targets())
             check(open_set(workstation) == expected_open, "reconciliation did not restore exact access")
+            check_unrelated(workstation)
 
         # Reload that moves an observed Fail2Ban hook after fpbxfirewall: integration is withdrawn (Fail2Ban is never
         # bypassed), then restored at the correct position after Fail2Ban re-inserts its hook at position 1.
@@ -283,7 +361,7 @@ with tempfile.TemporaryDirectory(prefix=".firewall-lab-", dir=ROOT) as directory
         check(instance.integration["state"] == "active" and valid_order(), input_targets())
         check(open_set(workstation) == expected_open, "integration not restored after Fail2Ban hook reordering")
 
-        # A Fail2Ban hook placed between the TELIPHONES jump and fpbxfirewall is detected; the jump is moved after it.
+        # Fail2Ban can reinsert hooks immediately above fpbxfirewall without bypassing them or moving our jump.
         move_hook("fail2ban-apache-auth", before="fpbxfirewall")
         ipt("-I", "fail2ban-apache-auth", "1", "-s", WEB_PEER, "-j", "REJECT")
         instance.expire_workstations()
@@ -292,8 +370,20 @@ with tempfile.TemporaryDirectory(prefix=".firewall-lab-", dir=ROOT) as directory
         ipt("-D", "fail2ban-apache-auth", "-s", WEB_PEER, "-j", "REJECT")
         freepbx()
         instance.expire_workstations()
-        check(valid_order() and freepbx_snapshot()[:3] == before[:3], input_targets())
+        check(valid_order() and freepbx_snapshot() == before, input_targets())
         check(not instance.enforcement_event.is_set(), "iptables reloads must not re-admit peers")
+
+        # Managed pairings keep only their certificate API and dedicated SSH port, not system SSH or another
+        # peer's listener. No sshd is started here; certificate authentication has its own isolated SSH suite.
+        managed_state = json.loads(json.dumps(state))
+        managed_state["workstations"][0]["ssh_public_key"] = "fixture"
+        instance.mutate_policy(instance.expected_policy(managed_state), instance.owned_table())
+        instance.firewall_integration(managed_state)
+        check(open_set(workstation) == expected_open - {(SSH_PEER, 22)}
+              | {(SSH_PEER, broker.ssh.API_PORT), (SSH_PEER, 22002)},
+              "managed SSH/API scope widened or system SSH admitted")
+        check_unrelated(workstation)
+        instance.mutate_policy(instance.expected_policy(state), instance.owned_table())
 
         # SSH removal and revocation take effect immediately.
         state["workstations"][0]["ssh"] = False
@@ -319,6 +409,7 @@ with tempfile.TemporaryDirectory(prefix=".firewall-lab-", dir=ROOT) as directory
         check(freepbx_snapshot() == before, "teardown changed FreePBX rules")
         check(run("nft", "-j", "list", "table", "inet", "teliphones_lab_foreign") == foreign, "foreign nft table changed")
         check(run(IP6TABLES, "-w", "5", "-S") == ip6_before, "ip6tables changed")
+        check_unrelated(workstation)
 
         # An unfamiliar namesake chain is never modified or removed.
         ipt("-N", broker.INTEGRATION_CHAIN)

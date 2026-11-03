@@ -1,11 +1,15 @@
-# TELIPHONES 0.4.0 workstation pairing contract
+# TELIPHONES 0.4.1 workstation pairing contract
 
 ## Version 2: managed My PBXs SSH
 
 Broker protocol **5** adds managed SSH alongside the preserved version-1 contract
-below. **Windows 0.7.0 now implements a session-isolated memory agent in source;
-native Windows tests have not run yet.** Its old plaintext session-key path
-remains removed. GUI-only pairing is available without OpenSSH.
+below. **Windows 0.7.0 implements a session-isolated memory agent.** The operator
+reports successful Windows builds, ten native OpenSSH integration tests passing,
+initial authenticated SSH into FreePBX 17 with module 0.4.0, and terminal closure
+on disconnect. These reports do not establish complete PBX-side revocation,
+expiry or cgroup cleanup, or real 0.4.1 firewall stability. No run identifiers or
+raw logs were supplied here. The old plaintext session-key path remains removed.
+GUI-only pairing is available without OpenSSH.
 The preserved SSH-capable pairing contract uses `TELIPHONES-PAIR-REQUEST-2:` and schema
 `teliphones-pair-request/2`: the existing four fields plus `ssh_public_key`, a
 canonical Ed25519 OpenSSH public key. An HTTPS/CSRF-authenticated full
@@ -47,8 +51,9 @@ seconds and the original pairing expiry. The portable client parser checks these
 bindings structurally; the separate production OpenSSL verifier checks the
 certificate's digital signature before launching Windows OpenSSH. The Windows
 client signs once through its process-bound memory agent and immediately destroys
-the session key; no reusable-key preflight is performed. Native interoperability
-remains unverified. Genuine Linux OpenSSH rejects tampered signatures.
+the session key; no reusable-key preflight is performed. Initial native
+interoperability is operator-reported; genuine Linux OpenSSH also rejects
+tampered signatures in local namespace tests.
 Errors are explicit JSON `{ok:false,error:string}`.
 
 Recognised legacy principal files migrate only after new configuration validation
@@ -77,8 +82,8 @@ requires explicit SSH-capable pairing before adding managed SSH; host/CA rotatio
 also requires re-pairing.
 PuTTY is unsupported for managed My PBXs certificates. Remote Support is
 independent and unchanged. Missing SSH prerequisites do not block web-only PBX
-pairing. Native Windows and real systemd/FreePBX lifecycle validation remain
-outstanding; namespace tests substitute the service supervisor. Linux tmpfs test
+pairing. The complete terminal/reboot matrix and real systemd/FreePBX lifecycle
+validation remain outstanding; namespace tests substitute the service supervisor. Linux tmpfs test
 keys are not evidence of memory-backed Windows credentials or native lifecycle
 destruction. The full key inventory and outstanding gates are in
 `docs/SSH-KEY-MANAGEMENT-PROPOSAL.md` at the source repository root; that document
@@ -124,7 +129,7 @@ The response is a copyable enrollment artifact, not proof that arbitrary access 
 
 This also applies when upgrading from 0.2.1. Install the current module and rerun the root bootstrap before relying on the separately installed broker.
 
-Install `TELIPHONES-0.3.2.tgz` through Module Admin, then rerun the documented root bootstrap with no active support session and Windows tunnels disconnected. Installation does not delete `workstations.json`, `workstation-recovery.json` or `workstation-wg.key`. Valid pairings keep their identities, addresses, permissions and original deadlines.
+Install the current `TELIPHONES-0.4.1.tgz` through Module Admin, then rerun the documented root bootstrap with no active support session and Windows tunnels disconnected. Installation does not delete `workstations.json`, `workstation-recovery.json` or `workstation-wg.key`. Valid pairings keep their identities, addresses, permissions and original deadlines.
 
 The bootstrap copies the current broker into its protected root-owned installation and restarts it. Protocol 3 was already used in 0.2.0: an operational socket or protocol number alone does **not** prove these security corrections are installed. Rerunning the bootstrap is mandatory even if no update warning appears.
 
@@ -134,17 +139,22 @@ An unmarked legacy table is migrated only when its complete nft JSON exactly mat
 
 The 0.3.1 broker adds the hookless `teliphones_owner_v1` chain because Debian 12 nftables 1.0.6 drops table comments from kernel JSON readback. The operator reports that this ownership correction was tested successfully on the actual FreePBX 17 test PBX. The repository code still needs to be installed and verified on that PBX through the normal upgrade/bootstrap procedure; this document does not claim that deployment has occurred.
 
-Install `TELIPHONES-0.3.1.tgz`, confirm there is no active support session, disconnect Windows tunnels, then rerun [Complete Installation on FreePBX 17](../README.md#complete-installation-on-freepbx-17) from an existing root shell. Broker protocol remains 3, so protocol/status alone cannot prove the corrected root-owned broker is running. On restart, the broker verifies the tunnel is down, safely migrates only the exact known 0.3.0 policy, restores current policy from saved state and re-admits valid, unexpired pairings. Pairing identities, addresses, SSH permissions, deadlines and the PBX WireGuard key are preserved. If exact ownership cannot be established, migration is refused and recovery data remains intact.
+Install the current `TELIPHONES-0.4.1.tgz`, confirm there is no active support session, disconnect Windows tunnels, then rerun [Complete Installation on FreePBX 17](../README.md#complete-installation-on-freepbx-17) from an existing root shell. The 0.3.1 ownership correction originally kept protocol 3; current protocol 5 alone likewise does not prove the installed helper's version or contents. On restart, the broker verifies the tunnel is down, safely migrates only the exact known 0.3.0 policy, restores current policy from saved state and readmits valid, unexpired pairings. Pairing identities, addresses, SSH permissions, deadlines and the PBX WireGuard key are preserved. If exact ownership cannot be established, migration is refused and recovery data remains intact.
 
 ## Upgrading from 0.3.1
 
-The 0.3.2 broker adds bounded diagnostics and protocol 4. Install `TELIPHONES-0.3.2.tgz`, confirm there is no active support session, disconnect workstation tunnels, and rerun the root bootstrap. This upgrades the separately installed broker while preserving workstation pairing state and the WireGuard key. Firewall policy, permitted ports, and pairing protocol are unchanged. The diagnostics panel remains unavailable until status reports protocol 4.
+The historical 0.3.2 change added bounded diagnostics and protocol 4 without
+changing firewall permissions or pairing protocol. For a current upgrade,
+install 0.4.1, disconnect workstation tunnels, confirm no active support session,
+and rerun the root bootstrap. Preserve pairing state and the WireGuard key.
+Current managed SSH requires protocol 5 and both installed helpers; protocol 4
+identifies diagnostics support only. Follow [current upgrade verification](../README.md#updating-teliphones).
 
 ## Network requirements
 
 The workstation connects directly to the configured PBX WireGuard UDP endpoint. The PBX's chosen UDP port must be reachable through the PBX host firewall, FreePBX Firewall, and any router/NAT. The module does not configure port forwarding or change unrelated network services. No relay or universal NAT traversal is provided.
 
-The `nft` CLI is essential; enabling or running `nftables.service` is **not** required. The broker programs the kernel directly. Missing userspace tools require platform-administrator repair; the GUI has no nftables installer. Apart from the single marked INPUT jump to its own `teliphones-ws` iptables chain (see [FreePBX Firewall integration](#freepbx-firewall-integration)), TELIPHONES never changes foreign tables or chains, their default policies, or firewall services.
+The `nft` CLI is essential; enabling or running `nftables.service` is **not** required. The broker programs the kernel directly. Missing userspace tools require platform-administrator repair; the GUI has no nftables installer. Apart from its marked jump inside `fpbxfirewall` and removal of the exact legacy INPUT jump (see [FreePBX Firewall integration](#freepbx-firewall-integration)), TELIPHONES never changes foreign tables or chains, their default policies, or firewall services.
 
 ## Enforcement integrity and exposure limits
 
@@ -162,13 +172,15 @@ An accept verdict in TELIPHONES' nftables table is final only for that base chai
 
 No supported mechanism for narrowly authorising traffic from an independently managed interface was available for inspection in the development workspace. FreePBX Firewall source and documentation were not present locally, and no external search was performed. Trusting `tlp-admin` as an interface zone or adding the workstation subnet to trusted networks would admit every service, so neither approach is used.
 
-The root broker instead maintains a dedicated chain, `teliphones-ws`, in the iptables filter table selected by `/usr/sbin/iptables`. That command's backend is reported as `nf_tables` or `legacy` in the GUI. One INPUT jump is used:
+The old integration inserted its jump above `fpbxfirewall` in INPUT. During Windows 0.7.0 / module 0.4.0 testing, the PBX journal identified that exact rule as invading and repeatedly reset iptables, approximately every 41 seconds. Broker reconciliation restored the very rule that FreePBX rejected, creating competing management loops.
+
+The corrected root broker maintains a dedicated chain, `teliphones-ws`, in the iptables filter table selected by `/usr/sbin/iptables`. That command's backend is reported as `nf_tables` or `legacy` in the GUI. One marked jump is placed **inside `fpbxfirewall`, at position 1**, not above its INPUT hook:
 
 ```
--A INPUT -i tlp-admin -m comment --comment "TELIPHONES workstation integration v1" -j teliphones-ws
+-A fpbxfirewall -i tlp-admin -m comment --comment "TELIPHONES workstation integration v1" -j teliphones-ws
 ```
 
-The jump must be the rule immediately before the first INPUT jump to `fpbxfirewall` and must follow every INPUT jump to a Fail2Ban chain. Fail2Ban hooks are recognised by the case-insensitive prefixes `fail2ban-` and `f2b-`. The FreePBX 17 test installation uses `fail2ban-sshd`, `fail2ban-SIP`, `fail2ban-BadBots`, `fail2ban-api`, `fail2ban-SSH`, `fail2ban-apache-auth`, `fail2ban-recidive` and `fail2ban-PBX-GUI`; upstream Fail2Ban uses `f2b-<jail>`. Banned addresses therefore remain banned for tunnel traffic. Each rule in the chain carries the same marker:
+INPUT is left in FreePBX's order. Every direct INPUT Fail2Ban hook must precede entry to `fpbxfirewall`. Fail2Ban hooks are recognised by the case-insensitive prefixes `fail2ban-` and `f2b-`. The FreePBX 17 test installation uses `fail2ban-sshd`, `fail2ban-SIP`, `fail2ban-BadBots`, `fail2ban-api`, `fail2ban-SSH`, `fail2ban-apache-auth`, `fail2ban-recidive` and `fail2ban-PBX-GUI`; upstream Fail2Ban uses `f2b-<jail>`. Banned addresses therefore remain banned for tunnel traffic. Each rule in the owned chain carries the same marker:
 
 ```
 -A teliphones-ws -s <workstation>/32 -d <PBX tunnel address>/32 -i tlp-admin -p tcp -m tcp --dport 80  ... -j ACCEPT
@@ -177,32 +189,34 @@ The jump must be the rule immediately before the first INPUT jump to `fpbxfirewa
 -A teliphones-ws ... -j RETURN
 ```
 
-Only active, unexpired paired addresses are listed. TCP 22 is listed only for workstations explicitly approved for SSH. Every other packet, including SIP, AMI, database and other ports, other sources, IPv6 and ICMP, returns to normal FreePBX Firewall processing. The owned nft table still applies its own drops. IPv6 is not integrated, and `ip6tables` is not modified.
+Only active, unexpired paired addresses are listed. Legacy SSH-approved pairings retain TCP 22; managed certificate SSH pairings instead receive TCP 8765 and their own dedicated SSH port, never system TCP 22. Certificate authentication, account approval, device binding and certificate lifetimes are unchanged. Every other packet, including SIP/RTP, AMI, database and other ports, other sources, IPv6 and ICMP, returns to normal FreePBX Firewall processing. The owned nft table still applies its own drops. IPv6 is not integrated, and `ip6tables` is not modified. Non-`tlp-admin` traffic never enters the owned chain.
 
 Lifecycle and safeguards:
 
 - The complete nft policy is verified before the integration is installed. Integration is installed before `tlp-admin` is brought up.
-- Updates are idempotent. The chain is rebuilt only if its parsed rules differ. The jump is moved only if it is missing, duplicated or incorrectly ordered. Every change is read back and verified. A flushed chain or missing jump is never more permissive than FreePBX's own policy.
+- Updates are idempotent. The owned chain is rebuilt only if its parsed rules differ. The jump is moved only if it is missing, duplicated or not first inside `fpbxfirewall`. Every change is read back and verified. A flushed chain or missing jump falls back to FreePBX's policy. Stable checks perform no firewall writes.
+- Migration first deletes every exact marked legacy INPUT jump, including duplicates. It never inserts an INPUT rule. Cleanup understands both old and new locations, including after a broker restart or interrupted migration.
 - Revocation, expiry, disablement, broker shutdown and uninstall remove the jump and chain after the interface is disabled or removed. An iptables cleanup failure is reported and keeps recovery state, but it does not skip owned nft cleanup.
 - FreePBX Firewall reloads are repaired without bringing peers down. With the `nf_tables` backend, the existing nft monitor wakes the broker on `ip filter` changes. With `legacy`, repair relies on the approximately 15-second periodic check. Until repair, tunnel traffic is dropped by FreePBX Firewall; the exposure is not widened.
-- Any rule in `teliphones-ws` without the marker, an unrecognised match, or a reference from a chain other than INPUT is treated as unfamiliar. It is never modified or deleted, and workstation access is not admitted.
-- No INPUT jump to `fpbxfirewall` results in status `not-detected`, and no integration rules are installed. If any Fail2Ban jump follows the FreePBX hook, no position both after Fail2Ban and before FreePBX Firewall exists. TELIPHONES then removes its integration and reports status `error`, naming the offending Fail2Ban chains. Tunnel traffic is left to FreePBX Firewall, and Fail2Ban is never bypassed. The integration is restored automatically when the ordering is corrected, for example when Fail2Ban restarts and re-inserts its hooks at INPUT position 1.
-- If a reload leaves the jump anywhere other than immediately before `fpbxfirewall`, for example with a Fail2Ban hook or another rule inserted between them, the jump is moved back to that position. Every placement is read back. If a hook is inserted concurrently and the result is invalid, the integration is withdrawn and reported as an error.
+- Any rule in `teliphones-ws` without the marker, an unrecognised match, or a reference other than the exact marked jump from INPUT (legacy cleanup only) or `fpbxfirewall` is treated as unfamiliar. It is never modified or deleted, and workstation access is not admitted.
+- No INPUT jump to `fpbxfirewall` results in status `not-detected`, and no integration rules are installed. If any Fail2Ban jump follows the FreePBX hook, the internal exception would precede that ban. TELIPHONES then removes its integration and reports status `error`, naming the offending Fail2Ban chains. Tunnel traffic is left to FreePBX Firewall, and Fail2Ban is never intentionally bypassed. The integration is restored automatically when the ordering is corrected, for example when Fail2Ban restarts and re-inserts its hooks at INPUT position 1.
+- A rebuild can flush `fpbxfirewall` and remove its owned jump. Reconciliation restores only that jump and, if needed, its own chain. It does not repair or reorder FreePBX's INPUT rules. Every placement is read back. If a hook changes concurrently and the result is invalid, the integration is withdrawn and reported as an error.
 - If installation or verification fails, TELIPHONES removes its rules and reports `error`. Peers stay nft-protected, but FreePBX Firewall may drop their HTTP/HTTPS. If removal cannot be verified, workstation access is disabled and recovery state is retained.
 
-TELIPHONES never modifies FreePBX Firewall chains, zones, interface assignments, trusted networks, settings, policies or services. It never flushes, restarts, disables or reconfigures FreePBX Firewall.
+The only edit inside a FreePBX chain is insertion/deletion of TELIPHONES' exact marked jump. No unrelated rule is flushed, replaced, deleted or reordered. Only the marker-validated `teliphones-ws` chain may be flushed/deleted. Zones, interface assignments, trusted networks, settings, policies and services are unchanged. Custom Rules need not be enabled. TELIPHONES never flushes, restarts, disables or reconfigures FreePBX Firewall.
 
 Diagnostics: **Windows workstations** shows integration status as active, not installed, failed or unreported. An unreported status means the running broker predates this integration and the root bootstrap must be rerun. When a workstation has a recent handshake but integration is not active, its row warns that FreePBX Firewall may drop HTTP/HTTPS. Read-only root checks are:
 
 ```
 iptables -S INPUT
+iptables -S fpbxfirewall
 iptables -S teliphones-ws
 iptables -L teliphones-ws -v -n -x
 ```
 
 Increasing counters on the ACCEPT rules show that integration is matching tunnel traffic.
 
-Limitations: the hook name `fpbxfirewall` and the `fail2ban-*` chain names come from the reported FreePBX 17 installation. `f2b-*` follows the upstream Fail2Ban default. None was verified against FreePBX Firewall or Fail2Ban source. Fail2Ban hooks reached only through other chains, rather than directly from INPUT, and Fail2Ban using its own nftables tables are not inspected. A separate nftables Fail2Ban table still applies independently because an iptables accept does not override it. If an external reload places a Fail2Ban hook between the TELIPHONES jump and `fpbxfirewall`, that jail can be bypassed for authorised 80/443 (and approved 22) flows until reconciliation. Reconciliation is immediate on `nf_tables` and takes up to about 15 seconds on `legacy`. The integration's behaviour during a real FreePBX Firewall restart, its interaction with any FreePBX self-check of INPUT, and the end-to-end Windows result have not been tested on a real PBX. Simulated namespace tests do not establish that the reported connectivity failure is resolved.
+Limitations: the hook name `fpbxfirewall` and the `fail2ban-*` chain names come from the reported FreePBX 17 installation. `f2b-*` follows the upstream Fail2Ban default. None was verified against FreePBX Firewall or Fail2Ban source. Fail2Ban hooks reached only through other chains, rather than directly from INPUT, and Fail2Ban using its own nftables tables are not inspected. A separate nftables Fail2Ban table still applies independently because an iptables accept does not override it. A Fail2Ban hook externally moved after `fpbxfirewall` can be bypassed by approved traffic until reconciliation withdraws integration. Hooks reinserted above `fpbxfirewall` cannot be bypassed by this jump. Monitor events wake reconciliation on `nf_tables`; `legacy` uses the approximately 15-second periodic fallback. Neither has a guaranteed repair deadline. FreePBX source is absent locally and no external searches were used. Tests model the reported above-hook watchdog condition; they do not prove every FreePBX self-check. Real watchdog stability, actual rebuilds, systemd lifecycle and Windows 0.7.0 certificate SSH still require PBX validation; see the source repository's `docs/FREEPBX-FIREWALL-DIAGNOSTICS.md`.
 
 ## Verified uninstall and recovery
 

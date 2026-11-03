@@ -1,6 +1,10 @@
 # TELIPHONES architecture
 
-This document describes how TELIPHONES module version 0.3.1 is built: its components, trust boundaries, network interfaces, firewall layers and stored state. For the security properties and their limitations, see [Security](SECURITY.md). For operating instructions, see the [module guide](../teliphones/README.md).
+This document describes **FreePBX module 0.4.1** and **Windows 0.7.0**:
+components, trust boundaries, interfaces, firewall layers and stored state.
+Architecture describes the implementation, not proof of production behaviour.
+See [Security and verification evidence](SECURITY.md#verification-evidence)
+and the [module operating guide](../teliphones/README.md).
 
 ## Contents
 
@@ -78,12 +82,12 @@ sequenceDiagram
     participant M as TELIPHONES module
     participant B as Root broker
     W->>W: Generate WireGuard key pair and 128-bit nonce
-    W-->>A: TELIPHONES-PAIR-REQUEST-1 (public key, name, nonce)
+    W-->>A: Pairing request (v1 GUI-only; v2 adds independent SSH public identity)
     A->>M: Paste request, choose period and SSH permission (HTTPS)
     M->>B: pair
     B->>B: Allocate a /32, apply and verify the nft policy and firewall integration
     B-->>M: Pairing response values
-    M-->>A: TELIPHONES-PAIR-RESPONSE-1
+    M-->>A: Bound response (v2 includes approved account, ports, pinned host/CA)
     A-->>W: Paste response
     W->>W: Verify nonce, key, addresses, endpoint and expiry, then save the profile
     W->>B: WireGuard handshake on tlp-admin (UDP 51821 by default)
@@ -95,11 +99,21 @@ sequenceDiagram
 | Default UDP port | `51821`; all pairings on a PBX share one port |
 | Address allocation | A `/24` from `100.64.0.0/10` (excluding `100.100.0.0/16`); the PBX is `.1` and each workstation receives a `/32` |
 | Workstation route | Only the PBX's tunnel address (`/32`) |
-| Services | TCP 80/443 to the PBX tunnel address; TCP 22 only for SSH-approved workstations; ICMP echo to the PBX tunnel address |
+| Services | TCP 80/443; managed SSH-approved peers additionally receive TCP 8765 and `22000 + IPv4 last octet`; legacy SSH-approved v1 pairings retain TCP 22; ICMP echo remains subject to FreePBX policy |
 | Forwarding | Dropped in both directions on `tlp-admin` |
 | GUI address opened by the client | `http://<PBX tunnel address>/admin/`, inside the encrypted tunnel |
 
 The request and response formats, and the client-side validation rules, are specified in the [workstation pairing contract](../teliphones/docs/WORKSTATION-PAIRING.md).
+
+Managed SSH uses an authenticated request/2 challenge exchange over the tunnel:
+the permanent DPAPI-protected workstation identity signs a fresh session ID and
+distinct ephemeral public key. The broker issues a source/principal-bound
+certificate for at most 300 seconds, bounded by the pairing deadline. Windows
+verifies the CA signature and pinned host, then its private agent signs once for
+the owned OpenSSH child and destroys the session signing capability. The app
+owns the console/helper/SSH Job; the PBX separately owns each listener's
+systemd/cgroup. No ordinary SSH account/configuration is modified.
+See the [key inventory and lifecycle](SSH-KEY-MANAGEMENT-PROPOSAL.md).
 
 ## Firewall layers on the PBX
 
@@ -107,15 +121,18 @@ Workstation traffic is subject to two independent layers. Both must permit a pac
 
 ### Layer 1: TELIPHONES nftables table
 
-The broker owns a single table, `inet teliphones_workstations`, identified by the exact comment `TELIPHONES workstation enforcement v1`. Its base chains run at priority −10:
+The broker owns `inet teliphones_workstations`, identified by the exact hookless
+`teliphones_owner_v1` chain, not a table comment. Its base chains run at priority -10:
 
 ```text
 table inet teliphones_workstations {
-    comment "TELIPHONES workstation enforcement v1";
+    chain teliphones_owner_v1 {
+    }
     chain input {
         type filter hook input priority -10; policy accept;
-        iifname "tlp-admin" ip daddr <PBX> tcp dport { 80, 443 } accept
-        iifname "tlp-admin" ip saddr { <SSH-approved /32s> } ip daddr <PBX> tcp dport 22 accept
+        iifname "tlp-admin" ip saddr <paired /32> ip daddr <PBX> tcp dport { 80, 443 } accept
+        iifname "tlp-admin" ip saddr <managed-SSH /32> ip daddr <PBX> tcp dport { 8765, <peer SSH port> } accept
+        iifname "tlp-admin" ip saddr <legacy-SSH /32> ip daddr <PBX> tcp dport 22 accept
         iifname "tlp-admin" ip daddr <PBX> icmp type echo-request accept
         iifname "tlp-admin" drop
     }
@@ -131,31 +148,33 @@ table inet teliphones_workstations {
 
 ### Layer 2: FreePBX Firewall integration
 
-An nftables `accept` is final only within its own base chain, so a later FreePBX Firewall rule can still drop the packet. On a real FreePBX 17 system, FreePBX Firewall classified `tlp-admin` as `zone-external` and dropped workstation web traffic. To admit only the approved traffic, the broker maintains its own iptables chain, `teliphones-ws`, with one marked jump from `INPUT`:
+An nftables `accept` is final only within its own base chain, so a later FreePBX Firewall rule can still drop the packet. On a real FreePBX 17 system, FreePBX Firewall classified `tlp-admin` as `zone-external` and dropped workstation web traffic. The old jump above `fpbxfirewall` in INPUT triggered the reported "invading rule" resets. To admit only the approved traffic without competing with INPUT ordering, the broker maintains its own iptables chain, `teliphones-ws`, with one marked jump at the start of `fpbxfirewall`:
 
 ```mermaid
 flowchart LR
     subgraph INPUT["iptables filter INPUT (order matters)"]
         direction LR
-        F1["fail2ban-* / f2b-* hooks"] --> J["-i tlp-admin → teliphones-ws<br/>(marked jump)"] --> FP["fpbxfirewall"]
+        F1["fail2ban-* / f2b-* hooks"] --> FP["fpbxfirewall"]
     end
+    FP --> J["First rule inside fpbxfirewall:<br/>-i tlp-admin → teliphones-ws"]
     J --> TW
     subgraph TW["teliphones-ws (TELIPHONES-owned)"]
         R1["ACCEPT paired /32 → PBX, TCP 80"]
         R2["ACCEPT paired /32 → PBX, TCP 443"]
-        R3["ACCEPT SSH-approved /32 → PBX, TCP 22"]
+        R3["ACCEPT approved SSH/API ports per /32"]
         R4["RETURN everything else"]
     end
 ```
 
-*The jump must follow every Fail2Ban hook and sit immediately before the FreePBX Firewall hook, so banned addresses stay banned. The chain accepts only exact source, destination, interface and port combinations, and returns everything else to FreePBX Firewall unchanged. SIP, AMI, databases, other ports, other sources, ICMP and IPv6 are never accepted by this chain.*
+*Every INPUT Fail2Ban hook must precede entry to FreePBX Firewall, so banned addresses stay banned. The chain accepts only exact source, destination, interface and port combinations, and returns everything else to the remaining FreePBX rules unchanged. Managed SSH uses TCP 8765 and the peer's dedicated port; legacy approved SSH uses 22. SIP/RTP, AMI, databases, other ports, other sources, ICMP and IPv6 are never accepted by this chain.*
 
 Placement rules:
 
 - Fail2Ban hooks are recognised by the case-insensitive prefixes `fail2ban-` (as used on the FreePBX 17 test PBX) and `f2b-` (upstream Fail2Ban).
 - If no `fpbxfirewall` hook exists, the status is `not-detected` and no integration is installed.
 - If a Fail2Ban hook follows `fpbxfirewall`, no safe position exists. The integration is withdrawn and the status is `error`, naming the chains. Tunnel traffic is then left to FreePBX Firewall.
-- The `inet teliphones_workstations` table is owned through its exact hookless `teliphones_owner_v1` marker chain, not a table comment that Debian 12 nftables 1.0.6 drops from JSON readback. An unfamiliar `teliphones-ws` iptables chain, an unmarked rule within it or a reference from another chain is never modified, and admission is refused.
+- The `inet teliphones_workstations` table is owned through its exact hookless `teliphones_owner_v1` marker chain, not a table comment that Debian 12 nftables 1.0.6 drops from JSON readback. An unfamiliar `teliphones-ws` chain, an unmarked rule within it or an unexpected reference is never modified, and admission is refused.
+- Only the exact marked jump is edited inside `fpbxfirewall`. The exact legacy INPUT jump is removed on migration and cleanup; no INPUT rule is inserted. No unrelated rule is flushed, replaced or reordered; Custom Rules are not required.
 
 The exact rule text, the reconciliation behaviour and the known ordering gap are documented in [FreePBX Firewall integration](../teliphones/docs/WORKSTATION-PAIRING.md#freepbx-firewall-integration).
 
@@ -192,7 +211,7 @@ The session progresses through `authorise → provision → connect-confirm → 
 | Lifetime | Temporary (60–1440 minutes) or persistent until revoked | Always temporary (5–240 minutes), absolute expiry |
 | Interface | `tlp-admin` | `wg-teliphones` |
 | Addressing | `100.64.0.0/10` allocation | `10.20.17.0/24` allocation |
-| SSH | Existing PBX SSH service on TCP 22 with existing credentials, only if approved | Temporary key-only `sshd` on port 22222 |
+| SSH | Managed certificate service for an explicitly approved existing account; legacy v1 approval retains system TCP 22 | Temporary key-only `sshd` on port 22222 |
 | External infrastructure | None; direct WireGuard to the PBX | Connect, Checker and Console implementations |
 | FreePBX Firewall integration | `teliphones-ws` chain | None; support firewall policy is not changed |
 
@@ -203,6 +222,7 @@ Neither workflow can create, extend or revoke the other's authority.
 | Path or unit | Purpose |
 |---|---|
 | `/usr/local/lib/teliphones-broker/support_broker.py` | Root-owned installed copy of the broker |
+| `/usr/local/lib/teliphones-broker/ssh_authority.py` | Root-owned managed certificate and listener helper; refreshed by the same bootstrap |
 | `teliphones-broker.service` | Runs the broker as root |
 | `teliphones-reconcile.service` | Runs `fwconsole teliphones reconcile` once at boot to reconcile support authority |
 | `/run/teliphones/control.sock` | Broker control socket, `root:asterisk`, mode `0660` |

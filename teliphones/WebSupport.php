@@ -3,7 +3,7 @@ namespace FreePBX\modules\Teliphones;
 
 class WebSupport
 {
-    public const VERSION = '0.4.0';
+    public const VERSION = '0.4.1';
     public const DIAGNOSTIC_ID_PATTERN = '/^ws-[a-f0-9]{16}$/';
 
     public static function authorised($sessionUser, $frameworkUser = null): bool

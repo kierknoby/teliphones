@@ -19,7 +19,7 @@ class BrokerBootstrap
 
     /**
      * For Debian 12 / FreePBX 17, from an existing root shell.
-     * The 0.4.0 upgrade/rollback lifecycle still requires disposable-host validation.
+     * The 0.4.1 upgrade/rollback lifecycle still requires disposable-host validation.
      * README.md must contain this text verbatim (enforced by tests/web-support.php).
      */
     public const ROOT_BOOTSTRAP_SCRIPT = <<<'SCRIPT'
@@ -56,7 +56,7 @@ echo "TELIPHONES broker is ready."
 SCRIPT;
 
     /** Shared by the GUI and README; tests require both to contain this text verbatim. */
-    public const UPGRADE_NOTE = 'A Module Admin upgrade updates the FreePBX module files but does not necessarily update the separately installed, root-owned broker. TELIPHONES 0.4.0 requires broker protocol 5 and both `/usr/local/lib/teliphones-broker/support_broker.py` and `/usr/local/lib/teliphones-broker/ssh_authority.py`; an older broker or a missing SSH helper cannot provide managed SSH. Confirm that no support session is active (as root: `fwconsole teliphones status`), disconnect Windows tunnels and expect existing TELIPHONES-managed SSH sessions to terminate, then rerun the root bootstrap from an existing root shell. The bootstrap retains the previous helper files and broker unit, validates the installed helpers, and enables and restarts `teliphones-broker.service`. Verify that service is active, `/run/teliphones/control.sock` exists, and the refreshed Connectivity > TELIPHONES page reports the current broker and managed SSH readiness. On failure, rollback attempts to restore prior files and the previous enabled/active state; an incomplete rollback is an error requiring recovery from the existing root shell. Do not restart, reconfigure or disable the normal system SSH service or change administrator accounts. Valid pairings retain their original deadlines; legacy SSH pairings need explicit re-pairing for managed SSH.';
+    public const UPGRADE_NOTE = 'A Module Admin upgrade updates the FreePBX module files but does not necessarily update the separately installed, root-owned broker. TELIPHONES 0.4.1 requires broker protocol 5 and both `/usr/local/lib/teliphones-broker/support_broker.py` and `/usr/local/lib/teliphones-broker/ssh_authority.py`; an older broker or a missing SSH helper cannot provide managed SSH. Confirm that no support session is active (as root: `fwconsole teliphones status`), disconnect Windows tunnels and expect existing TELIPHONES-managed SSH sessions to terminate, then rerun the root bootstrap from an existing root shell. The bootstrap retains the previous helper files and broker unit, validates the installed helpers, and enables and restarts `teliphones-broker.service`. Verify that service is active, `/run/teliphones/control.sock` exists, and the refreshed Connectivity > TELIPHONES page reports the current broker and managed SSH readiness. On failure, rollback attempts to restore prior files and the previous enabled/active state; an incomplete rollback is an error requiring recovery from the existing root shell. Do not restart, reconfigure or disable the normal system SSH service or change administrator accounts. Valid pairings retain their original deadlines; legacy SSH pairings need explicit re-pairing for managed SSH.';
 
     public const RECONCILE_UNIT_CONTENTS = <<<'UNIT'
 [Unit]
@@ -151,7 +151,7 @@ UNIT;
         @chmod($dir, 0700);
         $config = self::CONFIG;
         if (!file_exists($config)) {
-            @file_put_contents($config, "; TELIPHONES 0.4.0 development configuration\n; Support transport is temporary and session-scoped.\n; On-PBX uses local ephemeral WireGuard. On-net/Off-net require an external Connect implementation.\n");
+            @file_put_contents($config, "; TELIPHONES 0.4.1 development configuration\n; Support transport is temporary and session-scoped.\n; On-PBX uses local ephemeral WireGuard. On-net/Off-net require an external Connect implementation.\n");
             @chmod($config, 0600);
         }
 

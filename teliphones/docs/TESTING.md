@@ -1,4 +1,4 @@
-# TELIPHONES 0.3.2 testing
+# TELIPHONES 0.4.1 testing
 
 ## Workstation enforcement regression coverage
 
@@ -8,9 +8,128 @@ When `unshare`, `ip`, `nft` and user/network namespaces are usable, Python autom
 
 `gateway/tests/test_firewall_integration.py` covers the FreePBX Firewall integration chain. It runs simulated broker tests against a fake iptables layout that covers ordering, exact rules, SSH scope, reconnection, reload repair, revocation, expiry, shutdown, uninstall, failure handling and refusal of unfamiliar chains. It also runs `gateway/tests/firewall_integration_lab.py` in a fresh user/network namespace for both the iptables `nf_tables` and `legacy` backends (legacy uses a private `XTABLES_LOCKFILE`). The lab sends real TCP packets over a veth `tlp-admin` through a **simulated** FreePBX layout: a `fpbxfirewall` hook, `zone-external` and final DROP, plus INPUT hooks for the eight `fail2ban-*` chains observed on the FreePBX 17 test PBX. Regression coverage now includes hookless nftables ownership, exact 0.3.0 policy migration with the interface down, refusal of altered policies, broker restart, revocation and recovery. The simulated tests also cover upstream `f2b-*` and mixed-case names, Fail2Ban hooks moved after `fpbxfirewall` or between the jump and the hook by reloads, Fail2Ban restarts, and a hook inserted concurrently with integration. It checks that only TCP 80/443 (and 22 when approved) are admitted. SIP, AMI, MySQL and IPv6 remain blocked. It also checks that Fail2Ban bans remain effective, reload repair, revocation and teardown preservation. This is not a real FreePBX Firewall or WireGuard test. The operator separately reports that the nftables ownership correction was tested on the real FreePBX 17 test PBX; the packaged repository build still requires a reviewed upgrade/bootstrap and retest.
 
-The `TELIPHONES-0.3.2.tgz` Module Admin package includes these corrections. Run `PYTHONDONTWRITEBYTECODE=1 python3 teliphones/tests/package-validation.py -v` from the repository root to verify clean extraction and byte-for-byte equality with all intended module files. Tests, Windows sources, caches and runtime state are excluded.
+### 0.4.1 firewall correction
 
-0.3.2 is an unreleased development correction for testing on a **disposable FreePBX 17 / Debian 12 PBX**. Do not begin on a production PBX. The workstation diagnostics regression cases exercise server-side session filtering, admin/CSRF checks, secret-free allowlisted events, rotation, retention, concurrent writers and lifecycle correlation. They are local simulations; no live PBX was contacted.
+The jump now lives inside `fpbxfirewall`, not above its INPUT hook. Focused command:
+`PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s gateway/tests -p test_firewall_integration.py -v`.
+Coverage includes a model of the journal's above-hook watchdog condition, repeated
+stable reconciliations with no writes, duplicate legacy INPUT migration, concurrent
+and complete rebuilds, broker restarts without extending temporary deadlines,
+reconnection, expiry/revocation, shutdown/uninstall and cleanup failures.
+The packet lab verifies that existing rules and policies survive, both backend
+implementations enforce exact peer/interface/destination/service scope, and earlier
+Fail2Ban or independent nft drops still win. Managed SSH/API ports are scoped to
+their peer and system SSH is not granted to managed pairings. A separate LAN veth
+tests permitted SIP UDP 5060, RTP UDP 10000 and management TCP 22/443, plus
+unchanged denied management ports, before integration, after rebuilds and after
+teardown. Workstation SIP/RTP stays denied.
+
+The tests do not run FreePBX's actual watchdog. With Custom Rules **disabled** and
+FreePBX Firewall/Fail2Ban **enabled**, real-PBX validation must observe multiple
+41-second watchdog intervals (at least five minutes), deliberate approved firewall
+reload/restart cycles, Windows 0.7.0 connect/disconnect/reconnect, certificate SSH
+and revocation, PBX/broker restarts and uninstall. Compare INPUT and unrelated
+rules/counters and exercise a real SIP call with RTP and unrelated management
+sessions throughout. Check for absence of TELIPHONES-related invading-rule/reset
+messages, not just an `active` integration status. The root-owned installed broker
+must match reviewed source. The review package `TELIPHONES-0.4.1.tgz` contains
+this correction. `TELIPHONES-0.4.0.tgz` remains unchanged and contains the old
+intrusive INPUT placement. Rerun the documented root bootstrap after upgrading:
+module installation alone does not prove that the separately installed broker
+was updated. Windows remains 0.7.0.
+
+Local validation of this correction **at packaging, before the later
+documentation-only overhaul**:
+
+- Gateway/broker suite: 148 tests run, 147 passed, one skipped because `wg` is
+  unavailable. Both real-packet iptables backend labs and isolated OpenSSH
+  certificate/session tests passed. The SSH lab substitutes process supervision
+  for systemd/cgroups and does not validate the Windows memory agent.
+- Module PHP/JavaScript suite and documentation link tests passed.
+- Portable Windows CMake build and all seven CTest cases passed.
+- `git diff --check` passed.
+- Package/source equality, corrected archived firewall behavior, authoritative
+  module/broker/web version consistency and preservation of the older 0.4.0
+  archive are checked by `teliphones/tests/package-validation.py`.
+  The 0.4.1 SHA-256 sidecar identifies the exact package contents.
+  No release is published and nothing is deployed.
+
+The `TELIPHONES-0.4.1.tgz` Module Admin package includes the corrected code.
+Run `PYTHONDONTWRITEBYTECODE=1 python3 teliphones/tests/package-validation.py -v`
+from the repository root. Tests, Windows sources, caches and runtime state are
+excluded. **The archive is preserved unchanged during the documentation review.**
+Source documentation now differs, including the newly separated changelog, so
+the full archive/source file-set/byte-equality test is expected to fail.
+Version/checksum, corrected archived firewall behaviour and old-package identity
+checks remain independently useful. Do not ignore a non-documentation difference.
+Before any later distribution, explicitly approve packaging and rerun the full
+validator; do not describe the preserved archive as containing this new guide.
+
+### Documentation review validation
+
+After reorganising the guides, local rechecks passed:
+
+- module PHP/JavaScript suite, including exact README/GUI root-bootstrap and
+  upgrade-note consistency;
+- all five documentation-link tests, including module-only source boundaries
+  and extraction of the preserved archive;
+- all 36 Windows source/layout tests and all seven portable CTest cases;
+- broker suite: 148 run, 147 passed, one skipped (`wg` unavailable);
+- local Markdown fence/table/heading checks and `git diff --check`.
+
+Package validation is **3/4 passing**: versions/checksum, corrected archived
+firewall behaviour and unchanged older-package identity pass; full current
+source equality fails as expected for documentation. An independent comparison
+of every packaged/source file confirms **only** the module README, testing
+guide, pairing contract and new changelog differ. All packaged non-documentation
+source remains byte-identical.
+
+Both archive hashes and product versions are unchanged in this documentation
+phase: FreePBX 0.4.1, Windows 0.7.0. No native Windows test or GitHub-rendered
+visual review was performed locally; reported native results remain attributed
+as below. No new release, deployment or archive rebuild is implied.
+
+### Native and live evidence
+
+The operator now reports successful Windows Actions builds, all **ten** native
+OpenSSH integration tests passing, authenticated Windows 0.7.0 SSH into a
+FreePBX 17 / Debian 12 test PBX with module 0.4.0, and automatic owned-terminal
+closure on disconnect. Run URLs, commit/build hashes and raw logs were not
+supplied and were not retrieved. This is a meaningful initial interoperability
+milestone, not evidence of full server-side revocation, authorisation expiry,
+empty cgroups, real 0.4.1 watchdog stability or production readiness.
+The source repository's `docs/SECURITY.md`, section **Verification evidence**,
+is the central evidence register; the manual gates above still apply.
+
+### Genuine screenshots to capture
+
+No product screenshots are currently supplied; none should be fabricated from
+source, tests or a planned interface. Capture only real disposable-system UI,
+with versions and build provenance recorded separately:
+
+1. **Windows main window:** one approved connected My PBXs profile, reachable
+   Connection Health, distinct connection/authorisation durations and enabled
+   FreePBX/SSH actions. Capture a temporary pairing and **Until revoked** example.
+2. **Windows settings:** Applications/Connectivity and Appearance in System,
+   Light and Dark. Include one high-contrast and narrow/high-DPI example only
+   after real visual inspection; injected test DPI is not a screenshot.
+3. **Authenticated SSH:** an implemented OpenSSH-backed terminal beside the
+   connected profile, then observed owned-terminal closure on disconnect.
+   Never label this as the planned integrated TELIPHONES terminal.
+4. **FreePBX workstation approval:** SSH opt-in with a deliberately selected
+   test account, permission/lifetime controls, integration status and diagnostics.
+5. **FreePBX readiness/upgrade:** current module 0.4.1 and separately refreshed
+   broker status. A 0.4.0 capture is historical, not evidence of the correction.
+
+Use synthetic names and harmless commands. Redact keys, pairing strings,
+certificates, grants, credentials, customer names, usernames, hostnames,
+endpoints, operational addresses and unrelated sessions. Do not capture clipboard
+contents or privileged prompts. A screenshot demonstrates UI state, not firewall
+enforcement, authentication guarantees or successful server-side cleanup.
+
+0.4.1 is an operational correction to the installed/tested 0.4.0 build, prepared
+for review and testing on a **disposable FreePBX 17 / Debian 12 PBX**. It is not a
+production-readiness claim. The workstation diagnostics regression cases exercise server-side session filtering, admin/CSRF checks, secret-free allowlisted events, rotation, retention, concurrent writers and lifecycle correlation. They are local simulations; no live PBX was contacted.
 
 For workstation pairing, start with [install, pair and connect](../README.md#windows-workstations-install-pair-and-connect); for remote support use the [browser workflow](../README.md#remote-support-browser-workflow). The CLI steps below remain platform recovery and direct integration tests, not required browser operations. Local regression tests use framework stubs and mocked privileged broker calls; they do not prove real systemd, apt, SSH or FreePBX administrator permissions.
 

@@ -1,14 +1,40 @@
-# FreePBX 17: workstation web access investigation
+# FreePBX 17: workstation firewall integration investigation
 
 ## Current evidence and scope
 
-The operator reports that Windows **0.4.0** establishes a WireGuard tunnel to the
-FreePBX 17 test PBX and that PuTTY reaches its SSH server. Web access initially
-required disabling FreePBX Firewall. A separate 0.3.1 nftables ownership
-hotfix was successfully tested on that PBX, but the repository package and
-upgrade/bootstrap path have not yet been installed and independently verified.
-Do not assume the deployed root broker matches module **0.3.1** or survives the
-PBX's actual firewall regeneration.
+During module **0.4.0** / Windows **0.7.0** WireGuard and SSH testing on
+FreePBX 17 / Debian 12, the operator reports intermittent PBX connectivity.
+The journal identifies the exact TELIPHONES INPUT rule as an invader above
+FreePBX Firewall, followed by "Resetting iptables", approximately every 41
+seconds. This is separate from the earlier 0.3.1 nftables ownership correction.
+
+The local source explains the loop: `firewall_integration()` inserted the
+marked jump immediately above `fpbxfirewall` in INPUT. The broker restored that
+placement after each firewall rebuild (nft monitor wakeups or the periodic
+check). FreePBX's reported ordering self-check rejected it again. Successful
+WireGuard handshakes or SSH between resets do not establish coexistence.
+The journal establishes why this rule was rejected; without local FreePBX
+source it does not establish every watchdog check or the origin of its interval.
+No external search or live PBX operation was performed.
+
+The latest operator report also confirms successful Windows builds, ten native
+OpenSSH integration tests passing, initial authenticated SSH into this test PBX
+and owned-terminal closure on disconnect. Those observations against 0.4.0
+do not establish real 0.4.1 watchdog stability or complete PBX-side session
+termination. See the [evidence register](SECURITY.md#verification-evidence).
+
+**Source correction:** keep FreePBX's INPUT hook in place, remove only the
+exact marked legacy jump, and insert that same narrow jump at position 1
+**inside `fpbxfirewall`**. Only this owned jump is edited in the FreePBX chain.
+Only the owned, marker-validated `teliphones-ws` chain may be rebuilt/deleted.
+Unmatched packets return to the existing FreePBX rules. No trust zone/subnet,
+blanket ACCEPT, Custom Rules setting, firewall service change, or policy flush
+is used. Existing certificate SSH authentication, approved accounts, dedicated
+listeners, WireGuard peers/AllowedIPs and nft restrictions are unchanged.
+Local tests pass against a simulated layout, not the actual FreePBX watchdog.
+The correction is packaged as `TELIPHONES-0.4.1.tgz`. The older
+`TELIPHONES-0.4.0.tgz` remains unchanged and does not contain this correction.
+Rerun the root bootstrap after upgrading and verify the installed broker is 0.4.1.
 
 Do not disable FreePBX Firewall to reproduce this issue. If it is currently
 disabled, report that first: restoring it is an operational change requiring
@@ -30,14 +56,16 @@ and [BrokerBootstrap.php](../teliphones/BrokerBootstrap.php).
 
 | Stage | Actual implementation and boundary |
 |---|---|
-| Installation | Module files and the root-owned running broker are separate. Module Admin need not update `/usr/local/lib/teliphones-broker/support_broker.py`. A module version or protocol 3 alone cannot prove broker revision. |
+| Installation | Module files and the root-owned running broker are separate. Module Admin need not update `/usr/local/lib/teliphones-broker/support_broker.py` or `ssh_authority.py`. A module version or protocol 5 alone cannot prove broker revision. |
 | Startup | `serve()` disables workstation access, starts the nft monitor and calls `restore_workstations()`. Persistent and unexpired entries are loaded from root-owned state. |
 | Admission | `apply_workstations()` disables `tlp-admin`, installs and reads back the complete owned nft policy, configures the WireGuard interface and peers, reconciles iptables, then brings the link up. |
-| Address binding | The PBX uses the first host (`.1`) of its saved `/24`; every WireGuard peer has its own saved `/32` AllowedIPs. The iptables rule requires that source, that PBX destination, `tlp-admin`, TCP and port 80/443 (22 only with `ssh: true`). No LAN-IP or arbitrary-port exception is installed. |
+| Address binding | The PBX uses the first host (`.1`) of its saved `/24`; every WireGuard peer has its own saved `/32` AllowedIPs. The iptables rule requires that source, that PBX destination, `tlp-admin`, TCP and port 80/443. Legacy SSH-approved peers retain 22; managed peers instead get 8765 and their own SSH port. No LAN-IP or arbitrary-port exception is installed. |
 | iptables backend | Only the first available `/usr/sbin/iptables` or `/sbin/iptables` is used. It is not automatically switched to whichever backend contains FreePBX Firewall. |
-| Placement | The broker requires a **direct INPUT** jump/goto to the exact target `fpbxfirewall`. Its marked jump must be immediately before the first such hook and after all direct `fail2ban-*` / `f2b-*` targets (case-insensitive). FreePBX interface classification inside that hook is therefore skipped only for precisely matching ACCEPTs. |
+| Placement | `integration_inventory()` validates ownership and all references. `firewall_integration()` removes exact legacy INPUT jumps first, requires a **direct INPUT** jump/goto to `fpbxfirewall`, and installs one marked `tlp-admin` jump first inside that chain. All direct `fail2ban-*` / `f2b-*` INPUT targets (case-insensitive) must precede entry. FreePBX classification is skipped only for precisely matching ACCEPTs; INPUT is never reordered or given new TELIPHONES rules. |
 | Fail2Ban | A recognised Fail2Ban hook after `fpbxfirewall` causes withdrawal and `error`, not bypass. Nested hooks, alternative names and independent nftables chains are not inspected by this placement algorithm. Independent drop verdicts still apply. |
-| Reconciliation | `ip filter` nft events wake the worker; legacy iptables relies on periodic execution. Every iteration also verifies the owned nft policy. If the interface is UP and policy valid, only integration is reconciled, without bouncing peers. |
+| Reconciliation | `NftMonitor.event()` wakes the worker for `ip filter` events; legacy iptables relies on periodic execution. `expire_workstations()` also verifies the owned nft policy. If the interface is UP and policy valid, only integration is reconciled, without bouncing peers. Stable checks issue no writes; own iptables events may trigger an extra read-only pass, not another rewrite. |
+| Updates and readback | Parsed rules are compared to `integration_rules()`. Only a differing owned chain is flushed/repopulated; only missing, duplicate or misplaced owned jumps are deleted/reinserted. Full inventory and placement are read back. `-w 5` applies per command, not across the whole transaction; races cause withdrawal/error rather than INPUT repair. |
+| Removal | `teardown_workstations()` verifies interface disable/removal, closes managed SSH, removes exact old/current jumps and the owned iptables chain, then the owned nft table. An iptables error does not skip nft cleanup. `uninstall_workstations()` retains pairing/key recovery state unless cleanup succeeds. Unmarked rules or unexpected references are not touched. |
 | Missing hook / recoverable error | The owned iptables integration is removed and status becomes `not-detected` / `error`. With verified nft restrictions, the link may remain UP and handshakes may succeed; FreePBX still decides web access. A later successful iteration can restore the rules. |
 | Hard failure | Unverifiable integration removal, policy/monitor failures or other enforcement failures disable access. The ordinary integration-only branch does not raise an externally DOWN/absent link; monitor failure or a terminated worker requires repair, not an assurance of automatic recovery. |
 
@@ -53,6 +81,39 @@ An `active` integration status is the last successful rule verification, not a
 packet-path probe. An earlier INPUT drop, another iptables backend, a different
 nftables base chain, output filtering or an Apache redirect can still prevent
 access. Do not move the exception ahead of Fail2Ban to work around a block.
+
+## Required real-PBX acceptance (not performed)
+
+Use a disposable PBX or an approved maintenance window with an independent
+console/recovery route. The read-only collection below is not deployment approval.
+
+1. Verify the separately installed root-owned broker matches reviewed source
+   and that its process started after installation. Keep FreePBX Firewall and
+   Fail2Ban enabled, Custom Rules disabled, and capture INPUT, `fpbxfirewall`,
+   all policies and unrelated rules before testing.
+2. Observe for at least five minutes (multiple reported 41-second cycles).
+   No TELIPHONES rule may appear in INPUT. There must be exactly one marked
+   jump at the start of `fpbxfirewall`, after all INPUT Fail2Ban hooks.
+   The journal must show no TELIPHONES-related invading-rule/reset loop.
+3. With explicit approval, exercise actual FreePBX firewall reload/restart and
+   Fail2Ban restart. After rebuild, expect temporary fallback to FreePBX policy,
+   then exactly one internal jump, without peer/link churn or repeated resets.
+4. Reconnect/disconnect Windows 0.7.0 repeatedly, restart the broker and PBX,
+   and test persistent and unexpired/expired temporary pairings. A Windows
+   disconnect alone leaves pairing authorization intact; it must not duplicate
+   or broaden rules. Deadlines must not extend across restart.
+5. Test web-only and managed certificate SSH peers, pinned host keys, approved
+   accounts, renewal, expiry, revocation and active-session termination. System
+   SSH must not be granted to a managed peer; another peer's dedicated port,
+   unknown sources, other PBX destinations, SIP/RTP/AMI/DB, IPv6 and forwarding
+   over `tlp-admin` must remain denied. Preserve existing legacy SSH permission.
+6. During these operations, run an ordinary SIP call with bidirectional RTP,
+   unrelated authorised management sessions and representative denied probes.
+   Compare unrelated rules/policies and their packet outcomes to baseline.
+7. Test revoke-all, disable, shutdown and uninstall. Verify absence of both
+   legacy/current marked jumps, the owned chain/table, listeners and interface;
+   verify unrelated rules/policies remain unchanged and failure retains recovery
+   state. Do not remove state by hand to hide a cleanup failure.
 
 ## 1. Identify installed code, running service and tools
 
@@ -269,6 +330,7 @@ for delay in 0 5 15 20; do
     if command -v "$tool" >/dev/null 2>&1; then
       printf '\n=== %s ===\n' "$tool"
       "$tool" -w 5 -t filter -S INPUT
+      "$tool" -w 5 -t filter -S fpbxfirewall
       "$tool" -w 5 -t filter -L teliphones-ws -n -v -x --line-numbers
     fi
   done
@@ -302,6 +364,7 @@ Do not claim real reload recovery from a quiet 40-second observation.
 | Exact ACCEPT counter increases but no SYN-ACK | Examine other nft/legacy hooks, OUTPUT/reply route, Apache listener and time-correlated Fail2Ban state. An ACCEPT is not proof that every independent hook accepted. |
 | SYN, SYN-ACK and HTTP response succeed; browser still fails | Investigate redirects, certificate trust, proxy and Apache/application access policy. Do not widen network trust. |
 | Chain repeatedly appears/disappears | Correlate timestamped rule events, broker state and firewall source/journal. Test a targeted correction only after identifying the writer and real regeneration behaviour. |
+| Journal names the marked TELIPHONES INPUT rule as invading | The old broker placement conflicts with the firewall self-check. Confirm installed broker revision. The correction removes that jump and uses only the internal marked jump; do not disable FreePBX Firewall or enable Custom Rules as a workaround. |
 
 The local packet lab uses veth interfaces and a constructed FreePBX-shaped
 ruleset, not WireGuard, Apache or real FreePBX Firewall. It checks both
@@ -311,8 +374,10 @@ drops despite `active` status. It does not exercise mixed-backend deployments,
 FreePBX self-checks, actual regeneration transactions or a live daemon's repair
 deadline. Those remain live diagnostic requirements.
 
-The repository includes the operator-tested ownership correction as module
-**0.3.1**, but its package/recovery rollout still requires validation. Windows
-remains **0.4.0**. Supply the timestamped status, backend snapshots, relevant
-rule deltas and packet summary privately before selecting further corrections.
+The corrected module is **0.4.1**, a patch increment from the already installed
+and tested **0.4.0**. Windows remains independently versioned at **0.7.0** because
+its application code is unchanged. The new review archive has a SHA-256 sidecar;
+the older 0.4.0 archive is preserved. No release or deployment is performed. Supply timestamped
+status, backend snapshots, relevant rule deltas and packet summaries privately
+when validating this source correction.
 Keep FreePBX Firewall and Fail2Ban enabled.

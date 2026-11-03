@@ -1,10 +1,11 @@
 # My PBXs managed SSH: implementation and validation
 
 The approved Option 1 implementation targets **Windows 0.7.0** and **FreePBX
-0.4.0**, independently versioned and unreleased. The historical proposal below
+0.4.1**, independently versioned. Module 0.4.1 corrects the firewall defect in
+the installed/tested 0.4.0 build; Windows remains 0.7.0. The historical proposal below
 is retained as design history, not the current contract.
 
-## Current status: provider implemented; native validation pending
+## Current status: native integration and initial live SSH reported successful
 
 The **Pair -> Connect -> Open SSH -> authenticated terminal -> close ->
 credentials destroyed** path is now implemented in Windows source, not replaced
@@ -14,12 +15,18 @@ request/2 certificate endpoint, pinned host/CA identities and an owned console
 helper/SSH Job. GUI-only pairing, Connection Health, appearance, WireGuard and
 the independent Remote Support path are preserved.
 
-**This is not a completion or production-security claim.** The added native
-Windows Actions tests have not run. MSVC compilation, actual Windows OpenSSH
-interoperability, process isolation and lifecycle behaviour must pass those
-tests before the experience can be described as verified. This development
-environment has Linux OpenSSH, not a Windows runtime/compiler or systemd manager.
+The operator now reports successful Windows Actions builds, **all ten native
+OpenSSH integration tests passing**, authenticated Windows 0.7.0 SSH into a
+FreePBX 17 / Debian 12 test PBX with module 0.4.0, and owned-terminal closure
+on disconnect. No run URL, commit/build hash or raw logs were supplied here;
+these results are attributed reports, not locally repeated Windows tests.
+
+**This is not a completion or production-security claim.** Real 0.4.1 firewall
+stability, PBX revocation/expiry/systemd/cgroup termination, reboot, upgrade,
+rollback and failure recovery remain unverified. This local environment has
+Linux OpenSSH, not a Windows runtime/compiler or running systemd manager.
 There is no shared-agent, plaintext-file, password or host-verification fallback.
+See the [current evidence register](SECURITY.md#verification-evidence).
 
 ## Pairing identity and ephemeral certificate contract
 
@@ -243,14 +250,15 @@ unsupported for managed My PBXs certificates; Remote Support is unchanged.
   The environment has no running systemd manager. Actual production unit/cgroup,
   PAM/FreePBX policy, installation rollback and upgrade/removal behaviour still
   require disposable Debian 12 / FreePBX 17 systemd validation.
-- **Native Windows validation remains outstanding.** The added harness executes
+- **Native Windows integration: operator-reported 10/10 passing.** The harness executes
   production crypto/agent code with actual Windows OpenSSH and a loopback sshd.
   It covers login, lack of private-key runtime files, PID/process access denial,
   simultaneous sessions, wrong certificates/host pins, tampering, expiry and
   app/SSH crashes. A separate path invokes production DPAPI identity generation,
   signed HTTP issuance/refusal, cmd-hosted console launch, local expiry, preserved
   permanent identity after session teardown and verified disconnect.
-  These tests have not run; they are not reported as passed. They do not prove
+  No raw run logs or build identifier were supplied for independent review.
+  These tests do not prove
   WireGuard-only admission or production systemd semantics; Linux tests and the
   disposable FreePBX gate cover those separately.
 
@@ -279,7 +287,7 @@ administrator access for each scenario:
   normal terminal closure, app/SSH crash, forced termination, failed issuance,
   orphan recovery, simultaneous sessions, revocation, authorisation expiry,
   profile removal and Windows reboot, followed by rejected credential reuse.
-  The automated subset is implemented but has not run; the full matrix,
+  The automated subset is now operator-reported passing; the full matrix,
   especially all terminal variants and Windows reboot, still requires a test host.
 - Supported Windows OpenSSH helper acceptance/rejection of valid/tampered
   certificates, and real end-to-end account/root/PAM restrictions with the PBX.
@@ -288,8 +296,9 @@ administrator access for each scenario:
   skips.
 
 Temporary plaintext Windows session-key files are **not an acceptable option**.
-Provider errors must remain fail-closed, and release remains blocked until its
-native behaviour is demonstrated. Persistent-pairing sessions surviving the
+Provider errors must remain fail-closed, and production readiness remains blocked
+on the full lifecycle gates, not just the now-reported native test milestone.
+Persistent-pairing sessions surviving the
 five-minute certificate lifetime remain an explicit product-lifetime contract.
 Certificate expiry bounds new logins, while persistent sessions intentionally
 continue until revocation or connection/server termination. The local corrections

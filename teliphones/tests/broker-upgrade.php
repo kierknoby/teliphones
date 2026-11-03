@@ -24,7 +24,7 @@ function file_put_contents($path, $content, $flags = 0) {
     return strlen($content);
 }
 function copy($source, $target) {
-    return file_put_contents($target, str_ends_with($source, '/ssh_authority.py') ? 'new authority' : 'new broker') !== false;
+    return file_put_contents($target, \file_get_contents(dirname(__DIR__) . '/' . basename($source))) !== false;
 }
 function unlink($path) { global $model; unset($model['files'][$path]); return true; }
 function exec($command, &$output = null, &$result = null) {
@@ -50,9 +50,12 @@ $assert = static function (bool $value, string $message): void {
 };
 $reset();
 $assert(BrokerBootstrap::install('/module'), 'Successful validated upgrade must start the broker.');
-$assert($model['files'][BrokerBootstrap::BROKER_FILE] === 'new broker'
-    && $model['files'][BrokerBootstrap::BROKER_DIR . '/ssh_authority.py'] === 'new authority',
-    'Both root helpers must be installed.');
+$assert($model['files'][BrokerBootstrap::BROKER_FILE] === \file_get_contents(dirname(__DIR__) . '/support_broker.py')
+    && $model['files'][BrokerBootstrap::BROKER_DIR . '/ssh_authority.py'] === \file_get_contents(dirname(__DIR__) . '/ssh_authority.py'),
+    'Both current module helpers must replace the separately installed root helpers byte-for-byte.');
+$assert(strpos($model['files'][BrokerBootstrap::BROKER_FILE], 'VERSION = "0.4.1"') !== false
+    && strpos($model['files'][BrokerBootstrap::BROKER_FILE], 'self.ipt(iptables, "-I", FREEPBX_HOOK, "1"') !== false,
+    'The upgraded root broker must be 0.4.1 with the internal FreePBX jump correction.');
 $commands = implode("\n", $model['commands']);
 $assert(strpos($commands, ' -c ') < strpos($commands, 'systemctl restart teliphones-broker.service'), 'Import validation must precede activation.');
 foreach (['import', 'activation'] as $failure) {

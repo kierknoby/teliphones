@@ -1,13 +1,18 @@
 # TELIPHONES security
 
-Security is the defining consideration for TELIPHONES. This document explains the security model of module version 0.3.1 in accessible terms, states the assurance behind each control and records the known limitations honestly.
+This document explains the security model of **FreePBX module 0.4.1** and
+**Windows 0.7.0**, the evidence behind each control and its limitations.
 
 > [!WARNING]
-> TELIPHONES 0.3.1 is unreleased and experimental. The controls below describe what TELIPHONES is **designed** to enforce. Most have been tested only with automated tests and simulated environments; the operator separately reports live testing of the nftables ownership correction. Treat controls as security guarantees only once their corresponding live and adversarial tests have passed. Do not use TELIPHONES on a production PBX.
+> TELIPHONES remains experimental. The operator reports successful native
+> Windows tests and initial live authenticated SSH, not complete lifecycle
+> assurance. Module 0.4.1's firewall correction has only local regression evidence.
+> Do not use TELIPHONES on a production PBX.
 
 ## Contents
 
 - [Assurance levels](#assurance-levels)
+- [Verification evidence](#verification-evidence)
 - [Security model at a glance](#security-model-at-a-glance)
 - [Explicit administrator authorisation](#explicit-administrator-authorisation)
 - [WireGuard keys and tunnel isolation](#wireguard-keys-and-tunnel-isolation)
@@ -31,9 +36,9 @@ This documentation uses three levels of assurance. A control at one level should
 |---|---|
 | **Design** | The intended behaviour, implemented in code and reviewed, without specific test evidence |
 | **Locally tested** | Exercised by automated tests: unit tests with simulated system commands, or real packets in disposable Linux network namespaces with a **simulated** FreePBX firewall layout |
-| **Verified on a real PBX** | Observed on the Debian 12 / FreePBX 17 test PBX or on real Windows |
+| **Operator-reported native/live observation** | Reported from Windows or the Debian 12 / FreePBX 17 test PBX; not independently reproduced in this workspace |
 
-| Control | Design | Locally tested | Verified on a real PBX |
+| Control | Design | Locally tested | Native/live observation |
 |---|---|---|---|
 | Full-administrator and CSRF checks on the GUI | ✅ | ✅ Framework stubs | Partly: GUI operation confirmed; delegated-user refusal outstanding |
 | Root broker installation, ownership and socket permissions | ✅ | ✅ | ✅ Bootstrap verified (earlier release) |
@@ -41,10 +46,37 @@ This documentation uses three levels of assurance. A control at one level should
 | Workstation nftables policy verification and monitoring | ✅ | ✅ Real nftables in namespaces | — |
 | FreePBX Firewall integration (`teliphones-ws`) | ✅ | ✅ Real packets, simulated FreePBX Firewall, both iptables backends | **Outstanding** |
 | Fail2Ban ordering preservation | ✅ | ✅ Simulated, using observed chain names | **Outstanding** |
-| SSH permitted only when approved | ✅ | ✅ | **Outstanding** (including PuTTY) |
+| Managed SSH authentication and client disconnect | ✅ | ✅ Linux OpenSSH and portable contracts | Operator reports native 10/10, live authentication and owned-terminal closure |
+| SSH refusal for unapproved peers and complete server lifecycle | ✅ | ✅ | **Outstanding** on the real PBX; PuTTY is not supported for managed SSH |
 | Unauthorised PBX services inaccessible through the tunnel | ✅ | ✅ SIP, AMI, MySQL and IPv6 in simulation | **Outstanding** |
 | Revocation, expiry and verified uninstall | ✅ | ✅ Including failure injection | **Outstanding** |
 | Remote Support session lifecycle and Checker evidence | ✅ | ✅ Module tests; reference gateway laboratory available | **Outstanding** |
+
+## Verification evidence
+
+This is the current evidence register for the documentation review on
+**3 November 2026**. It distinguishes supplied reports from local execution.
+Earlier failed runs remain in the [Windows readiness history](../desktop/windows/tests/WINDOWS-READINESS.md#historical-investigations);
+they are not the current native-test result.
+
+| Evidence source | Result and boundary |
+|---|---|
+| Operator's latest report | Successful Windows GitHub Actions builds and **all ten native OpenSSH integration tests passing**. No run URL, commit/build hash or raw logs accompanied this update; no external service was queried to verify it. |
+| Operator's live test | Windows 0.7.0 authenticated to a FreePBX 17 / Debian 12 server with installed module 0.4.0; the owned SSH terminal closed automatically on disconnect. This establishes an initial interoperability milestone, not complete PBX-side termination. |
+| Local 0.4.1 correction tests | Gateway suite: 148 run, 147 passed, one skipped because `wg` was absent. Includes genuine OpenSSH in isolated Linux namespaces and real packets through both iptables backends with simulated FreePBX rules; the SSH supervisor substitutes for systemd/cgroups. Module PHP/JS/docs, portable Windows 7/7 CTest and archive validation passed at packaging. |
+| Preserved review archive | `TELIPHONES-0.4.1.tgz` includes the corrected broker. Subsequent documentation-only edits are not repackaged; full archive/source byte equality must be re-established before a future distribution. |
+| Not established | Real 0.4.1 FreePBX watchdog/rebuild stability; full revocation/expiry and empty cgroups; reboot, broker failure, recovery, upgrade/rollback/uninstall; complete terminal/display matrix; Remote Support end to end; production readiness. |
+
+Certificate expiry refuses **new authentication**. It does not kill an
+already authenticated SSH process. Termination relies on the owned Windows Job
+and, independently, PBX pairing authority and per-workstation systemd/cgroup
+controls. Observing the terminal close does not verify the PBX cgroup is empty,
+nor prove revocation, authorisation expiry or unrelated-session preservation.
+
+For acceptance steps and remaining real-PBX tests, use
+[module verification status](../teliphones/README.md#current-verification-status),
+[testing](../teliphones/docs/TESTING.md#041-firewall-correction) and
+[firewall diagnostics](FREEPBX-FIREWALL-DIAGNOSTICS.md).
 
 ## Security model at a glance
 
@@ -81,13 +113,36 @@ flowchart TB
 | Traffic from a paired workstation | Result |
 |---|---|
 | TCP 80 and 443 to the PBX tunnel address | Permitted |
-| TCP 22 to the PBX tunnel address | Permitted **only** if that workstation was approved for SSH |
+| TCP 8765 and that peer's `22000 + IPv4 last octet` listener | Managed SSH-approved peers only: authenticated certificate API and isolated SSH service |
+| TCP 22 to the PBX tunnel address | Legacy version-1 SSH-approved pairings only; not granted to managed pairings |
 | ICMP echo request to the PBX tunnel address | Permitted by TELIPHONES' nftables table; still subject to FreePBX Firewall |
 | SIP, IAX, AMI, ARI, databases, provisioning and every other port | Dropped by TELIPHONES' nftables table |
 | Any destination other than the PBX tunnel address, including forwarding | Dropped |
 | IPv6 on `tlp-admin` | Dropped |
 
-SSH approval admits the PBX's **existing** SSH service, with the PBX's existing accounts and authentication policy. Pairing creates no accounts, passwords or keys, and does not change SSH configuration. The `Linux SSH account` field in the Windows application only selects the user name for **Open SSH**.
+Managed SSH approval names an **existing Linux account**, never an implicit root
+account. Pairing creates no account and does not alter system SSH configuration.
+The broker owns a separate CA/host identity and per-workstation listener. It
+checks the account's effective policy and refuses unsupported Match, MFA or
+forced-command constraints rather than weakening them.
+
+Windows holds a DPAPI-encrypted permanent workstation signing identity,
+separate from its WireGuard key. For every SSH launch it creates an in-memory
+ephemeral key. The permanent identity signs a one-use challenge, fresh session
+ID and distinct ephemeral public key for the request/2 API. The certificate is
+limited to that key/source/principal, at most 300 seconds and the original
+pairing expiry. Windows verifies the CA signature and pinned host identity;
+there is no password, shared-agent or host-acceptance fallback.
+
+The owned Windows OpenSSH process receives one account/certificate-bound
+authentication signature via a private process-bound agent; the disposable
+signing capability is then destroyed. This does not guarantee physical erasure
+from memory, paging files, crash dumps or storage, or resist a compromised OS,
+administrator or pre-existing privileged handles. Full details are in the
+[managed SSH implementation reference](SSH-KEY-MANAGEMENT-PROPOSAL.md).
+OpenSSH-backed PowerShell, PowerShell 7, Windows Terminal and Command Prompt
+are supported. PuTTY belongs only to the separate Remote Support launch path;
+the planned integrated terminal is not implemented.
 
 ## Temporary and persistent access
 
@@ -106,16 +161,16 @@ SSH approval admits the PBX's **existing** SSH service, with the PBX's existing 
 
 ### FreePBX Firewall integration
 
-- The broker maintains the `teliphones-ws` iptables chain and one marked `INPUT` jump, placed after every Fail2Ban hook and immediately before `fpbxfirewall`.
-- The chain accepts only TCP 80/443, plus TCP 22 for SSH-approved workstations, from each active paired `/32` to the PBX tunnel address on `tlp-admin`. Everything else returns to FreePBX Firewall.
+- The broker maintains the `teliphones-ws` iptables chain and one marked jump at the start of `fpbxfirewall`. Every direct INPUT Fail2Ban hook must precede entry. No rule is inserted above FreePBX's INPUT hook: that old placement triggered the reported recurring "invading rule" resets.
+- The chain accepts only TCP 80/443 and the explicitly approved SSH ports from each active paired `/32` to the PBX tunnel address on `tlp-admin`. Managed certificate SSH uses TCP 8765 and a per-peer listener, never system TCP 22; legacy SSH-approved pairings retain 22. Everything else returns to the remaining FreePBX rules.
 - The integration is installed only after the nftables policy has been verified, and before the interface is brought up.
-- FreePBX Firewall chains, zones, trusted networks, settings and services are never modified. The interface is not added to a trusted zone, and the workstation subnet is not trusted, because either would admit every service.
+- Only TELIPHONES' exact marked jump is inserted/deleted inside `fpbxfirewall`; the exact legacy INPUT jump is removed during migration/cleanup. Unrelated rules, zones, trusted networks, settings and services are unchanged. Custom Rules need not be enabled. The interface and subnet are not trusted, because either would admit every service.
 - If Fail2Ban's hooks cannot all precede the integration, TELIPHONES withdraws the integration rather than bypass Fail2Ban. Tunnel web traffic is then dropped by FreePBX Firewall until the ordering is corrected.
 - `ip6tables` is never modified.
 
 ### What TELIPHONES never does
 
-TELIPHONES never flushes the system ruleset, deletes or edits FreePBX Firewall or Fail2Ban chains, changes default firewall policies, enables, disables or restarts firewall services, modifies unrelated nftables tables, or changes routing, DNS, NAT or forwarding defaults.
+TELIPHONES never flushes the system ruleset or a foreign chain, deletes/replaces unrelated FreePBX Firewall or Fail2Ban rules, changes default firewall policies, enables, disables or restarts firewall services, modifies unrelated nftables tables, or changes routing, DNS, NAT or forwarding defaults.
 
 ## Revocation and expiry
 
@@ -162,19 +217,24 @@ TELIPHONES never flushes the system ruleset, deletes or edits FreePBX Firewall o
 - A compromised PBX root account, or another privileged process that deliberately alters the firewall.
 - Code running as the FreePBX service account, which can use the broker as an administrator would.
 - A compromised Windows workstation or Windows user account holding the WireGuard key.
-- Weak FreePBX or SSH credentials. TELIPHONES restricts who can reach the services, but it does not replace their authentication.
+- Weak FreePBX credentials, legacy/system SSH credentials or unsafe approved
+  account privileges. Managed SSH adds certificate authentication, not protection
+  against a compromised authorised account or application.
 - Exposure of the WireGuard UDP port itself. It must be reachable; WireGuard does not respond to unauthenticated packets.
 
 ## Known limitations
 
 - **External firewall flushes.** TELIPHONES detects and repairs external changes; it cannot prevent them. A privileged process that flushes or replaces the firewall can expose an active tunnel until the change is detected. A transient removal can pass traffic even if the rules are restored before detection. There is no guaranteed detection latency under load or resource exhaustion. This is **not** fail-closed or zero-exposure protection.
-- **Fail2Ban ordering gap.** If a firewall reload or Fail2Ban inserts a Fail2Ban hook between the TELIPHONES jump and `fpbxfirewall`, traffic that TELIPHONES has approved for paired workstations reaches the TELIPHONES chain before that hook. The hook can be bypassed until reconciliation moves the jump: this is prompt with the iptables `nf_tables` backend, and can take up to about 15 seconds with `legacy`. There is also a race if a hook is inserted at the same moment as the integration; the result is read back, and an invalid result is corrected or withdrawn.
+- **Fail2Ban ordering gap.** A Fail2Ban INPUT hook externally moved after `fpbxfirewall` can be bypassed for approved flows until reconciliation withdraws integration. Hooks inserted before `fpbxfirewall` remain ahead of the internal jump without a repair window. The result is read back and an invalid concurrent change causes withdrawal. Monitor wakeups and periodic checks are not a guaranteed recovery deadline.
 - **Assumed FreePBX hook names.** The names `fpbxfirewall`, `fail2ban-*` and `f2b-*` come from the reported FreePBX 17 test installation and upstream defaults, not from FreePBX source code. Fail2Ban hooks reached through other chains, and Fail2Ban's own nftables tables, are not inspected.
 - **IPv4 only.** Workstation connectivity and the FreePBX Firewall integration are IPv4-only.
 - **No revocation push to Windows.** Clients detect revocation through lost reachability.
 - **Root SSH for Remote Support.** The temporary support SSH service uses root with session-specific keys. A narrower support account model has not yet been designed.
 - **Remote Support firewall policy.** Support-session reachability with FreePBX Firewall enabled is unknown, and TELIPHONES does not change the support firewall policy.
-- **Real-world verification.** The operator reports that the 0.3.1 nftables ownership correction was tested on the FreePBX 17 test PBX. Full repository package upgrade/recovery, Fail2Ban ordering, failure recovery and adversarial security testing remain incomplete. See [outstanding verification](../teliphones/README.md#outstanding-031-verification).
+- **Real-world verification.** Initial native/live SSH success is
+  operator-reported. The 0.4.1 watchdog fix, package upgrade/recovery, live
+  Fail2Ban ordering, complete server lifecycle and adversarial security testing
+  remain incomplete. See [current verification status](../teliphones/README.md#current-verification-status).
 
 ## Operational guidance
 

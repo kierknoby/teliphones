@@ -7,9 +7,17 @@ version numbers retrospectively.
 
 ## 0.7.0 — Unreleased
 
-Windows file version: **0.7.0.0**. FreePBX module version: **0.4.0**.
-The reported native build succeeds; the corrected sources and full Windows
-tunnel/terminal behaviour still require native validation.
+Windows file version: **0.7.0.0**. FreePBX module version: **0.4.1**.
+The FreePBX-only firewall correction advances the installed/tested module from
+0.4.0 to 0.4.1. Windows remains 0.7.0 because no application code changes are
+made; this note does not declare a new Windows build or release.
+**Current operator-reported evidence:** successful Windows Actions builds,
+**all ten native OpenSSH integration tests passing**, authenticated Windows
+SSH into FreePBX 17 with module 0.4.0, and owned-terminal closure on disconnect.
+Run identifiers and raw logs were not supplied here. Complete PBX-side
+revocation/expiry/cgroups, reboot/recovery, the all-terminal matrix and real
+module 0.4.1 firewall stability remain outstanding. See the
+[evidence register](../../docs/SECURITY.md#verification-evidence).
 
 - Correct certificate identity selection: select the certificate directly from
   the isolated memory agent without permitting raw-key authentication or private
@@ -17,10 +25,12 @@ tunnel/terminal behaviour still require native validation.
   the subsequent reported Windows run passes nine of ten native tests. Tolerate
   fingerprint rejection only for the deliberately corrupted certificate, and
   require signature rejection and verified key destruction before SSH launch.
-  The remaining corrected negative test still needs native execution.
+  That remaining diagnostic fix is included in the subsequently reported
+  ten-of-ten result; the nine-of-ten observation is retained as history.
   Require authenticated readiness
   before crash tests and retain per-client diagnostics. Preserve the unreleased
-  0.7.0 target; this is not a new release/distribution. FreePBX stays 0.4.0.
+  0.7.0 target; this is not a new Windows release/distribution. FreePBX was 0.4.0
+  for that Windows correction and is now independently updated to 0.4.1.
 - Remove the previous DPAPI SSH key save/decrypt and plaintext runtime-key export
   paths. Preserve existing permanent encrypted identities and authorisations.
 - Implement Ed25519 session keys in memory using static OpenSSL, with locked seed
@@ -47,9 +57,10 @@ tunnel/terminal behaviour still require native validation.
 - Preserve Remote Support, appearance, layout and the centred licence footer.
 - Add native Windows OpenSSH login, process/agent access, concurrent sessions,
   controller/SSH crash, expiry and production DPAPI/API/console/disconnect tests
-  to Actions. The latest reported run executes all ten, with seven failures;
-  corrected native authentication, the terminal/reboot matrix
-  and real systemd/FreePBX termination still require validation. No physical
+  to Actions. An earlier reported run executed all ten with seven failures;
+  subsequent reports progressed through nine-of-ten to ten-of-ten passing.
+  The terminal/reboot matrix and real systemd/FreePBX termination still require
+  validation. No physical
   memory/pagefile/SSD-erasure guarantee or production security sign-off is made.
 
 ## 0.6.5 — Previous development version (not released)
@@ -244,7 +255,7 @@ These are source-history milestones, **not published Windows releases**:
   executable SHA-256 alongside the version to distinguish build provenance.
 - Keep the window title, executable metadata, README and current changelog entry
   consistent. Automated checks reject mismatches.
-- The FreePBX module version is independent and is **0.4.0**. The manifest's
+- The FreePBX module version is independent and is **0.4.1**. The manifest's
   fixed assembly identity is not a release version and must not be bumped merely
   to change the product version.
 - An application version does not imply publication or production readiness.
