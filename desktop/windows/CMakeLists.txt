@@ -48,10 +48,10 @@ if(WIN32)
     add_library(teliphones_fixture_crypto STATIC src/core/SshCrypto.cpp)
     target_include_directories(teliphones_fixture_crypto PUBLIC src/core)
     target_link_libraries(teliphones_fixture_crypto PUBLIC teliphones_fixture_core OpenSSL::Crypto)
-    add_executable(ssh_native_host tests/ssh_native_host.cpp src/platform/SshAgent.cpp src/platform/SshSession.cpp
+    add_executable(ssh_native_host tests/ssh_native_host.cpp tests/fixture_security.cpp src/platform/SshAgent.cpp src/platform/SshSession.cpp
         src/platform/Ssh.cpp src/platform/Applications.cpp src/platform/Services.cpp src/platform/Win.cpp)
     target_compile_definitions(ssh_native_host PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00 TELIPHONES_SSH_TESTING)
-    target_link_libraries(ssh_native_host PRIVATE teliphones_fixture_crypto advapi32 bcrypt crypt32 ws2_32 iphlpapi shell32 ole32 uuid winhttp)
+    target_link_libraries(ssh_native_host PRIVATE teliphones_fixture_crypto advapi32 bcrypt crypt32 ws2_32 iphlpapi shell32 ole32 oleaut32 taskschd uuid winhttp)
 endif()
 
 enable_testing()

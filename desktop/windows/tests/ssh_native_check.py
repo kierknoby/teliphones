@@ -25,7 +25,6 @@ OPENSSH = Path(os.environ["SystemRoot"]) / "System32/OpenSSH"
 SSH = OPENSSH / "ssh.exe"
 SSHD = OPENSSH / "sshd.exe"
 KEYGEN = OPENSSH / "ssh-keygen.exe"
-SECURITY = Path(__file__).with_name("fixture_security.ps1")
 SYSTEM_SID = "S-1-5-18"
 ADMIN_SID = "S-1-5-32-544"
 
@@ -78,20 +77,34 @@ def pipe_io(handle, data, writing):
 
 def run(args, **kwargs):
     command = [str(x) for x in args]
+    if command[0].lower() in ("icacls.exe", "schtasks.exe", "whoami.exe"):
+        command[0] = str(Path(os.environ["SystemRoot"]) / "System32" / command[0])
+    encoding = kwargs.pop("encoding", "utf-8")
+    if isinstance(kwargs.get("input"), str):
+        # SSHSIG verifies exact bytes; Windows text-mode stdin rewrites LF to CRLF.
+        kwargs["input"] = kwargs["input"].encode("utf-8")
     try:
-        result = subprocess.run(command, capture_output=True, text=True, timeout=30, **kwargs)
+        result = subprocess.run(command, capture_output=True, timeout=30, **kwargs)
     except subprocess.TimeoutExpired as error:
         raise RuntimeError(f"Native fixture command {subprocess.list2cmdline(command)} timed out "
                            f"(no exit code):\nstdout:\n{error.stdout!r}\nstderr:\n{error.stderr!r}") from error
+    except OSError as error:
+        raise RuntimeError(f"Native fixture command {subprocess.list2cmdline(command)} could not launch; "
+                           f"expected successful process creation; actual Win32={getattr(error, 'winerror', None)}, "
+                           f"errno={error.errno}: {error}") from error
+    output = result.stdout.decode(encoding, errors="replace")
+    error_output = result.stderr.decode(encoding, errors="replace")
     if result.returncode:
         raise RuntimeError(f"Native fixture command {subprocess.list2cmdline(command)} failed "
-                           f"(exit {result.returncode}):\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}")
-    return result.stdout
+                           f"(expected exit 0; actual exit {result.returncode}):\nstdout:\n{output}\nstderr:\n{error_output}")
+    return output
 
 
 def verify_security(observed, owner, sids, inheritance=0, task=False):
     expected = {"owner": owner, "protected": True, "sids": sorted(sids),
                 "inheritance": inheritance, "full_control": True}
+    if task:
+        expected.update(principal=SYSTEM_SID, logon_type=5, run_level=1)
     print("ACL expected: " + json.dumps(expected), flush=True)
     print("ACL observed: " + json.dumps(observed), flush=True)
     rules = observed["rules"]
@@ -100,20 +113,20 @@ def verify_security(observed, owner, sids, inheritance=0, task=False):
     for rule in rules:
         valid = valid and (rule["allow"] is True and rule["inherited"] is False
                            and rule["mask"] in ((0x10000000, 0x1F01FF) if task else (0x1F01FF,))
-                           and rule["inheritance"] == inheritance and rule["propagation"] == 0)
+                           and rule["inheritance"] == inheritance and rule["propagation"] == 0
+                           and rule["unsupported_flags"] == 0)
     if not valid:
         raise AssertionError("Fixture security descriptor does not match the exact restricted policy.")
-    if task and (observed["principal"].upper() not in ("SYSTEM", "NT AUTHORITY\\SYSTEM", SYSTEM_SID)
+    if task and (observed["principal"] != SYSTEM_SID
                  or observed["logon_type"] != 5 or observed["run_level"] != 1):
         raise AssertionError("Fixture task does not use a highest-privilege SYSTEM service-account token.")
 
 
 def security_state(kind, path, user_sid=None):
-    command = ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-               "-File", SECURITY, "-Kind", kind, "-Target", path]
+    command = [HOST, "--security", kind, path]
     if user_sid:
-        command += ["-UserSid", user_sid]
-    return json.loads(run(command))
+        command.append(user_sid)
+    return json.loads(run(command, encoding="utf-8"))
 
 
 def secure_path(path, owner, sids, directory=False, remove_sid=None):
@@ -132,11 +145,46 @@ def secure_path(path, owner, sids, directory=False, remove_sid=None):
         for command in commands:
             print("ACL operation: " + subprocess.list2cmdline([str(x) for x in command]), flush=True)
             run(command)
-    except Exception:
+    except Exception as operation_error:
         print("ACL state after failed operation:", flush=True)
-        print(json.dumps(security_state("File", path)), flush=True)
+        try:
+            print(json.dumps(security_state("File", path)), flush=True)
+        except Exception as descriptor_error:
+            raise RuntimeError(f"ACL operation failed: {operation_error}\n"
+                               f"Descriptor inspection also failed: {descriptor_error}") from operation_error
         raise
     verify_security(security_state("File", path), owner, sids, 3 if directory else 0)
+
+
+def native_acl_regression(root, sid):
+    """Exercise the real descriptor reader against deliberately invalid file ACLs."""
+    path = root / "acl-negative-probe"
+    path.write_text("public fixture permission probe\n", encoding="ascii")
+    sids = [sid, SYSTEM_SID, ADMIN_SID]
+    secure_path(path, sid, sids)
+    cases = (
+        ("unexpected SID", ["/grant:r", "*S-1-1-0:(R)"], ["/remove:g", "*S-1-1-0"]),
+        ("wrong owner", ["/setowner", "*" + ADMIN_SID], ["/setowner", "*" + sid]),
+        ("unprotected/inherited DACL", ["/inheritance:e"], ["/inheritance:r"]),
+        ("insufficient access mask", ["/grant:r", "*" + sid + ":(R)"], ["/grant:r", "*" + sid + ":(F)"]),
+        ("deny ACE", ["/deny", "*S-1-1-0:(WD)"], ["/remove:d", "*S-1-1-0"]),
+    )
+    try:
+        for label, change, restore in cases:
+            print("Native ACL negative probe: " + label, flush=True)
+            run(["icacls.exe", path, *change])
+            try:
+                try:
+                    verify_security(security_state("File", path), sid, sids)
+                except AssertionError:
+                    print("Rejected actual invalid ACL as required: " + label, flush=True)
+                else:
+                    raise RuntimeError("Security verification accepted actual invalid ACL: " + label)
+            finally:
+                run(["icacls.exe", path, *restore])
+            verify_security(security_state("File", path), sid, sids)
+    finally:
+        path.unlink()
 
 
 def disable_debug_privilege():
@@ -218,6 +266,10 @@ def line(process, timeout=40):
     reader.join(timeout=5)
     if isinstance(result, Exception):
         raise result
+    if not result:
+        output, error = process.communicate(timeout=10)
+        raise RuntimeError(f"Native SSH protocol ended before its next line; expected protocol response; "
+                           f"actual process exit={process.returncode}\nstdout:\n{output}\nstderr:\n{error}")
     return result.strip()
 
 
@@ -240,10 +292,7 @@ def alive(pid):
 
 
 def fixture_task_state(task):
-    remaining = json.loads(run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
-        "ConvertTo-Json -InputObject @(Get-ScheduledTask -TaskPath '\\' -ErrorAction Stop | "
-        "Select-Object TaskName, @{Name='State'; Expression={[int]$_.State}}) -Compress"]))
-    return next((entry["State"] for entry in remaining if entry["TaskName"] == task), None)
+    return security_state("TaskState", task)
 
 
 def wait_server_exit(pid_file):
@@ -315,21 +364,25 @@ class WindowsSshTests(unittest.TestCase):
         if os.environ.get("STARTUP_DIAGNOSTICS") and os.environ.get("RUNNER_TEMP"):
             (Path(os.environ["STARTUP_DIAGNOSTICS"]) / "native-fixture.json").write_text(
                 json.dumps({"root": str(cls.root), "task": cls.task}), encoding="utf-8")
-        cls.user = os.environ["USERNAME"].lower()
-        cls.sid = json.loads(run(["powershell.exe", "-NoProfile", "-Command",
-                                 "[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value | ConvertTo-Json"]))
+        identity = json.loads(run([HOST, "--security", "Identity"], encoding="utf-8"))
+        print("Actual fixture token identity: " + json.dumps(identity), flush=True)
+        if not identity["elevated"] or not identity["local_account"]:
+            raise RuntimeError("Expected elevated local-account token for SYSTEM task/native Windows SSH login; "
+                               "actual: " + json.dumps(identity))
+        cls.user = identity["user"].lower()
+        cls.sid = identity["sid"]
         secure_path(cls.root, cls.sid, [cls.sid, SYSTEM_SID, ADMIN_SID], directory=True)
         for name in ("ca", "host"):
             run([KEYGEN, "-q", "-t", "ed25519", "-N", "", "-C", "", "-f", cls.root / name])
         secure_path(cls.root / "host", SYSTEM_SID, [SYSTEM_SID, ADMIN_SID], remove_sid=cls.sid)
         secure_path(cls.root / "ca", cls.sid, [cls.sid, SYSTEM_SID, ADMIN_SID])
         message = cls.root / "feature-probe"
-        message.write_text("TELIPHONES Windows SSHSIG compatibility\n", encoding="ascii")
+        message.write_bytes(b"TELIPHONES Windows SSHSIG compatibility\n")
         run([KEYGEN, "-Y", "sign", "-f", cls.root / "ca", "-n", "teliphones-preflight", message])
         (cls.root / "feature-allowed").write_text("preflight " + (cls.root / "ca.pub").read_text(), encoding="ascii")
         run([KEYGEN, "-Y", "verify", "-I", "preflight", "-n", "teliphones-preflight",
              "-f", cls.root / "feature-allowed", "-s", cls.root / "feature-probe.sig"],
-            input=message.read_text())
+            input=message.read_bytes())
         cls.ca = (cls.root / "ca.pub").read_text().strip()
         cls.host = (cls.root / "host.pub").read_text().strip()
         cls.principal = "teliphones-native-test"
@@ -435,7 +488,7 @@ class WindowsSshTests(unittest.TestCase):
                     run(["schtasks.exe", "/End", "/TN", cls.task])
                     wait_server_exit(cls.server_pid)
                 run(["schtasks.exe", "/Delete", "/TN", cls.task, "/F"])
-                # Enumerate task names: a failing /Query alone cannot prove absence.
+                # Only Task Scheduler's precise not-found HRESULT proves absence.
                 if fixture_task_state(cls.task) is not None:
                     raise RuntimeError("Fixture scheduled task survived deletion.")
                 print("Fixture cleanup verified: scheduled task deleted.", flush=True)
@@ -723,6 +776,7 @@ def fixture_preflight():
     failures = []
     try:
         WindowsSshTests.setUpClass()
+        native_acl_regression(WindowsSshTests.root, WindowsSshTests.sid)
     except Exception as error:
         failures.append(error)
     finally:

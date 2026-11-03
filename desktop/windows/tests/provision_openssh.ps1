@@ -9,7 +9,7 @@ $principal = [Security.Principal.WindowsPrincipal]::new($identity)
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     throw 'Official OpenSSH capability installation and isolated SYSTEM fixture require an elevated runner.'
 }
-foreach ($tool in @('python.exe', 'cmake.exe', 'ctest.exe', 'icacls.exe', 'schtasks.exe', 'powershell.exe')) {
+foreach ($tool in @('python.exe', 'cmake.exe', 'ctest.exe', 'icacls.exe', 'schtasks.exe', 'whoami.exe')) {
     if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) {
         throw "Windows test tool missing: $tool. Use the supported windows-2022 image."
     }

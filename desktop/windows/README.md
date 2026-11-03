@@ -114,7 +114,8 @@ Portable CTest and native SSH integration are separate steps. If CTest fails,
 native SSH tests still execute when their build, OpenSSH and Win32 preflight
 prerequisites and the real isolated-fixture preflight succeeded. That preflight
 uses the integration fixture itself: separate SID-based ICACLS operations,
-read-back file/task security descriptors, generated keys/configuration, a
+native Win32/Task Scheduler read-back of file/task security descriptors, actual
+negative ACL probes, generated keys/configuration, a
 temporary SYSTEM task, real loopback SSH banner and verified shutdown/removal.
 It preserves all ten authentication/security tests; it does not replace them.
 Actual Windows ACL/task execution remains unverified locally. Independent window, executable and startup checks also
@@ -123,6 +124,9 @@ still fails the job and prevents application artifact publication. Full verbose
 CTest/unittest output, CTest JUnit and native SSH logs are retained in the
 diagnostics artifact on success or failure. The [readiness audit](tests/WINDOWS-READINESS.md)
 records the reproduced three-assertion CRT output defect and its helper-only fix.
+The fixture no longer invokes PowerShell for ACL, identity or task inspection.
+A separate diagnostic step records inherited versus reset Windows PowerShell
+module discovery; its loader results are not used as security-test results.
 
 The x64 manifest uses explicit `amd64` application and Common Controls version 6 identities. The workflow extracts and prints the actual embedded manifest, validates it using the SDK's `mt.exe`, and requires exactly one matching Common Controls dependency after linker manifest merging. It preserves `asInvoker`, `uiAccess="false"` and the DPI settings. The project disables automatic DPI manifest generation so the custom manifest is the sole source: exactly one legacy `dpiAware` (`true/pm`) and one modern `dpiAwareness` (`PerMonitorV2`) declaration, checked in the embedded manifest by Actions. The startup smoke test must launch both malformed helper invocations and receive exit code 2 (argument rejection before elevation/networking); a loader error or timeout fails the run.
 

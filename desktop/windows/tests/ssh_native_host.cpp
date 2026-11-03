@@ -13,6 +13,7 @@
 #include <thread>
 #include <filesystem>
 #include <fstream>
+#include "fixture_security.h"
 
 namespace {
 std::wstring wide(const std::string& text) {
@@ -102,24 +103,28 @@ void preflight() {
 
 int fixtureServer(char** argv) {
     Handle token{nullptr};
-    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token.value)) throw tlp::Error("SYSTEM token query failed.");
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token.value))
+        FixtureWin32Error("Fixture OpenProcessToken(SYSTEM)");
     DWORD size = 0;
     GetTokenInformation(token.value, TokenUser, nullptr, 0, &size);
     std::vector<BYTE> user(size);
-    if (!GetTokenInformation(token.value, TokenUser, user.data(), size, &size) ||
-        !IsWellKnownSid(reinterpret_cast<TOKEN_USER*>(user.data())->User.Sid, WinLocalSystemSid))
-        throw tlp::Error("Fixture sshd must run as SYSTEM to create Windows logon tokens.");
+    if (!GetTokenInformation(token.value, TokenUser, user.data(), size, &size))
+        FixtureWin32Error("Fixture GetTokenInformation(TokenUser)");
+    if (!IsWellKnownSid(reinterpret_cast<TOKEN_USER*>(user.data())->User.Sid, WinLocalSystemSid))
+        throw tlp::Error("Fixture token: expected SYSTEM SID S-1-5-18; actual=" + tlp::win::CurrentUserSid());
     SECURITY_ATTRIBUTES security{sizeof(security), nullptr, TRUE};
     Handle log{CreateFileW(wide(argv[4]).c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
                            &security, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr)};
+    if (log.value == INVALID_HANDLE_VALUE) FixtureWin32Error("Fixture CreateFileW(server log)");
     Handle input{CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
                              &security, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr)};
+    if (input.value == INVALID_HANDLE_VALUE) FixtureWin32Error("Fixture CreateFileW(NUL stdin)");
     Handle job{CreateJobObjectW(nullptr, nullptr)};
+    if (!job.value) FixtureWin32Error("Fixture CreateJobObjectW");
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
     limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-    if (log.value == INVALID_HANDLE_VALUE || input.value == INVALID_HANDLE_VALUE || !job.value ||
-        !SetInformationJobObject(job.value, JobObjectExtendedLimitInformation, &limits, sizeof(limits)))
-        throw tlp::Error("Isolated sshd logging/Job setup failed.");
+    if (!SetInformationJobObject(job.value, JobObjectExtendedLimitInformation, &limits, sizeof(limits)))
+        FixtureWin32Error("Fixture SetInformationJobObject(KILL_ON_JOB_CLOSE)");
     auto command = wide(tlp::JoinCommandLine({argv[2], "-D", "-e", "-f", argv[3]}));
     STARTUPINFOW startup{sizeof(startup)};
     startup.dwFlags = STARTF_USESTDHANDLES;
@@ -128,24 +133,35 @@ int fixtureServer(char** argv) {
     PROCESS_INFORMATION process{};
     if (!CreateProcessW(wide(argv[2]).c_str(), command.data(), nullptr, nullptr, TRUE, CREATE_SUSPENDED,
                         nullptr, nullptr, &startup, &process))
-        throw tlp::Error("Isolated SYSTEM sshd launch failed.");
+        FixtureWin32Error("Fixture CreateProcessW(SYSTEM sshd, suspended)");
     Handle child{process.hProcess}, thread{process.hThread};
     if (!AssignProcessToJobObject(job.value, child.value)) {
-        TerminateProcess(child.value, 1);
-        throw tlp::Error("Fixture sshd Job assignment failed.");
+        const auto error = GetLastError();
+        if (!TerminateProcess(child.value, 1)) FixtureWin32Error("Fixture TerminateProcess(unassigned child)");
+        FixtureWin32Error("Fixture AssignProcessToJobObject(sshd)", error);
     }
     const auto pid = std::to_string(process.dwProcessId);
     tlp::win::WriteNewFile(wide(argv[6]), pid, L"D:P(A;;FA;;;SY)(A;;FA;;;BA)");
-    if (ResumeThread(thread.value) == static_cast<DWORD>(-1)) throw tlp::Error("Fixture sshd resume failed.");
+    if (ResumeThread(thread.value) == static_cast<DWORD>(-1))
+        FixtureWin32Error("Fixture ResumeThread(sshd)");
     const auto deadline = GetTickCount64() + 600000;
-    while (WaitForSingleObject(child.value, 200) == WAIT_TIMEOUT &&
-           GetFileAttributesW(wide(argv[5]).c_str()) == INVALID_FILE_ATTRIBUTES && GetTickCount64() < deadline) {}
-    if (!TerminateJobObject(job.value, 0) || WaitForSingleObject(child.value, 10000) != WAIT_OBJECT_0)
-        throw tlp::Error("Fixture sshd termination failed.");
+    for (;;) {
+        const auto state = WaitForSingleObject(child.value, 200);
+        if (state == WAIT_FAILED) FixtureWin32Error("Fixture WaitForSingleObject(sshd)");
+        const auto stop = GetFileAttributesW(wide(argv[5]).c_str());
+        if (stop == INVALID_FILE_ATTRIBUTES && GetLastError() != ERROR_FILE_NOT_FOUND)
+            FixtureWin32Error("Fixture GetFileAttributesW(stop marker)");
+        if (state == WAIT_OBJECT_0 || stop != INVALID_FILE_ATTRIBUTES || GetTickCount64() >= deadline) break;
+    }
+    if (!TerminateJobObject(job.value, 0)) FixtureWin32Error("Fixture TerminateJobObject(sshd tree)");
+    const auto stopped = WaitForSingleObject(child.value, 10000);
+    if (stopped == WAIT_FAILED) FixtureWin32Error("Fixture WaitForSingleObject(sshd shutdown)");
+    if (stopped != WAIT_OBJECT_0)
+        throw tlp::Error("Fixture sshd shutdown: expected signalled process; actual wait=" + std::to_string(stopped));
     for (unsigned attempt = 0; attempt < 100; ++attempt) {
         JOBOBJECT_BASIC_ACCOUNTING_INFORMATION accounting{};
         if (!QueryInformationJobObject(job.value, JobObjectBasicAccountingInformation, &accounting, sizeof(accounting), nullptr))
-            throw tlp::Error("Fixture process-tree teardown query failed.");
+            FixtureWin32Error("Fixture QueryInformationJobObject(active processes)");
         if (accounting.ActiveProcesses == 0) {
             tlp::win::WriteNewFile(wide(argv[6]) + L".stopped", "Job process count: 0\n",
                                    L"D:P(A;;FA;;;SY)(A;;FA;;;BA)");
@@ -159,6 +175,7 @@ int fixtureServer(char** argv) {
 
 int runMain(int argc, char** argv) {
     try {
+        if (argc > 1 && std::string(argv[1]) == "--security") return FixtureSecurityCommand(argc, argv);
         if (argc == 7 && std::string(argv[1]) == "--fixture-server") return fixtureServer(argv);
         if (argc == 2 && std::string(argv[1]) == "--preflight") { preflight(); return 0; }
         if (argc > 1 && std::string(argv[1]) == "/ssh-console")
@@ -265,12 +282,10 @@ int runMain(int argc, char** argv) {
         std::cout << "KEY_DESTROYED=" << agent.destroyed() << std::endl;
         return static_cast<int>(status);
     } catch (const std::exception& error) {
-        const auto windowsError = GetLastError();
         if (argc == 7 && std::string(argv[1]) == "--fixture-server") {
             std::ofstream log(std::filesystem::path(wide(argv[4])), std::ios::app);
-            if (log) log << "SYSTEM fixture wrapper failure: " << error.what()
-                         << "; Win32 error snapshot: " << windowsError << "\n";
-            else std::cerr << "Unable to write SYSTEM fixture failure log; Win32 error " << windowsError << "\n";
+            if (log) log << "SYSTEM fixture wrapper failure: " << error.what() << "\n";
+            else std::cerr << "Unable to write SYSTEM fixture failure log.\n";
         }
         std::cerr << "NATIVE SSH TEST FAILURE: " << error.what() << std::endl;
         return 1;

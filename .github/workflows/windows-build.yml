@@ -114,6 +114,13 @@ jobs:
             throw "Native build layout checks failed with exit code $LASTEXITCODE."
           }
 
+      - name: Diagnose Windows PowerShell module discovery independently
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
+        run: |
+          python -u desktop/windows/tests/powershell_environment_check.py 2>&1 |
+            Tee-Object -FilePath (Join-Path $env:STARTUP_DIAGNOSTICS 'powershell-environment.log')
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to collect Windows PowerShell process/module diagnostics.' }
+
       - name: Provision official Windows OpenSSH capabilities
         id: openssh
         if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}

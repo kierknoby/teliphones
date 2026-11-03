@@ -1,6 +1,6 @@
 """Check native build inputs without requiring Visual Studio or third-party packages."""
 
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import importlib.util
 import copy
 import os
@@ -31,7 +31,7 @@ class BuildLayoutTests(unittest.TestCase):
         sids = ["S-1-5-18", "S-1-5-32-544"]
         descriptor = {"owner": sids[0], "protected": True, "rules": [
             {"sid": sid, "allow": True, "inherited": False, "mask": 0x1F01FF,
-             "inheritance": 0, "propagation": 0} for sid in sids]}
+             "inheritance": 0, "propagation": 0, "unsupported_flags": 0} for sid in sids]}
         with patch.object(module, "run") as run, patch.object(module, "security_state", return_value=descriptor):
             module.secure_path("D:/fixture/host", sids[0], sids, remove_sid="S-1-5-21-1-2-3-1001")
             commands = [call.args[0] for call in run.call_args_list]
@@ -45,7 +45,7 @@ class BuildLayoutTests(unittest.TestCase):
             with self.subTest(field=field), self.assertRaises(AssertionError):
                 module.verify_security(invalid, sids[0], sids)
         for field, value in (("sid", "S-1-1-0"), ("mask", 0x120089), ("inherited", True),
-                             ("allow", False), ("inheritance", 3), ("propagation", 1)):
+                             ("allow", False), ("inheritance", 3), ("propagation", 1), ("unsupported_flags", 64)):
             invalid = copy.deepcopy(descriptor)
             invalid["rules"][0][field] = value
             with self.subTest(field=field), self.assertRaises(AssertionError):
@@ -54,8 +54,37 @@ class BuildLayoutTests(unittest.TestCase):
         module.verify_security(task, sids[0], sids, task=True)
         with self.assertRaises(AssertionError):
             module.verify_security({**task, "logon_type": 3}, sids[0], sids, task=True)
+        runner_sid = "S-1-5-21-1-2-3-1001"
+        baseline = copy.deepcopy(descriptor)
+        baseline["owner"] = runner_sid
+        baseline["rules"].append({**baseline["rules"][0], "sid": runner_sid})
+        invalid = copy.deepcopy(baseline)
+        invalid["rules"].append({**invalid["rules"][0], "sid": "S-1-1-0"})
+        observations = [baseline]
+        for field in ("extra", "owner", "protected", "mask", "deny"):
+            observed = copy.deepcopy(invalid if field in ("extra", "deny") else baseline)
+            if field == "owner":
+                observed["owner"] = sids[1]
+            elif field == "protected":
+                observed["protected"] = False
+            elif field == "mask":
+                observed["rules"][0]["mask"] = 0x120089
+            elif field == "deny":
+                observed["rules"][-1]["allow"] = False
+            observations.extend((observed, baseline))
+        with tempfile.TemporaryDirectory() as root, patch.object(module, "run"), \
+                patch.object(module, "security_state", side_effect=observations) as inspected:
+            module.native_acl_regression(Path(root), runner_sid)
+            self.assertEqual(inspected.call_count, 11)
+            self.assertFalse((Path(root) / "acl-negative-probe").exists())
+        with tempfile.TemporaryDirectory() as root, patch.object(module, "run"), \
+                patch.object(module, "security_state", return_value=baseline), \
+                self.assertRaisesRegex(RuntimeError, "accepted actual invalid ACL"):
+            module.native_acl_regression(Path(root), runner_sid)
         cls = module.WindowsSshTests
-        with patch("builtins.print"), patch.object(cls, "setUpClass") as setup, patch.object(cls, "doClassCleanups") as cleanup, \
+        with patch.object(module, "native_acl_regression"), patch("builtins.print"), \
+                patch.object(cls, "root", Path("fixture"), create=True), patch.object(cls, "sid", sids[0], create=True), \
+                patch.object(cls, "setUpClass") as setup, patch.object(cls, "doClassCleanups") as cleanup, \
                 patch.object(cls, "tearDown_exceptions", [], create=True):
             module.fixture_preflight()
             setup.assert_called_once()
@@ -89,6 +118,59 @@ class BuildLayoutTests(unittest.TestCase):
                 self.assertRaisesRegex(RuntimeError, "setup operation failed"):
             module.fixture_preflight()
         cleanup.assert_called_once()
+
+    def test_native_security_has_no_powershell_module_dependency(self):
+        fixture = (ROOT / "tests/ssh_native_check.py").read_text(encoding="utf-8")
+        for dependency in ("powershell.exe", "Get-Acl", "Get-ScheduledTask", "PSModulePath"):
+            self.assertNotIn(dependency, fixture)
+        native = (ROOT / "tests/fixture_security.cpp").read_text(encoding="utf-8")
+        for api in ("GetNamedSecurityInfoW", "GetSecurityDescriptorOwner", "GetSecurityDescriptorDacl",
+                    "GetSecurityDescriptorControl", "GetAce", "GetSecurityDescriptor",
+                    "SE_DACL_PROTECTED", "TASK_DONT_ADD_PRINCIPAL_ACE", "TokenElevation",
+                    "GetVolumeInformationW", "FS_PERSISTENT_ACLS"):
+            self.assertIn(api, native)
+        self.assertIn("HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND)", native)
+        cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
+        self.assertIn("tests/fixture_security.cpp", cmake)
+        self.assertIn("oleaut32 taskschd", cmake)
+        self.assertFalse((ROOT / "tests/fixture_security.ps1").exists())
+
+    def test_native_fixture_signature_transport_preserves_exact_bytes(self):
+        spec = importlib.util.spec_from_file_location("fixture_transport", ROOT / "tests/ssh_native_check.py")
+        module = importlib.util.module_from_spec(spec)
+        with patch.dict(os.environ, {"SystemRoot": "C:/Windows"}), patch.object(sys, "argv", ["fixture", "host.exe"]):
+            spec.loader.exec_module(module)
+        message = "TELIPHONES-SSH-REQUEST-2\nworkstation\nchallenge\nsession\npublic-key\n"
+        result = subprocess.CompletedProcess(["keygen"], 0, b"verified\r\n", b"")
+        with patch.object(module.subprocess, "run", return_value=result) as process:
+            self.assertEqual(module.run(["keygen"], input=message), "verified\r\n")
+            self.assertEqual(process.call_args.kwargs["input"], message.encode("utf-8"))
+            self.assertNotIn("text", process.call_args.kwargs)
+            self.assertNotIn("encoding", process.call_args.kwargs)
+        with patch.object(module, "run", return_value='{"owner":"S-1-5-18"}') as process:
+            self.assertEqual(module.security_state("File", "D:/a b/key")["owner"], "S-1-5-18")
+            self.assertEqual(process.call_args.args[0], [module.HOST, "--security", "File", "D:/a b/key"])
+
+    def test_powershell_diagnostics_compare_isolated_discovery_environments(self):
+        spec = importlib.util.spec_from_file_location("ps_environment", ROOT / "tests/powershell_environment_check.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        results = [subprocess.CompletedProcess([], 1, "loader exception details", ""),
+                   subprocess.CompletedProcess([], 0, "Microsoft.PowerShell.Security loaded", "")]
+        environment = {"SystemRoot": "C:/Windows", "PSModulePath": "C:/PowerShell7/Modules",
+                       "PSHOME": "C:/PowerShell7"}
+        with patch.dict(os.environ, environment), patch.object(module.os, "name", "nt"), \
+                patch.object(module, "Path", PureWindowsPath), \
+                patch.object(module.subprocess, "run", side_effect=results) as process, \
+                patch("builtins.print") as output:
+            module.main()
+            first, second = process.call_args_list
+            self.assertEqual(first.kwargs["env"]["PSModulePath"], environment["PSModulePath"])
+            self.assertNotIn("PSModulePath", second.kwargs["env"])
+            self.assertNotIn("PSHOME", second.kwargs["env"])
+            self.assertEqual(os.environ["PSModulePath"], environment["PSModulePath"])
+            self.assertIn("System32\\WindowsPowerShell\\v1.0\\powershell.exe", first.args[0][0])
+            self.assertTrue(any("loader exception details" in str(call) for call in output.call_args_list))
 
     def test_contract_stdout_rejects_windows_double_translation(self):
         spec = importlib.util.spec_from_file_location("portable_contract", ROOT / "tests/contract_check.py")

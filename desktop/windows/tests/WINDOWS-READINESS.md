@@ -15,6 +15,7 @@ Windows executes portable client contracts; Linux retains full broker contracts.
 | Checkout | Existing GitHub checkout action | No persisted Git credentials |
 | Toolchain | Runner Visual Studio 2022, v143, static MFC, Windows SDK | Existing `vswhere` discovery and exact header/library/tool checks; no VS downloads |
 | Project/layout checks | Runner Python and CMake | Explicit Python requirement; CMake script-mode tests check both platform registrations and provisioning order |
+| PowerShell discovery diagnostics | Exact System32 Windows PowerShell executable, separate from fixture/security tests | Record selected discovery variables and child edition/module paths; compare inherited versus PSModulePath/PSHOME-reset module loads; full exception/exit output in powershell-environment.log; not an ACL verification or success substitute |
 | OpenSSH provisioning | Elevated x64 runner, Windows DISM capability servicing, Task Scheduler | Enumerate `Get-WindowsCapability -Online` OpenSSH entries; install missing official Client/Server capabilities with `Add-WindowsCapability`; re-query Installed state and reject RestartNeeded |
 | OpenSSH executable validation | Windows capability output in `%SystemRoot%\System32\OpenSSH` | Verify all three files, versions and SHA256; execute ssh version and sshd/keygen usage probes; validate exit codes AND output; export exact directory through GITHUB_PATH |
 | OpenSSL restore | Runner's existing vcpkg; existing declared OpenSSL manifest | Static x64 restore, checked exit codes, versions logged; explicitly verify headers, Release/Debug crypto libraries and distributable copyright file |
@@ -22,7 +23,7 @@ Windows executes portable client contracts; Linux retains full broker contracts.
 | Native CMake build | Runner CMake/Python/compiler, same vcpkg toolchain | Compile production core plus isolated loopback fixture core, crypto and agent/session test host |
 | Win32 preflight | DPAPI, BCrypt/OpenSSL, VirtualAlloc/VirtualLock, local pipes, Jobs, process permissions | Actual native operations: locked seed/sign/destroy, user DPAPI round-trip, restrictive pipe creation, suspended child, Job assignment/process DACL/termination |
 | CTest | Dependencies listed below | All six Windows tests remain enabled; verbose output, JUnit and full stdout/stderr log retained; failure does not suppress independent native SSH integration |
-| Real fixture preflight | Same Python/C++ fixture, ICACLS, PowerShell ACL APIs, Task Scheduler COM and actual OpenSSH server | Separate grants/owner/inheritance commands; inspect exact file/task descriptors, generated keys/config, SYSTEM task, live server PID/SSH banner; verified teardown; no mocked replacement |
+| Real fixture preflight | Same Python/C++ fixture, ICACLS, native Win32 security APIs, Task Scheduler COM and actual OpenSSH server | Separate grants/owner/inheritance commands; inspect exact file/task descriptors; reject real deliberately invalid file ACLs; generated keys/config, SYSTEM task, live server PID/SSH banner; verified teardown; no mocked replacement |
 | Native SSH integration | Windows OpenSSH, elevated task registration, current local Windows account, loopback ports | Actual SSHSIG sign/verify feature probe, generated Ed25519 host/CA, strict host key ACL, `sshd -t` and effective `sshd -T`; real authenticated login is mandatory |
 | Always-run cleanup | Python and uniquely recorded fixture task/path | Stop marker, verified zero-Job-process acknowledgement, exact task deletion; recovery for interrupted harness; no service-name/process-name killing |
 | Remaining native tests | Existing MFC tests, dumpbin, mt.exe, loader | Window tests, actual PE/version/manifest/import checks and helper startup tests retained |
@@ -39,7 +40,7 @@ diagnostics executables are attempted even if the first fails.
 No step uses `continue-on-error`: failures remain job failures. Application
 packaging/upload retain the default successful-job condition. Diagnostics upload
 runs on success or failure, collecting `ctest-results.xml`, `ctest-output.log`,
-`native-fixture-preflight.log`, `native-ssh-output.log` and the existing native/startup logs in
+`powershell-environment.log`, `native-fixture-preflight.log`, `native-ssh-output.log` and the existing native/startup logs in
 `TELIPHONES-Windows-startup-diagnostics`. Verbose unittest names, unlimited contract
 diffs and raw transport-byte errors identify exact assertions in the same run.
 
@@ -72,9 +73,11 @@ provider defect.
 The fixture now issues **separate** `/grant:r`, `/setowner`, `/inheritance:r`
 and, for the host key, `/remove:g` operations. Explicit trusted grants are
 installed before inherited rights are removed, avoiding a transient ACL lockout.
-SID-based policy is read back through Windows security APIs in
-`fixture_security.ps1`, checking owner, protected DACL, exact allowed identities,
-full-control masks, inheritance and propagation. Unexpected ACEs fail the fixture.
+SID-based policy is read back through native Windows APIs in
+`fixture_security.cpp`, checking owner, protected DACL, exact allowed identities,
+full-control masks, inheritance, propagation and unexpected flags. Unsupported
+ACE forms and unexpected ACEs fail the fixture. The former PowerShell script has
+been removed; the fixture does not spawn PowerShell.
 
 - Temporary root: current user owner; current user, SYSTEM and Administrators
   have explicit inheritable full control.
@@ -91,7 +94,10 @@ full-control masks, inheritance and propagation. Unexpected ACEs fail the fixtur
 `--fixture-preflight` calls the **same** `setUpClass` and class cleanups used by
 the ten native tests. It checks generated Ed25519 host keys, SSHSIG support,
 `sshd -t/-T`, the protected task, real SYSTEM wrapper and loopback SSH banner with
-a live recorded server PID. Success requires acknowledged zero Job processes,
+a live recorded server PID. Actual negative ACL probes separately change owner,
+add an unauthorised SID, enable inheritance, reduce access rights and add a deny
+ACE; every observed invalid descriptor must be rejected, then restored and
+re-verified. Success requires acknowledged zero Job processes,
 closed listener, absent scheduled task and removed temporary directory. Setup
 and cleanup errors are both reported. It does not claim an authenticated login:
 that remains mandatory in the unchanged ten-test integration suite.
@@ -103,8 +109,8 @@ The C++ test host uses Unicode command-line input rather than treating Windows
 ANSI argv as UTF-8. SYSTEM-wrapper failures are written to the fixture log,
 because a scheduled task has no attached console. Failed shutdown does not
 silently erase evidence of a still-running server/task; interrupted recovery
-checks actual task enumeration instead of treating arbitrary `/Query` errors as
-proof that a task is absent.
+uses `ITaskFolder::GetTask` and accepts only `HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND)`
+as proof that a task is absent. Access-denied/RPC/service failures remain errors.
 
 Local policy/command-construction/cleanup-error unit tests use mocks and do **not**
 validate Windows ACL semantics. This Linux workspace has no PowerShell or Windows
@@ -112,6 +118,88 @@ runtime: the separate native fixture preflight, actual ICACLS commands, task
 descriptors, Unicode test-host build and all ten native SSH tests remain
 unexecuted locally. Runtime ICACLS help plus descriptor checks provide the
 on-runner syntax and permission validation; no external searches were used.
+
+### Latest PowerShell loader failure: evidence and correction
+
+The supplied error, `Get-Acl: Microsoft.PowerShell.Security could not be loaded`,
+establishes a module/command-loader failure **before** descriptor inspection. It
+does not establish an invalid file owner or ACL. The full loader exception,
+inherited module paths and exact module manifest selected on that runner are
+not available locally; no remote GitHub access was performed.
+
+The workflow's parent shell is PowerShell 7 (`pwsh`), whereas the old fixture
+spawned Windows PowerShell (`powershell.exe`) without sanitising its inherited
+environment. `-NoProfile` does not clear `PSModulePath` or other environment
+variables. Cross-edition module/assembly discovery is therefore a concrete
+fragile dependency, but **not a proven explanation for that specific run**.
+Missing/damaged inbox modules or other assembly-loading errors cannot be ruled
+out from the single supplied message.
+
+The diagnostic-only probes are isolated child processes, not a workaround in
+the fixture. They record only named PowerShell discovery variables, edition,
+module manifest paths, exit codes and complete loader exceptions, comparing
+inherited versus reset discovery variables. Even if these probes cannot load
+the module, the native security checks still run independently. A later runner
+cannot retroactively prove the original runner's exact condition.
+
+The actual correction removes **all** PowerShell calls from the SSH harness:
+
+- `GetNamedSecurityInfoW`, `GetSecurityDescriptorOwner/Control/Dacl`, `GetAce`,
+  SID conversion and SDDL serialization inspect real file security; the filesystem
+  must advertise persistent ACL support. No localised CLI output is parsed.
+- Task Scheduler COM sets and reads back the protected task descriptor and
+  resolves principal names to SIDs; its actual SYSTEM SID, service-account logon
+  and highest run level are required.
+- Token/account APIs return the runner SID, elevation and actual local account
+  name instead of trusting `USERNAME` or a PowerShell identity query.
+- Task-state/absence inspection uses COM, including interrupted cleanup; it no
+  longer imports the ScheduledTasks PowerShell module.
+- Errors identify the API, numeric Win32 code or HRESULT, expected result and
+  actual result. Descriptor mismatch errors include expected policy and observed
+  descriptor. The SYSTEM wrapper captures errors at the failing API rather than
+  reporting a later, potentially stale `GetLastError`.
+
+The audit also identified a separate **fixture-only byte transport defect**:
+Python `subprocess.run(text=True, input=...)` rewrites LF to CRLF on Windows.
+The production certificate-request signature covers LF-delimited bytes, so the
+old mock issuer could verify different bytes from those signed by the native
+provider. The fixture now sends SSHSIG input as explicit UTF-8 bytes and writes
+the feature probe using exact bytes. Production cryptography is unchanged.
+Local transport tests verify no text-mode stdin translation; native signature
+verification/login remains a required Windows result.
+
+### Complete fixture dependency audit
+
+| Phase / operation | Essential dependency and handling |
+|---|---|
+| Before tests: tools | Official client/server/keygen provisioning and executable checks remain before dependent stages; static OpenSSL is restored and compiled; native host links SDK `taskschd`, `ole32`, `oleaut32` and `advapi32`, no added runtime package |
+| Before tests: services/modules | Task Scheduler/RPC is essential and checked by provisioning plus actual native COM connection/task registration. No global sshd/ssh-agent service is started. PowerShell DISM remains only in the existing official-capability provisioning stage, not fixture verification or teardown |
+| Before tests: privileges/account | Provisioning requires elevated x64; native identity query additionally verifies an elevated local-account token. SYSTEM is needed for Windows sshd logon tokens; task principal/run level/permissions are checked. Python disables debug privilege before process-isolation tests |
+| Before tests: filesystem | Unique temporary path, exact SID allowlists, protected ACLs, host SYSTEM ownership, explicit CA/config/task permissions; filesystem persistent-ACL capability checked. Negative ACL probes must reject actual invalid permissions |
+| Before tests: server | Generated test-only CA/host keys; public-key-only auth, pinned host, no password/interactive fallback, forwarding disabled, StrictModes enabled; `sshd -t/-T`, exclusive port availability, actual live PID/banner. No production config/firewall changes |
+| During tests: API issuer | Loopback HTTP server with authenticated SSHSIG request, exact-byte verification, distinct public subject/session/principal and short-lived generated certificate; rejects invalid/denied requests; issuer thread/socket stopped in finally |
+| During tests: isolation | Actual Windows named pipe and exact client PID enforcement; real process access probes, locked Ed25519 key, DPAPI, Windows SSH client/helper, anonymous kill-on-close Jobs; concurrent sessions and unexpected termination exercised, not mocked |
+| During tests: paths/encoding | Native host uses `wmain`, UTF-8 protocol and UTF-16 Win32/COM APIs; Python uses argument arrays, XML task serialization and quoted OpenSSH paths. Task operations restricted to the generated fixture namespace |
+| After tests: ownership/termination | Stop marker, SYSTEM wrapper kill-on-close Job, zero-active-process acknowledgement, bounded PID wait, closed loopback listener, exact task deletion and absence query; retain failure if any mandatory check fails |
+| After failure/interruption | Cleanup registered immediately, recovery descriptor recorded before sensitive setup; created-but-unstarted tasks cleaned; always-run recovery ends only the recorded task and removes only its validated temporary path. No name-based process killing or production service changes |
+
+All six Windows CTests and all ten native methods remain registered/enabled.
+Unittest continues after individual test failures. Independent portable, native,
+window, PE and startup results are collected using existing outcome gates;
+mandatory failures remain job failures and prevent packaging/publication.
+Fixture setup/preflight failure cannot be labelled an authenticated SSH test pass.
+
+Local validation for this correction: CMake build and all seven Linux CTests
+passed, including 30 project/fixture regression tests; gateway Python ran 142
+tests with 141 passed and one skipped for missing WireGuard tooling. PHP,
+JavaScript, documentation and module packaging regressions passed. A genuine
+local OpenSSH SSHSIG probe (with Linux mode-0600 test key) accepted the exact
+LF-delimited payload and rejected its CRLF-mutated equivalent. This is evidence
+for byte binding, not Windows execution. The new native Win32/COM component,
+real negative ACL probes, runner module probes, SYSTEM task and all ten native
+SSH tests have **not** been compiled/executed in this Linux workspace. No
+disposable Windows runtime, Windows SDK/compiler or authorised remote Windows
+execution environment is available here; no dependencies were downloaded.
 
 ## All six Windows CTests
 
