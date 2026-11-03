@@ -322,8 +322,9 @@ void StartManagedSsh(const Profile& profile, const Preferences& preferences) {
     const std::string config =
         "Host *\nHostName " + profile.pairing.pbxAddress + "\nUser " + profile.pairing.sshUser +
         "\nPort " + std::to_string(profile.pairing.sshPort) + "\nHostKeyAlias " + alias +
-        "\nIdentityAgent " + quoted(pipe) + "\nIdentityFile " + quoted(state->directory + L"\\identity.pub") +
-        "\nCertificateFile " + quoted(state->directory + L"\\certificate.pub") +
+        // Select the agent's certificate entry directly; raw identities are excluded by the algorithm policy.
+        "\nIdentityAgent " + quoted(pipe) + "\nIdentityFile " + quoted(state->directory + L"\\certificate.pub") +
+        "\nCertificateFile none" +
         "\nUserKnownHostsFile " + quoted(state->directory + L"\\known_hosts") +
         "\nGlobalKnownHostsFile NUL\nStrictHostKeyChecking yes\nUpdateHostKeys no\nVerifyHostKeyDNS no\nCheckHostIP no\n"
         "HostKeyAlgorithms ssh-ed25519\nPubkeyAcceptedKeyTypes ssh-ed25519-cert-v01@openssh.com\n"
@@ -451,7 +452,17 @@ int RunSshConsole(const std::vector<std::string>& arguments) {
         if (ssh.empty() || value.at("ssh").asString() != ssh) throw Error("Unexpected SSH executable.");
         const auto path = value.at("config").asString();
         if (!IsShellSafeFilePath(path)) throw Error("Unsafe SSH configuration path.");
-        auto command = Widen(JoinCommandLine({ssh, "-F", path, "teliphones"}));
+        std::vector<std::string> commandArgs{ssh, "-F", path};
+#ifdef TELIPHONES_SSH_TESTING
+        wchar_t testLog[32768];
+        const auto logSize = GetEnvironmentVariableW(L"TELIPHONES_SSH_TEST_LOG", testLog, 32768);
+        if (!logSize || logSize >= 32768) throw Error("Native SSH test requires a bounded client diagnostic log path.");
+        const auto logPath = Narrow(std::wstring(testLog, logSize));
+        if (!IsShellSafeFilePath(logPath)) throw Error("Unsafe SSH test log path.");
+        commandArgs.insert(commandArgs.end(), {"-vvv", "-E", logPath});
+#endif
+        commandArgs.push_back("teliphones");
+        auto command = Widen(JoinCommandLine(commandArgs));
         STARTUPINFOW startup{sizeof(startup)};
         PROCESS_INFORMATION process{};
         if (!CreateProcessW(Widen(ssh).c_str(), command.data(), nullptr, nullptr, FALSE, CREATE_SUSPENDED,

@@ -23,10 +23,7 @@ private:
     HANDLE pipe_ = INVALID_HANDLE_VALUE;
     HANDLE stop_ = nullptr;
     HANDLE client_ = nullptr;
-    std::unique_ptr<SshSigningKey> key_;
-    Bytes certificate_;
-    Bytes hostKey_;
-    std::string user_;
+    SshAgentProtocol protocol_;
     mutable std::mutex mutex_;
     std::string failure_;
     std::atomic<bool> destroyed_{false};

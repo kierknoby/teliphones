@@ -22,6 +22,28 @@ def project(name):
 
 
 class BuildLayoutTests(unittest.TestCase):
+    def test_native_certificate_selection_and_authenticated_crash_preconditions(self):
+        session = (ROOT / "src/platform/SshSession.cpp").read_text()
+        fixture = (ROOT / "tests/ssh_native_check.py").read_text()
+        host = (ROOT / "tests/ssh_native_host.cpp").read_text()
+        self.assertIn('IdentityFile " + quoted(state->directory + L"\\\\certificate.pub")', session)
+        self.assertIn(r'\nCertificateFile none', session)
+        self.assertIn("IdentityFile {quoted(root / 'certificate.pub')}", fixture)
+        self.assertIn(r'CertificateFile none\nUserKnownHostsFile', fixture)
+        for source in (session, fixture):
+            self.assertIn("PubkeyAcceptedKeyTypes ssh-ed25519-cert-v01@openssh.com", source)
+        for name in ("test_controller_crash_kills_owned_ssh_only", "test_ssh_crash_ends_agent_and_prevents_reuse"):
+            method = fixture.split("    def " + name, 1)[1].split("\n    def ", 1)[0]
+            self.assertIn('self.assertEqual(line(', method)
+            self.assertIn('"TELIPHONES_SESSION_READY"', method)
+        self.assertIn('self.assertIn("KEY_DESTROYED=1", output, output + error)', fixture)
+        self.assertIn('program, "-n", "-vvv", "-E"', host)
+        self.assertIn('action != "crash"', host)
+        self.assertNotIn("Sleep(2000)", host)
+        self.assertIn("TELIPHONES_SSH_TEST_LOG", session)
+        self.assertIn("TELIPHONES_SSH_TEST_LOG", fixture)
+        self.assertIn('glob("*-client.log")', fixture)
+
     def test_system_process_inventory_never_opens_process_handles(self):
         spec = importlib.util.spec_from_file_location("fixture_inventory", ROOT / "tests/ssh_native_check.py")
         module = importlib.util.module_from_spec(spec)
@@ -645,9 +667,14 @@ endfunction()
         for required in ("JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE", "AssignProcessToJobObject", "IsProcessInJob",
                          "CRYPTPROTECT_UI_FORBIDDEN", "teliphones-ssh-request/2", "VerifySshCertificateSignature"):
             self.assertIn(required, session)
-        for required in ("GetNamedPipeClientProcessId", "GetProcessId(client_)", "key_->destroy()",
-                         "ValidateSshAuthentication", "PIPE_REJECT_REMOTE_CLIENTS", "FILE_FLAG_FIRST_PIPE_INSTANCE"):
+        for required in ("GetNamedPipeClientProcessId", "GetProcessId(client_)", "protocol_.destroy()",
+                         "protocol_.reply(request)", "PIPE_REJECT_REMOTE_CLIENTS", "FILE_FLAG_FIRST_PIPE_INSTANCE"):
             self.assertIn(required, agent)
+        protocol = (ROOT / "src/core/SshCrypto.cpp").read_text()
+        self.assertIn("ValidateSshAuthentication(message, user_, certificate_, hostKey_)", protocol)
+        self.assertLess(protocol.index("ValidateSshAuthentication(message, user_, certificate_, hostKey_)"),
+                        protocol.index("const auto signature = key_->sign(message)"))
+        self.assertIn("destroyed_ = protocol_.destroyed()", agent)
         helper = session[session.index("int RunSshConsole("):]
         self.assertLess(helper.index("ProtectSshProcess(GetCurrentProcess(), true)"), helper.index("CreateProcessW("))
         solution = (ROOT / "TELIPHONES.sln").read_text()

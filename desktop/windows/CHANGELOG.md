@@ -8,8 +8,16 @@ version numbers retrospectively.
 ## 0.7.0 — Unreleased
 
 Windows file version: **0.7.0.0**. FreePBX module version: **0.4.0**.
-Native MSVC/MFC compilation and real Windows tunnel/terminal validation remain pending.
+The reported native build succeeds; the corrected sources and full Windows
+tunnel/terminal behaviour still require native validation.
 
+- Correct certificate identity selection: select the certificate directly from
+  the isolated memory agent without permitting raw-key authentication or private
+  key files. Exercise the shared production protocol with genuine local OpenSSH;
+  all ten Windows native tests now execute in the reported run, but its seven
+  failures require rerun after this correction. Require authenticated readiness
+  before crash tests and retain per-client diagnostics. Preserve the unreleased
+  0.7.0 target; this is not a new release/distribution. FreePBX stays 0.4.0.
 - Remove the previous DPAPI SSH key save/decrypt and plaintext runtime-key export
   paths. Preserve existing permanent encrypted identities and authorisations.
 - Implement Ed25519 session keys in memory using static OpenSSL, with locked seed
@@ -36,7 +44,8 @@ Native MSVC/MFC compilation and real Windows tunnel/terminal validation remain p
 - Preserve Remote Support, appearance, layout and the centred licence footer.
 - Add native Windows OpenSSH login, process/agent access, concurrent sessions,
   controller/SSH crash, expiry and production DPAPI/API/console/disconnect tests
-  to Actions. They have not run yet; native builds, the terminal/reboot matrix
+  to Actions. The latest reported run executes all ten, with seven failures;
+  corrected native authentication, the terminal/reboot matrix
   and real systemd/FreePBX termination still require validation. No physical
   memory/pagefile/SSD-erasure guarantee or production security sign-off is made.
 

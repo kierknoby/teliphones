@@ -2,6 +2,86 @@
 
 Targets: TELIPHONES for Windows **0.7.0**, TELIPHONES for FreePBX **0.4.0**.
 
+## Seven native authentication/process failures
+
+The latest user-reported Windows run executes all ten native tests: three pass
+and seven fail. Four positive fixture tests report `Load key "identity.pub":
+invalid format`, publickey refusal and `KEY_DESTROYED=0`; two production tests
+cannot establish authentication, and controller-crash fails a liveness assertion.
+Complete Windows client/server transcripts were not supplied or fetched.
+
+Local genuine OpenSSH 9.6 reproduces the shared selection defect, using a
+disposable loopback sshd, generated CA/host keys and the same agent protocol:
+
+1. The memory agent enumerates an Ed25519 **certificate**, while the old
+   `IdentityFile` selects the raw `identity.pub` and `CertificateFile` separately
+   selects the certificate. OpenSSH accepts the certificate offer but searches
+   for its signer through the raw identity. It does not associate that identity
+   with the certificate-only agent entry. It instead tries to load the
+   public-only file as a private key. No agent signing request is made; the
+   private seed has not been consumed, explaining `KEY_DESTROYED=0`.
+   The local Linux loader reports `error in libcrypto`; the supplied Windows
+   loader reports `invalid format`. Neither is evidence of malformed public
+   key/certificate encoding: both are the wrong private-key loader being invoked.
+2. Advertising the raw identity is not a sufficient production fix. With the
+   production certificate-only `PubkeyAcceptedKeyTypes` policy, genuine OpenSSH
+   filters out the raw identity (`corresponding algorithm not in
+   PubkeyAcceptedAlgorithms`) before signer selection. This separately reproduced
+   failure must not be "fixed" by allowing raw-key authentication.
+
+Both configs now use `IdentityFile certificate.pub` and `CertificateFile none`.
+The latter prevents a second, separately loaded certificate candidate; it does
+not disable certificates. The identity itself is the exact certificate exposed
+by the agent. `identity.pub` remains a public subject/audit artifact, never a
+private-key fallback. Certificate-only algorithms, `IdentitiesOnly`, strict host
+verification and no password/shared-agent fallback remain enforced.
+
+The agent request/reply logic is moved without relaxing its policy into the
+portable production `SshAgentProtocol`, called by the existing process-bound
+named-pipe transport. Its signer selector is still the exact certificate blob,
+not the raw public key. It checks zero flags and the exact userauth
+user/service/certificate (and pinned host for hostbound requests), creates one
+Ed25519 signature, then destroys the seed. Enumeration/re-signing fail after
+destruction; import/removal/export/extension operations remain unsupported.
+Named-pipe PID/retained-handle checks, DACLs, DPAPI, locks and owned Jobs are
+unchanged.
+
+The portable regression drives that actual C++ dispatcher, not a Python signing
+substitute. It verifies enumeration, normal/hostbound signing, destruction,
+re-use rejection and wrong key/certificate/user/host/flags rejection. A real
+local OpenSSH client/server login with the production certificate-only policy
+succeeds using this dispatcher and no session private-key file. Unix sockets
+adapt only the transport: this does **not** validate Windows named pipes,
+Windows OpenSSH, DPAPI, console helper or Jobs.
+The same real-OpenSSH regression also runs both old configurations, requiring
+certificate-offer acceptance followed by authentication failure, no signing
+request and a still-unconsumed key. Only the corrected selection may log in.
+
+Both crash tests now require a remote authenticated readiness marker before
+testing process death. The SSH-crash test also requires `KEY_DESTROYED=1`,
+preventing an authentication failure from masquerading as a successful crash
+test. The controller-crash test still requires both children alive, owned child
+termination and unrelated child survival. An explicit post-login crash command
+replaces the fixed two-second timer; `ssh -n` prevents the client from consuming
+the test controller's stdin protocol.
+
+Native tests record effective identity/certificate/agent configuration and
+public fingerprints. Direct clients and the test-built production helper use
+`-vvv -E` logs outside the public-runtime directories, avoiding verbose-stderr
+pipe blockage. Client/server tails and issuer errors accompany production
+authentication failure; full client logs are copied to the existing diagnostics
+artifact before cleanup. No private seeds/keys/signature requests are logged.
+Production binaries do not include the test helper's log-path environment hook.
+All ten test methods, working ACL/Task Scheduler code, independent CI suite
+execution and mandatory failure outcomes are retained.
+
+Windows remains **0.7.0**: this corrects production code within that explicitly
+unreleased development target, not a correction to released software or a new
+distribution/checkpoint. FreePBX remains **0.4.0** because its code/contracts are
+unchanged. Existing build-info source SHA, Actions run/attempt and executable
+hash provenance remain intact. Native Windows execution of the correction and
+all ten tests is still required; no passing Windows result is claimed.
+
 This audit describes executable provisioning and tests, not a successful Windows
 run. The reported failure established that the selected `windows-2022` runner
 lacked `System32/OpenSSH/sshd.exe`. Checking that file without provisioning it

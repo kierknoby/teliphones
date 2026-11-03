@@ -10,7 +10,6 @@
 #include <iostream>
 #include <cstring>
 #include <memory>
-#include <thread>
 #include <filesystem>
 #include <fstream>
 #include "fixture_security.h"
@@ -245,7 +244,8 @@ int runMain(int argc, char** argv) {
         if (!job.value || !SetInformationJobObject(job.value, JobObjectExtendedLimitInformation, &limits, sizeof(limits)))
             throw tlp::Error("Test job setup failed.");
         const auto program = params.at("ssh").asString();
-        const auto command = tlp::JoinCommandLine({program, "-F", params.at("config").asString(), "fixture",
+        const auto command = tlp::JoinCommandLine({program, "-n", "-vvv", "-E", params.at("log").asString(),
+                                                 "-F", params.at("config").asString(), "fixture",
                                                  params.at("command").asString()});
         auto commandWide = wide(command);
         STARTUPINFOW startup{};
@@ -266,15 +266,16 @@ int runMain(int argc, char** argv) {
         std::string go;
         if (!std::getline(std::cin, go) || go != "go") { TerminateJobObject(job.value, 1); return 2; }
         if (ResumeThread(thread.value) == static_cast<DWORD>(-1)) throw tlp::Error("Native SSH resume failed.");
-        std::thread crash;
-        if (params.has("crash") && params.at("crash").asBool())
-            crash = std::thread([handle = child.value] { Sleep(2000); TerminateProcess(handle, 87); });
+        if (params.has("crash") && params.at("crash").asBool()) {
+            std::string action;
+            if (!std::getline(std::cin, action) || action != "crash")
+                throw tlp::Error("Native SSH crash test requires an explicit post-authentication crash command.");
+            if (!TerminateProcess(child.value, 87)) tlp::win::ThrowLastError("Unable to crash the owned SSH test process");
+        }
         if (WaitForSingleObject(child.value, 45000) != WAIT_OBJECT_0) {
             TerminateJobObject(job.value, 1);
-            if (crash.joinable()) crash.join();
             throw tlp::Error("Native SSH timed out.");
         }
-        if (crash.joinable()) crash.join();
         DWORD status = 1;
         if (!GetExitCodeProcess(child.value, &status)) throw tlp::Error("Native SSH exit query failed.");
         if (!agent.failure().empty()) throw tlp::Error(agent.failure());

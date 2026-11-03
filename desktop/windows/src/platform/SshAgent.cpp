@@ -35,15 +35,10 @@ public:
     ~Event() { CloseHandle(handle); }
     HANDLE handle;
 };
-Bytes certificateBlob(const std::string& certificate) {
-    const auto first = certificate.find(' ');
-    if (first == std::string::npos) throw Error("Invalid SSH certificate.");
-    return Base64Decode(certificate.substr(first + 1, certificate.find_first_of(" \r\n", first + 1) - first - 1));
-}
 }
 SshAgent::SshAgent(const std::wstring& name, const std::wstring& sddl, std::unique_ptr<SshSigningKey> key,
                    const std::string& certificate, const std::string& user, const std::string& hostKey)
-    : key_(std::move(key)), certificate_(certificateBlob(certificate)), hostKey_(certificateBlob(hostKey)), user_(user) {
+    : protocol_(std::move(key), certificate, user, hostKey) {
     PSECURITY_DESCRIPTOR descriptor = nullptr;
     if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.c_str(), SDDL_REVISION_1, &descriptor, nullptr))
         throw Error("Unable to create SSH agent security descriptor.");
@@ -135,21 +130,8 @@ void SshAgent::serve() {
                     if (size == 0 || size > 16384) throw Error("Oversized SSH agent request.");
                     Bytes request(size);
                     if (!transfer(request.data(), size, false)) break;
-                    Bytes reply{5}; // SSH_AGENT_FAILURE; no add/export/remove/shared-agent operations.
-                    if (request.size() == 1 && request[0] == 11 && !destroyed_) {
-                        reply = SshJoin({Bytes{12}, SshNumber(1), SshField(certificate_), SshField(std::string("TELIPHONES session"))});
-                    } else if (request[0] == 13 && !destroyed_) {
-                        Bytes body(request.begin() + 1, request.end());
-                        SshWireReader reader(body);
-                        const auto key = reader.field(), message = reader.field();
-                        const auto flags = reader.number();
-                        if (!reader.done() || flags != 0 || key != certificate_) throw Error("SSH agent signing key mismatch.");
-                        ValidateSshAuthentication(message, user_, certificate_, hostKey_);
-                        const auto signature = key_->sign(message);
-                        key_->destroy();
-                        destroyed_ = true;
-                        reply = SshJoin({Bytes{14}, SshField(signature)});
-                    }
+                    const auto reply = protocol_.reply(request);
+                    destroyed_ = protocol_.destroyed();
                     auto frame = SshField(reply);
                     if (!transfer(frame.data(), static_cast<DWORD>(frame.size()), true)) break;
                 }
@@ -160,7 +142,7 @@ void SshAgent::serve() {
         std::lock_guard<std::mutex> guard(mutex_);
         failure_ = error.what();
     }
-    key_->destroy();
+    protocol_.destroy();
     destroyed_ = true;
 }
 }

@@ -233,4 +233,28 @@ void ValidateSshAuthentication(const Bytes& message, const std::string& user, co
     if (method != "publickey") require(!hostKey.empty() && key.field() == hostKey, "SSH hostbound key differs from the paired host.");
     require(key.done(), "Unexpected SSH authentication fields.");
 }
+
+SshAgentProtocol::SshAgentProtocol(std::unique_ptr<SshSigningKey> key, const std::string& certificate,
+                                 const std::string& user, const std::string& hostKey)
+    : key_(std::move(key)), certificate_(blob(certificate)), hostKey_(blob(hostKey)), user_(user) {
+    require(key_ != nullptr, "Missing SSH session signing key.");
+}
+
+Bytes SshAgentProtocol::reply(const Bytes& request) {
+    require(!request.empty() && request.size() <= 16384, "Invalid SSH agent request size.");
+    if (!key_) return Bytes{5};
+    if (request.size() == 1 && request[0] == 11) {
+        return SshJoin({Bytes{12}, SshNumber(1), SshField(certificate_), SshField(std::string("TELIPHONES session"))});
+    }
+    if (request[0] != 13) return Bytes{5};
+    Bytes body(request.begin() + 1, request.end());
+    SshWireReader reader(body);
+    const auto key = reader.field(), message = reader.field();
+    const auto flags = reader.number();
+    require(reader.done() && flags == 0 && key == certificate_, "SSH agent signing key mismatch.");
+    ValidateSshAuthentication(message, user_, certificate_, hostKey_);
+    const auto signature = key_->sign(message);
+    key_.reset();
+    return SshJoin({Bytes{14}, SshField(signature)});
+}
 } // namespace tlp

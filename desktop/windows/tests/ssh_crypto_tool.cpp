@@ -12,6 +12,20 @@ int main(int argc, char** argv) {
             auto seed = tlp::WorkstationIdentitySeed(stored);
             tlp::SshSigningKey key(seed);
             std::cout << key.publicKey() << '\n';
+        } else if (mode == "agent") {
+            auto key = std::make_unique<tlp::SshSigningKey>();
+            std::cout << key->publicKey() << std::endl;
+            std::string input;
+            if (!std::getline(std::cin, input)) return 2;
+            const auto fields = tlp::json::Parse(input);
+            tlp::VerifySshCertificateSignature(fields.at("certificate").asString(), fields.at("ca").asString());
+            tlp::SshAgentProtocol protocol(std::move(key), fields.at("certificate").asString(),
+                                           fields.at("user").asString(), fields.at("host").asString());
+            while (std::getline(std::cin, input)) {
+                const auto reply = protocol.reply(tlp::Base64Decode(input));
+                std::cout << tlp::json::Serialize(tlp::json::Value::Object{
+                    {"reply", tlp::Base64Encode(reply)}, {"destroyed", protocol.destroyed()}}) << std::endl;
+            }
         } else if (mode == "signature") {
             tlp::SshSigningKey key;
             const auto signature = tlp::SignSshChallenge(key, "test challenge");

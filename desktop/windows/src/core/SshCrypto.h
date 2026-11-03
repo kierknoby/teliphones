@@ -46,4 +46,18 @@ void VerifySshCertificateSignature(const std::string& certificate, const std::st
 // Restrict the agent to a userauth request for this exact user and certificate.
 void ValidateSshAuthentication(const Bytes& message, const std::string& user, const Bytes& certificate, const Bytes& hostKey);
 
+class SshAgentProtocol {
+public:
+    SshAgentProtocol(std::unique_ptr<SshSigningKey> key, const std::string& certificate,
+                     const std::string& user, const std::string& hostKey);
+    Bytes reply(const Bytes& request);
+    bool destroyed() const { return key_ == nullptr; }
+    void destroy() { key_.reset(); }
+private:
+    std::unique_ptr<SshSigningKey> key_;
+    Bytes certificate_;
+    Bytes hostKey_;
+    std::string user_;
+};
+
 } // namespace tlp

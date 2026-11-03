@@ -287,6 +287,16 @@ def quoted(path):
     return '"' + str(path).replace("\\", "/").replace('"', '\\"') + '"'
 
 
+def client_identity_diagnostics(config, identity, certificate):
+    selected = {"hostname", "port", "user", "identityagent", "identityfile", "certificatefile",
+                "identitiesonly", "hostkeyalias", "stricthostkeychecking", "preferredauthentications"}
+    effective = run([SSH, "-G", "-F", config, "fixture"])
+    print("Effective native SSH identity selection:\n" + "\n".join(
+        entry for entry in effective.splitlines() if entry.split() and entry.split()[0].lower() in selected), flush=True)
+    for path in (identity, certificate):
+        print(f"Native SSH public fingerprint ({path.name}): " + run([KEYGEN, "-l", "-f", path]).strip(), flush=True)
+
+
 def alive(pid):
     kernel = kernel32()
     process = kernel.OpenProcess(0x100000, False, pid)
@@ -597,6 +607,8 @@ class WindowsSshTests(unittest.TestCase):
                     print("Fixture OpenSSH/wrapper diagnostic tail:\n" + server_log_tail(log), flush=True)
                     if diagnostics:
                         shutil.copyfile(log, Path(diagnostics) / "native-sshd-test.log")
+                        for client_log in cls.root.glob("*-client.log"):
+                            shutil.copyfile(client_log, Path(diagnostics) / client_log.name)
             finally:
                 if not graceful and fixture_task_state(cls.task) in (2, 4):
                     run(["schtasks.exe", "/End", "/TN", cls.task])
@@ -611,6 +623,8 @@ class WindowsSshTests(unittest.TestCase):
         token = secrets.token_hex(16)
         root = self.root / token
         root.mkdir()
+        client_log = self.root / (token + "-client.log")
+        self.addCleanup(lambda: print(f"Native client {token} diagnostic tail:\n" + server_log_tail(client_log), flush=True))
         host = subprocess.Popen([str(HOST)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, text=True, bufsize=1)
         self.addCleanup(lambda: self.stop(host))
@@ -638,14 +652,17 @@ class WindowsSshTests(unittest.TestCase):
         config = root / "config"
         config.write_text(
             f"Host *\nHostName 127.0.0.1\nPort {self.port}\nUser {self.user}\nHostKeyAlias fixture\n"
-            f"IdentityAgent {agent}\nIdentityFile {quoted(root / 'identity.pub')}\n"
-            f"CertificateFile {quoted(root / 'certificate.pub')}\nUserKnownHostsFile {quoted(root / 'known_hosts')}\n"
+            f"IdentityAgent {agent}\nIdentityFile {quoted(root / 'certificate.pub')}\n"
+            f"CertificateFile none\nUserKnownHostsFile {quoted(root / 'known_hosts')}\n"
             "GlobalKnownHostsFile NUL\nStrictHostKeyChecking yes\nUpdateHostKeys no\n"
             "IdentitiesOnly yes\nBatchMode yes\nPasswordAuthentication no\nKbdInteractiveAuthentication no\n"
+            "HostKeyAlgorithms ssh-ed25519\nPubkeyAcceptedKeyTypes ssh-ed25519-cert-v01@openssh.com\n"
             "PreferredAuthentications publickey\nConnectTimeout 5\nControlMaster no\nControlPath none\n"
         )
+        client_identity_diagnostics(config, root / "identity.pub", root / "certificate.pub")
         params = {"pipe": pipe, "certificate": cert, "ca": self.ca, "host": self.host,
-                  "user": self.user, "ssh": str(SSH), "config": str(config), "command": command, "crash": crash}
+                  "user": self.user, "ssh": str(SSH), "config": str(config), "log": str(client_log),
+                  "command": command, "crash": crash}
         host.stdin.write(json.dumps(params) + "\n")
         host.stdin.flush()
         if tamper:
@@ -732,11 +749,13 @@ class WindowsSshTests(unittest.TestCase):
                 self.assertNotEqual(host.returncode, 0, output + error)
 
     def test_controller_crash_kills_owned_ssh_only(self):
-        unrelated, _, _, unrelated_pid, _ = self.start(command="ping -n 40 127.0.0.1")
-        owned, _, _, pid, _ = self.start(command="ping -n 40 127.0.0.1")
+        command = "echo TELIPHONES_SESSION_READY && ping -n 40 127.0.0.1"
+        unrelated, _, _, unrelated_pid, _ = self.start(command=command)
+        owned, _, _, pid, _ = self.start(command=command)
         self.go(unrelated)
         self.go(owned)
-        time.sleep(3)
+        self.assertEqual(line(unrelated), "TELIPHONES_SESSION_READY")
+        self.assertEqual(line(owned), "TELIPHONES_SESSION_READY")
         self.assertTrue(alive(pid))
         self.assertTrue(alive(unrelated_pid))
         owned.kill()
@@ -749,10 +768,14 @@ class WindowsSshTests(unittest.TestCase):
         self.assertTrue(alive(unrelated_pid), "Controller crash killed an unrelated session.")
 
     def test_ssh_crash_ends_agent_and_prevents_reuse(self):
-        host, _, pipe, _, _ = self.start(command="ping -n 40 127.0.0.1", crash=True)
+        host, _, pipe, _, _ = self.start(command="echo TELIPHONES_SESSION_READY && ping -n 40 127.0.0.1", crash=True)
         self.go(host)
-        host.communicate(timeout=15)
+        self.assertEqual(line(host), "TELIPHONES_SESSION_READY")
+        host.stdin.write("crash\n")
+        host.stdin.flush()
+        output, error = host.communicate(timeout=15)
         self.assertNotEqual(host.returncode, 0)
+        self.assertIn("KEY_DESTROYED=1", output, output + error)
         kernel = kernel32()
         self.assertFalse(kernel.WaitNamedPipeW(pipe, 100), "Destroyed agent endpoint survived its owner.")
 
@@ -774,8 +797,11 @@ class WindowsSshTests(unittest.TestCase):
         self.assertFalse(runtime.exists())
         self.addCleanup(lambda: identity_path.unlink(missing_ok=True))
         self.addCleanup(lambda: shutil.rmtree(runtime) if runtime.exists() else None)
+        client_log = self.root / ("production-" + profile + "-client.log")
+        environment = os.environ.copy()
+        environment["TELIPHONES_SSH_TEST_LOG"] = str(client_log)
         host = subprocess.Popen([str(HOST), "--production", profile], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE, text=True, bufsize=1)
+                                stderr=subprocess.PIPE, text=True, bufsize=1, env=environment)
         self.addCleanup(lambda: self.stop(host))
         identity = line(host)
         self.assertTrue(identity.startswith("ssh-ed25519 "), identity)
@@ -863,7 +889,10 @@ class WindowsSshTests(unittest.TestCase):
                     break
                 time.sleep(0.1)
             else:
-                self.fail("Production provider did not produce an authenticated native SSH login.")
+                self.fail("Production provider did not produce an authenticated native SSH login.\n"
+                          f"Controller exit={host.poll()}; issuer errors={errors}; issued certificates={len(observed)}\n"
+                          "Client diagnostic tail:\n" + server_log_tail(client_log) +
+                          "\nServer diagnostic tail:\n" + server_log_tail(self.root / "sshd-test.log"))
             self.assertTrue(observed, errors)
             encrypted = identity_path.read_bytes()
             self.assertNotIn(b"PRIVATE KEY", encrypted)
