@@ -166,6 +166,26 @@ ConnectionHealthMonitor::ConnectionHealthMonitor(HealthThresholds thresholds) : 
     validateThresholds(thresholds_);
 }
 
+HealthWindowBounds FitHealthWindow(HealthWindowBounds requested, HealthWindowBounds workArea, int minimumWidth, int minimumHeight) {
+    if (workArea.width <= 0 || workArea.height <= 0 || minimumWidth <= 0 || minimumHeight <= 0) {
+        throw Error("Connection health display dimensions are invalid.");
+    }
+    const int width = std::min(workArea.width, std::max(requested.width, minimumWidth));
+    const int height = std::min(workArea.height, std::max(requested.height, minimumHeight));
+    const auto right = static_cast<std::int64_t>(requested.x) + requested.width;
+    const auto bottom = static_cast<std::int64_t>(requested.y) + requested.height;
+    const auto workRight = static_cast<std::int64_t>(workArea.x) + workArea.width;
+    const auto workBottom = static_cast<std::int64_t>(workArea.y) + workArea.height;
+    const bool overlaps = requested.width > 0 && requested.height > 0 &&
+        requested.x < workRight && right > workArea.x && requested.y < workBottom && bottom > workArea.y;
+    return {
+        static_cast<int>(overlaps ? std::clamp<std::int64_t>(requested.x, workArea.x, workRight - width) :
+            workArea.x + (workArea.width - width) / 2),
+        static_cast<int>(overlaps ? std::clamp<std::int64_t>(requested.y, workArea.y, workBottom - height) :
+            workArea.y + (workArea.height - height) / 2),
+        width, height};
+}
+
 std::string ConnectedDurationText(const HealthSnapshot& snapshot) {
     return "Connected for: " + (snapshot.connectedSeconds ?
         (*snapshot.connectedSeconds == 0 ? std::string("0 s") : FormatRemaining(*snapshot.connectedSeconds)) : "Not connected");

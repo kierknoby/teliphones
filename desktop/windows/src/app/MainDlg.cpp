@@ -311,6 +311,11 @@ void CMainDlg::OnConnectionHealth() {
         healthDialog_.ShowMonitor();
     } catch (const std::exception& e) {
         ShowError(e.what());
+    } catch (CException* e) {
+        wchar_t details[512]{};
+        e->GetErrorMessage(details, 512);
+        e->Delete();
+        ShowError("The Connection Health window could not be opened: " + Narrow(details));
     }
 }
 

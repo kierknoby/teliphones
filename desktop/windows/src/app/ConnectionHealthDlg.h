@@ -40,7 +40,9 @@ private:
     void ApplyTopmost();
     void RefreshText();
     void LayoutGraph(int width, int height);
+    void EnsureVisiblePosition();
 
+    CWnd* owner_;
     tlp::HealthPreferences preferences_;
     tlp::HealthSnapshot snapshot_;
     CComboBox history_;

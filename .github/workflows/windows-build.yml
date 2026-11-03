@@ -139,6 +139,22 @@ jobs:
             }
           }
 
+      - name: Run native Connection Health window lifecycle tests
+        run: |
+          $tests = Join-Path $env:GITHUB_WORKSPACE 'desktop\windows\build\Release\HealthWindowTests.exe'
+          if (-not (Test-Path -LiteralPath $tests -PathType Leaf)) {
+            throw "The native MFC window test executable was not produced: $tests"
+          }
+          $process = Start-Process -FilePath $tests -PassThru
+          if (-not $process.WaitForExit(30000)) {
+            $process.Kill()
+            throw 'Native MFC window lifecycle tests timed out.'
+          }
+          $process.Refresh()
+          if ($process.ExitCode -ne 0) {
+            throw "Native MFC window lifecycle tests failed with exit code $($process.ExitCode)."
+          }
+
       - name: Verify real x64 native executable and runtime dependencies
         run: |
           $ErrorActionPreference = 'Stop'

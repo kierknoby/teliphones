@@ -148,6 +148,38 @@ class BuildLayoutTests(unittest.TestCase):
         self.assertNotIn("FormatRemaining", monitor)
         self.assertIn('decision.summary = "Connected";', monitor)
 
+    def test_modeless_health_window_has_explicit_owner_and_native_lifecycle_tests(self):
+        source = (ROOT / "src/app/ConnectionHealthDlg.cpp").read_text()
+        header = (ROOT / "src/app/ConnectionHealthDlg.h").read_text()
+        resource = (ROOT / "src/app/TELIPHONES.rc").read_text()
+        block = resource.split("IDD_CONNECTION_HEALTH DIALOGEX", 1)[1].split("END", 1)[0]
+        self.assertIn("WS_EX_APPWINDOW", block)
+        self.assertNotIn("WS_EX_TOOLWINDOW", block)
+        self.assertIn("WS_THICKFRAME", block)
+        self.assertIn("CWnd* owner_", header)
+        self.assertIn("Create(IDD_CONNECTION_HEALTH, owner_)", source)
+        self.assertNotIn("GetParent())", source)
+        self.assertIn("if (GetSafeHwnd()) return true;", source)
+        self.assertIn("EnsureVisiblePosition();", source)
+        self.assertIn("ShowWindow(IsIconic() ? SW_RESTORE : SW_SHOW)", source)
+        self.assertIn("MonitorFromWindow(owner_->GetSafeHwnd(), MONITOR_DEFAULTTONEAREST)", source)
+        self.assertIn("tlp::FitHealthWindow(", source)
+        self.assertIn("SetForegroundWindow();", source)
+        self.assertNotIn("EndDialog", source)
+        self.assertNotIn("PostQuitMessage", source)
+        self.assertNotIn("DoModal()", source.split("bool CConnectionHealthDlg::CreateMonitor()", 1)[1].split(
+            "void CConnectionHealthDlg::UpdateSnapshot", 1)[0])
+        project_file = ROOT / "HealthWindowTests.vcxproj"
+        ET.parse(project_file)
+        native_tests = (ROOT / "tests/health_window_tests.cpp").read_text()
+        for scenario in ("main window remains visible and enabled", "explicit main-window owner",
+                         "repeat opening reuses one window", "close leaves main usable",
+                         "reopen restores minimized window", "safe recreation after destruction",
+                         "hidden monitoring update does not reopen window"):
+            self.assertIn(scenario, native_tests)
+        self.assertIn("HealthWindowTests.vcxproj", (ROOT / "TELIPHONES.sln").read_text())
+        self.assertIn("HealthWindowTests.exe", (ROOT.parents[1] / ".github/workflows/windows-build.yml").read_text())
+
     def test_project_inputs_exist(self):
         for name in ("TELIPHONES.vcxproj", "TeliphonesCoreTests.vcxproj", "SessionDiagnosticsTests.vcxproj"):
             with self.subTest(project=name):

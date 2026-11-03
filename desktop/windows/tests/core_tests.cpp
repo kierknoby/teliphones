@@ -384,6 +384,30 @@ void testConnectionHealth() {
           "connection health preferences persist history, position, topmost and configurable thresholds");
     check(throws([] { HealthPreferences invalid; invalid.thresholds.warningLatencyMs = 20; SerializeHealthPreferences(invalid); }),
           "invalid health thresholds rejected");
+    const HealthWindowBounds desktop{0, 40, 1920, 1040};
+    auto placement = FitHealthWindow({200, 150, 800, 600}, desktop, 640, 480);
+    check(placement.x == 200 && placement.y == 150 && placement.width == 800 && placement.height == 600,
+          "visible saved health window retains its position and size");
+    placement = FitHealthWindow({90000, -90000, 800, 600}, desktop, 640, 480);
+    check(placement.x == 560 && placement.y == 260,
+          "off-screen health window is centered in the fallback monitor work area");
+    placement = FitHealthWindow({1800, 1000, 800, 600}, desktop, 640, 480);
+    check(placement.x == 1120 && placement.y == 480,
+          "partially visible health window is fully clamped inside the work area");
+    placement = FitHealthWindow({-1800, 100, 800, 600}, {-1920, 0, 1920, 1080}, 640, 480);
+    check(placement.x == -1800 && placement.y == 100,
+          "valid negative coordinates on secondary monitors are preserved");
+    placement = FitHealthWindow({-1800, 100, 800, 600}, desktop, 640, 480);
+    check(placement.x == 560 && placement.y == 260,
+          "unplugging a monitor recovers to the remaining monitor");
+    placement = FitHealthWindow({0, 0, 10000, 10000}, {0, 30, 800, 570}, 900, 650);
+    check(placement.x == 0 && placement.y == 30 && placement.width == 800 && placement.height == 570,
+          "oversized health window fits small work areas even below its normal minimum size");
+    placement = FitHealthWindow({0, 0, 0, 0}, desktop, 640, 480);
+    check(placement.width == 640 && placement.height == 480 && placement.x == 640 && placement.y == 320,
+          "invalid saved dimensions recover to centered minimum dimensions");
+    check(throws([&] { FitHealthWindow({0, 0, 800, 600}, {0, 0, 0, 0}, 640, 480); }),
+          "missing display work area is reported instead of silently opening invisibly");
 
     WireGuardCounters counters = ParseWireGuardCounters(kPbxKey + "\t2000\t1000\n", kPbxKey + "\t1700000000\n", kPbxKey);
     check(counters.receivedBytes == 2000 && counters.transmittedBytes == 1000 && counters.handshakeUnixSeconds == 1700000000,

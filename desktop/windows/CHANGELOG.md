@@ -10,6 +10,11 @@ version numbers retrospectively.
 Windows file version: **0.5.1.0**. FreePBX module version: **0.3.2**.
 No new native Windows build or live measurements have been validated locally.
 
+- Correct modeless pop-out creation to use its explicit main-window owner rather
+  than querying an uncreated HWND. Restore minimized windows, recover saved
+  geometry on every opening and expose the monitor in the task switcher.
+- Add native MFC window lifecycle tests to the existing Actions build; these
+  still require a successful Windows runner execution.
 - Correct UTC/monotonic clock separation for authorization expiry and handshake
   age. Persistent authorization displays Until revoked; absent evidence is Unknown.
 - Integrate health measurements and a shared, labelled graph into the main window,

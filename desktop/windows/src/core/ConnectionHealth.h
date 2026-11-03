@@ -89,6 +89,13 @@ constexpr const char* kHealthPreferencesSchema = "teliphones-connection-health/1
 std::string SerializeHealthPreferences(const HealthPreferences& preferences);
 HealthPreferences ParseHealthPreferences(const std::string& text);
 const char* HealthStateName(HealthState state);
+struct HealthWindowBounds {
+    int x;
+    int y;
+    int width;
+    int height;
+};
+HealthWindowBounds FitHealthWindow(HealthWindowBounds requested, HealthWindowBounds workArea, int minimumWidth, int minimumHeight);
 std::string ConnectedDurationText(const HealthSnapshot& snapshot);
 std::string HealthyDurationText(const HealthSnapshot& snapshot);
 std::string AuthorizationRemainingText(const HealthSnapshot& snapshot);

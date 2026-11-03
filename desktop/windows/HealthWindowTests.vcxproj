@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64"><Configuration>Debug</Configuration><Platform>x64</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>17.0</VCProjectVersion><Keyword>MFCProj</Keyword><ProjectGuid>{571E4513-40B8-4DED-A7CC-66022F172975}</ProjectGuid><RootNamespace>HealthWindowTests</RootNamespace><WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration"><ConfigurationType>Application</ConfigurationType><UseDebugLibraries>true</UseDebugLibraries><PlatformToolset>v143</PlatformToolset><UseOfMfc>Static</UseOfMfc><CharacterSet>Unicode</CharacterSet></PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration"><ConfigurationType>Application</ConfigurationType><UseDebugLibraries>false</UseDebugLibraries><PlatformToolset>v143</PlatformToolset><UseOfMfc>Static</UseOfMfc><CharacterSet>Unicode</CharacterSet></PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup><OutDir>$(SolutionDir)build\$(Configuration)\</OutDir><IntDir>$(SolutionDir)build\obj\$(ProjectName)\$(Configuration)\</IntDir></PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'"><ClCompile><RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary></ClCompile></ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'"><ClCompile><RuntimeLibrary>MultiThreaded</RuntimeLibrary></ClCompile></ItemDefinitionGroup>
+  <ItemDefinitionGroup>
+    <ClCompile><WarningLevel>Level4</WarningLevel><SDLCheck>true</SDLCheck><ConformanceMode>true</ConformanceMode><LanguageStandard>stdcpp17</LanguageStandard><ExceptionHandling>Sync</ExceptionHandling><AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions><PreprocessorDefinitions>UNICODE;_UNICODE;WIN32_LEAN_AND_MEAN;NOMINMAX;_WIN32_WINNT=0x0A00;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
+    <Link><SubSystem>Windows</SubSystem><TargetMachine>MachineX64</TargetMachine><AdditionalDependencies>bcrypt.lib;wintrust.lib;crypt32.lib;advapi32.lib;ws2_32.lib;shell32.lib;comdlg32.lib;ole32.lib;comctl32.lib;uuid.lib;%(AdditionalDependencies)</AdditionalDependencies></Link>
+    <ResourceCompile><AdditionalIncludeDirectories>$(ProjectDir)src\app;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories></ResourceCompile>
+    <Manifest><EnableDpiAwareness>false</EnableDpiAwareness><AdditionalManifestFiles>$(ProjectDir)src\app\TELIPHONES.manifest;%(AdditionalManifestFiles)</AdditionalManifestFiles></Manifest>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="tests\health_window_tests.cpp" />
+    <ClCompile Include="src\app\ConnectionHealthDlg.cpp" />
+    <ClCompile Include="src\platform\Win.cpp" />
+    <ClCompile Include="src\core\*.cpp" />
+    <ResourceCompile Include="src\app\TELIPHONES.rc" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

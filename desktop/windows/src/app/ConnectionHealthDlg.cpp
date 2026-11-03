@@ -353,7 +353,7 @@ BEGIN_MESSAGE_MAP(CConnectionHealthDlg, CDialogEx)
     ON_WM_CTLCOLOR()
 END_MESSAGE_MAP()
 
-CConnectionHealthDlg::CConnectionHealthDlg(CWnd* parent) : CDialogEx(IDD_CONNECTION_HEALTH, parent) {}
+CConnectionHealthDlg::CConnectionHealthDlg(CWnd* parent) : CDialogEx(IDD_CONNECTION_HEALTH, parent), owner_(parent) {}
 
 void CConnectionHealthDlg::DoDataExchange(CDataExchange* exchange) {
     CDialogEx::DoDataExchange(exchange);
@@ -372,42 +372,60 @@ BOOL CConnectionHealthDlg::OnInitDialog() {
     CRect client;
     GetClientRect(&client);
     LayoutGraph(client.Width(), client.Height());
-    if (preferences_.windowWidth > 0 && preferences_.windowHeight > 0) {
-        MINMAXINFO limits{};
-        OnGetMinMaxInfo(&limits);
-        int width = std::max<int>(preferences_.windowWidth, static_cast<int>(limits.ptMinTrackSize.x));
-        int height = std::max<int>(preferences_.windowHeight, static_cast<int>(limits.ptMinTrackSize.y));
-        CRect saved(preferences_.windowX, preferences_.windowY, preferences_.windowX + width, preferences_.windowY + height);
-        HMONITOR monitor = MonitorFromRect(&saved, MONITOR_DEFAULTTONULL);
-        if (monitor != nullptr) {
-            MONITORINFO display{};
-            display.cbSize = sizeof(display);
-            if (GetMonitorInfo(monitor, &display)) {
-                const int workWidth = static_cast<int>(display.rcWork.right - display.rcWork.left);
-                const int workHeight = static_cast<int>(display.rcWork.bottom - display.rcWork.top);
-                width = std::min<int>(width, workWidth);
-                height = std::min<int>(height, workHeight);
-                const int x = std::clamp<int>(static_cast<int>(saved.left), static_cast<int>(display.rcWork.left),
-                    static_cast<int>(display.rcWork.right) - width);
-                const int y = std::clamp<int>(static_cast<int>(saved.top), static_cast<int>(display.rcWork.top),
-                    static_cast<int>(display.rcWork.bottom) - height);
-                SetWindowPos(nullptr, x, y, width, height, SWP_NOZORDER);
-            }
-        }
-    }
     return TRUE;
 }
 
 bool CConnectionHealthDlg::CreateMonitor() {
     if (GetSafeHwnd()) return true;
-    if (!Create(IDD_CONNECTION_HEALTH, GetParent())) return false;
+    if (owner_ == nullptr || !::IsWindow(owner_->GetSafeHwnd())) {
+        throw tlp::Error("The Connection Health monitor requires an active TELIPHONES owner window.");
+    }
+    // GetParent() cannot resolve an owner before this modeless dialog has an HWND.
+    if (!Create(IDD_CONNECTION_HEALTH, owner_)) return false;
     return true;
 }
 
 void CConnectionHealthDlg::ShowMonitor() {
+    if (GetSafeHwnd() && IsWindowVisible() && !IsIconic()) SaveWindowPosition();
     if (!CreateMonitor()) throw tlp::Error("The Connection Health monitor could not be opened.");
-    ShowWindow(SW_SHOW);
+    EnsureVisiblePosition();
+    ShowWindow(IsIconic() ? SW_RESTORE : SW_SHOW);
+    BringWindowToTop();
     SetForegroundWindow();
+}
+
+void CConnectionHealthDlg::EnsureVisiblePosition() {
+    CRect position;
+    GetWindowRect(&position);
+    if (preferences_.windowWidth > 0 && preferences_.windowHeight > 0) {
+        position.SetRect(preferences_.windowX, preferences_.windowY,
+            preferences_.windowX + preferences_.windowWidth, preferences_.windowY + preferences_.windowHeight);
+    }
+    HMONITOR monitor = MonitorFromRect(&position, MONITOR_DEFAULTTONULL);
+    if (monitor == nullptr) monitor = MonitorFromWindow(owner_->GetSafeHwnd(), MONITOR_DEFAULTTONEAREST);
+    MONITORINFO display{};
+    display.cbSize = sizeof(display);
+    if (!GetMonitorInfo(monitor, &display)) tlp::win::ThrowLastError("Read Connection Health display work area");
+    MINMAXINFO limits{};
+    OnGetMinMaxInfo(&limits);
+    const auto placement = tlp::FitHealthWindow(
+        {static_cast<int>(position.left), static_cast<int>(position.top), position.Width(), position.Height()},
+        {static_cast<int>(display.rcWork.left), static_cast<int>(display.rcWork.top),
+         static_cast<int>(display.rcWork.right - display.rcWork.left), static_cast<int>(display.rcWork.bottom - display.rcWork.top)},
+        static_cast<int>(limits.ptMinTrackSize.x), static_cast<int>(limits.ptMinTrackSize.y));
+    if (IsIconic()) {
+        WINDOWPLACEMENT saved{};
+        saved.length = sizeof(saved);
+        if (!GetWindowPlacement(&saved)) tlp::win::ThrowLastError("Read Connection Health window placement");
+        // WINDOWPLACEMENT uses workspace coordinates for non-tool top-level windows.
+        const int offsetX = static_cast<int>(display.rcWork.left - display.rcMonitor.left);
+        const int offsetY = static_cast<int>(display.rcWork.top - display.rcMonitor.top);
+        saved.rcNormalPosition = {placement.x - offsetX, placement.y - offsetY,
+            placement.x + placement.width - offsetX, placement.y + placement.height - offsetY};
+        if (!SetWindowPlacement(&saved)) tlp::win::ThrowLastError("Restore Connection Health window placement");
+    } else if (!SetWindowPos(nullptr, placement.x, placement.y, placement.width, placement.height, SWP_NOZORDER | SWP_NOACTIVATE)) {
+        tlp::win::ThrowLastError("Position Connection Health window");
+    }
 }
 
 void CConnectionHealthDlg::UpdateSnapshot(const tlp::HealthSnapshot& snapshot) {
@@ -430,9 +448,7 @@ void CConnectionHealthDlg::OnOK() { PersistWindowState(); ShowWindow(SW_HIDE); }
 void CConnectionHealthDlg::OnCancel() { PersistWindowState(); ShowWindow(SW_HIDE); }
 
 void CConnectionHealthDlg::OnClose() {
-    SaveWindowPosition();
-    SavePreferences();
-    ShowWindow(SW_HIDE);
+    OnCancel();
 }
 
 void CConnectionHealthDlg::OnSize(UINT type, int cx, int cy) {
@@ -563,7 +579,7 @@ void CConnectionHealthDlg::SavePreferences() {
 
 void CConnectionHealthDlg::ApplyTopmost() {
     if (!GetSafeHwnd()) return;
-    SetWindowPos(preferences_.alwaysOnTop ? &wndTopMost : &wndNoTopMost, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+    SetWindowPos(preferences_.alwaysOnTop ? &wndTopMost : &wndNoTopMost, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 }
 
 void CConnectionHealthDlg::RefreshText() {
