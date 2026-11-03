@@ -127,6 +127,43 @@ registration, SYSTEM execution and the ten SSH tests remain Windows validation
 requirements. Windows stays 0.7.0 (test-only correction); FreePBX stays 0.4.0
 (module unchanged). No distribution is created.
 
+### Identification readiness probe and bounded diagnostics
+
+The reported run starts SYSTEM sshd and binds port 22001 but repeatedly fails
+during identification. The old readiness probe never sent a client
+identification: it waited two seconds for a server line, then closed the socket
+on timeout. Its broad `except OSError` also retried established-connection resets
+and timeouts up to 300 times, potentially producing minutes of self-generated
+pre-auth disconnect logs and hiding the first useful error.
+
+The corrected probe sends `SSH-2.0-TELIPHONES_fixture_probe` with CRLF before
+reading the server identification. Reading is bounded to 255 bytes and three
+seconds; EOF, reset, timeout and invalid identification fail immediately after
+the first established connection. Only connection refusal while the server is
+binding is retried: at most ten TCP attempts within a 15-second startup window.
+The owned server PID must exist and be alive before connecting. Identification
+success deliberately closes **before** key exchange/authentication and labels
+that disconnect as expected; it is not evidence of authenticated login.
+
+Failure output identifies the stage, sent/received identification bytes and
+actual socket error (including Win32/errno where available). Startup failures
+and teardown print only the last 30 log lines, read from at most 8 KiB; the full
+server log is still copied into the existing diagnostic artifact. No retry loop
+can silently turn an established-connection protocol failure into success.
+
+Local regression tests cover send-before-read ordering, fragmented valid banner,
+EOF/reset/timeout, invalid/oversized banner, refusal retry exhaustion, deadline,
+dead PID, immediate nonretryable connect failure and no retry after identification
+failure. A real local loopback peer waiting for client identification reproduced
+the old receive-only timeout/disconnect; the revised probe exchanged
+identifications on one connection. This demonstrates probe behaviour, **not**
+that the reported Windows sshd waits for client identification. Without that
+run's full logs or an authorised Windows runtime, its exact initial socket error
+and whether later key exchange/authentication succeeds remain unverified. The
+new diagnostics expose a genuine server-side failure rather than retrying it.
+All ten actual Windows SSH tests, ACLs, Task Scheduler registration, authentication
+policy and process ownership/cleanup remain unchanged.
+
 `--fixture-preflight` calls the **same** `setUpClass` and class cleanups used by
 the ten native tests. It checks generated Ed25519 host keys, SSHSIG support,
 `sshd -t/-T`, the protected task, real SYSTEM wrapper and loopback SSH banner with

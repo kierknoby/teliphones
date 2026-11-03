@@ -9,7 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 import xml.etree.ElementTree as ET
 
 
@@ -22,6 +22,75 @@ def project(name):
 
 
 class BuildLayoutTests(unittest.TestCase):
+    def test_fixture_identification_exchange_and_bounded_startup(self):
+        spec = importlib.util.spec_from_file_location("fixture_readiness", ROOT / "tests/ssh_native_check.py")
+        module = importlib.util.module_from_spec(spec)
+        with patch.dict(os.environ, {"SystemRoot": "C:/Windows"}), patch.object(sys, "argv", ["fixture", "host.exe"]):
+            spec.loader.exec_module(module)
+        banner = b"SSH-2.0-OpenSSH_for_Windows_9.5\r\n"
+        connection = MagicMock()
+        connection.recv.side_effect = [bytes([byte]) for byte in banner]
+        self.assertEqual(module.exchange_ssh_identification(connection), banner)
+        connection.sendall.assert_called_once_with(b"SSH-2.0-TELIPHONES_fixture_probe\r\n")
+        methods = [call[0] for call in connection.method_calls]
+        self.assertLess(methods.index("sendall"), methods.index("recv"))
+        for error in (TimeoutError("no server banner"), ConnectionResetError(10054, "reset"), None):
+            connection = MagicMock()
+            connection.recv.side_effect = error
+            connection.recv.return_value = b""
+            with self.subTest(error=error), self.assertRaisesRegex(RuntimeError, "connected failures are not retried"):
+                module.exchange_ssh_identification(connection)
+        for banner in (b"HTTP/1.1 200 OK\r\n", b"SSH-2.0-\r\n", b"x" * 255):
+            connection = MagicMock()
+            connection.recv.side_effect = [bytes([byte]) for byte in banner]
+            with self.subTest(banner=banner), self.assertRaisesRegex(RuntimeError, "expected complete SSH-2.0"):
+                module.exchange_ssh_identification(connection)
+        with tempfile.TemporaryDirectory() as root:
+            pid = Path(root) / "pid"
+            pid.write_text("123", encoding="ascii")
+            with patch.object(module.time, "monotonic", side_effect=[0, 16]), \
+                    patch.object(module.socket, "create_connection") as connect, \
+                    self.assertRaisesRegex(RuntimeError, "actual attempts=0"):
+                module.wait_fixture_listener(22001, pid)
+            connect.assert_not_called()
+            with patch.object(module, "alive", return_value=True), \
+                    patch.object(module.time, "sleep"), patch.object(module.time, "monotonic", return_value=0), \
+                    patch.object(module.socket, "create_connection", side_effect=ConnectionRefusedError("not bound")) as connect, \
+                    self.assertRaisesRegex(RuntimeError, "actual attempts=10"):
+                module.wait_fixture_listener(22001, pid)
+            self.assertEqual(connect.call_count, 10)
+            with patch.object(module, "alive", return_value=False), \
+                    patch.object(module.socket, "create_connection") as connect, \
+                    self.assertRaisesRegex(RuntimeError, "PID 123 has exited"):
+                module.wait_fixture_listener(22001, pid)
+            connect.assert_not_called()
+            connection = MagicMock()
+            connection.__enter__.return_value = connection
+            with patch.object(module, "alive", return_value=True), \
+                    patch.object(module.time, "sleep"), patch.object(module.socket, "create_connection",
+                        side_effect=[ConnectionRefusedError("not bound"), connection]) as connect, \
+                    patch.object(module, "exchange_ssh_identification", return_value=b"SSH-2.0-test\r\n"), \
+                    patch("builtins.print"):
+                module.wait_fixture_listener(22001, pid)
+            self.assertEqual(connect.call_count, 2)
+            with patch.object(module, "alive", return_value=True), \
+                    patch.object(module.socket, "create_connection", return_value=connection) as connect, \
+                    patch.object(module, "exchange_ssh_identification", side_effect=RuntimeError("identification reset")), \
+                    self.assertRaisesRegex(RuntimeError, "identification reset"):
+                module.wait_fixture_listener(22001, pid)
+            connect.assert_called_once()
+            with patch.object(module, "alive", return_value=True), \
+                    patch.object(module.socket, "create_connection", side_effect=PermissionError("access denied")) as connect, \
+                    self.assertRaisesRegex(RuntimeError, "TCP connect failed on attempt 1"):
+                module.wait_fixture_listener(22001, pid)
+            connect.assert_called_once()
+            log = Path(root) / "server.log"
+            log.write_bytes(b"old verbose log\n" * 2000 + b"actual startup failure\n")
+            tail = module.server_log_tail(log)
+            self.assertLessEqual(len(tail.encode()), 8192)
+            self.assertLessEqual(len(tail.splitlines()), 30)
+            self.assertTrue(tail.endswith("actual startup failure"))
+
     @patch("builtins.print")
     def test_fixture_acl_operations_and_descriptor_verification(self, _print):
         spec = importlib.util.spec_from_file_location("fixture_acl", ROOT / "tests/ssh_native_check.py")

@@ -316,6 +316,76 @@ def wait_server_exit(pid_file):
     raise RuntimeError(f"Fixture server PID {pid} survived ten seconds after owned task shutdown.")
 
 
+def exchange_ssh_identification(connection):
+    identification = b"SSH-2.0-TELIPHONES_fixture_probe\r\n"
+    deadline = time.monotonic() + 3
+    received = bytearray()
+    try:
+        connection.settimeout(3)
+        connection.sendall(identification)
+        while len(received) < 255:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("server identification deadline exceeded")
+            connection.settimeout(remaining)
+            byte = connection.recv(1)
+            if not byte:
+                raise EOFError("server closed before a complete identification line")
+            received.extend(byte)
+            if byte == b"\n":
+                break
+    except (OSError, EOFError) as error:
+        raise RuntimeError("SSH identification failed after TCP connect: "
+                           f"sent={identification!r}; received={bytes(received)!r}; "
+                           f"actual={type(error).__name__}: {error}; "
+                           f"Win32={getattr(error, 'winerror', None)}, errno={getattr(error, 'errno', None)}; "
+                           "connected failures are not retried") from error
+    banner = bytes(received)
+    if not banner.startswith(b"SSH-2.0-") or not banner.endswith(b"\r\n") or len(banner) <= 10:
+        raise RuntimeError(f"SSH identification: expected complete SSH-2.0 software identification; actual={banner!r}")
+    return banner
+
+
+def wait_fixture_listener(port, pid_file):
+    deadline = time.monotonic() + 15
+    attempts = 0
+    last_error = "server PID not yet published"
+    while time.monotonic() < deadline and attempts < 10:
+        if not pid_file.exists():
+            time.sleep(0.25)
+            continue
+        pid = int(pid_file.read_text())
+        if not alive(pid):
+            raise RuntimeError(f"Fixture startup: expected live owned sshd; actual PID {pid} has exited.")
+        attempts += 1
+        try:
+            connection = socket.create_connection(("127.0.0.1", port), timeout=1)
+        except OSError as error:
+            # Only a listener that has not bound yet is a retryable startup condition.
+            if not isinstance(error, ConnectionRefusedError):
+                raise RuntimeError(f"Fixture TCP connect failed on attempt {attempts}: {error!r}") from error
+            last_error = repr(error)
+            time.sleep(0.5)
+            continue
+        with connection:
+            banner = exchange_ssh_identification(connection)
+        print(f"Fixture identification ready on 127.0.0.1:{port} after {attempts} TCP attempt(s): {banner!r}. "
+              "Probe intentionally closes before key exchange/authentication; native login tests remain required.",
+              flush=True)
+        return
+    raise RuntimeError(f"Fixture startup deadline exhausted (15 seconds, at most 10 TCP attempts); "
+                       f"actual attempts={attempts}; last condition={last_error}")
+
+
+def server_log_tail(path):
+    if not path.exists():
+        return "No server log produced."
+    with path.open("rb") as stream:
+        stream.seek(0, os.SEEK_END)
+        stream.seek(max(0, stream.tell() - 8192))
+        return b"\n".join(stream.read().splitlines()[-30:]).decode("utf-8", errors="replace")
+
+
 def cleanup_interrupted_fixture():
     descriptor = Path(os.environ["STARTUP_DIAGNOSTICS"]) / "native-fixture.json"
     if not descriptor.exists():
@@ -435,25 +505,11 @@ class WindowsSshTests(unittest.TestCase):
                         [cls.sid, SYSTEM_SID, ADMIN_SID], task=True)
         cls.server_requested = True
         run(["schtasks.exe", "/Run", "/TN", cls.task])
-        for _ in range(300):
-            try:
-                with socket.create_connection(("127.0.0.1", cls.port), timeout=0.1) as connection:
-                    connection.settimeout(2)
-                    with connection.makefile("rb") as stream:
-                        banner = stream.readline(256)
-                    if not banner.startswith(b"SSH-2.0-"):
-                        raise RuntimeError(f"Fixture loopback endpoint returned an invalid SSH banner: {banner!r}")
-                    if not cls.server_pid.exists() or not alive(int(cls.server_pid.read_text())):
-                        raise RuntimeError("Fixture listener has no live owned server PID.")
-                    print(f"Fixture loopback listener ready: 127.0.0.1:{cls.port}", flush=True)
-                    break
-            except OSError:
-                time.sleep(0.1)
-        else:
-            log = cls.root / "sshd-test.log"
-            raise RuntimeError("SYSTEM fixture sshd never became responsive:\n"
-                               + run(["schtasks.exe", "/Query", "/TN", cls.task, "/V", "/FO", "LIST"])
-                               + (log.read_text(errors="replace") if log.exists() else "No server log produced."))
+        try:
+            wait_fixture_listener(cls.port, cls.server_pid)
+        except RuntimeError as error:
+            raise RuntimeError(f"{error}\nOpenSSH/wrapper log tail (at most 30 lines/8 KiB):\n"
+                               + server_log_tail(cls.root / "sshd-test.log")) from error
 
     @classmethod
     def remove_temporary(cls):
@@ -492,7 +548,7 @@ class WindowsSshTests(unittest.TestCase):
             diagnostics = os.environ.get("STARTUP_DIAGNOSTICS")
             try:
                 if log.exists():
-                    print("Fixture OpenSSH/wrapper diagnostics:\n" + log.read_text(errors="replace"), flush=True)
+                    print("Fixture OpenSSH/wrapper diagnostic tail:\n" + server_log_tail(log), flush=True)
                     if diagnostics:
                         shutil.copyfile(log, Path(diagnostics) / "native-sshd-test.log")
             finally:
