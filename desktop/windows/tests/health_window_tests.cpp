@@ -3,13 +3,15 @@
 #include "../src/app/DesktopLayout.h"
 
 #include <cstdio>
+#include <memory>
 #include <stdexcept>
+#include <vector>
 
 namespace {
 
-class CWindowLifecycleTest : public CDialogEx {
+class CWindowLifecycleTest : public CAppearanceDialog {
 public:
-    CWindowLifecycleTest() : CDialogEx(IDD_MAIN), health_(this) {}
+    CWindowLifecycleTest() : CAppearanceDialog(IDD_MAIN), health_(this) {}
     int result = 1;
 
 protected:
@@ -28,7 +30,7 @@ protected:
     }
 
     BOOL OnInitDialog() override {
-        CDialogEx::OnInitDialog();
+        CAppearanceDialog::OnInitDialog();
         ShowWindow(SW_SHOW);
         PostMessage(WM_APP + 100);
         return TRUE;
@@ -37,6 +39,7 @@ protected:
     LRESULT WindowTests(WPARAM, LPARAM) {
         try {
             LayoutTests();
+            AppearanceTests();
             tlp::HealthPreferences preferences;
             preferences.windowX = 90000;
             preferences.windowY = -90000;
@@ -106,6 +109,307 @@ protected:
     afx_msg BOOL OnMouseWheel(UINT, short delta, CPoint) { return layout_.Wheel(delta); }
 
 private:
+    static void PumpAppearance() {
+        MSG message{};
+        while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+            TranslateMessage(&message);
+            DispatchMessageW(&message);
+        }
+    }
+
+    static COLORREF Background(HWND window, UINT message, HWND control = nullptr) {
+        HDC dc = ::GetDC(window);
+        const auto brush = reinterpret_cast<HBRUSH>(::SendMessageW(window, message,
+            reinterpret_cast<WPARAM>(dc), reinterpret_cast<LPARAM>(control ? control : window)));
+        LOGBRUSH info{};
+        const bool valid = brush && GetObjectW(brush, sizeof(info), &info) == sizeof(info);
+        ::ReleaseDC(window, dc);
+        check(valid, "control supplies an appearance brush");
+        return info.lbColor;
+    }
+
+    void AppearanceTests() {
+        using tlp::Appearance;
+        std::vector<std::unique_ptr<CAppearanceDialog>> dialogs;
+        for (UINT resource : {IDD_PAIR, IDD_SUPPORT, IDD_APP_SETTINGS, IDD_SESSION_LOG, IDD_HEALTH_LIMITS, IDD_APP_MESSAGE}) {
+            auto dialog = std::make_unique<CAppearanceDialog>(resource, this);
+            check(dialog->Create(resource, this) != FALSE, "create application dialog resource with shared appearance base");
+            dialog->ShowWindow(SW_SHOWNOACTIVATE);
+            dialogs.push_back(std::move(dialog));
+        }
+        health_.ShowMonitor();
+        for (auto mode : {Appearance::System, Appearance::Light, Appearance::Dark}) {
+            tlp::ui::SetAppearance(mode);
+            for (bool systemDark : {false, true, false}) {
+                tlp::ui::SimulateSystemAppearance(systemDark, false);
+                PumpAppearance();
+                const auto expected = tlp::PaletteFor(tlp::UseDarkAppearance(mode, systemDark, false));
+                check(tlp::ui::Colours().Values() == expected.Values(), "live simulated system event respects selected mode");
+                check(Background(m_hWnd, WM_CTLCOLORDLG) == expected.background, "main dialog background follows theme");
+                const HWND list = layout_.Find(IDC_PROFILES)->GetSafeHwnd();
+                check(ListView_GetBkColor(list) == expected.surface && ListView_GetTextColor(list) == expected.text,
+                    "PBX list colours update immediately");
+                const HWND edit = layout_.Find(IDC_DETAILS)->GetSafeHwnd();
+                check(Background(m_hWnd, WM_CTLCOLORSTATIC, edit) == expected.surface, "read-only details follow theme");
+                for (const auto& dialog : dialogs) {
+                    check(Background(dialog->GetSafeHwnd(), WM_CTLCOLORDLG) == expected.background,
+                        "every currently open application dialog follows theme");
+                }
+                check(Background(health_.GetSafeHwnd(), WM_CTLCOLORDLG) == expected.background,
+                    "open health pop-out follows theme");
+                check(IsWindowVisible() && IsWindowEnabled(), "appearance does not disable or hide main window");
+                ControlAppearanceTests();
+                ListAppearanceTests();
+                GraphAppearanceTests();
+            }
+        }
+        health_.SendMessage(WM_CLOSE);
+        dialogs.front()->ShowWindow(SW_HIDE);
+        tlp::ui::SetAppearance(Appearance::Light);
+        tlp::ui::SetAppearance(Appearance::Dark);
+        check(!health_.IsWindowVisible() && !dialogs.front()->IsWindowVisible(), "theme switch never reopens hidden windows");
+        health_.ShowMonitor();
+        check(Background(health_.GetSafeHwnd(), WM_CTLCOLORDLG) == tlp::ui::Colours().background,
+            "reopened pop-out uses latest theme");
+        tlp::ui::SimulateSystemAppearance(true, true);
+        PumpAppearance();
+        check(tlp::ui::HighContrast(), "live simulated accessibility event overrides forced Dark");
+        check(tlp::ui::Colours().surface == GetSysColor(COLOR_WINDOW) &&
+            tlp::ui::Colours().text == GetSysColor(COLOR_WINDOWTEXT), "high contrast uses actual Windows system colours");
+        ComboHeightTests();
+        GraphAppearanceTests();
+        tlp::ui::SimulateSystemAppearance(false, false);
+        PumpAppearance();
+        tlp::ui::SetAppearance(Appearance::System);
+        for (auto& dialog : dialogs) dialog->DestroyWindow();
+        health_.SendMessage(WM_CLOSE);
+        MessageAppearanceTests();
+        std::puts("Native appearance tests: PASS (simulated Windows theme/accessibility notifications; no OS settings changed)");
+    }
+
+    static COLORREF ControlPixel(HWND window, int x, int y) {
+        RECT rectangle{};
+        ::GetClientRect(window, &rectangle);
+        HDC screen = ::GetDC(window);
+        HDC dc = CreateCompatibleDC(screen);
+        HBITMAP bitmap = CreateCompatibleBitmap(screen, std::max<LONG>(1, rectangle.right), std::max<LONG>(1, rectangle.bottom));
+        check(dc && bitmap, "create native control paint buffer");
+        const auto previous = SelectObject(dc, bitmap);
+        ::SendMessageW(window, WM_PRINTCLIENT, reinterpret_cast<WPARAM>(dc), PRF_CLIENT | PRF_ERASEBKGND);
+        const COLORREF pixel = GetPixel(dc, x, y);
+        SelectObject(dc, previous);
+        DeleteObject(bitmap);
+        DeleteDC(dc);
+        ::ReleaseDC(window, screen);
+        return pixel;
+    }
+
+    void ControlAppearanceTests() {
+        const auto& palette = tlp::ui::Colours();
+        const HWND button = layout_.Find(IDC_SETTINGS)->GetSafeHwnd();
+        const auto pixel = ControlPixel(button, 6, 4);
+        check(pixel == palette.button || pixel == palette.hover || pixel == palette.selection,
+            "native button paint uses current palette");
+        const HWND combo = layout_.Find(IDC_HEALTH_PLOT)->GetSafeHwnd();
+        ::SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Appearance test"));
+        ::SendMessageW(combo, CB_SETCURSEL, 0, 0);
+        RECT rectangle{};
+        ::GetClientRect(combo, &rectangle);
+        check(ControlPixel(combo, 4, rectangle.bottom / 2) == palette.surface, "closed dropdown uses current palette");
+        COMBOBOXINFO info{sizeof(info)};
+        check(GetComboBoxInfo(combo, &info) != FALSE, "dropdown list is available");
+        check(Background(combo, WM_CTLCOLORLISTBOX, info.hwndList) == palette.surface, "dropdown list background follows theme");
+        ::SendMessageW(combo, CB_RESETCONTENT, 0, 0);
+
+        CMenu menu;
+        check(menu.CreatePopupMenu() != FALSE, "create native context menu");
+        menu.AppendMenu(MF_STRING, 20001, L"&Copy\tCtrl+C");
+        menu.AppendMenu(MF_STRING, 20002, L"&Clear");
+        menu.AppendMenu(MF_STRING | MF_GRAYED, 20003, L"&Disabled");
+        menu.AppendMenu(MF_STRING, 20004, L"Save && Exit");
+        menu.AppendMenu(MF_STRING, 20005, L"&Select All");
+        SendMessage(WM_INITMENUPOPUP, reinterpret_cast<WPARAM>(menu.GetSafeHmenu()), 0);
+        MENUITEMINFOW item{sizeof(item)};
+        item.fMask = MIIM_FTYPE | MIIM_DATA;
+        check(GetMenuItemInfoW(menu.GetSafeHmenu(), 0, TRUE, &item) != FALSE && (item.fType & MFT_OWNERDRAW),
+            "context menu adopts theme");
+        MEASUREITEMSTRUCT measure{};
+        measure.CtlType = ODT_MENU;
+        measure.itemData = item.dwItemData;
+        check(SendMessage(WM_MEASUREITEM, 0, reinterpret_cast<LPARAM>(&measure)) != 0 && measure.itemHeight > 0,
+            "menu uses DPI-scaled native font measurement");
+        auto mnemonic = [&](wchar_t character) {
+            return SendMessage(WM_MENUCHAR, MAKEWPARAM(character, MF_POPUP), reinterpret_cast<LPARAM>(menu.GetSafeHmenu()));
+        };
+        check(HIWORD(mnemonic(L's')) == MNC_EXECUTE && LOWORD(mnemonic(L's')) == 4,
+            "owner-drawn menu supports unique keyboard mnemonic");
+        check(HIWORD(mnemonic(L'c')) == MNC_SELECT && LOWORD(mnemonic(L'c')) == 0,
+            "duplicate menu mnemonics select first enabled match");
+        MENUITEMINFOW highlighted{sizeof(highlighted)};
+        highlighted.fMask = MIIM_STATE;
+        highlighted.fState = MFS_HILITE;
+        check(SetMenuItemInfoW(menu.GetSafeHmenu(), 0, TRUE, &highlighted) != FALSE,
+            "set deterministic keyboard menu selection");
+        check(HIWORD(mnemonic(L'c')) == MNC_SELECT && LOWORD(mnemonic(L'c')) == 1,
+            "duplicate menu mnemonics cycle to next match");
+        check(HIWORD(mnemonic(L'd')) == MNC_IGNORE && HIWORD(mnemonic(L'e')) == MNC_IGNORE,
+            "menu mnemonics skip disabled items and escaped ampersands");
+        SendMessage(WM_UNINITMENUPOPUP, reinterpret_cast<WPARAM>(menu.GetSafeHmenu()), 0);
+        check(GetMenuItemInfoW(menu.GetSafeHmenu(), 0, TRUE, &item) != FALSE && !(item.fType & MFT_OWNERDRAW) &&
+            item.dwItemData == 0, "menu lifetime restores original item ownership");
+    }
+
+    void ComboHeightTests() {
+        const HWND combo = layout_.Find(IDC_HEALTH_PLOT)->GetSafeHwnd();
+        const auto originalFont = ::SendMessageW(combo, WM_GETFONT, 0, 0);
+        for (int dpi : {96, 120, 144, 192}) {
+            CFont font;
+            LOGFONT specification{};
+            specification.lfHeight = -MulDiv(9, dpi, 72);
+            wcscpy_s(specification.lfFaceName, L"Segoe UI");
+            check(font.CreateFontIndirect(&specification) != FALSE, "create accessible combo font");
+            ::SendMessageW(combo, WM_SETFONT, reinterpret_cast<WPARAM>(font.GetSafeHandle()), FALSE);
+            CClientDC dc(CWnd::FromHandle(combo));
+            CFont* previous = dc.SelectObject(&font);
+            TEXTMETRIC metrics{};
+            dc.GetTextMetrics(&metrics);
+            dc.SelectObject(previous);
+            const auto height = ::SendMessageW(combo, CB_GETITEMHEIGHT, 0, 0);
+            check(height >= metrics.tmHeight && ::SendMessageW(combo, CB_GETITEMHEIGHT, static_cast<WPARAM>(-1), 0) == height,
+                "high contrast updates both dropdown item and selection heights after font changes");
+            ::SendMessageW(combo, WM_SETFONT, originalFont, FALSE);
+        }
+    }
+
+    void ListAppearanceTests() {
+        const HWND list = layout_.Find(IDC_PROFILES)->GetSafeHwnd();
+        LVCOLUMNW column{};
+        column.mask = LVCF_WIDTH;
+        column.cx = 100;
+        check(ListView_InsertColumn(list, 0, &column) == 0 && ListView_InsertColumn(list, 1, &column) == 1,
+            "create PBX list columns for owner-draw clipping test");
+        std::wstring name(120, L'W');
+        LVITEMW item{};
+        item.mask = LVIF_TEXT;
+        item.pszText = name.data();
+        check(ListView_InsertItem(list, &item) == 0, "insert long PBX name");
+        CClientDC screen(CWnd::FromHandle(list));
+        CDC dc;
+        CBitmap bitmap;
+        check(dc.CreateCompatibleDC(&screen) && bitmap.CreateCompatibleBitmap(&screen, 240, 32),
+            "create PBX list rendering buffer");
+        CBitmap* previous = dc.SelectObject(&bitmap);
+        for (bool selected : {false, true}) {
+            ListView_SetItemState(list, 0, selected ? LVIS_SELECTED : 0, LVIS_SELECTED | LVIS_FOCUSED);
+            NMLVCUSTOMDRAW draw{};
+            draw.nmcd.hdr.hwndFrom = list;
+            draw.nmcd.hdr.code = NM_CUSTOMDRAW;
+            draw.nmcd.dwDrawStage = CDDS_ITEMPREPAINT;
+            draw.nmcd.hdc = dc.GetSafeHdc();
+            draw.nmcd.rc = {0, 0, 240, 32};
+            const auto background = selected ? tlp::ui::Colours().selection : tlp::ui::Colours().surface;
+            dc.FillSolidRect(0, 0, 240, 32, background);
+            check(::SendMessageW(::GetParent(list), WM_NOTIFY, 0, reinterpret_cast<LPARAM>(&draw)) == CDRF_SKIPDEFAULT,
+                "nested PBX list custom-draw notification is handled");
+            bool clipped = true;
+            for (int x = 101; x < 198; ++x)
+                for (int y = 1; y < 31; ++y) clipped = clipped && dc.GetPixel(x, y) == background;
+            check(clipped, "long PBX name never paints into the adjacent column");
+        }
+        dc.SelectObject(previous);
+        ListView_DeleteAllItems(list);
+        ListView_DeleteColumn(list, 1);
+        ListView_DeleteColumn(list, 0);
+    }
+
+    static void CALLBACK AnswerMessage(HWND, UINT, UINT_PTR timer, DWORD) {
+        const HWND window = ::GetActiveWindow();
+        if (window && ::GetWindow(window, GW_OWNER) == messageOwner_ && ::GetDlgItem(window, IDC_MESSAGE_FIRST)) {
+            ::KillTimer(nullptr, timer);
+            ::SendMessageW(window, WM_COMMAND, MAKEWPARAM(messageButton_, BN_CLICKED),
+                reinterpret_cast<LPARAM>(::GetDlgItem(window, messageButton_)));
+        }
+    }
+
+    void MessageAppearanceTests() {
+        const UINT modes[] = {MB_OK | MB_ICONERROR, MB_OKCANCEL | MB_ICONWARNING,
+            MB_YESNO | MB_ICONQUESTION, MB_YESNOCANCEL | MB_ICONWARNING};
+        const int buttons[] = {IDC_MESSAGE_FIRST, IDC_MESSAGE_SECOND, IDC_MESSAGE_SECOND, IDC_MESSAGE_THIRD};
+        const int answers[] = {IDOK, IDCANCEL, IDNO, IDCANCEL};
+        for (int i = 0; i < 4; ++i) {
+            SetActiveWindow();
+            messageOwner_ = ::GetActiveWindow();
+            if (!messageOwner_) messageOwner_ = GetSafeHwnd();
+            messageButton_ = buttons[i];
+            const UINT_PTR timer = ::SetTimer(nullptr, 0, 10, AnswerMessage);
+            check(timer != 0, "create deterministic message-dialog response");
+            const int result = tlp::ui::ShowMessage(L"Appearance test: preserve confirmation and cancellation semantics.", modes[i]);
+            ::KillTimer(nullptr, timer);
+            check(result == answers[i], "themed errors and confirmations preserve original response codes");
+        }
+    }
+
+    void GraphAppearanceTests() {
+        const auto& palette = tlp::ui::Colours();
+        tlp::HealthSnapshot snapshot;
+        snapshot.snapshotTimestampMs = 30000;
+        for (int i = 0; i < 15; ++i) {
+            tlp::HealthSample sample;
+            sample.timestampMs = i * 2000 + 1000;
+            sample.tunnelKnown = true;
+            sample.tunnelRunning = true;
+            sample.probeKnown = true;
+            sample.probeSucceeded = i != 8;
+            if (sample.probeSucceeded) sample.latencyMs = 20 + i * 5;
+            if (i % 3 == 0) {
+                sample.wireGuardTelemetryAttempted = true;
+                sample.receivedBytes = i * 1000;
+                sample.transmittedBytes = i * 500;
+            }
+            snapshot.samples.push_back(sample);
+        }
+        CDC dc;
+        check(dc.CreateCompatibleDC(nullptr) != FALSE, "create appearance graph DC");
+        BITMAPINFO info{};
+        info.bmiHeader.biSize = sizeof(info.bmiHeader);
+        info.bmiHeader.biWidth = 480;
+        info.bmiHeader.biHeight = -240;
+        info.bmiHeader.biPlanes = 1;
+        info.bmiHeader.biBitCount = 32;
+        info.bmiHeader.biCompression = BI_RGB;
+        void* bits = nullptr;
+        HBITMAP bitmap = CreateDIBSection(dc.GetSafeHdc(), &info, DIB_RGB_COLORS, &bits, nullptr, 0);
+        check(bitmap != nullptr, "create graph pixel buffer");
+        const auto previousBitmap = SelectObject(dc.GetSafeHdc(), bitmap);
+        for (int dpi : {96, 120, 144, 192}) {
+            CFont font;
+            LOGFONT specification{};
+            specification.lfHeight = -MulDiv(9, dpi, 72);
+            wcscpy_s(specification.lfFaceName, L"Segoe UI");
+            check(font.CreateFontIndirect(&specification) != FALSE, "create scaled graph font");
+            CFont* previousFont = dc.SelectObject(&font);
+            for (int mode = 0; mode < 3; ++mode) {
+                DrawConnectionHealthGraph(dc, CRect(0, 0, 480, 240), snapshot, 60, mode);
+                GdiFlush();
+                check(dc.GetPixel(0, 0) == palette.graph, "graph background follows theme at every DPI input");
+                auto contains = [&](tlp::Colour colour) {
+                    const unsigned dibColour = ((colour & 255) << 16) | (colour & 0xFF00) | ((colour >> 16) & 255);
+                    const auto pixels = static_cast<const unsigned*>(bits);
+                    for (int i = 0; i < 480 * 240; ++i) if ((pixels[i] & 0xFFFFFF) == dibColour) return true;
+                    return false;
+                };
+                if (!tlp::ui::HighContrast()) {
+                    check(contains(mode == 0 ? palette.latency : mode == 1 ? palette.download : palette.error),
+                        "graph primary series renders selected palette pixels");
+                    if (mode == 1) check(contains(palette.upload), "upload and download use distinct palette pixels");
+                }
+            }
+            dc.SelectObject(previousFont);
+        }
+        SelectObject(dc.GetSafeHdc(), previousBitmap);
+        DeleteObject(bitmap);
+    }
+
     void LayoutTests() {
         layout_.Initialize(*this);
         const int sizes[][2] = {{1024, 728}, {1366, 728}, {1920, 1040}, {420, 300}, {2560, 1400}};
@@ -208,9 +512,11 @@ private:
     CConnectionHealthDlg health_;
     CDesktopLayout layout_;
     int lastAction_ = 0;
+    inline static HWND messageOwner_ = nullptr;
+    inline static int messageButton_ = IDC_MESSAGE_FIRST;
 };
 
-BEGIN_MESSAGE_MAP(CWindowLifecycleTest, CDialogEx)
+BEGIN_MESSAGE_MAP(CWindowLifecycleTest, CAppearanceDialog)
     ON_WM_MOUSEWHEEL()
     ON_MESSAGE(WM_APP + 100, &CWindowLifecycleTest::WindowTests)
 END_MESSAGE_MAP()
@@ -221,6 +527,7 @@ public:
         INITCOMMONCONTROLSEX controls{sizeof(controls), ICC_WIN95_CLASSES};
         InitCommonControlsEx(&controls);
         CWinApp::InitInstance();
+        tlp::ui::SimulateSystemAppearance(false, false);
         CWindowLifecycleTest dialog;
         m_pMainWnd = &dialog;
         if (dialog.DoModal() != -1) result_ = dialog.result;

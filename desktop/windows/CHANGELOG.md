@@ -5,7 +5,35 @@ No Windows release is declared published by this document. Earlier development
 builds lacked embedded file/product versions and cannot be assigned reliable
 version numbers retrospectively.
 
-## 0.5.2 — Unreleased
+## 0.6.0 — Unreleased
+
+Windows file version: **0.6.0.0**. FreePBX module version: **0.3.2**.
+Native MSVC/MFC compilation and visual validation remain pending.
+
+- Add Settings > Appearance: System (default), Light and Dark, persisted with the
+  existing per-user preferences. Preview changes immediately in all open dialogs;
+  Save retains them and Cancel restores the previously saved appearance.
+- Follow live Windows application colour changes through the supported WinRT
+  UISettings event, marshalled to the UI thread, without touching connection state.
+- Centralize application dialog, list/header, selection, button, checkbox, combo,
+  edit, menu, border, scrollbar, message and graph rendering. The main window,
+  pairing, Remote Support, Settings, thresholds, health pop-out and Session Log
+  share the same palette. Hidden monitors stay hidden when themes change.
+- Respect Windows high contrast with native control rendering/system colours;
+  retain keyboard behavior, focus cues and native accessibility roles. OS-owned
+  file pickers, title-bar/system decorations on older Windows and security prompts
+  remain controlled by Windows rather than private/undocumented dark-mode APIs.
+- Add portable preference/policy/contrast tests and native open-dialog, live
+  simulated notification, control/graph pixel, hidden-window and DPI-input tests.
+  Simulations do not constitute interactive Windows visual validation.
+- Pre-build appearance review: preserve owner-drawn menu mnemonics (including
+  duplicates, disabled entries and escaped ampersands), clip PBX text to actual
+  header column bounds, update dropdown/selection heights after font/DPI changes
+  even in high contrast, and repaint themed scrollbar frames after native
+  keyboard/paint/tracking updates. Graph legends describe line/marker patterns
+  rather than colours that change with accessibility settings.
+
+## 0.5.2 — Previous development version (not released)
 
 Windows file version: **0.5.2.0**. FreePBX module version: **0.3.2**.
 No new native Windows build or live measurements have been validated locally.
@@ -107,7 +135,7 @@ These are source-history milestones, **not published Windows releases**:
 
 - [Version.h](src/app/Version.h) is the authoritative Windows version definition.
 - Use plain numerical application versions: the current product/display version
-  is `0.5.2` and the Windows fixed numeric file/product version is `0.5.2.0`.
+  is `0.6.0` and the Windows fixed numeric file/product version is `0.6.0.0`.
   Do not add development suffixes or change the version for individual
   development builds. Actions records the Git commit SHA, run identity and
   executable SHA-256 alongside the version to distinguish build provenance.
@@ -121,5 +149,7 @@ These are source-history milestones, **not published Windows releases**:
   prerelease flag reflects this unreleased status without changing its numerical
   version; publication requires an explicit release decision and updates to
   the changelog, resource flags and validation.
-- Windows 0.6.0 is reserved for the upcoming fully automated SSH
-  authentication functionality. That functionality is not part of 0.5.2.
+- New features increment the minor version; bug fixes increment the patch version.
+  Preserve previous version history when advancing either.
+- Windows 0.7.0 is reserved for the upcoming fully automated SSH
+  authentication functionality. That functionality is not part of 0.6.0.

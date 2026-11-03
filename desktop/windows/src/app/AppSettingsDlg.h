@@ -1,5 +1,5 @@
 #pragma once
-#include "framework.h"
+#include "Appearance.h"
 
 #include <optional>
 #include <string>
@@ -12,7 +12,7 @@
 
 // One dialog, one storage mechanism: shown as "Welcome to TELIPHONES" on first run and as Settings afterwards.
 // Preferences are saved to the current Windows user's local application data before the dialog closes.
-class CAppSettingsDlg : public CDialogEx {
+class CAppSettingsDlg : public CAppearanceDialog {
 public:
     enum class Mode { Welcome, Settings };
     CAppSettingsDlg(Mode mode, const std::optional<tlp::Preferences>& stored, CWnd* parent = nullptr);
@@ -36,6 +36,7 @@ protected:
     afx_msg void OnLocateBrowser();
     afx_msg void OnLocateTerminal();
     afx_msg void OnSelectionChanged();
+    afx_msg void OnAppearanceChanged();
     afx_msg void OnInstallWireGuard();
     afx_msg void OnCheckWireGuard();
     afx_msg void OnNotNow();

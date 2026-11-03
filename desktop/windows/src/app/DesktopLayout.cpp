@@ -1,4 +1,5 @@
 #include "DesktopLayout.h"
+#include "Appearance.h"
 #include <algorithm>
 #include <functional>
 #include <iterator>
@@ -70,6 +71,7 @@ void CDesktopLayout::Initialize(CWnd& window) {
         CRect(0, 0, 1, 1), &window, IDC_CONTENT_VIEWPORT)) {
         tlp::win::ThrowLastError("Create TELIPHONES scrollable content");
     }
+    tlp::ui::ThemeWindow(content_.GetSafeHwnd());
     const CWnd* previous = &CWnd::wndTop;
     for (int id : contentIds) {
         CWnd* control = window.GetDlgItem(id);

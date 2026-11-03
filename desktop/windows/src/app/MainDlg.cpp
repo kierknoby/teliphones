@@ -85,7 +85,7 @@ std::string FormatTime(std::int64_t unixTime) {
     return Narrow(std::wstring(time.Format(L"%Y-%m-%d %H:%M")));
 }
 
-void ShowError(const std::string& text) { AfxMessageBox(Widen(text).c_str(), MB_ICONERROR); }
+void ShowError(const std::string& text) { tlp::ui::ShowMessage(Widen(text).c_str(), MB_ICONERROR); }
 
 std::string AccessText(const Profile& profile, std::int64_t now) {
     if (profile.kind == ProfileKind::Administrator) {
@@ -105,7 +105,7 @@ std::string AccessText(const Profile& profile, std::int64_t now) {
 
 }  // namespace
 
-BEGIN_MESSAGE_MAP(CMainDlg, CDialogEx)
+BEGIN_MESSAGE_MAP(CMainDlg, CAppearanceDialog)
     ON_WM_SIZE()
     ON_WM_GETMINMAXINFO()
     ON_WM_MOUSEWHEEL()
@@ -133,7 +133,7 @@ BEGIN_MESSAGE_MAP(CMainDlg, CDialogEx)
     ON_MESSAGE(WM_APP_FIRST_RUN, &CMainDlg::OnFirstRun)
 END_MESSAGE_MAP()
 
-CMainDlg::CMainDlg(CWnd* parent) : CDialogEx(IDD_MAIN, parent), healthDialog_(this) {}
+CMainDlg::CMainDlg(CWnd* parent) : CAppearanceDialog(IDD_MAIN, parent), healthDialog_(this) {}
 
 void CMainDlg::DoDataExchange(CDataExchange* exchange) {
     CDialogEx::DoDataExchange(exchange);
@@ -142,7 +142,20 @@ void CMainDlg::DoDataExchange(CDataExchange* exchange) {
 }
 
 BOOL CMainDlg::OnInitDialog() {
-    CDialogEx::OnInitDialog();
+    CAppearanceDialog::OnInitDialog();
+    bool preferencesReadable = true;
+    try {
+        storedPreferences_ = tlp::win::LoadPreferences();
+    } catch (const std::exception& e) {
+        preferencesReadable = false;
+        ShowError(std::string("Your browser and SSH terminal preferences could not be read and were left unchanged: ") + e.what() +
+                  " Open Settings to choose them again.");
+    }
+    try {
+        tlp::ui::SetAppearance(storedPreferences_.value_or(tlp::Preferences()).appearance);
+    } catch (const std::exception& e) {
+        ShowError(std::string("Your saved appearance could not be applied: ") + e.what());
+    }
     try {
         layout_.Initialize(*this);
         layout_.InitialPosition();
@@ -175,14 +188,6 @@ BOOL CMainDlg::OnInitDialog() {
     RemoveStaleTunnels();
     SetTimer(kMonitorTimer, kMonitorIntervalMs, nullptr);
 
-    bool preferencesReadable = true;
-    try {
-        storedPreferences_ = tlp::win::LoadPreferences();
-    } catch (const std::exception& e) {
-        preferencesReadable = false;
-        ShowError(std::string("Your browser and SSH terminal preferences could not be read and were left unchanged: ") + e.what() +
-                  " Open Settings to choose them again.");
-    }
     try {
         std::optional<tlp::HealthPreferences> storedHealth = tlp::win::LoadHealthPreferences();
         if (storedHealth) healthPreferences_ = *storedHealth;
@@ -264,11 +269,11 @@ void CMainDlg::OnPlotChanged() {
 HBRUSH CMainDlg::OnCtlColor(CDC* dc, CWnd* window, UINT type) {
     HBRUSH brush = CDialogEx::OnCtlColor(dc, window, type);
     if (window->GetDlgCtrlID() == IDC_STATE) {
-        COLORREF color = GetSysColor(COLOR_WINDOWTEXT);
+        COLORREF color = tlp::ui::Colours().text;
         const Profile* selected = Selected();
         if (active_ && selected && selected->id == active_->profileId) {
-            if (active_->verified) color = RGB(20, 110, 50);
-            else if (healthSnapshot_.state == tlp::HealthState::Disconnected) color = RGB(175, 35, 40);
+            if (active_->verified) color = tlp::ui::Colours().success;
+            else if (healthSnapshot_.state == tlp::HealthState::Disconnected) color = tlp::ui::Colours().error;
         }
         dc->SetTextColor(color);
     }
@@ -575,7 +580,7 @@ void CMainDlg::RemoveStaleTunnels() {
         if (state != tlp::win::TunnelState::Absent && state != tlp::win::TunnelState::Unknown) stale.push_back(name);
     }
     if (stale.empty()) return;
-    if (AfxMessageBox(L"A TELIPHONES tunnel from a previous run is still installed. Remove it now?", MB_ICONQUESTION | MB_YESNO) != IDYES) {
+    if (tlp::ui::ShowMessage(L"A TELIPHONES tunnel from a previous run is still installed. Remove it now?", MB_ICONQUESTION | MB_YESNO) != IDYES) {
         SetState("Previous tunnel still installed", "Remove it from WireGuard for Windows, or restart TELIPHONES and approve cleanup.");
         return;
     }
@@ -636,7 +641,7 @@ void CMainDlg::OnRemove() {
     if (profile->kind == ProfileKind::Administrator) {
         question += L"\n\nThis does not revoke the workstation on the PBX. Revoke it in FreePBX > Connectivity > TELIPHONES > Windows workstations.";
     }
-    if (AfxMessageBox(question.c_str(), MB_ICONQUESTION | MB_YESNO) != IDYES) return;
+    if (tlp::ui::ShowMessage(question.c_str(), MB_ICONQUESTION | MB_YESNO) != IDYES) return;
     try {
         tlp::win::DeletePrivateKey(tlp::CredentialTargetFor(*profile));
     } catch (const std::exception& e) {
@@ -760,7 +765,7 @@ void CMainDlg::OnOpenGui() {
     } catch (const tlp::AppUnavailable& e) {
         std::string text = std::string(e.what()) +
                            "\n\nYes: use the Windows default browser from now on.\nNo: choose another browser in Settings.\nCancel: do nothing.";
-        int answer = AfxMessageBox(Widen(text).c_str(), MB_YESNOCANCEL | MB_ICONWARNING);
+        int answer = tlp::ui::ShowMessage(Widen(text).c_str(), MB_YESNOCANCEL | MB_ICONWARNING);
         bool retry = false;
         if (answer == IDYES) {
             tlp::Preferences updated = storedPreferences_.value_or(CurrentPreferences());
@@ -814,7 +819,7 @@ void CMainDlg::OnOpenSsh() {
         tlp::win::OpenSsh(*FindProfile(active_->profileId), active_->sessionId, CurrentPreferences());
     } catch (const tlp::AppUnavailable& e) {
         std::string text = std::string(e.what()) + "\n\nChoose OK to select another SSH terminal in Settings.";
-        if (AfxMessageBox(Widen(text).c_str(), MB_OKCANCEL | MB_ICONWARNING) != IDOK) return;
+        if (tlp::ui::ShowMessage(Widen(text).c_str(), MB_OKCANCEL | MB_ICONWARNING) != IDOK) return;
         if (!ShowAppSettings(false, e.what()) || !SshReady()) return;
         try {
             tlp::win::OpenSsh(*FindProfile(active_->profileId), active_->sessionId, CurrentPreferences());
@@ -1099,15 +1104,15 @@ LRESULT CMainDlg::OnOperationDone(WPARAM, LPARAM lparam) {
 
 void CMainDlg::OnCancel() {
     if (busy_) {
-        AfxMessageBox(L"Please wait for the current operation to finish.", MB_ICONINFORMATION);
+        tlp::ui::ShowMessage(L"Please wait for the current operation to finish.", MB_ICONINFORMATION);
         return;
     }
     if (probing_) {
-        AfxMessageBox(L"Please wait for the connection status check to finish before closing.", MB_ICONINFORMATION);
+        tlp::ui::ShowMessage(L"Please wait for the connection status check to finish before closing.", MB_ICONINFORMATION);
         return;
     }
     if (active_) {
-        if (AfxMessageBox(L"Disconnect from the PBX and exit TELIPHONES?", MB_ICONQUESTION | MB_YESNO) != IDYES) return;
+        if (tlp::ui::ShowMessage(L"Disconnect from the PBX and exit TELIPHONES?", MB_ICONQUESTION | MB_YESNO) != IDYES) return;
         CWaitCursor wait;
         LogEvent("disconnect_requested", "info", "Application shutdown: removing active tunnel.");
         try {

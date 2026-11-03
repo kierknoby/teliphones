@@ -1,5 +1,5 @@
 #pragma once
-#include "framework.h"
+#include "Appearance.h"
 
 #include <string>
 
@@ -7,7 +7,7 @@
 #include "../platform/WireGuard.h"
 
 // Creates a Remote Support profile (engineer key) or imports an updated gateway grant for an existing one.
-class CSupportDlg : public CDialogEx {
+class CSupportDlg : public CAppearanceDialog {
 public:
     // existing == nullptr creates a profile; otherwise the dialog imports a new grant for it.
     CSupportDlg(const tlp::win::WireGuardInstallation& wireguard, const tlp::Profile* existing, CWnd* parent = nullptr);

@@ -15,14 +15,15 @@
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'"><ClCompile><RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary></ClCompile></ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'"><ClCompile><RuntimeLibrary>MultiThreaded</RuntimeLibrary></ClCompile></ItemDefinitionGroup>
   <ItemDefinitionGroup>
-    <ClCompile><WarningLevel>Level4</WarningLevel><SDLCheck>true</SDLCheck><ConformanceMode>true</ConformanceMode><LanguageStandard>stdcpp17</LanguageStandard><ExceptionHandling>Sync</ExceptionHandling><AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions><PreprocessorDefinitions>UNICODE;_UNICODE;WIN32_LEAN_AND_MEAN;NOMINMAX;_WIN32_WINNT=0x0A00;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
-    <Link><SubSystem>Windows</SubSystem><TargetMachine>MachineX64</TargetMachine><AdditionalDependencies>bcrypt.lib;wintrust.lib;crypt32.lib;advapi32.lib;ws2_32.lib;shell32.lib;comdlg32.lib;ole32.lib;comctl32.lib;uuid.lib;%(AdditionalDependencies)</AdditionalDependencies></Link>
+    <ClCompile><WarningLevel>Level4</WarningLevel><SDLCheck>true</SDLCheck><ConformanceMode>true</ConformanceMode><LanguageStandard>stdcpp17</LanguageStandard><ExceptionHandling>Sync</ExceptionHandling><AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions><PreprocessorDefinitions>UNICODE;_UNICODE;WIN32_LEAN_AND_MEAN;NOMINMAX;TELIPHONES_APPEARANCE_TESTING;_WIN32_WINNT=0x0A00;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
+    <Link><SubSystem>Windows</SubSystem><TargetMachine>MachineX64</TargetMachine><AdditionalDependencies>bcrypt.lib;wintrust.lib;crypt32.lib;advapi32.lib;ws2_32.lib;shell32.lib;comdlg32.lib;ole32.lib;comctl32.lib;uxtheme.lib;dwmapi.lib;windowsapp.lib;uuid.lib;%(AdditionalDependencies)</AdditionalDependencies></Link>
     <ResourceCompile><AdditionalIncludeDirectories>$(ProjectDir)src\app;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories></ResourceCompile>
     <Manifest><EnableDpiAwareness>false</EnableDpiAwareness><AdditionalManifestFiles>$(ProjectDir)src\app\TELIPHONES.manifest;%(AdditionalManifestFiles)</AdditionalManifestFiles></Manifest>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="tests\health_window_tests.cpp" />
     <ClCompile Include="src\app\ConnectionHealthDlg.cpp" />
+    <ClCompile Include="src\app\Appearance.cpp" />
     <ClCompile Include="src\app\DesktopLayout.cpp" />
     <ClCompile Include="src\platform\Win.cpp" />
     <ClCompile Include="src\core\*.cpp" />

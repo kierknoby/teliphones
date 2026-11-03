@@ -1054,6 +1054,60 @@ void testWireGuardSetup() {
     check(run().state == SetupState::Installed, "retry after cancellation or failure recovers");
 }
 
+double contrast(Colour first, Colour second) {
+    auto luminance = [](Colour colour) {
+        auto channel = [](unsigned value) {
+            double c = value / 255.0;
+            return c <= 0.04045 ? c / 12.92 : std::pow((c + 0.055) / 1.055, 2.4);
+        };
+        return 0.2126 * channel(colour & 255) + 0.7152 * channel((colour >> 8) & 255) + 0.0722 * channel((colour >> 16) & 255);
+    };
+    const double a = luminance(first), b = luminance(second);
+    return (std::max(a, b) + 0.05) / (std::min(a, b) + 0.05);
+}
+
+void testAppearance() {
+    const std::string legacy = "{\"schema\":\"teliphones-desktop-preferences/1\",\"browser\":\"firefox\",\"terminal\":\"putty\","
+        "\"locations\":{},\"setup\":\"completed\"}";
+    check(ParsePreferences(legacy).appearance == Appearance::System, "legacy preferences default to System");
+    check(Preferences().appearance == Appearance::System, "new preferences default to System");
+    for (auto mode : {Appearance::System, Appearance::Light, Appearance::Dark}) {
+        auto preferences = ParsePreferences(legacy);
+        preferences.appearance = mode;
+        const auto restored = ParsePreferences(SerializePreferences(preferences));
+        check(restored.appearance == mode && restored.browser == "firefox" && restored.terminal == "putty" &&
+            restored.setup == "completed", "all appearance modes persist without changing other preferences");
+        check(ParseAppearance(AppearanceName(mode)) == mode, "appearance names round trip");
+        auto skipped = PreferencesAfterFirstRun(FirstRunOutcome::Skipped, "", "", {}, {}, preferences);
+        check(skipped && skipped->appearance == mode, "welcome Skip preserves appearance");
+        check(EffectivePreferences(preferences, {}, {}).appearance == mode, "effective settings retain appearance");
+        for (bool systemDark : {false, true}) {
+            check(UseDarkAppearance(mode, systemDark, false) ==
+                (mode == Appearance::Dark || (mode == Appearance::System && systemDark)), "system change/forced mode policy");
+            check(!UseDarkAppearance(mode, systemDark, true), "high contrast overrides every appearance mode");
+        }
+    }
+    for (const auto& invalid : {json::Value("auto"), json::Value("Dark"), json::Value(""), json::Value(true), json::Value(2)}) {
+        auto fields = json::Parse(legacy).asObject();
+        fields["appearance"] = invalid;
+        check(throws([&] { ParsePreferences(json::Serialize(json::Value(fields))); }), "invalid appearance is explicitly rejected");
+    }
+    check(throws([] { AppearanceName(static_cast<Appearance>(99)); }), "invalid appearance enum rejected on serialization");
+    for (bool dark : {false, true}) {
+        const auto p = PaletteFor(dark);
+        for (auto background : {p.background, p.surface, p.button, p.hover}) {
+            check(contrast(p.text, background) >= 4.5, "normal control text meets 4.5:1 contrast");
+            check(contrast(p.disabled, background) >= 3, "disabled control text remains readable");
+        }
+        check(contrast(p.selectedText, p.selection) >= 4.5, "selected PBX text meets 4.5:1 contrast");
+        for (auto signal : {p.latency, p.success, p.warning, p.error, p.download, p.upload})
+            check(contrast(signal, p.graph) >= 3, "every graph series meets 3:1 contrast");
+        for (auto signal : {p.success, p.warning, p.error})
+            check(contrast(signal, p.background) >= 4.5, "health status text meets 4.5:1 contrast");
+        check(p.download != p.upload && p.latency != p.success && p.success != p.error, "graph series remain distinguishable");
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -1063,8 +1117,8 @@ int main() {
     for (unsigned part : versionParts) check(part <= 65535, "Windows version component fits the resource WORD");
     check(TELIPHONES_VERSION_FILE_STRING == versionBase + "." + std::to_string(versionParts[3]), "file version expands consistently");
     check(TELIPHONES_VERSION_STRING == versionBase, "product version expands without a development suffix");
-    check(std::string(TELIPHONES_VERSION_STRING) == "0.5.2", "Windows application version is independent of the module");
-    check(std::string(TELIPHONES_VERSION_FILE_STRING) == "0.5.2.0", "Windows file version is 0.5.2.0");
+    check(std::string(TELIPHONES_VERSION_STRING) == "0.6.0", "Windows application version is independent of the module");
+    check(std::string(TELIPHONES_VERSION_FILE_STRING) == "0.6.0.0", "Windows file version is 0.6.0.0");
     testEncoding();
     testJson();
     testValidation();
@@ -1077,6 +1131,7 @@ int main() {
     testConnectionHealth();
     testLaunchers();
     testWireGuardSetup();
+    testAppearance();
     if (failures) {
         std::printf("Desktop core tests: FAIL (%d of %d checks failed)\n", failures, checks);
         return 1;

@@ -80,15 +80,15 @@ std::string ComputerName() {
 
 }  // namespace
 
-BEGIN_MESSAGE_MAP(CPairDlg, CDialogEx)
+BEGIN_MESSAGE_MAP(CPairDlg, CAppearanceDialog)
     ON_BN_CLICKED(IDC_PAIR_GENERATE, &CPairDlg::OnGenerate)
     ON_BN_CLICKED(IDC_PAIR_COPY, &CPairDlg::OnCopy)
 END_MESSAGE_MAP()
 
-CPairDlg::CPairDlg(const tlp::win::WireGuardInstallation& wireguard, CWnd* parent) : CDialogEx(IDD_PAIR, parent), wireguard_(wireguard) {}
+CPairDlg::CPairDlg(const tlp::win::WireGuardInstallation& wireguard, CWnd* parent) : CAppearanceDialog(IDD_PAIR, parent), wireguard_(wireguard) {}
 
 BOOL CPairDlg::OnInitDialog() {
-    CDialogEx::OnInitDialog();
+    CAppearanceDialog::OnInitDialog();
     SetDlgItemText(IDC_PAIR_WORKSTATION, tlp::win::Widen(ComputerName()).c_str());
     SetDlgItemText(IDC_PAIR_SSHUSER, L"");
     SetDlgItemText(IDC_PAIR_REQUEST, L"Generate a key and pairing request first.");
@@ -125,22 +125,22 @@ void CPairDlg::OnGenerate() {
         keyStored_ = true;
         SetEdit(this, IDC_PAIR_REQUEST, request_);
         SetDlgItemText(IDC_PAIR_FINGERPRINT, tlp::win::Widen("Workstation public-key fingerprint: " + tlp::KeyFingerprint(publicKey_)).c_str());
-        AfxMessageBox(L"Copy this pairing request and paste it into the Windows workstations section of the TELIPHONES page on your PBX. Then copy the pairing response back into this dialog.", MB_ICONINFORMATION);
+        tlp::ui::ShowMessage(L"Copy this pairing request and paste it into the Windows workstations section of the TELIPHONES page on your PBX. Then copy the pairing response back into this dialog.", MB_ICONINFORMATION);
     } catch (const std::exception& e) {
-        AfxMessageBox(tlp::win::Widen(e.what()).c_str(), MB_ICONERROR);
+        tlp::ui::ShowMessage(tlp::win::Widen(e.what()).c_str(), MB_ICONERROR);
     }
 }
 
 void CPairDlg::OnCopy() {
     if (request_.empty()) {
-        AfxMessageBox(L"Generate a pairing request first.", MB_ICONINFORMATION);
+        tlp::ui::ShowMessage(L"Generate a pairing request first.", MB_ICONINFORMATION);
         return;
     }
     try {
         CopyText(m_hWnd, request_);
-        AfxMessageBox(L"Pairing request copied.", MB_ICONINFORMATION);
+        tlp::ui::ShowMessage(L"Pairing request copied.", MB_ICONINFORMATION);
     } catch (const std::exception& e) {
-        AfxMessageBox(tlp::win::Widen(e.what()).c_str(), MB_ICONERROR);
+        tlp::ui::ShowMessage(tlp::win::Widen(e.what()).c_str(), MB_ICONERROR);
     }
 }
 
@@ -163,7 +163,7 @@ void CPairDlg::OnOK() {
         profile.pairing = std::move(pairing);
         CDialogEx::OnOK();
     } catch (const std::exception& e) {
-        AfxMessageBox(tlp::win::Widen(e.what()).c_str(), MB_ICONERROR);
+        tlp::ui::ShowMessage(tlp::win::Widen(e.what()).c_str(), MB_ICONERROR);
     }
 }
 
@@ -172,7 +172,7 @@ bool CPairDlg::DiscardKey() {
     try {
         tlp::win::DeletePrivateKey(tlp::CredentialTargetFor(profile));
     } catch (const std::exception& e) {
-        AfxMessageBox((std::wstring(L"The unused workstation key could not be removed from Windows Credential Manager: ") + tlp::win::Widen(e.what())).c_str(),
+        tlp::ui::ShowMessage((std::wstring(L"The unused workstation key could not be removed from Windows Credential Manager: ") + tlp::win::Widen(e.what())).c_str(),
                       MB_ICONERROR);
         return false;
     }

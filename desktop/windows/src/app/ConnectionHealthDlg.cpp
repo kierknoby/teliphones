@@ -16,14 +16,14 @@ using tlp::win::Widen;
 
 namespace {
 
-class CHealthThresholdsDlg : public CDialogEx {
+class CHealthThresholdsDlg : public CAppearanceDialog {
 public:
     explicit CHealthThresholdsDlg(tlp::HealthThresholds& thresholds, CWnd* parent)
-        : CDialogEx(IDD_HEALTH_LIMITS, parent), thresholds_(thresholds), original_(thresholds) {}
+        : CAppearanceDialog(IDD_HEALTH_LIMITS, parent), thresholds_(thresholds), original_(thresholds) {}
 
 protected:
     BOOL OnInitDialog() override {
-        CDialogEx::OnInitDialog();
+        CAppearanceDialog::OnInitDialog();
         const int latency[] = {200, 300, 500};
         const int jitter[] = {50, 100, 200};
         const int failures[] = {2, 3, 4};
@@ -38,7 +38,7 @@ protected:
             !Read(IDC_HEALTH_LIMIT_JITTER, thresholds_.warningJitterMs) ||
             !Read(IDC_HEALTH_LIMIT_FAILURES, thresholds_.consecutiveFailures)) {
             thresholds_ = original_;
-            AfxMessageBox(L"Choose a value for each health threshold.", MB_ICONWARNING);
+            tlp::ui::ShowMessage(L"Choose a value for each health threshold.", MB_ICONWARNING);
             return;
         }
         CDialogEx::OnOK();
@@ -147,11 +147,12 @@ std::string ConnectionHealthSummary(const tlp::HealthSnapshot& snapshot) {
 }
 
 void DrawConnectionHealthGraph(CDC& dc, const CRect& rect, const tlp::HealthSnapshot& snapshot, int historySeconds, int mode) {
+    const auto& colours = tlp::ui::Colours();
     const int saved = dc.SaveDC();
     dc.IntersectClipRect(rect);
-    dc.FillSolidRect(rect, RGB(250, 252, 254));
+    dc.FillSolidRect(rect, colours.graph);
     dc.SetBkMode(TRANSPARENT);
-    dc.SetTextColor(RGB(40, 50, 65));
+    dc.SetTextColor(colours.text);
     // The control's DPI-scaled font is selected by the owner-draw caller.
     TEXTMETRIC metrics{};
     dc.GetTextMetrics(&metrics);
@@ -193,7 +194,7 @@ void DrawConnectionHealthGraph(CDC& dc, const CRect& rect, const tlp::HealthSnap
     std::string trafficUnit = "B/s";
     if (maxTraffic >= 1024 * 1024) { divisor = 1024 * 1024; trafficUnit = "MiB/s"; }
     else if (maxTraffic >= 1024) { divisor = 1024; trafficUnit = "KiB/s"; }
-    CPen grid(PS_SOLID, 1, RGB(219, 225, 233));
+    CPen grid(PS_SOLID, 1, colours.grid);
     auto axes = [&](const CRect& plot, double maximum, const std::string& unit) {
         dc.SelectObject(&grid);
         for (int tick = 0; tick <= 2; ++tick) {
@@ -213,14 +214,14 @@ void DrawConnectionHealthGraph(CDC& dc, const CRect& rect, const tlp::HealthSnap
     };
     if (mode == 1) axes(trafficPlot, maxTraffic / divisor, trafficUnit);
     else axes(latencyPlot, mode == 2 ? 1 : maxLatency, mode == 2 ? "event" : "ms");
-    graphText(dc, CRect(left, rect.top, right, top), mode == 1 ? "Download: blue / Upload: orange" :
-        mode == 2 ? "X: failed check / D: tunnel down / R: up" : "Latency: purple / Jitter: green / X: failed");
+    graphText(dc, CRect(left, rect.top, right, top), mode == 1 ? "Download: solid / Upload: dashed" :
+        mode == 2 ? "X: failed check / D: tunnel down / R: up" : "Latency: line / Jitter: dots / X: failed");
 
-    CPen latencyPen(PS_SOLID, 2, RGB(112, 62, 165));
-    CPen failurePen(PS_SOLID, 2, RGB(190, 40, 45));
-    CPen missingPen(PS_SOLID, 1, RGB(135, 140, 150));
-    CPen downPen(PS_DOT, 1, RGB(185, 45, 50));
-    CPen upPen(PS_DOT, 1, RGB(30, 125, 70));
+    CPen latencyPen(PS_SOLID, 2, colours.latency);
+    CPen failurePen(PS_SOLID, 2, colours.error);
+    CPen missingPen(PS_SOLID, 1, colours.disabled);
+    CPen downPen(PS_DOT, 1, colours.error);
+    CPen upPen(PS_DOT, 1, colours.success);
     std::optional<double> previousLatency;
     std::optional<bool> previousProbe;
     bool connectedPoint = false, haveLatency = false;
@@ -237,9 +238,9 @@ void DrawConnectionHealthGraph(CDC& dc, const CRect& rect, const tlp::HealthSnap
             dc.SelectObject(sample.tunnelRunning ? &upPen : &downPen);
             dc.MoveTo(x, latencyPlot.top);
             dc.LineTo(x, trafficPlot.bottom);
-            dc.SetTextColor(sample.tunnelRunning ? RGB(30, 125, 70) : RGB(185, 45, 50));
+            dc.SetTextColor(sample.tunnelRunning ? colours.success : colours.error);
             graphText(dc, CRect(x - 6, latencyPlot.top, x + 12, latencyPlot.top + line), sample.tunnelRunning ? "R" : "D");
-            dc.SetTextColor(RGB(40, 50, 65));
+            dc.SetTextColor(colours.text);
             connectedPoint = false;
         }
         lastTunnel = sample.tunnelKnown ? std::optional<bool>(sample.tunnelRunning) : std::nullopt;
@@ -260,11 +261,11 @@ void DrawConnectionHealthGraph(CDC& dc, const CRect& rect, const tlp::HealthSnap
             } else {
                 dc.MoveTo(x, y);
             }
-            dc.FillSolidRect(x - 1, y - 1, 3, 3, RGB(112, 62, 165));
+            dc.FillSolidRect(x - 1, y - 1, 3, 3, colours.latency);
             if (previousLatency) {
                 const double jitter = std::min(maxLatency, std::abs(*sample.latencyMs - *previousLatency));
                 const int jitterY = static_cast<int>(latencyPlot.bottom) - static_cast<int>(jitter / maxLatency * latencyPlot.Height());
-                dc.FillSolidRect(x - 1, jitterY - 1, 3, 3, RGB(30, 125, 70));
+                dc.FillSolidRect(x - 1, jitterY - 1, 3, 3, colours.success);
                 dc.MoveTo(x, y);
             }
             previousLatency = sample.latencyMs;
@@ -277,7 +278,7 @@ void DrawConnectionHealthGraph(CDC& dc, const CRect& rect, const tlp::HealthSnap
             previousLatency.reset();
         }
         if (mode == 2 && sample.probeKnown && sample.probeSucceeded) {
-            dc.FillSolidRect(x - 1, latencyPlot.bottom - 3, 3, 3, RGB(30, 125, 70));
+            dc.FillSolidRect(x - 1, latencyPlot.bottom - 3, 3, 3, colours.success);
             if (previousProbe && !*previousProbe) {
                 graphText(dc, CRect(x - 5, latencyPlot.bottom - line, x + 20, latencyPlot.bottom), "R");
             }
@@ -294,8 +295,8 @@ void DrawConnectionHealthGraph(CDC& dc, const CRect& rect, const tlp::HealthSnap
             dc.LineTo(x, trafficPlot.bottom);
         }
     }
-    CPen rxPen(PS_SOLID, 2, RGB(20, 105, 185));
-    CPen txPen(PS_DASH, 1, RGB(195, 95, 10));
+    CPen rxPen(PS_SOLID, 2, colours.download);
+    CPen txPen(PS_DASH, 1, colours.upload);
     for (int direction = 0; mode == 1 && direction < 2; ++direction) {
         dc.SelectObject(direction == 0 ? &rxPen : &txPen);
         bool havePrevious = false;
@@ -305,7 +306,7 @@ void DrawConnectionHealthGraph(CDC& dc, const CRect& rect, const tlp::HealthSnap
             const int y = static_cast<int>(trafficPlot.bottom) - static_cast<int>(value / maxTraffic * trafficPlot.Height());
             if (havePrevious && point.join) dc.LineTo(x, y);
             else dc.MoveTo(x, y);
-            if (direction == 0) dc.FillSolidRect(x - 1, y - 1, 3, 3, RGB(20, 105, 185));
+            if (direction == 0) dc.FillSolidRect(x - 1, y - 1, 3, 3, colours.download);
             else {
                 dc.MoveTo(x - 2, y - 2); dc.LineTo(x + 3, y + 3);
                 dc.MoveTo(x, y);
@@ -326,7 +327,7 @@ void DrawConnectionHealthGraph(CDC& dc, const CRect& rect, const tlp::HealthSnap
     dc.RestoreDC(saved);
 }
 
-BEGIN_MESSAGE_MAP(CConnectionHealthDlg, CDialogEx)
+BEGIN_MESSAGE_MAP(CConnectionHealthDlg, CAppearanceDialog)
     ON_WM_CLOSE()
     ON_WM_SIZE()
     ON_WM_GETMINMAXINFO()
@@ -338,7 +339,7 @@ BEGIN_MESSAGE_MAP(CConnectionHealthDlg, CDialogEx)
     ON_WM_CTLCOLOR()
 END_MESSAGE_MAP()
 
-CConnectionHealthDlg::CConnectionHealthDlg(CWnd* parent) : CDialogEx(IDD_CONNECTION_HEALTH, parent), owner_(parent) {}
+CConnectionHealthDlg::CConnectionHealthDlg(CWnd* parent) : CAppearanceDialog(IDD_CONNECTION_HEALTH, parent), owner_(parent) {}
 
 void CConnectionHealthDlg::DoDataExchange(CDataExchange* exchange) {
     CDialogEx::DoDataExchange(exchange);
@@ -347,7 +348,7 @@ void CConnectionHealthDlg::DoDataExchange(CDataExchange* exchange) {
 }
 
 BOOL CConnectionHealthDlg::OnInitDialog() {
-    CDialogEx::OnInitDialog();
+    CAppearanceDialog::OnInitDialog();
     history_.AddString(L"60 seconds");
     history_.AddString(L"5 minutes");
     history_.SetCurSel(preferences_.historySeconds == 300 ? 1 : 0);
@@ -542,12 +543,12 @@ void CConnectionHealthDlg::OnDrawItem(int controlId, LPDRAWITEMSTRUCT drawItem) 
 HBRUSH CConnectionHealthDlg::OnCtlColor(CDC* dc, CWnd* window, UINT controlColor) {
     HBRUSH brush = CDialogEx::OnCtlColor(dc, window, controlColor);
     if (controlColor == CTLCOLOR_STATIC && window->GetDlgCtrlID() == IDC_HEALTH_STATE) {
-        COLORREF color = RGB(100, 100, 100);
+        COLORREF color = tlp::ui::Colours().disabled;
         switch (snapshot_.state) {
-            case tlp::HealthState::Stable: color = RGB(20, 120, 55); break;
-            case tlp::HealthState::Degraded: color = RGB(170, 105, 0); break;
+            case tlp::HealthState::Stable: color = tlp::ui::Colours().success; break;
+            case tlp::HealthState::Degraded: color = tlp::ui::Colours().warning; break;
             case tlp::HealthState::Unstable:
-            case tlp::HealthState::Disconnected: color = RGB(180, 35, 35); break;
+            case tlp::HealthState::Disconnected: color = tlp::ui::Colours().error; break;
             case tlp::HealthState::Unknown: break;
         }
         dc->SetTextColor(color);

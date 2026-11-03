@@ -128,15 +128,21 @@ std::string SerializePreferences(const Preferences& preferences) {
                                {"browser", preferences.browser},
                                {"terminal", preferences.terminal},
                                {"locations", json::Value(locations)},
-                               {"setup", preferences.setup}};
+                               {"setup", preferences.setup},
+                               {"appearance", AppearanceName(preferences.appearance)}};
     return json::Serialize(json::Value(object)) + "\n";
 }
 
 Preferences ParsePreferences(const std::string& text) {
     json::Value value = json::Parse(text, 64 * 1024);
-    json::RequireExactKeys(value, {"schema", "browser", "terminal", "locations", "setup"}, "TELIPHONES preferences");
+    if (value.has("appearance")) {
+        json::RequireExactKeys(value, {"schema", "browser", "terminal", "locations", "setup", "appearance"}, "TELIPHONES preferences");
+    } else {
+        json::RequireExactKeys(value, {"schema", "browser", "terminal", "locations", "setup"}, "TELIPHONES preferences");
+    }
     if (value.at("schema").asString() != kPreferencesSchema) throw Error("Unsupported TELIPHONES preferences format.");
     Preferences preferences;
+    if (value.has("appearance")) preferences.appearance = ParseAppearance(value.at("appearance").asString());
     preferences.browser = value.at("browser").asString();
     preferences.terminal = value.at("terminal").asString();
     preferences.setup = value.at("setup").asString();

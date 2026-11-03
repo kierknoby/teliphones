@@ -1,5 +1,5 @@
 #pragma once
-#include "framework.h"
+#include "Appearance.h"
 
 #include <functional>
 
@@ -9,7 +9,7 @@
 void DrawConnectionHealthGraph(CDC& dc, const CRect& rect, const tlp::HealthSnapshot& snapshot, int historySeconds, int mode = 0);
 std::string ConnectionHealthSummary(const tlp::HealthSnapshot& snapshot);
 
-class CConnectionHealthDlg : public CDialogEx {
+class CConnectionHealthDlg : public CAppearanceDialog {
 public:
     explicit CConnectionHealthDlg(CWnd* parent = nullptr);
     bool CreateMonitor();

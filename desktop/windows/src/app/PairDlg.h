@@ -1,5 +1,5 @@
 #pragma once
-#include "framework.h"
+#include "Appearance.h"
 
 #include <string>
 
@@ -8,7 +8,7 @@
 
 // Pairs this workstation with a PBX. The PBX administrator must approve the request in
 // FreePBX > Connectivity > TELIPHONES; the response is pasted back here.
-class CPairDlg : public CDialogEx {
+class CPairDlg : public CAppearanceDialog {
 public:
     explicit CPairDlg(const tlp::win::WireGuardInstallation& wireguard, CWnd* parent = nullptr);
     tlp::Profile profile;  // valid after IDOK

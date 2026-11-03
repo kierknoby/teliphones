@@ -17,18 +17,19 @@ using tlp::win::Widen;
 
 namespace {
 
-void ShowError(const std::string& text) { AfxMessageBox(Widen(text).c_str(), MB_ICONERROR); }
+void ShowError(const std::string& text) { tlp::ui::ShowMessage(Widen(text).c_str(), MB_ICONERROR); }
 
 bool Contains(const std::vector<std::string>& ids, const std::string& id) { return std::find(ids.begin(), ids.end(), id) != ids.end(); }
 
 }  // namespace
 
-BEGIN_MESSAGE_MAP(CAppSettingsDlg, CDialogEx)
+BEGIN_MESSAGE_MAP(CAppSettingsDlg, CAppearanceDialog)
     ON_BN_CLICKED(IDC_APPS_SKIP, &CAppSettingsDlg::OnSkip)
     ON_BN_CLICKED(IDC_APPS_LOCATE_BROWSER, &CAppSettingsDlg::OnLocateBrowser)
     ON_BN_CLICKED(IDC_APPS_LOCATE_TERMINAL, &CAppSettingsDlg::OnLocateTerminal)
     ON_CBN_SELCHANGE(IDC_APPS_BROWSER, &CAppSettingsDlg::OnSelectionChanged)
     ON_CBN_SELCHANGE(IDC_APPS_TERMINAL, &CAppSettingsDlg::OnSelectionChanged)
+    ON_CBN_SELCHANGE(IDC_APPEARANCE, &CAppSettingsDlg::OnAppearanceChanged)
     ON_BN_CLICKED(IDC_CONNECT_INSTALL, &CAppSettingsDlg::OnInstallWireGuard)
     ON_BN_CLICKED(IDC_CONNECT_CHECK, &CAppSettingsDlg::OnCheckWireGuard)
     ON_BN_CLICKED(IDC_CONNECT_NOT_NOW, &CAppSettingsDlg::OnNotNow)
@@ -39,7 +40,7 @@ BEGIN_MESSAGE_MAP(CAppSettingsDlg, CDialogEx)
 END_MESSAGE_MAP()
 
 CAppSettingsDlg::CAppSettingsDlg(Mode mode, const std::optional<tlp::Preferences>& stored, CWnd* parent)
-    : CDialogEx(IDD_APP_SETTINGS, parent), mode_(mode), stored_(stored), working_(stored.value_or(tlp::Preferences())) {}
+    : CAppearanceDialog(IDD_APP_SETTINGS, parent), mode_(mode), stored_(stored), working_(stored.value_or(tlp::Preferences())) {}
 
 CAppSettingsDlg::~CAppSettingsDlg() {
     if (installer_.joinable()) installer_.join();
@@ -52,7 +53,12 @@ void CAppSettingsDlg::DoDataExchange(CDataExchange* exchange) {
 }
 
 BOOL CAppSettingsDlg::OnInitDialog() {
-    CDialogEx::OnInitDialog();
+    CAppearanceDialog::OnInitDialog();
+    CComboBox* appearance = static_cast<CComboBox*>(GetDlgItem(IDC_APPEARANCE));
+    appearance->AddString(L"System (follow Windows)");
+    appearance->AddString(L"Light");
+    appearance->AddString(L"Dark");
+    appearance->SetCurSel(working_.appearance == tlp::Appearance::Dark ? 2 : working_.appearance == tlp::Appearance::Light ? 1 : 0);
     if (mode_ == Mode::Welcome) {
         SetWindowText(L"Welcome to TELIPHONES");
         SetDlgItemText(IDC_APPS_HEADING, L"Step 1: Applications");
@@ -130,6 +136,20 @@ void CAppSettingsDlg::UpdateStatus() {
 
 void CAppSettingsDlg::OnSelectionChanged() { UpdateStatus(); }
 
+void CAppSettingsDlg::OnAppearanceChanged() {
+    const int row = static_cast<CComboBox*>(GetDlgItem(IDC_APPEARANCE))->GetCurSel();
+    const tlp::Appearance selected = row == 2 ? tlp::Appearance::Dark : row == 1 ? tlp::Appearance::Light : tlp::Appearance::System;
+    try {
+        tlp::ui::SetAppearance(selected);
+        working_.appearance = selected;
+    } catch (const std::exception& e) {
+        const auto current = tlp::ui::CurrentAppearance();
+        static_cast<CComboBox*>(GetDlgItem(IDC_APPEARANCE))->SetCurSel(
+            current == tlp::Appearance::Dark ? 2 : current == tlp::Appearance::Light ? 1 : 0);
+        ShowError(e.what());
+    }
+}
+
 void CAppSettingsDlg::OnLocateBrowser() { Locate(AppKind::Browser); }
 
 void CAppSettingsDlg::OnLocateTerminal() { Locate(AppKind::Terminal); }
@@ -173,6 +193,7 @@ bool CAppSettingsDlg::Store(const tlp::Preferences& candidate) {
         return false;
     }
     preferences = candidate;
+    stored_ = candidate;
     return true;
 }
 
@@ -215,13 +236,19 @@ void CAppSettingsDlg::OnSkip() {
 
 void CAppSettingsDlg::OnCancel() {
     if (installing_) return;
+    try {
+        tlp::ui::SetAppearance(stored_.value_or(tlp::Preferences()).appearance);
+    } catch (const std::exception& e) {
+        ShowError(e.what());
+    }
     CDialogEx::OnCancel();
 }
 
 void CAppSettingsDlg::ShowStep() {
     bool welcome = mode_ == Mode::Welcome;
     for (int id : {IDC_APPS_GROUP, IDC_APPS_BROWSER_LABEL, IDC_APPS_TERMINAL_LABEL, IDC_APPS_BROWSER,
-                   IDC_APPS_TERMINAL, IDC_APPS_LOCATE_BROWSER, IDC_APPS_LOCATE_TERMINAL, IDC_APPS_STATUS, IDC_APPS_NOTE}) {
+                   IDC_APPS_TERMINAL, IDC_APPS_LOCATE_BROWSER, IDC_APPS_LOCATE_TERMINAL, IDC_APPS_STATUS, IDC_APPS_NOTE,
+                   IDC_APPEARANCE_LABEL, IDC_APPEARANCE}) {
         GetDlgItem(id)->ShowWindow(!welcome || step_ == 1 ? SW_SHOW : SW_HIDE);
     }
     for (int id : {IDC_CONNECT_GROUP, IDC_CONNECT_STATUS, IDC_CONNECT_CHECK}) {

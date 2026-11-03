@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "CommandLine.h"
+#include "Appearance.h"
 #include "Json.h"
 #include "Profiles.h"
 
@@ -45,6 +46,7 @@ bool IsShellSafePath(const std::string& path);
 bool IsShellSafeToken(const std::string& text);
 
 struct Preferences {
+    Appearance appearance = Appearance::System;
     std::string browser;    // catalogue id; empty when never chosen
     std::string terminal;   // catalogue id; empty when never chosen
     std::map<std::string, std::string> locations;  // user-located executables (for example portable PuTTY), by id

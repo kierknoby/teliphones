@@ -8,17 +8,17 @@
 #include "../platform/Win.h"
 #include "resource.h"
 
-BEGIN_MESSAGE_MAP(CSessionLogDlg, CDialogEx)
+BEGIN_MESSAGE_MAP(CSessionLogDlg, CAppearanceDialog)
     ON_BN_CLICKED(IDC_SESSION_LOG_EXPORT, &CSessionLogDlg::OnExport)
     ON_WM_SIZE()
     ON_WM_GETMINMAXINFO()
 END_MESSAGE_MAP()
 
 CSessionLogDlg::CSessionLogDlg(std::string contents, CWnd* parent)
-    : CDialogEx(IDD_SESSION_LOG, parent), contents_(std::move(contents)) {}
+    : CAppearanceDialog(IDD_SESSION_LOG, parent), contents_(std::move(contents)) {}
 
 BOOL CSessionLogDlg::OnInitDialog() {
-    CDialogEx::OnInitDialog();
+    CAppearanceDialog::OnInitDialog();
     CEdit* text = static_cast<CEdit*>(GetDlgItem(IDC_SESSION_LOG_TEXT));
     text->SetLimitText(0x7FFFFFFE);
     std::wstring display = tlp::win::Widen(contents_);
@@ -50,14 +50,14 @@ void CSessionLogDlg::OnExport() {
         }
         output.Flush();
         output.Close();
-        AfxMessageBox(L"The displayed session log snapshot was exported as UTF-8.", MB_ICONINFORMATION);
+        tlp::ui::ShowMessage(L"The displayed session log snapshot was exported as UTF-8.", MB_ICONINFORMATION);
     } catch (CFileException* error) {
         wchar_t details[512]{};
         error->GetErrorMessage(details, static_cast<UINT>(std::size(details)));
         error->Delete();
         CString message(L"The session log could not be exported. A partial file may remain.\r\n");
         message += details;
-        AfxMessageBox(message, MB_ICONERROR);
+        tlp::ui::ShowMessage(message, MB_ICONERROR);
     }
 }
 

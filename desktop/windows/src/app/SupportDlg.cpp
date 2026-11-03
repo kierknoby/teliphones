@@ -70,19 +70,19 @@ std::string ReadGrantFile(const std::wstring& path) {
 
 }  // namespace
 
-BEGIN_MESSAGE_MAP(CSupportDlg, CDialogEx)
+BEGIN_MESSAGE_MAP(CSupportDlg, CAppearanceDialog)
     ON_BN_CLICKED(IDC_SUP_GENERATE, &CSupportDlg::OnGenerate)
     ON_BN_CLICKED(IDC_SUP_COPY, &CSupportDlg::OnCopy)
     ON_BN_CLICKED(IDC_SUP_BROWSE, &CSupportDlg::OnBrowse)
 END_MESSAGE_MAP()
 
 CSupportDlg::CSupportDlg(const tlp::win::WireGuardInstallation& wireguard, const tlp::Profile* existing, CWnd* parent)
-    : CDialogEx(IDD_SUPPORT, parent), wireguard_(wireguard), updating_(existing != nullptr) {
+    : CAppearanceDialog(IDD_SUPPORT, parent), wireguard_(wireguard), updating_(existing != nullptr) {
     if (existing != nullptr) profile = *existing;
 }
 
 BOOL CSupportDlg::OnInitDialog() {
-    CDialogEx::OnInitDialog();
+    CAppearanceDialog::OnInitDialog();
     SetEdit(this, IDC_SUP_NAME, profile.name);
     if (updating_) {
         SetEdit(this, IDC_SUP_PUBKEY, profile.engineerPublicKey);
@@ -120,20 +120,20 @@ void CSupportDlg::OnGenerate() {
         SetDlgItemText(IDC_SUP_HINT, L"Send this public key to your gateway operator. When they issue a grant for this exact key, import it here.");
         GetDlgItem(IDC_SUP_BROWSE)->EnableWindow(TRUE);
     } catch (const std::exception& e) {
-        AfxMessageBox(tlp::win::Widen(e.what()).c_str(), MB_ICONERROR);
+        tlp::ui::ShowMessage(tlp::win::Widen(e.what()).c_str(), MB_ICONERROR);
     }
 }
 
 void CSupportDlg::OnCopy() {
     if (profile.engineerPublicKey.empty()) {
-        AfxMessageBox(L"Generate or select an engineer public key first.", MB_ICONINFORMATION);
+        tlp::ui::ShowMessage(L"Generate or select an engineer public key first.", MB_ICONINFORMATION);
         return;
     }
     try {
         CopyText(m_hWnd, profile.engineerPublicKey);
-        AfxMessageBox(L"Engineer public key copied. Only the public key may be shared.", MB_ICONINFORMATION);
+        tlp::ui::ShowMessage(L"Engineer public key copied. Only the public key may be shared.", MB_ICONINFORMATION);
     } catch (const std::exception& e) {
-        AfxMessageBox(tlp::win::Widen(e.what()).c_str(), MB_ICONERROR);
+        tlp::ui::ShowMessage(tlp::win::Widen(e.what()).c_str(), MB_ICONERROR);
     }
 }
 
@@ -156,7 +156,7 @@ void CSupportDlg::OnBrowse() {
         SetEdit(this, IDC_SUP_GRANT, std::to_string(profile.grant.sessions.size()) + " session(s) for " + profile.grant.engineerId);
         tlp::win::SecureWipe(text);
     } catch (const std::exception& e) {
-        AfxMessageBox(tlp::win::Widen(e.what()).c_str(), MB_ICONERROR);
+        tlp::ui::ShowMessage(tlp::win::Widen(e.what()).c_str(), MB_ICONERROR);
     }
 }
 
@@ -173,7 +173,7 @@ void CSupportDlg::OnOK() {
         profile.name = name;
         CDialogEx::OnOK();
     } catch (const std::exception& e) {
-        AfxMessageBox(tlp::win::Widen(e.what()).c_str(), MB_ICONERROR);
+        tlp::ui::ShowMessage(tlp::win::Widen(e.what()).c_str(), MB_ICONERROR);
     }
 }
 
@@ -182,7 +182,7 @@ void CSupportDlg::OnCancel() {
         try {
             tlp::win::DeletePrivateKey(tlp::CredentialTargetFor(profile));
         } catch (const std::exception& e) {
-            AfxMessageBox((std::wstring(L"The unused engineer key could not be removed from Windows Credential Manager: ") + tlp::win::Widen(e.what())).c_str(),
+            tlp::ui::ShowMessage((std::wstring(L"The unused engineer key could not be removed from Windows Credential Manager: ") + tlp::win::Widen(e.what())).c_str(),
                           MB_ICONERROR);
         }
     }

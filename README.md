@@ -359,7 +359,7 @@ and [SSH key-management proposal for review](docs/SSH-KEY-MANAGEMENT-PROPOSAL.md
 | [Connect](teliphones/docs/CONNECT-CONTRACT.md), [Checker](teliphones/docs/CHECKER-CONTRACT.md) and [Console](teliphones/docs/CONSOLE-CONTRACT.md) contracts | Versioned message formats |
 | [Topologies](teliphones/docs/TOPOLOGIES.md) | On-PBX, On-net and Off-net definitions |
 | [Testing programme](teliphones/docs/TESTING.md) | Regression coverage and the staged disposable-PBX test programme |
-| [Windows application](desktop/windows/README.md) | Windows **0.5.2** (unreleased, independently versioned), build provenance, [Windows changelog](desktop/windows/CHANGELOG.md), landscape responsive layout, selectable health graphs, correlated session diagnostics and test plan |
+| [Windows application](desktop/windows/README.md) | Windows **0.6.0** (unreleased, independently versioned), build provenance, [Windows changelog](desktop/windows/CHANGELOG.md), System/Light/Dark appearance, landscape responsive layout, selectable health graphs, correlated session diagnostics and test plan |
 | [Reference gateway](gateway/README.md) | Lab Connect gateway, engineer and Checker tools, namespace laboratory |
 | [Rendezvous design note](docs/RENDEZVOUS.md) | Future direct-first rendezvous and relay interface (not implemented) |
 
@@ -399,7 +399,7 @@ Where the environment permits unprivileged user and network namespaces, the Pyth
 
 ## Release history
 
-**0.3.2** adds bounded, administrator-only workstation diagnostics while preserving the verified 0.3.1 firewall ownership correction. Windows **0.5.2** adds the responsive landscape interface and selectable health graphs, following 0.5.1's Connection Health and correlated diagnostics work. Both remain unreleased; native Windows and live PBX validation are not claimed. Windows **0.6.0** remains reserved for fully automated SSH authentication, which is not included. Earlier module versions are summarised in the [module release history](teliphones/README.md#release-history).
+**0.3.2** adds bounded, administrator-only workstation diagnostics while preserving the verified 0.3.1 firewall ownership correction. Windows **0.6.0** adds System/Light/Dark appearance to 0.5.2's responsive landscape interface and selectable health graphs, following 0.5.1's Connection Health and correlated diagnostics work. Both remain unreleased; native Windows and live PBX validation are not claimed. Windows **0.7.0** remains reserved for fully automated SSH authentication, which is not included. Earlier module versions are summarised in the [module release history](teliphones/README.md#release-history).
 
 ## Contributing
 

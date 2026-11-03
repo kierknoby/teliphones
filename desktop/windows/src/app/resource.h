@@ -8,6 +8,7 @@
 #define IDD_CONNECTION_HEALTH       105
 #define IDD_HEALTH_LIMITS           106
 #define IDD_SESSION_LOG             107
+#define IDD_APP_MESSAGE             108
 
 #define IDC_WG_STATUS               1000
 #define IDC_PROFILES                1001
@@ -72,6 +73,8 @@
 #define IDC_CONNECT_NOT_NOW         1316
 #define IDC_SETUP_PBX               1317
 #define IDC_SETUP_SUPPORT           1318
+#define IDC_APPEARANCE_LABEL        1319
+#define IDC_APPEARANCE              1320
 
 #define IDC_HEALTH_STATE            1400
 #define IDC_HEALTH_AUTH             1401
@@ -88,12 +91,17 @@
 #define IDC_HEALTH_LIMIT_FAILURES   1412
 #define IDC_SESSION_LOG_TEXT        1413
 #define IDC_SESSION_LOG_EXPORT      1414
+#define IDC_MESSAGE_TEXT            1415
+#define IDC_MESSAGE_ICON            1416
+#define IDC_MESSAGE_FIRST           1417
+#define IDC_MESSAGE_SECOND          1418
+#define IDC_MESSAGE_THIRD           1419
 
 #ifdef APSTUDIO_INVOKED
 #ifndef APSTUDIO_READONLY_SYMBOLS
 #define _APS_NEXT_RESOURCE_VALUE    129
 #define _APS_NEXT_COMMAND_VALUE     32771
-#define _APS_NEXT_CONTROL_VALUE     1415
+#define _APS_NEXT_CONTROL_VALUE     1420
 #define _APS_NEXT_SYMED_VALUE       101
 #endif
 #endif

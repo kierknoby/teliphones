@@ -73,8 +73,14 @@ jobs:
           $sdkFiles = @(
             "Include\$sdkVersion\um\Windows.h",
             "Include\$sdkVersion\ucrt\stdio.h",
+            "Include\$sdkVersion\cppwinrt\winrt\Windows.UI.ViewManagement.h",
+            "Include\$sdkVersion\cppwinrt\winrt\Windows.UI.h",
+            "Include\$sdkVersion\cppwinrt\winrt\Windows.Foundation.h",
             "Lib\$sdkVersion\um\x64\kernel32.lib",
             "Lib\$sdkVersion\um\x64\uuid.lib",
+            "Lib\$sdkVersion\um\x64\uxtheme.lib",
+            "Lib\$sdkVersion\um\x64\dwmapi.lib",
+            "Lib\$sdkVersion\um\x64\windowsapp.lib",
             "Lib\$sdkVersion\ucrt\x64\libucrt.lib",
             "bin\$sdkVersion\x64\rc.exe",
             "bin\$sdkVersion\x64\mt.exe"
@@ -139,7 +145,7 @@ jobs:
             }
           }
 
-      - name: Run native Connection Health window lifecycle tests
+      - name: Run native appearance, layout and Connection Health window tests
         run: |
           $tests = Join-Path $env:GITHUB_WORKSPACE 'desktop\windows\build\Release\HealthWindowTests.exe'
           if (-not (Test-Path -LiteralPath $tests -PathType Leaf)) {

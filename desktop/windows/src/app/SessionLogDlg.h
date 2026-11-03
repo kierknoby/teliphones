@@ -1,9 +1,9 @@
 #pragma once
-#include "framework.h"
+#include "Appearance.h"
 
 #include <string>
 
-class CSessionLogDlg : public CDialogEx {
+class CSessionLogDlg : public CAppearanceDialog {
 public:
     // The caller supplies one human-readable, already-redacted UTF-8 snapshot.
     explicit CSessionLogDlg(std::string contents, CWnd* parent = nullptr);

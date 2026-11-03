@@ -1,6 +1,6 @@
-# TELIPHONES 0.5.2 for Windows (experimental)
+# TELIPHONES 0.6.0 for Windows (experimental)
 
-The native Windows client is under active development and versioned independently of the FreePBX module, which remains **0.3.2**. The current unreleased Windows version is **0.5.2**, shown in the main window title and embedded product version, with Windows file version **0.5.2.0**. This interface redesign does not implement SSH authentication. Windows **0.6.0 is reserved for the upcoming fully automated SSH authentication functionality**. Individual builds are identified by Git commit SHA and Actions provenance. See the [Windows change history and versioning policy](CHANGELOG.md). The manifest's `assemblyIdentity` is a fixed side-by-side identity, not the release number. Earlier operator tests of 0.4.0 established a WireGuard tunnel and reached SSH using PuTTY; they do not validate this new version or its monitor. The native C++17 Win32/MFC application has two independent profile types:
+The native Windows client is under active development and versioned independently of the FreePBX module, which remains **0.3.2**. The current unreleased Windows version is **0.6.0**, shown in the main window title and embedded product version, with Windows file version **0.6.0.0**. This appearance feature does not implement SSH authentication. Windows **0.7.0 is reserved for the upcoming fully automated SSH authentication functionality**. Individual builds are identified by Git commit SHA and Actions provenance. See the [Windows change history and versioning policy](CHANGELOG.md). The manifest's `assemblyIdentity` is a fixed side-by-side identity, not the release number. Earlier operator tests of 0.4.0 established a WireGuard tunnel and reached SSH using PuTTY; they do not validate this new version or its monitor. The native C++17 Win32/MFC application has two independent profile types:
 
 - **My PBX** pairs a workstation with a PBX using an approval in the PBX's TELIPHONES page. Persistent pairing remains revocable from that page. Temporary pairings expire on the PBX.
 - **Remote Support** keeps a locally generated engineer key and imports an operator-issued `teliphones-engineer-grant/1` JSON file. The grant must name that exact engineer public key.
@@ -43,6 +43,40 @@ If startup fails with an incorrect side-by-side configuration, the workflow prin
 Download **TELIPHONES-Windows-x64** from the successful run's **Artifacts** section. It contains `TELIPHONES.exe`, this README, the Windows changelog and `build-info.json`, not source archives, test binaries, keys, profiles, caches or tunnel configurations. The build information records the embedded product/file version, source commit, Actions run/attempt and executable SHA-256. The workflow checks both textual and fixed numeric executable versions against `Version.h` and requires the prerelease flag before publishing the artefact. The version is also visible in **Properties > Details** on the executable and in the main window title. Artefacts are retained for 14 days. It creates no GitHub Release and deploys nothing.
 
 Extract the artifact and run `TELIPHONES.exe` on Windows 10/11 x64. Release builds statically link MFC and the MSVC C/C++ runtime (`/MT`), so no separate Visual C++ Redistributable or MFC DLL is expected; Windows system DLLs remain required. No .NET runtime is used. The application offers [WireGuard installation](#secure-connectivity-and-wireguard-installation) if needed. **Open SSH** requires Windows OpenSSH Client unless PuTTY is selected. An unsigned test executable may trigger Windows SmartScreen; the workflow does not code-sign it.
+
+## Appearance
+
+**Settings > Appearance** offers **System (follow Windows)**, **Light** and
+**Dark**. System is the default, including when reading older preferences.
+Changes preview immediately in the main window and all open TELIPHONES dialogs,
+including pairing, Remote Support, Settings, thresholds, Session Log and the
+Connection Health pop-out. **Save** persists the choice; **Cancel** restores the
+previously saved choice. Welcome's **Save & Next** and **Skip** retain it too.
+
+The shared native renderer covers backgrounds, text, disabled controls, lists and
+selection, headers, buttons, checkboxes, dropdowns, menus, borders, scrollbars and
+graph series. Theme switching does not recreate connection objects, clear history,
+stop monitoring, restart a tunnel or change authorisation. Closed/hidden monitors
+stay closed/hidden and use the latest appearance when reopened.
+
+System uses the supported Windows Runtime `UISettings.ColorValuesChanged` event
+and reads Windows' application foreground colour; notifications are marshalled
+to the UI thread. Windows accessibility/high-contrast colours override every
+appearance preference, with native control rendering (owner-drawn dropdown items
+and graphs use the same system palette). Keyboard/focus and standard control
+accessibility roles are retained; graph line patterns and textual state labels
+do not rely on colour alone. Metrics/spacing follow the existing DPI-aware layout.
+No private dark-mode ordinals, external services or third-party UI libraries are
+used. Windows-owned file pickers, UAC, credential prompts and unsupported older
+Windows title-bar decorations remain OS-rendered; TELIPHONES does not attempt to
+override security/system UI. The documented dark title-bar attribute is optional
+on older Windows 10 builds.
+
+New dialogs must derive from `CAppearanceDialog`; runtime-created content windows
+enrol through `tlp::ui::ThemeWindow`. Rendering and environment notifications live
+in `src/app/Appearance.cpp`, with portable preferences/palettes in
+`src/core/Appearance.h`. New features advance the minor Windows version; fixes
+advance the patch version. Windows 0.7.0 is reserved for the upcoming fully automated SSH authentication functionality.
 
 ## Secure connectivity and WireGuard installation
 
@@ -183,7 +217,7 @@ Earlier builds opened the Windows default browser and ran `ssh.exe` directly in 
 
 Choosing a terminal never grants SSH access. **Open SSH** still requires an active connection that the PBX has answered, SSH approval in the pairing (or the Remote Support grant), and an SSH account. TELIPHONES creates no SSH users, passwords or keys. The OpenSSH-based terminals use your existing OpenSSH credentials. PuTTY uses its own credentials and settings, for example Pageant or a `.ppk` key, and keeps its own host-key cache.
 
-If PuTTY reports **No supported authentication methods available (server sent: publickey)**, it has reached an SSH server that requires public-key authentication; the selected account has not authenticated with an accepted key. TELIPHONES currently neither generates/enrols SSH keys nor passes a managed identity file to the terminal. Its Credential Manager keys are for WireGuard, not SSH. Do not enable password fallback or copy server private keys to resolve this. A separate workstation SSH key-management workflow is proposed for review, not implemented in 0.5.2; fully automated SSH authentication is reserved for Windows 0.6.0.
+If PuTTY reports **No supported authentication methods available (server sent: publickey)**, it has reached an SSH server that requires public-key authentication; the selected account has not authenticated with an accepted key. TELIPHONES currently neither generates/enrols SSH keys nor passes a managed identity file to the terminal. Its Credential Manager keys are for WireGuard, not SSH. Do not enable password fallback or copy server private keys to resolve this. A separate workstation SSH key-management workflow is proposed for review, not implemented in 0.6.0; fully automated SSH authentication is reserved for Windows 0.7.0.
 
 ### When an application is missing
 
@@ -201,7 +235,7 @@ Preferences are stored in `%LOCALAPPDATA%\TELIPHONES\preferences.json` for the c
 ## Local data and permissions
 
 - Profiles contain public pairing/grant data and are stored in the user's roaming application-data directory.
-- Browser and SSH terminal preferences are stored in `%LOCALAPPDATA%\TELIPHONES\preferences.json` and contain only application choices and paths.
+- Browser, SSH terminal and appearance preferences are stored in `%LOCALAPPDATA%\TELIPHONES\preferences.json` and contain only application choices, paths and appearance mode.
 - WireGuard private keys are stored separately in Windows Credential Manager and are not written into the profile file or copied into the gateway grant.
 - Tunnel configuration is staged in a user-restricted local directory, revalidated by an elevated helper, then placed under `%ProgramFiles%\TELIPHONES\Tunnels` with a restrictive ACL.
 - Each tunnel is demand-started. The helper grants the current Windows user only the service rights needed to query, stop and remove that TELIPHONES tunnel; it does not grant permission to start or reconfigure it.
@@ -214,6 +248,25 @@ Preferences are stored in `%LOCALAPPDATA%\TELIPHONES\preferences.json` for the c
 The C++ core tests and contract tests check parsing, key/request binding, grant binding, narrow host routes, tunnel rendering, command construction, connection monitor behavior, and parity with the broker/gateway contracts. They also simulate health threshold persistence, WireGuard counter parsing, latency/jitter/rate calculations, stable/degraded/unstable/disconnected/unknown transitions, bounded 60-second/5-minute history, and recovery after measurement interruptions. These are deterministic model tests, not live WireGuard measurements. They also simulate browser and terminal preferences: first-run save, skip and cancel; detection-driven choices and defaults; saving, restoring and changing preferences; missing and mismatched applications; and the exact command line for each supported browser and terminal, including paths with spaces and rejection of unsafe arguments. They do not execute Win32 APIs, so registry detection, the dialogs and real application launches are untested on Linux.
 
 The build-layout checks also verify SDK header ordering (`Win.h`, which includes `windows.h`, before `shellapi.h`), the Settings dialog's explicit `commdlg.h` include, and the required shell, file-dialog and registry libraries in both native build configurations. These are source checks, not a substitute for compiling and linking with MSVC, MFC and the Windows SDK.
+
+Appearance regressions cover all three persisted modes, legacy preferences,
+strict invalid-value rejection, simulated system/high-contrast policy and measured
+palette contrast (4.5:1 normal/status/selection text; 3:1 graph series and disabled
+text). `HealthWindowTests.exe` additionally exercises real MFC dialog resources,
+buttons, dropdowns, menus, message response codes, hidden pop-outs and graph pixel
+output with 96/120/144/192 DPI font/layout inputs. Its system/accessibility change
+events are simulated through the same UI-thread notification handler, without
+activating the real WinRT event provider in the test executable. It does not
+change Windows settings and is not an interactive visual or real DPI-transition
+test. Actions builds and runs it; no native appearance validation has been
+performed in the Linux workspace.
+
+The pre-build review also adds native regressions for owner-drawn menu mnemonics
+(including duplicate/disabled/escaped entries), PBX column text clipping and
+high-contrast combo item/selection sizing after font changes. Scrollbar frames are
+repainted after native keyboard, paint and tracking updates. Graph legends name
+line/marker patterns so they remain accurate in high contrast. These native tests
+are registered for Actions but their Windows results remain pending.
 
 Portable installer tests simulate existing/missing/untrusted installations, approval and deferral, successful installation, UAC refusal, MSI cancellation, download/verification/launch errors, success followed by failed detection, restart requests, cleanup failures and retry. Native source checks guard the official source/hash, verification policy, project dependencies, onboarding wiring and the absence of profile/tunnel mutation. They do **not** execute WinHTTP, Authenticode, UAC or MSI, and do not prove a successful live Windows installation.
 
@@ -238,5 +291,16 @@ The following require real Windows and a disposable FreePBX/gateway environment:
 9. On disposable fresh Windows 10/11 x64 machines, test the complete installer UI with a standard user and a separate administrator account, cancellation/UAC refusal, blocked downloads and revocation servers, unexpected signatures/hashes, post-install detection, retries, safe temporary-file cleanup and connection controls becoming available. Repeat with WireGuard already installed and confirm profiles, preferences and pre-existing tunnels remain unchanged. No live Windows installer validation has been performed locally.
 10. With a disposable PBX and Windows workstation, verify the Connection Health dialog's resize, position/topmost/history/threshold persistence, sampling responsiveness, measured WireGuard counters/handshake age, disconnected/recovery states, network changes, and temporary authorization expiry. Compare displayed rates and TCP measurements with local Windows/WireGuard observations. Confirm an existing SSH terminal remains open during degradation and that no stale PBX address is probed. Linux tests only simulate the health algorithms; they do not establish native UI responsiveness or real Windows telemetry behavior.
 11. Compare the integrated and pop-out graphs at both history lengths; test persistent Until revoked and temporary UTC expiry with a fresh workstation uptime. As a standard user, verify exact-interface IP byte counters and the actual WireGuard CLI diagnostic reason. Export both sides' logs, check matching `ws-` identifiers and clock differences, exercise concurrent instances/rotation/retention, and verify another Windows user and a non-administrator FreePBX session cannot read them. Access-control/GUI tests here are not a substitute for this native/live exercise.
+12. On Windows 10 and 11, test System/Light/Dark at 100%, 125%, 150% and 200%
+    scaling on 1024x768, 1366x768 and 1920x1080 work areas, including moving between
+    differently scaled monitors. Open Settings, pairing, Remote Support, thresholds,
+    Session Log and the pop-out together; switch Windows' **application** theme in
+    System mode and verify immediate updates, no white flashes, readable controls,
+    selected PBX rows, disabled actions, dropdown lists, scrolling and all graph
+    modes. Repeat with high contrast enabled/disabled and keyboard-only navigation.
+    Save/restart to verify persistence; Cancel to verify preview rollback. Repeat
+    while connected/disconnected and with temporary, expired and persistent access:
+    theme changes must leave connection timers, authorisation, monitoring, history,
+    SSH windows and tunnel state unchanged. This manual matrix is still pending.
 
 No Windows executable is included in the module package. The existing executable has compiled and launched in user-run Windows testing and is available from the successful Actions artifact. The local Linux development environment does not have MSVC, MFC, or a Windows SDK; local tests do not establish native compilation. The operator's 0.4.0 tunnel/PuTTY result does not complete UAC, Credential Manager, WireGuard lifecycle, visual layout, firewall-enabled web access or authenticated SSH validation.

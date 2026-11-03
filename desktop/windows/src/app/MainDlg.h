@@ -1,5 +1,5 @@
 #pragma once
-#include "framework.h"
+#include "Appearance.h"
 
 #include <atomic>
 #include <memory>
@@ -17,7 +17,7 @@
 #include "ConnectionHealthDlg.h"
 #include "DesktopLayout.h"
 
-class CMainDlg : public CDialogEx {
+class CMainDlg : public CAppearanceDialog {
 public:
     explicit CMainDlg(CWnd* parent = nullptr);
 

@@ -27,8 +27,8 @@ class BuildLayoutTests(unittest.TestCase):
         base = ".".join(map(str, parts[:3]))
         product = base
         numeric = ".".join(map(str, parts))
-        self.assertEqual(product, "0.5.2")
-        self.assertEqual(numeric, "0.5.2.0")
+        self.assertEqual(product, "0.6.0")
+        self.assertEqual(numeric, "0.6.0.0")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
         self.assertIn(f"# TELIPHONES {product} for Windows", readme)
@@ -37,9 +37,9 @@ class BuildLayoutTests(unittest.TestCase):
         self.assertIn(f"## {product} — Unreleased", changelog)
         self.assertEqual(re.findall(r"^## (\d+\.\d+\.\d+) ", changelog, re.MULTILINE)[0], product)
         self.assertIn(f"**{numeric}**", changelog)
-        self.assertIn("0.6.0 is reserved for the upcoming fully automated SSH authentication functionality", readme)
+        self.assertIn("0.7.0 is reserved for the upcoming fully automated SSH authentication functionality", readme)
         self.assertIn(
-            "0.6.0 is reserved for the upcoming fully automated SSH authentication functionality",
+            "0.7.0 is reserved for the upcoming fully automated SSH authentication functionality",
             " ".join(changelog.split()),
         )
         self.assertIn("FreePBX module version is independent and remains **0.3.2**", changelog)
@@ -244,6 +244,67 @@ class BuildLayoutTests(unittest.TestCase):
         installer = (ROOT / "src/platform/WireGuardInstaller.cpp").read_text()
         for header in ("shellapi.h", "winhttp.h", "wintrust.h"):
             self.assertLess(installer.index('#include "Win.h"'), installer.index(f"#include <{header}>"))
+
+    def test_central_appearance_and_native_regressions_are_wired(self):
+        source = (ROOT / "src/app/Appearance.cpp").read_text()
+        settings = (ROOT / "src/app/AppSettingsDlg.cpp").read_text()
+        resource = (ROOT / "src/app/TELIPHONES.rc").read_text()
+        for name in ("MainDlg", "AppSettingsDlg", "PairDlg", "SupportDlg", "ConnectionHealthDlg", "SessionLogDlg"):
+            header = (ROOT / f"src/app/{name}.h").read_text()
+            implementation = (ROOT / f"src/app/{name}.cpp").read_text()
+            self.assertIn("public CAppearanceDialog", header)
+            self.assertIn("CAppearanceDialog::OnInitDialog()", implementation)
+        self.assertIn("IDC_APPEARANCE", resource)
+        for choice in ("System (follow Windows)", "Light", "Dark"):
+            self.assertIn(f'L"{choice}"', settings)
+        for required in ("ColorValuesChanged", "PostMessageW(target", "SPI_GETHIGHCONTRAST",
+                         "WM_SETTINGCHANGE", "WM_SYSCOLORCHANGE", "WM_THEMECHANGED",
+                         "DrawComboItem", "PaintScrollbars", "WM_NCDESTROY",
+                         "const bool visible = IsWindowVisible(root)"):
+            self.assertIn(required, source)
+        for private_api in ("AllowDarkModeForWindow", "SetPreferredAppMode", "DarkMode_Explorer", "MAKEINTRESOURCEA"):
+            self.assertNotIn(private_api, source)
+        self.assertNotIn("RGB(", (ROOT / "src/app/ConnectionHealthDlg.cpp").read_text())
+        self.assertIn("tlp::ui::Colours()", (ROOT / "src/app/ConnectionHealthDlg.cpp").read_text())
+        for name in ("TELIPHONES.vcxproj", "HealthWindowTests.vcxproj"):
+            native = project(name)
+            self.assertIn("src\\app\\Appearance.cpp", [node.get("Include") for node in native.findall(".//ms:ClCompile", NS)])
+            for dependencies in native.findall(".//ms:AdditionalDependencies", NS):
+                for library in ("uxtheme.lib", "dwmapi.lib", "windowsapp.lib"):
+                    self.assertIn(library, dependencies.text.split(";"))
+        app = (ROOT / "TELIPHONES.vcxproj").read_text()
+        self.assertNotIn("TELIPHONES_APPEARANCE_TESTING", app)
+        self.assertIn("TELIPHONES_APPEARANCE_TESTING", (ROOT / "HealthWindowTests.vcxproj").read_text())
+        tests = (ROOT / "tests/health_window_tests.cpp").read_text()
+        for scenario in ("SimulateSystemAppearance", "GraphAppearanceTests",
+                         "theme switch never reopens hidden windows", "every currently open application dialog follows theme",
+                         "96, 120, 144, 192", "WM_CTLCOLORDLG"):
+            self.assertIn(scenario, tests)
+        workflow = (ROOT.parents[1] / ".github/workflows/windows-build.yml").read_text()
+        self.assertIn("cppwinrt\\winrt\\Windows.UI.ViewManagement.h", workflow)
+        self.assertIn("cppwinrt\\winrt\\Windows.UI.h", workflow)
+        self.assertIn("cppwinrt\\winrt\\Windows.Foundation.h", workflow)
+
+    def test_appearance_review_regressions_are_registered(self):
+        source = (ROOT / "src/app/Appearance.cpp").read_text()
+        tests = (ROOT / "tests/health_window_tests.cpp").read_text()
+        for header in ("winrt/Windows.UI.h", "winrt/Windows.Foundation.h", "cwctype", "utility"):
+            self.assertIn(f"#include <{header}>", source)
+        for case in ("owner-drawn menu supports unique keyboard mnemonic",
+                     "duplicate menu mnemonics cycle to next match",
+                     "menu mnemonics skip disabled items and escaped ampersands",
+                     "high contrast updates both dropdown item and selection heights after font changes",
+                     "long PBX name never paints into the adjacent column"):
+            self.assertIn(case, tests)
+        self.assertIn("WM_MENUCHAR", source)
+        self.assertIn("WM_DPICHANGED_AFTERPARENT", source)
+        self.assertIn("Header_GetItemRect(header, column, &cell)", source)
+        self.assertNotIn("ListView_GetSubItemRect", source)
+        self.assertIn("CB_SETITEMHEIGHT, static_cast<WPARAM>(-1)", source)
+        self.assertLess(source.index("message == WM_SETFONT"), source.index("if (manager.highContrast_)"))
+        health = (ROOT / "src/app/ConnectionHealthDlg.cpp").read_text()
+        self.assertIn("Download: solid / Upload: dashed", health)
+        self.assertIn("Latency: line / Jitter: dots", health)
 
     def test_installer_is_fixed_verified_and_does_not_change_profiles(self):
         source = (ROOT / "src/platform/WireGuardInstaller.cpp").read_text()
