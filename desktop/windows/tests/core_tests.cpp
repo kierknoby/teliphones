@@ -230,6 +230,10 @@ void testPairing() {
     };
     const auto managed = ParsePairResponse(v2(), kNonce, kWorkstationKey, sshKey);
     check(managed.sshUser == "root" && managed.sshPort == 22002, "explicit administrator-approved root account retained");
+    auto loopback = managed;
+    loopback.address = "127.0.0.1/32";
+    loopback.sshPort = 22001;
+    check(throws([&] { ValidateManagedPairing(loopback); }), "production managed pairing must reject the native fixture loopback source");
     check(throws([&] { ParsePairResponse(v2(), kNonce, kWorkstationKey); }), "managed SSH cannot use an unenrolled local key");
     object["ssh_user"] = "";
     check(throws([&] { ParsePairResponse(v2(), kNonce, kWorkstationKey, sshKey); }), "SSH account has no implicit root default");

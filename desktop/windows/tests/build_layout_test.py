@@ -1,10 +1,14 @@
 """Check native build inputs without requiring Visual Studio or third-party packages."""
 
 from pathlib import Path
+import importlib.util
+import os
 import re
 import subprocess
+import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 import xml.etree.ElementTree as ET
 
 
@@ -17,6 +21,21 @@ def project(name):
 
 
 class BuildLayoutTests(unittest.TestCase):
+    def test_native_task_definition_preserves_windows_paths(self):
+        spec = importlib.util.spec_from_file_location("native_fixture", ROOT / "tests/ssh_native_check.py")
+        module = importlib.util.module_from_spec(spec)
+        with patch.dict(os.environ, {"SystemRoot": "C:/Windows"}), patch.object(sys, "argv", ["fixture", "host.exe"]):
+            spec.loader.exec_module(module)
+        args = ["--fixture-server", "C:\\Windows\\System32\\OpenSSH\\sshd.exe",
+                "D:\\test directory\\config", "D:\\test directory\\log", "stop", "pid"]
+        xml = ET.fromstring(module.task_xml("D:\\test directory\\host.exe", args))
+        ns = {"t": "http://schemas.microsoft.com/windows/2004/02/mit/task"}
+        self.assertEqual(xml.findtext("t:Principals/t:Principal/t:UserId", namespaces=ns), "S-1-5-18")
+        self.assertEqual(xml.findtext("t:Actions/t:Exec/t:Command", namespaces=ns), "D:\\test directory\\host.exe")
+        self.assertEqual(xml.findtext("t:Actions/t:Exec/t:Arguments", namespaces=ns), subprocess.list2cmdline(args))
+        self.assertEqual(xml.findtext("t:Settings/t:ExecutionTimeLimit", namespaces=ns), "PT10M")
+        self.assertEqual(len([name for name in dir(module.WindowsSshTests) if name.startswith("test_")]), 10)
+
     def test_ctest_platform_boundary_and_native_ssh_gate(self):
         stubbed = ("project", "set_target_properties", "add_library", "add_executable",
                    "target_compile_options", "target_include_directories", "target_link_libraries",
@@ -49,11 +68,45 @@ endfunction()
                 self.assertEqual(set(registered), expected)
                 self.assertEqual(len(registered), len(expected))
         workflow = (ROOT.parents[1] / ".github/workflows/windows-build.yml").read_text(encoding="utf-8")
-        self.assertIn("@('ssh.exe', 'ssh-keygen.exe', 'sshd.exe')", workflow)
-        self.assertLess(workflow.index("@('ssh.exe', 'ssh-keygen.exe', 'sshd.exe')"),
+        self.assertIn("tests/provision_openssh.ps1", workflow)
+        self.assertLess(workflow.index("tests/provision_openssh.ps1"),
+                        workflow.index("ctest --test-dir"))
+        self.assertLess(workflow.index("tests/provision_openssh.ps1"),
+                        workflow.index("Restore declared static OpenSSL"))
+        self.assertLess(workflow.index("ssh_native_host.exe --preflight"),
                         workflow.index("ctest --test-dir"))
         self.assertIn("python desktop/windows/tests/ssh_native_check.py", workflow)
         self.assertIn("throw 'Native Windows named-pipe/OpenSSH integration failed.'", workflow)
+
+    def test_native_ssh_provisioning_and_isolated_system_fixture(self):
+        provision = (ROOT / "tests/provision_openssh.ps1").read_text(encoding="utf-8")
+        for required in ("Get-WindowsCapability -Online", "Add-WindowsCapability -Online -Name $name",
+                         "OpenSSH.Client~~~~0.0.1.0", "OpenSSH.Server~~~~0.0.1.0",
+                         "$verified.State -ne 'Installed'", "$result.RestartNeeded",
+                         "@('ssh.exe', 'ssh-keygen.exe', 'sshd.exe')", "$env:GITHUB_PATH",
+                         "Get-FileHash", "$LASTEXITCODE", "$global:LASTEXITCODE = 0"):
+            self.assertIn(required, provision)
+        for forbidden in ("Start-Service", "Set-Service", "Invoke-WebRequest", "winget", "choco"):
+            self.assertNotIn(forbidden, provision)
+        native = (ROOT / "tests/ssh_native_check.py").read_text(encoding="utf-8")
+        for required in ("disable_debug_privilege()", "SO_EXCLUSIVEADDRUSE", "StrictModes yes",
+                         '"/RU", "SYSTEM"', '"S-1-5-18"', '"schtasks.exe", "/Create"',
+                         '"schtasks.exe", "/Run"', '"schtasks.exe", "/Delete"', "cls.stop_file.touch()",
+                         'KEYGEN, "-Y", "verify"', 'SSHD, "-T"', '"/setowner", "*S-1-5-18"',
+                         "Unrelated-process agent probe did not complete within five seconds"):
+            self.assertIn(required, native)
+        host = (ROOT / "tests/ssh_native_host.cpp").read_text(encoding="utf-8")
+        for required in ("WinLocalSystemSid", "CryptProtectData", "CryptUnprotectData",
+                         "fixtureServer(argv)", "JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE",
+                         "accounting.ActiveProcesses == 0", "TerminateJobObject", 'L".stopped"'):
+            self.assertIn(required, host)
+        cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
+        self.assertIn("target_compile_definitions(teliphones_fixture_core PRIVATE TELIPHONES_SSH_LOOPBACK_FIXTURE)", cmake)
+        self.assertNotIn("TELIPHONES_SSH_LOOPBACK_FIXTURE", (ROOT / "TELIPHONES.vcxproj").read_text())
+        self.assertIn("ssh_native_host PRIVATE teliphones_fixture_crypto", cmake)
+        workflow = (ROOT.parents[1] / ".github/workflows/windows-build.yml").read_text(encoding="utf-8")
+        self.assertIn("if: always() && env.STARTUP_DIAGNOSTICS != ''", workflow)
+        self.assertIn("ssh_native_host.exe --cleanup-only", workflow)
 
     def test_windows_version_is_consistent_and_embedded(self):
         header = (ROOT / "src/app/Version.h").read_text()

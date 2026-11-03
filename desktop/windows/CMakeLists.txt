@@ -5,7 +5,7 @@ project(TeliphonesDesktopCore CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-add_library(teliphones_core STATIC
+set(TELIPHONES_CORE_SOURCES
     src/core/CommandLine.cpp
     src/core/ConnectionHealth.cpp
     src/core/Encoding.cpp
@@ -18,11 +18,13 @@ add_library(teliphones_core STATIC
     src/core/TunnelConfig.cpp
     src/core/Validation.cpp
     src/core/WireGuardSetup.cpp)
+add_library(teliphones_core STATIC ${TELIPHONES_CORE_SOURCES})
 if(MSVC)
-    target_compile_options(teliphones_core PUBLIC /W4 /WX /utf-8)
+    set(TELIPHONES_WARNING_OPTIONS /W4 /WX /utf-8)
 else()
-    target_compile_options(teliphones_core PUBLIC -Wall -Wextra -Wpedantic -Werror)
+    set(TELIPHONES_WARNING_OPTIONS -Wall -Wextra -Wpedantic -Werror)
 endif()
+target_compile_options(teliphones_core PUBLIC ${TELIPHONES_WARNING_OPTIONS})
 
 add_executable(core_tests tests/core_tests.cpp)
 target_link_libraries(core_tests PRIVATE teliphones_core)
@@ -38,10 +40,18 @@ target_link_libraries(teliphones_ssh_crypto PUBLIC teliphones_core OpenSSL::Cryp
 add_executable(ssh_crypto_tool tests/ssh_crypto_tool.cpp)
 target_link_libraries(ssh_crypto_tool PRIVATE teliphones_ssh_crypto)
 if(WIN32)
+    # Only the loopback integration fixture accepts its reserved local source.
+    # Production core/tests retain the deployed non-loopback route policy.
+    add_library(teliphones_fixture_core STATIC ${TELIPHONES_CORE_SOURCES})
+    target_compile_definitions(teliphones_fixture_core PRIVATE TELIPHONES_SSH_LOOPBACK_FIXTURE)
+    target_compile_options(teliphones_fixture_core PUBLIC ${TELIPHONES_WARNING_OPTIONS})
+    add_library(teliphones_fixture_crypto STATIC src/core/SshCrypto.cpp)
+    target_include_directories(teliphones_fixture_crypto PUBLIC src/core)
+    target_link_libraries(teliphones_fixture_crypto PUBLIC teliphones_fixture_core OpenSSL::Crypto)
     add_executable(ssh_native_host tests/ssh_native_host.cpp src/platform/SshAgent.cpp src/platform/SshSession.cpp
         src/platform/Ssh.cpp src/platform/Applications.cpp src/platform/Services.cpp src/platform/Win.cpp)
     target_compile_definitions(ssh_native_host PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00 TELIPHONES_SSH_TESTING)
-    target_link_libraries(ssh_native_host PRIVATE teliphones_ssh_crypto advapi32 bcrypt crypt32 ws2_32 iphlpapi shell32 ole32 uuid winhttp)
+    target_link_libraries(ssh_native_host PRIVATE teliphones_fixture_crypto advapi32 bcrypt crypt32 ws2_32 iphlpapi shell32 ole32 uuid winhttp)
 endif()
 
 enable_testing()

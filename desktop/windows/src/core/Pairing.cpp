@@ -89,8 +89,13 @@ void ValidateManagedPairing(const PairResponse& p) {
         return;
     }
     std::uint32_t address = 0;
+    bool validSource = ParseHostRoute(p.address, address);
+#ifdef TELIPHONES_SSH_LOOPBACK_FIXTURE
+    // The isolated native sshd fixture must not bind a deployable network address.
+    if (p.address == "127.0.0.1/32") { validSource = true; address = 0x7f000001; }
+#endif
     if (!p.ssh || !IsLinuxUser(p.sshUser) || !IsSshPublicKey(p.sshPublicKey) || !IsSshPublicKey(p.sshHostKey) ||
-        !IsSshPublicKey(p.sshCaKey) || !ParseHostRoute(p.address, address) || p.sshPort != 22000 + static_cast<int>(address & 255) ||
+        !IsSshPublicKey(p.sshCaKey) || !validSource || p.sshPort != 22000 + static_cast<int>(address & 255) ||
         p.sshApiPort != 8765) throw Error("Invalid managed SSH account, keys or endpoint.");
 }
 

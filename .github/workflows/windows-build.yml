@@ -13,7 +13,7 @@ permissions:
 jobs:
   windows-build:
     runs-on: windows-2022
-    timeout-minutes: 30
+    timeout-minutes: 45
     defaults:
       run:
         shell: pwsh
@@ -113,6 +113,9 @@ jobs:
             throw "Native build layout checks failed with exit code $LASTEXITCODE."
           }
 
+      - name: Provision official Windows OpenSSH capabilities
+        run: ./desktop/windows/tests/provision_openssh.ps1
+
       - name: Restore declared static OpenSSL dependency
         run: |
           $ErrorActionPreference = 'Stop'
@@ -126,6 +129,11 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw 'Declared OpenSSL dependency restore failed.' }
             & $vcpkg list
             if ($LASTEXITCODE -ne 0) { throw 'Unable to record installed dependency versions.' }
+            foreach ($file in @('include/openssl/evp.h', 'lib/libcrypto.lib', 'debug/lib/libcrypto.lib', 'share/openssl/copyright')) {
+              if (-not (Test-Path -LiteralPath "vcpkg_installed/x64-windows-static/$file" -PathType Leaf)) {
+                throw "OpenSSL restore reported success but required build/package input is missing: $file"
+              }
+            }
           } finally { Pop-Location }
 
       - name: Build TELIPHONES solution (Release x64)
@@ -170,17 +178,21 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Native SSH CMake configuration failed.' }
           cmake --build desktop/windows/build/ssh-native --config Release
           if ($LASTEXITCODE -ne 0) { throw 'Native SSH compilation failed.' }
-          $openSsh = Join-Path $env:SystemRoot 'System32/OpenSSH'
-          foreach ($name in @('ssh.exe', 'ssh-keygen.exe', 'sshd.exe')) {
-            if (-not (Test-Path -LiteralPath (Join-Path $openSsh $name) -PathType Leaf)) {
-              throw "Native OpenSSH prerequisite missing: $name. Provision the runner before claiming integration success; no substitute or silent skip is permitted."
-            }
-          }
-          $env:PATH = "$openSsh;$env:PATH"
+          & desktop/windows/build/ssh-native/Release/ssh_native_host.exe --preflight
+          if ($LASTEXITCODE -ne 0) { throw 'Native DPAPI/locked-memory/named-pipe/Job preflight failed.' }
           ctest --test-dir desktop/windows/build/ssh-native -C Release --output-on-failure
           if ($LASTEXITCODE -ne 0) { throw 'Native portable/cryptographic SSH tests failed.' }
           python desktop/windows/tests/ssh_native_check.py desktop/windows/build/ssh-native/Release/ssh_native_host.exe -v
           if ($LASTEXITCODE -ne 0) { throw 'Native Windows named-pipe/OpenSSH integration failed.' }
+
+      - name: Clean up interrupted isolated SSH fixture
+        if: always() && env.STARTUP_DIAGNOSTICS != ''
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (Test-Path -LiteralPath (Join-Path $env:STARTUP_DIAGNOSTICS 'native-fixture.json')) {
+            python desktop/windows/tests/ssh_native_check.py desktop/windows/build/ssh-native/Release/ssh_native_host.exe --cleanup-only
+            if ($LASTEXITCODE -ne 0) { throw 'Isolated SSH task/process/temporary-file cleanup could not be verified.' }
+          }
 
       - name: Run native appearance, layout and Connection Health window tests
         run: |

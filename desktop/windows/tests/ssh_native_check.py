@@ -17,6 +17,7 @@ import tempfile
 import threading
 import time
 import unittest
+import xml.etree.ElementTree as ET
 
 HOST = Path(sys.argv.pop(1)).resolve()
 OPENSSH = Path(os.environ["SystemRoot"]) / "System32/OpenSSH"
@@ -39,8 +40,101 @@ def kernel32():
     kernel.WriteFile.argtypes = kernel.ReadFile.argtypes
     return kernel
 
+
+def pipe_io(handle, data, writing):
+    from ctypes import wintypes
+
+    class Overlapped(ctypes.Structure):
+        _fields_ = [("Internal", ctypes.c_size_t), ("InternalHigh", ctypes.c_size_t),
+                    ("Offset", wintypes.DWORD), ("OffsetHigh", wintypes.DWORD), ("hEvent", wintypes.HANDLE)]
+
+    kernel = kernel32()
+    kernel.CreateEventW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.BOOL, wintypes.LPCWSTR]
+    kernel.CreateEventW.restype = wintypes.HANDLE
+    kernel.GetOverlappedResult.argtypes = [wintypes.HANDLE, ctypes.c_void_p,
+                                         ctypes.POINTER(wintypes.DWORD), wintypes.BOOL]
+    kernel.CancelIoEx.argtypes = [wintypes.HANDLE, ctypes.c_void_p]
+    operation = Overlapped()
+    operation.hEvent = kernel.CreateEventW(None, True, False, None)
+    if not operation.hEvent:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        count = wintypes.DWORD()
+        action = kernel.WriteFile if writing else kernel.ReadFile
+        ok = action(handle, data, len(data), ctypes.byref(count), ctypes.byref(operation))
+        if not ok and ctypes.get_last_error() == 997:
+            if kernel.WaitForSingleObject(operation.hEvent, 5000) != 0:
+                kernel.CancelIoEx(handle, ctypes.byref(operation))
+                kernel.GetOverlappedResult(handle, ctypes.byref(operation), ctypes.byref(count), True)
+                raise TimeoutError("Unrelated-process agent probe did not complete within five seconds.")
+            ok = kernel.GetOverlappedResult(handle, ctypes.byref(operation), ctypes.byref(count), False)
+        return bool(ok), count.value
+    finally:
+        kernel.CloseHandle(operation.hEvent)
+
 def run(args, **kwargs):
-    return subprocess.run([str(x) for x in args], check=True, capture_output=True, text=True, timeout=20, **kwargs).stdout
+    result = subprocess.run([str(x) for x in args], capture_output=True, text=True, timeout=30, **kwargs)
+    if result.returncode:
+        raise RuntimeError(f"Native fixture command {args[0]} failed (exit {result.returncode}):\n"
+                           + result.stdout + result.stderr)
+    return result.stdout
+
+
+def disable_debug_privilege():
+    from ctypes import wintypes
+
+    class Luid(ctypes.Structure):
+        _fields_ = [("LowPart", wintypes.DWORD), ("HighPart", wintypes.LONG)]
+
+    class Privileges(ctypes.Structure):
+        _fields_ = [("PrivilegeCount", wintypes.DWORD), ("Luid", Luid), ("Attributes", wintypes.DWORD)]
+
+    advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+    advapi.OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]
+    advapi.LookupPrivilegeValueW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR, ctypes.POINTER(Luid)]
+    advapi.AdjustTokenPrivileges.argtypes = [wintypes.HANDLE, wintypes.BOOL, ctypes.POINTER(Privileges),
+                                           wintypes.DWORD, ctypes.c_void_p, ctypes.c_void_p]
+    kernel = kernel32()
+    kernel.GetCurrentProcess.restype = wintypes.HANDLE
+    token = wintypes.HANDLE()
+    if not advapi.OpenProcessToken(kernel.GetCurrentProcess(), 0x20 | 0x8, ctypes.byref(token)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        privileges = Privileges()
+        privileges.PrivilegeCount = 1
+        if not advapi.LookupPrivilegeValueW(None, "SeDebugPrivilege", ctypes.byref(privileges.Luid)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        ctypes.set_last_error(0)
+        if not advapi.AdjustTokenPrivileges(token, False, ctypes.byref(privileges), 0, None, None):
+            raise ctypes.WinError(ctypes.get_last_error())
+        if ctypes.get_last_error() not in (0, 1300):  # A non-admin token may not have this privilege.
+            raise ctypes.WinError(ctypes.get_last_error())
+    finally:
+        kernel.CloseHandle(token)
+
+
+def task_xml(program, arguments):
+    ns = "http://schemas.microsoft.com/windows/2004/02/mit/task"
+    ET.register_namespace("", ns)
+    task = ET.Element(f"{{{ns}}}Task", version="1.2")
+
+    def element(parent, name, text=None, **attributes):
+        child = ET.SubElement(parent, f"{{{ns}}}{name}", attributes)
+        child.text = text
+        return child
+
+    principal = element(element(task, "Principals"), "Principal", id="System")
+    element(principal, "UserId", "S-1-5-18")
+    element(principal, "RunLevel", "HighestAvailable")
+    settings = element(task, "Settings")
+    element(settings, "ExecutionTimeLimit", "PT10M")
+    element(settings, "AllowStartOnDemand", "true")
+    element(settings, "DisallowStartIfOnBatteries", "false")
+    element(settings, "StopIfGoingOnBatteries", "false")
+    action = element(element(task, "Actions", Context="System"), "Exec")
+    element(action, "Command", str(program))
+    element(action, "Arguments", subprocess.list2cmdline([str(arg) for arg in arguments]))
+    return ET.tostring(task, encoding="utf-16", xml_declaration=True)
 
 
 def line(process, timeout=40):
@@ -75,11 +169,50 @@ def alive(pid):
     kernel = kernel32()
     process = kernel.OpenProcess(0x100000, False, pid)
     if not process:
-        return False
+        error = ctypes.get_last_error()
+        if error == 87:  # ERROR_INVALID_PARAMETER: no such PID.
+            return False
+        raise ctypes.WinError(error)
     try:
         return kernel.WaitForSingleObject(ctypes.c_void_p(process), 0) == 258
     finally:
         kernel.CloseHandle(ctypes.c_void_p(process))
+
+
+def cleanup_interrupted_fixture():
+    descriptor = Path(os.environ["STARTUP_DIAGNOSTICS"]) / "native-fixture.json"
+    if not descriptor.exists():
+        return
+    state = json.loads(descriptor.read_text(encoding="utf-8"))
+    root = Path(state["root"]).resolve()
+    task = state["task"]
+    token = task.removeprefix("TELIPHONES-sshd-test-")
+    if (root.parent != Path(os.environ["RUNNER_TEMP"]).resolve()
+            or not root.name.startswith("TELIPHONES-native-ssh-")
+            or not task.startswith("TELIPHONES-sshd-test-")
+            or len(token) != 16 or any(c not in "0123456789abcdef" for c in token)):
+        raise RuntimeError("Interrupted-fixture descriptor is not an owned test path/task.")
+    if root.exists():
+        (root / "stop-server").touch()
+        for _ in range(100):
+            if (root / "server.pid.stopped").exists():
+                break
+            time.sleep(0.1)
+    query = subprocess.run(["schtasks.exe", "/Query", "/TN", task], capture_output=True, text=True, timeout=20)
+    if query.returncode == 0:
+        # End only this uniquely recorded task, never production services/process names.
+        end = subprocess.run(["schtasks.exe", "/End", "/TN", task], capture_output=True, text=True, timeout=20)
+        if end.returncode:
+            print("Fixture task End status: " + end.stdout + end.stderr, file=sys.stderr)
+        run(["schtasks.exe", "/Delete", "/TN", task, "/F"])
+    elif root.exists() and not (root / "server.pid.stopped").exists():
+        raise RuntimeError("Cannot verify interrupted task state:\n" + query.stdout + query.stderr)
+    pid_file = root / "server.pid"
+    if pid_file.exists() and alive(int(pid_file.read_text())):
+        raise RuntimeError("Interrupted fixture server is still alive after task termination.")
+    if root.exists():
+        shutil.rmtree(root)
+    descriptor.unlink()
 
 
 class WindowsSshTests(unittest.TestCase):
@@ -91,22 +224,37 @@ class WindowsSshTests(unittest.TestCase):
             if not path.is_file():
                 raise RuntimeError(f"Native prerequisite missing: {path}. No Unix substitute or silent skip is permitted.")
         print(subprocess.run([str(SSH), "-V"], capture_output=True, text=True).stderr.strip())
-        cls.temporary = tempfile.TemporaryDirectory(prefix="TELIPHONES-native-ssh-")
+        disable_debug_privilege()
+        cls.temporary = tempfile.TemporaryDirectory(prefix="TELIPHONES-native-ssh-", dir=os.environ.get("RUNNER_TEMP"))
         cls.addClassCleanup(cls.temporary.cleanup)
         cls.root = Path(cls.temporary.name)
         cls.user = os.environ["USERNAME"].lower()
         cls.sid = json.loads(run(["powershell.exe", "-NoProfile", "-Command",
                                  "[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value | ConvertTo-Json"]))
-        run(["icacls.exe", cls.root, "/inheritance:r", "/grant:r", f"*{cls.sid}:(OI)(CI)(F)", "*S-1-5-18:(OI)(CI)(F)"])
+        run(["icacls.exe", cls.root, "/inheritance:r", "/grant:r", f"*{cls.sid}:(OI)(CI)(F)",
+             "*S-1-5-18:(OI)(CI)(F)", "*S-1-5-32-544:(OI)(CI)(F)"])
         for name in ("ca", "host"):
             run([KEYGEN, "-q", "-t", "ed25519", "-N", "", "-C", "", "-f", cls.root / name])
+        run(["icacls.exe", cls.root / "host", "/inheritance:r", "/grant:r",
+             "*S-1-5-18:(F)", "*S-1-5-32-544:(F)", "/setowner", "*S-1-5-18"])
+        message = cls.root / "feature-probe"
+        message.write_text("TELIPHONES Windows SSHSIG compatibility\n", encoding="ascii")
+        run([KEYGEN, "-Y", "sign", "-f", cls.root / "ca", "-n", "teliphones-preflight", message])
+        (cls.root / "feature-allowed").write_text("preflight " + (cls.root / "ca.pub").read_text(), encoding="ascii")
+        run([KEYGEN, "-Y", "verify", "-I", "preflight", "-n", "teliphones-preflight",
+             "-f", cls.root / "feature-allowed", "-s", cls.root / "feature-probe.sig"],
+            input=message.read_text())
         cls.ca = (cls.root / "ca.pub").read_text().strip()
         cls.host = (cls.root / "host.pub").read_text().strip()
         cls.principal = "teliphones-native-test"
         (cls.root / "principals").write_text(cls.principal + "\n")
         with socket.socket() as reserve:
+            reserve.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
             reserve.bind(("127.0.0.1", 22001))
             cls.port = 22001
+        with socket.socket() as reserve:
+            reserve.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+            reserve.bind(("127.0.0.1", 8765))
         cls.config = cls.root / "sshd_config"
         cls.config.write_text(
             f"Port {cls.port}\nListenAddress 127.0.0.1\nHostKey {quoted(cls.root / 'host')}\n"
@@ -115,24 +263,60 @@ class WindowsSshTests(unittest.TestCase):
             "AuthorizedKeysFile none\nPubkeyAuthentication yes\nAuthenticationMethods publickey\n"
             "PasswordAuthentication no\nKbdInteractiveAuthentication no\nPermitEmptyPasswords no\n"
             "AllowAgentForwarding no\nAllowTcpForwarding no\nPermitTunnel no\nLogLevel DEBUG2\n"
-        )
+            "StrictModes yes\n",
+            encoding="utf-8")
         run([SSHD, "-t", "-f", cls.config])
-        cls.server_log = open(cls.root / "sshd-test.log", "w", encoding="utf-8")
-        cls.addClassCleanup(cls.server_log.close)
-        cls.server = subprocess.Popen([str(SSHD), "-D", "-e", "-f", str(cls.config)],
-                                      stdout=cls.server_log, stderr=subprocess.STDOUT)
-        cls.addClassCleanup(cls.stop, cls.server)
-        for _ in range(100):
-            if cls.server.poll() is not None:
-                cls.server_log.flush()
-                raise RuntimeError("Native fixture sshd exited: " + (cls.root / "sshd-test.log").read_text())
+        effective = run([SSHD, "-T", "-f", cls.config])
+        if "listenaddress 127.0.0.1:" not in effective.lower() or "passwordauthentication no" not in effective.lower():
+            raise RuntimeError("Fixture sshd effective configuration is not loopback-only certificate authentication.")
+        cls.task = "TELIPHONES-sshd-test-" + secrets.token_hex(8)
+        if os.environ.get("STARTUP_DIAGNOSTICS") and os.environ.get("RUNNER_TEMP"):
+            (Path(os.environ["STARTUP_DIAGNOSTICS"]) / "native-fixture.json").write_text(
+                json.dumps({"root": str(cls.root), "task": cls.task}), encoding="utf-8")
+        cls.stop_file = cls.root / "stop-server"
+        cls.server_pid = cls.root / "server.pid"
+        xml = cls.root / "server-task.xml"
+        xml.write_bytes(task_xml(HOST, ["--fixture-server", SSHD, cls.config, cls.root / "sshd-test.log",
+                                        cls.stop_file, cls.server_pid]))
+        run(["schtasks.exe", "/Create", "/TN", cls.task, "/XML", xml, "/RU", "SYSTEM"])
+        cls.addClassCleanup(cls.stop_server)
+        run(["schtasks.exe", "/Run", "/TN", cls.task])
+        for _ in range(300):
             try:
                 with socket.create_connection(("127.0.0.1", cls.port), timeout=0.1):
                     break
             except OSError:
                 time.sleep(0.1)
         else:
-            raise RuntimeError("Native fixture sshd never became responsive.")
+            log = cls.root / "sshd-test.log"
+            raise RuntimeError("SYSTEM fixture sshd never became responsive:\n"
+                               + run(["schtasks.exe", "/Query", "/TN", cls.task, "/V", "/FO", "LIST"])
+                               + (log.read_text(errors="replace") if log.exists() else "No server log produced."))
+
+    @classmethod
+    def stop_server(cls):
+        cls.stop_file.touch()
+        stopped = Path(str(cls.server_pid) + ".stopped")
+        try:
+            for _ in range(100):
+                if stopped.exists() and cls.server_pid.exists() and not alive(int(cls.server_pid.read_text())):
+                    break
+                time.sleep(0.1)
+            else:
+                run(["schtasks.exe", "/End", "/TN", cls.task])
+                raise RuntimeError("SYSTEM fixture did not confirm zero Job processes before timeout; task forcibly ended.")
+            if cls.server_pid.exists() and alive(int(cls.server_pid.read_text())):
+                raise RuntimeError("Fixture sshd survived stop/Job cleanup.")
+            with socket.socket() as probe:
+                probe.settimeout(0.2)
+                if probe.connect_ex(("127.0.0.1", cls.port)) == 0:
+                    raise RuntimeError("Fixture listener remains open after teardown.")
+        finally:
+            run(["schtasks.exe", "/Delete", "/TN", cls.task, "/F"])
+            log = cls.root / "sshd-test.log"
+            diagnostics = os.environ.get("STARTUP_DIAGNOSTICS")
+            if diagnostics and log.exists():
+                shutil.copyfile(log, Path(diagnostics) / "native-sshd-test.log")
 
     def start(self, command="echo TELIPHONES_LOGIN_OK", expired=False, wrong_host=False, tamper=False, cert_from=None, crash=False):
         token = secrets.token_hex(16)
@@ -206,15 +390,15 @@ class WindowsSshTests(unittest.TestCase):
     def test_other_process_cannot_enumerate_or_use_agent(self):
         host, _, pipe, _, _ = self.start()
         kernel = kernel32()
-        handle = kernel.CreateFileW(pipe, 0xC0000000, 0, None, 3, 0, None)
+        handle = kernel.CreateFileW(pipe, 0xC0000000, 0, None, 3, 0x40000000, None)
         self.assertNotEqual(handle, ctypes.c_void_p(-1).value)
         try:
-            count = ctypes.c_ulong()
             packet = struct.pack(">IB", 1, 11)
-            kernel.WriteFile(ctypes.c_void_p(handle), packet, len(packet), ctypes.byref(count), None)
-            output = ctypes.create_string_buffer(4)
-            result = kernel.ReadFile(ctypes.c_void_p(handle), output, 4, ctypes.byref(count), None)
-            self.assertFalse(result and count.value, "An unrelated process enumerated session credentials.")
+            written, _ = pipe_io(handle, packet, True)
+            if written:
+                output = ctypes.create_string_buffer(4)
+                result, count = pipe_io(handle, output, False)
+                self.assertFalse(result and count, "An unrelated process enumerated session credentials.")
         finally:
             kernel.CloseHandle(ctypes.c_void_p(handle))
         self.go(host)
@@ -307,11 +491,12 @@ class WindowsSshTests(unittest.TestCase):
         self.assertTrue(identity.startswith("ssh-ed25519 "), identity)
         principal = "tlp-eph-" + profile + "-" + hashlib.sha256(identity.encode()).hexdigest()[:16]
         (self.root / "principals").write_text(principal + "\n")
+        self.addCleanup(lambda: (self.root / "principals").write_text(self.principal + "\n"))
         nonce = secrets.token_hex(32)
         observed = []
         errors = []
         fixture = self
-        deadline = int(time.time()) + 15 if expiring else 0
+        deadline = int(time.time()) + 30 if expiring else 0
 
         class Issuer(http.server.BaseHTTPRequestHandler):
             def log_message(self, *_):
@@ -382,7 +567,6 @@ class WindowsSshTests(unittest.TestCase):
                 return
             self.assertEqual(line(host), "PRODUCTION_STARTED")
             for _ in range(100):
-                self.server_log.flush()
                 tail = (self.root / "sshd-test.log").read_bytes()[log_offset:].decode(errors="replace")
                 if "Accepted publickey" in tail and "ws-" + profile + "/" in tail:
                     break
@@ -398,7 +582,7 @@ class WindowsSshTests(unittest.TestCase):
                     self.assertNotIn(b"PRIVATE KEY", file.read_bytes())
             host.stdin.write("wait-expiry\n" if expiring else "close\n")
             host.stdin.flush()
-            output, error = host.communicate(timeout=30)
+            output, error = host.communicate(timeout=60 if expiring else 30)
             self.assertEqual(host.returncode, 0, output + error + "\n".join(errors))
             self.assertIn("PRODUCTION_CLOSED", output)
             self.assertIn("IDENTITY_RETAINED", output)
@@ -414,4 +598,7 @@ class WindowsSshTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    if sys.argv[1:] == ["--cleanup-only"]:
+        cleanup_interrupted_fixture()
+    else:
+        unittest.main()
