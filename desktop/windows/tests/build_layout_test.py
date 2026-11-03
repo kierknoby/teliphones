@@ -27,8 +27,8 @@ class BuildLayoutTests(unittest.TestCase):
         base = ".".join(map(str, parts[:3]))
         product = base
         numeric = ".".join(map(str, parts))
-        self.assertEqual(product, "0.6.3")
-        self.assertEqual(numeric, "0.6.3.0")
+        self.assertEqual(product, "0.6.4")
+        self.assertEqual(numeric, "0.6.4.0")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
         self.assertIn(f"# TELIPHONES {product} for Windows", readme)
@@ -42,7 +42,7 @@ class BuildLayoutTests(unittest.TestCase):
             "0.7.0 is reserved for the upcoming fully automated SSH authentication functionality",
             " ".join(changelog.split()),
         )
-        self.assertIn("FreePBX module version is independent and is **0.3.4**", changelog)
+        self.assertIn("FreePBX module version is independent and is **0.3.5**", changelog)
         registered = {
             item.attrib["Include"].replace("\\", "/")
             for item in project("TELIPHONES.vcxproj").findall("ms:ItemGroup/ms:ClInclude", NS)
@@ -91,13 +91,14 @@ class BuildLayoutTests(unittest.TestCase):
         self.assertIn("SetDlgItemText(IDC_PRODUCT_FOOTER", layout)
         self.assertIn('"TELIPHONES " TELIPHONES_VERSION_STRING " for Windows is licensed under GPLv3.', layout)
         self.assertIn("move(Find(IDC_PRODUCT_FOOTER), fixed.disclaimer)", layout)
-        self.assertIn('LTEXT           "", IDC_PRODUCT_FOOTER', resource)
+        self.assertIn('SS_CENTER | SS_CENTERIMAGE | SS_ENDELLIPSIS', resource)
+        self.assertNotIn('"TELIPHONES is a UK registered trademark.\\r\\n"', layout)
         self.assertIn("desktop/windows/build/artifact/LICENSE", workflow)
         module = ET.parse(ROOT.parents[1] / "teliphones/module.xml").getroot()
-        self.assertEqual(module.findtext("version"), "0.3.4")
+        self.assertEqual(module.findtext("version"), "0.3.5")
         for path, statement in (
-            (ROOT / "README.md", "TELIPHONES 0.6.3 for Windows is licensed under GPLv3."),
-            (ROOT.parents[1] / "teliphones/README.md", "TELIPHONES 0.3.4 for FreePBX is licensed under GPLv3."),
+            (ROOT / "README.md", "TELIPHONES 0.6.4 for Windows is licensed under GPLv3."),
+            (ROOT.parents[1] / "teliphones/README.md", "TELIPHONES 0.3.5 for FreePBX is licensed under GPLv3."),
         ):
             text = path.read_text()
             self.assertIn(statement, text)

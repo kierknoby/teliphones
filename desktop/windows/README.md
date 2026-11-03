@@ -1,17 +1,18 @@
-# TELIPHONES 0.6.3 for Windows (experimental)
+# TELIPHONES 0.6.4 for Windows (experimental)
 
 **TELIPHONES is a UK registered trademark.**
 
-**TELIPHONES 0.6.3 for Windows is licensed under GPLv3.**
+**TELIPHONES 0.6.4 for Windows is licensed under GPLv3.**
 
 GPLv3 licensing applies to the software and does not grant trademark rights.
 The main window displays both statements in a fixed footer beneath the connection
 controls, also available in Settings > About, using the application version
-definition. The footer wraps on narrow windows and stays outside the scrolling
-content. The existing GPLv3-or-later software licence grant is unchanged;
+definition. The footer is a centred, regular-weight single line with vertical
+padding and stays outside the scrolling content. Narrow windows use end ellipsis;
+the complete wording remains in Settings > About. The existing GPLv3-or-later software licence grant is unchanged;
 see LICENSE in the distributed application ZIP for the full licence text.
 
-The native Windows client is under active development and versioned independently of the FreePBX module, now **0.3.4**. The current unreleased Windows version is **0.6.3**, shown in the main window title and embedded product version, with Windows file version **0.6.3.0**. This patch corrects conflicting dropdown selection/focus painting while preserving native Windows caption-frame theming and the 0.6.0 appearance feature; it does not implement SSH authentication or establish that Chrome's download warning is resolved. Windows **0.7.0 is reserved for the upcoming fully automated SSH authentication functionality**. Individual builds are identified by Git commit SHA and Actions provenance. See the [Windows change history and versioning policy](CHANGELOG.md). The manifest's `assemblyIdentity` is a fixed side-by-side identity, not the release number. Earlier operator tests of 0.4.0 established a WireGuard tunnel and reached SSH using PuTTY; they do not validate this new version or its monitor. The native C++17 Win32/MFC application has two independent profile types:
+The native Windows client is under active development and versioned independently of the FreePBX module, now **0.3.5**. The current unreleased Windows version is **0.6.4**, shown in the main window title and embedded product version, with Windows file version **0.6.4.0**. This patch corrects conflicting dropdown selection/focus painting while preserving native Windows caption-frame theming and the 0.6.0 appearance feature; it does not implement SSH authentication or establish that Chrome's download warning is resolved. Windows **0.7.0 is reserved for the upcoming fully automated SSH authentication functionality**. Individual builds are identified by Git commit SHA and Actions provenance. See the [Windows change history and versioning policy](CHANGELOG.md). The manifest's `assemblyIdentity` is a fixed side-by-side identity, not the release number. Earlier operator tests of 0.4.0 established a WireGuard tunnel and reached SSH using PuTTY; they do not validate this new version or its monitor. The native C++17 Win32/MFC application has two independent profile types:
 
 - **My PBX** pairs a workstation with a PBX using an approval in the PBX's TELIPHONES page. Persistent pairing remains revocable from that page. Temporary pairings expire on the PBX.
 - **Remote Support** keeps a locally generated engineer key and imports an operator-issued `teliphones-engineer-grant/1` JSON file. The grant must name that exact engineer public key.
@@ -135,7 +136,7 @@ During installation the dialog cannot be closed until the worker finishes; cance
 
 ## Pair an administrator workstation
 
-1. Install `TELIPHONES-0.3.4.tgz` through FreePBX Module Admin and complete its [documented root broker bootstrap](../../teliphones/README.md#complete-installation-on-freepbx-17). After upgrading the module, rerun the bootstrap with no active support session and Windows tunnels disconnected so the separately installed broker is current. A module upgrade alone does not replace the privileged broker.
+1. Install `TELIPHONES-0.3.5.tgz` through FreePBX Module Admin and complete its [documented root broker bootstrap](../../teliphones/README.md#complete-installation-on-freepbx-17). After upgrading the module, rerun the bootstrap with no active support session and Windows tunnels disconnected so the separately installed broker is current. A module upgrade alone does not replace the privileged broker.
 2. In TELIPHONES for Windows, select **Add my PBX...**, enter a workstation name, and choose **Generate request**. Copy the request.
 3. In the PBX web interface, open **Connectivity > TELIPHONES > Windows workstations**, paste the request, provide the PBX's externally reachable WireGuard hostname/IP and UDP port, select temporary or persistent access, and explicitly choose whether SSH is allowed. The pairing operation requires HTTPS.
 4. Click **Copy pairing response**, paste it into the still-open Windows pairing dialog, enter an existing authorised Linux account only if SSH was approved, and click **Save connection**. The client verifies the response nonce and workstation public key before saving it.

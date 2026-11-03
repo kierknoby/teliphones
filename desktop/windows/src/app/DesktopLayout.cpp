@@ -67,7 +67,7 @@ LRESULT CDesktopContent::WindowProc(UINT message, WPARAM wparam, LPARAM lparam) 
 void CDesktopLayout::Initialize(CWnd& window) {
     window_ = &window;
     window.SetDlgItemText(IDC_PRODUCT_FOOTER, tlp::win::Widen(
-        "TELIPHONES is a UK registered trademark.\r\n"
+        "TELIPHONES is a UK registered trademark.  "
         "TELIPHONES " TELIPHONES_VERSION_STRING " for Windows is licensed under GPLv3.").c_str());
     content_.controller = &window;
     if (!content_.CreateEx(WS_EX_CONTROLPARENT, AfxRegisterWndClass(0, LoadCursor(nullptr, IDC_ARROW),

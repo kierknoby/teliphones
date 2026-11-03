@@ -11,7 +11,7 @@ $pageSource = is_readable($pageFile) ? file_get_contents($pageFile) : '';
 $assertions = [
     (string)$module->rawname === 'teliphones',
     (string)$module->name === 'TELIPHONES',
-    (string)$module->version === '0.3.4',
+    (string)$module->version === '0.3.5',
     (string)$module->category === 'Connectivity',
     count($menuItems) === 1,
     isset($module->menuitems->teliphones),
@@ -46,6 +46,14 @@ foreach (['support', 'main'] as $view) {
 }
 if (strpos($disclaimer, '<footer ') === false) {
     throw new RuntimeException('The module disclaimer must be a footer.');
+}
+foreach (['text-align:center', 'font-weight:normal', 'white-space:nowrap', 'padding:16px 0'] as $style) {
+    if (strpos($disclaimer, $style) === false) {
+        throw new RuntimeException('The footer must be a centred, padded, regular-weight single line.');
+    }
+}
+if (strpos($disclaimer, '<strong>') !== false || strpos($disclaimer, '<br>') !== false) {
+    throw new RuntimeException('The footer must not contain bold text or explicit line breaks.');
 }
 if ((string)$module->license !== 'GPLv3+') {
     throw new RuntimeException('The existing GPLv3-or-later licence grant must be preserved.');

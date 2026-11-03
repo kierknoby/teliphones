@@ -451,6 +451,13 @@ private:
 
     void LayoutTests() {
         layout_.Initialize(*this);
+        CWnd* footer = layout_.Find(IDC_PRODUCT_FOOTER);
+        CString footerText;
+        footer->GetWindowText(footerText);
+        check(footerText.Find(L'\r') < 0 && footerText.Find(L'\n') < 0,
+            "product footer is a single line");
+        check((footer->GetStyle() & SS_TYPEMASK) == SS_CENTER &&
+            (footer->GetStyle() & SS_CENTERIMAGE) != 0, "product footer is centred horizontally and vertically");
         const int sizes[][2] = {{1024, 728}, {1366, 728}, {1920, 1040}, {420, 300}, {2560, 1400}};
         const UINT dpis[] = {96, 120, 144, 192};
         for (UINT dpi : dpis) {
