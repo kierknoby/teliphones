@@ -14,8 +14,11 @@ tunnel/terminal behaviour still require native validation.
 - Correct certificate identity selection: select the certificate directly from
   the isolated memory agent without permitting raw-key authentication or private
   key files. Exercise the shared production protocol with genuine local OpenSSH;
-  all ten Windows native tests now execute in the reported run, but its seven
-  failures require rerun after this correction. Require authenticated readiness
+  the subsequent reported Windows run passes nine of ten native tests. Tolerate
+  fingerprint rejection only for the deliberately corrupted certificate, and
+  require signature rejection and verified key destruction before SSH launch.
+  The remaining corrected negative test still needs native execution.
+  Require authenticated readiness
   before crash tests and retain per-client diagnostics. Preserve the unreleased
   0.7.0 target; this is not a new release/distribution. FreePBX stays 0.4.0.
 - Remove the previous DPAPI SSH key save/decrypt and plaintext runtime-key export

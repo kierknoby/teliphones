@@ -2,9 +2,46 @@
 
 Targets: TELIPHONES for Windows **0.7.0**, TELIPHONES for FreePBX **0.4.0**.
 
+## Deliberately corrupted certificate diagnostic
+
+The subsequent user-reported Windows run passes nine of ten native tests. Its
+remaining error is fingerprint diagnostics treating `ssh-keygen -l` rejection
+of the deliberately corrupted certificate as a fixture failure. No remote logs
+were fetched. The earlier seven-failure investigation below is historical.
+
+Only the designated tampered `certificate.pub` may return fingerprint exit 1/255
+without aborting the test. The complete command/exit/stdout/stderr is printed as
+an expected diagnostic rejection. Valid identity/certificate failures, missing
+files, configuration inspection failures, other exit codes, process launch
+errors and timeouts still fail. A fingerprint that succeeds on a different
+OpenSSH version is also diagnostic-only; the signature rejection remains the
+mandatory security assertion.
+The installed local OpenSSH reports exit 255 for an invalid public-key file;
+controlled regressions cover both 1 and 255 rather than assuming a single
+cross-version rejection code.
+
+The native host verifies the certificate before creating an agent or SSH child.
+On verification rejection it explicitly destroys the disposable key, verifies
+that signing and public-key access both fail, reports
+`AUTHENTICATION_REJECTED_BEFORE_SSH` and `KEY_DESTROYED=1`, and rethrows the
+original verification error. The negative subtest requires that exact signature
+failure, both markers, no login output, no child/pipe-ready publication and no
+remaining pipe. Password/interactive fallback stays disabled in the config;
+no client is launched on this path, so no password exchange is possible.
+This tests fail-closed rejection before authentication, not a server-side
+authentication attempt; certificate verification must not be bypassed to force
+a connection.
+
+Local regression coverage exercises the real OpenSSH fingerprint rejection and
+the narrowly scoped handling, plus unexpected failures through controlled mocks.
+All ten native tests remain present. Production sources, ACLs, Task Scheduler
+and signing/authentication rules are unchanged. The revised native host's
+execution still requires Windows. Windows remains 0.7.0 (test-only correction);
+FreePBX remains 0.4.0 (module untouched). Existing build provenance is unchanged.
+
 ## Seven native authentication/process failures
 
-The latest user-reported Windows run executes all ten native tests: three pass
+The earlier user-reported Windows run executes all ten native tests: three pass
 and seven fail. Four positive fixture tests report `Load key "identity.pub":
 invalid format`, publickey refusal and `KEY_DESTROYED=0`; two production tests
 cannot establish authentication, and controller-crash fails a liveness assertion.

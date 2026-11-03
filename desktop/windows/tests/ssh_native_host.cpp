@@ -236,7 +236,18 @@ int runMain(int argc, char** argv) {
         const auto params = tlp::json::Parse(input, 32768);
         const auto pipe = params.at("pipe").asString();
         const auto cert = params.at("certificate").asString();
-        tlp::VerifySshCertificateSignature(cert, params.at("ca").asString());
+        try {
+            tlp::VerifySshCertificateSignature(cert, params.at("ca").asString());
+        } catch (const tlp::Error&) {
+            key->destroy();
+            bool signingRejected = false, publicKeyRejected = false;
+            try { key->sign(tlp::Bytes{1}); } catch (const tlp::Error&) { signingRejected = true; }
+            try { key->publicKey(); } catch (const tlp::Error&) { publicKeyRejected = true; }
+            if (!signingRejected || !publicKeyRejected)
+                throw tlp::Error("Rejected certificate retained disposable signing capability.");
+            std::cout << "AUTHENTICATION_REJECTED_BEFORE_SSH\nKEY_DESTROYED=1" << std::endl;
+            throw;
+        }
         tlp::win::SshAgent agent(wide(pipe), acl(), std::move(key), cert, params.at("user").asString(), params.at("host").asString());
         Handle job{CreateJobObjectW(nullptr, nullptr)};
         JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};

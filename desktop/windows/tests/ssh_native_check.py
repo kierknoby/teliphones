@@ -75,6 +75,12 @@ def pipe_io(handle, data, writing):
     finally:
         kernel.CloseHandle(operation.hEvent)
 
+class NativeCommandError(RuntimeError):
+    def __init__(self, message, returncode):
+        super().__init__(message)
+        self.returncode = returncode
+
+
 def run(args, **kwargs):
     command = [str(x) for x in args]
     if command[0].lower() in ("icacls.exe", "schtasks.exe", "whoami.exe"):
@@ -95,8 +101,9 @@ def run(args, **kwargs):
     output = result.stdout.decode(encoding, errors="replace")
     error_output = result.stderr.decode(encoding, errors="replace")
     if result.returncode:
-        raise RuntimeError(f"Native fixture command {subprocess.list2cmdline(command)} failed "
-                           f"(expected exit 0; actual exit {result.returncode}):\nstdout:\n{output}\nstderr:\n{error_output}")
+        raise NativeCommandError(f"Native fixture command {subprocess.list2cmdline(command)} failed "
+                                 f"(expected exit 0; actual exit {result.returncode}):\nstdout:\n{output}\nstderr:\n{error_output}",
+                                 result.returncode)
     return output
 
 
@@ -287,14 +294,23 @@ def quoted(path):
     return '"' + str(path).replace("\\", "/").replace('"', '\\"') + '"'
 
 
-def client_identity_diagnostics(config, identity, certificate):
+def client_identity_diagnostics(config, identity, certificate, deliberately_invalid_certificate=False):
     selected = {"hostname", "port", "user", "identityagent", "identityfile", "certificatefile",
                 "identitiesonly", "hostkeyalias", "stricthostkeychecking", "preferredauthentications"}
     effective = run([SSH, "-G", "-F", config, "fixture"])
     print("Effective native SSH identity selection:\n" + "\n".join(
         entry for entry in effective.splitlines() if entry.split() and entry.split()[0].lower() in selected), flush=True)
     for path in (identity, certificate):
-        print(f"Native SSH public fingerprint ({path.name}): " + run([KEYGEN, "-l", "-f", path]).strip(), flush=True)
+        if not path.is_file():
+            raise RuntimeError(f"Native SSH fingerprint input is not a file: {path}")
+        try:
+            fingerprint = run([KEYGEN, "-l", "-f", path]).strip()
+        except NativeCommandError as error:
+            if not (deliberately_invalid_certificate and path == certificate and error.returncode in (1, 255)):
+                raise
+            print(f"Expected fingerprint rejection for deliberately corrupted certificate:\n{error}", flush=True)
+        else:
+            print(f"Native SSH public fingerprint ({path.name}): " + fingerprint, flush=True)
 
 
 def alive(pid):
@@ -659,7 +675,8 @@ class WindowsSshTests(unittest.TestCase):
             "HostKeyAlgorithms ssh-ed25519\nPubkeyAcceptedKeyTypes ssh-ed25519-cert-v01@openssh.com\n"
             "PreferredAuthentications publickey\nConnectTimeout 5\nControlMaster no\nControlPath none\n"
         )
-        client_identity_diagnostics(config, root / "identity.pub", root / "certificate.pub")
+        client_identity_diagnostics(config, root / "identity.pub", root / "certificate.pub",
+                                    deliberately_invalid_certificate=tamper)
         params = {"pipe": pipe, "certificate": cert, "ca": self.ca, "host": self.host,
                   "user": self.user, "ssh": str(SSH), "config": str(config), "log": str(client_log),
                   "command": command, "crash": crash}
@@ -742,11 +759,24 @@ class WindowsSshTests(unittest.TestCase):
     def test_expired_cert_and_wrong_host_fail_without_password_fallback(self):
         for fields in ({"expired": True}, {"wrong_host": True}, {"tamper": True}):
             with self.subTest(fields=fields):
-                host, _, _, _, _ = self.start(**fields)
+                host, root, pipe, _, _ = self.start(**fields)
                 if not fields.get("tamper"):
                     self.go(host)
                 output, error = host.communicate(timeout=30)
                 self.assertNotEqual(host.returncode, 0, output + error)
+                self.assertNotIn("TELIPHONES_LOGIN_OK", output, output + error)
+                if fields.get("tamper"):
+                    self.assertIn("SSH certificate digital signature verification failed.", error)
+                    self.assertIn("AUTHENTICATION_REJECTED_BEFORE_SSH", output)
+                    self.assertIn("KEY_DESTROYED=1", output)
+                    self.assertNotIn("SSH_PID=", output)
+                    self.assertNotIn("PIPE_READY", output)
+                    self.assertFalse(kernel32().WaitNamedPipeW(pipe, 100),
+                                     "Rejected certificate left an agent endpoint.")
+                    config = (root / "config").read_text()
+                    for directive in ("BatchMode yes", "PasswordAuthentication no", "KbdInteractiveAuthentication no",
+                                      "PreferredAuthentications publickey"):
+                        self.assertIn(directive + "\n", config)
 
     def test_controller_crash_kills_owned_ssh_only(self):
         command = "echo TELIPHONES_SESSION_READY && ping -n 40 127.0.0.1"

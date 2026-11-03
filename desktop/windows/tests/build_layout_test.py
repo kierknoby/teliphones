@@ -5,6 +5,7 @@ import importlib.util
 import copy
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -22,6 +23,88 @@ def project(name):
 
 
 class BuildLayoutTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("ssh-keygen") and shutil.which("ssh"),
+                         "Local OpenSSH required; no download attempted")
+    def test_fingerprint_diagnostics_with_real_openssh(self):
+        spec = importlib.util.spec_from_file_location("fixture_real_fingerprint", ROOT / "tests/ssh_native_check.py")
+        module = importlib.util.module_from_spec(spec)
+        with patch.dict(os.environ, {"SystemRoot": "C:/Windows"}), patch.object(sys, "argv", ["fixture", "host.exe"]):
+            spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            identity, certificate, config = root / "identity.pub", root / "certificate.pub", root / "config"
+            subprocess.run([shutil.which("ssh-keygen"), "-q", "-t", "ed25519", "-N", "", "-f", str(root / "identity")],
+                           capture_output=True, check=True, timeout=30)
+            config.write_text("Host *\nBatchMode yes\nPasswordAuthentication no\n", encoding="ascii")
+            certificate.write_text("deliberately invalid certificate\n", encoding="ascii")
+            with patch.object(module, "KEYGEN", Path(shutil.which("ssh-keygen"))), \
+                    patch.object(module, "SSH", Path(shutil.which("ssh"))), patch("builtins.print") as output:
+                module.client_identity_diagnostics(config, identity, certificate, True)
+                self.assertIn("Expected fingerprint rejection", output.call_args_list[-1].args[0])
+                with self.assertRaises(module.NativeCommandError) as failure:
+                    module.client_identity_diagnostics(config, identity, certificate)
+                self.assertIn(failure.exception.returncode, (1, 255))
+
+    def test_fingerprint_diagnostics_only_tolerate_designated_certificate_rejection(self):
+        spec = importlib.util.spec_from_file_location("fixture_fingerprint", ROOT / "tests/ssh_native_check.py")
+        module = importlib.util.module_from_spec(spec)
+        with patch.dict(os.environ, {"SystemRoot": "C:/Windows"}), patch.object(sys, "argv", ["fixture", "host.exe"]):
+            spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            identity, certificate = root / "identity.pub", root / "certificate.pub"
+            identity.write_text("public identity")
+            certificate.write_text("deliberately invalid")
+            rejected = module.NativeCommandError("fingerprint rejected (exit 1)", 1)
+            with patch.object(module, "run", side_effect=["identityfile certificate.pub\n", "fingerprint", rejected]) as run, \
+                    patch("builtins.print") as output:
+                module.client_identity_diagnostics(root / "config", identity, certificate, True)
+                self.assertEqual(run.call_args_list[-1].args[0], [module.KEYGEN, "-l", "-f", certificate])
+                self.assertIn("Expected fingerprint rejection", output.call_args_list[-1].args[0])
+            with patch.object(module, "run", side_effect=["", "fingerprint", "certificate fingerprint"]), \
+                    patch("builtins.print"):
+                module.client_identity_diagnostics(root / "config", identity, certificate, True)
+            with patch.object(module, "run", side_effect=["", "fingerprint", module.NativeCommandError("invalid format", 255)]), \
+                    patch("builtins.print"):
+                module.client_identity_diagnostics(root / "config", identity, certificate, True)
+            for deliberate, responses in (
+                (False, ["", "fingerprint", rejected]),
+                (True, ["", rejected]),
+                (True, [rejected]),
+                (True, ["", "fingerprint", module.NativeCommandError("unexpected exit", 2)]),
+                (True, ["", "fingerprint", RuntimeError("launch failed")]),
+                (True, ["", "fingerprint", TimeoutError("timed out")]),
+            ):
+                with self.subTest(deliberate=deliberate, responses=responses), \
+                        patch.object(module, "run", side_effect=responses), patch("builtins.print"), \
+                        self.assertRaises((RuntimeError, TimeoutError)):
+                    module.client_identity_diagnostics(root / "config", identity, certificate, deliberate)
+            certificate.unlink()
+            with patch.object(module, "run", side_effect=["", "fingerprint"]), patch("builtins.print"), \
+                    self.assertRaisesRegex(RuntimeError, "fingerprint input is not a file"):
+                module.client_identity_diagnostics(root / "config", identity, certificate, True)
+
+    def test_tampered_certificate_requires_rejection_and_destroyed_key_before_launch(self):
+        fixture = (ROOT / "tests/ssh_native_check.py").read_text()
+        host = (ROOT / "tests/ssh_native_host.cpp").read_text()
+        self.assertIn("deliberately_invalid_certificate=tamper", fixture)
+        method = fixture.split("    def test_expired_cert_and_wrong_host_fail_without_password_fallback", 1)[1]
+        method = method.split("\n    def ", 1)[0]
+        for required in ('self.assertIn("SSH certificate digital signature verification failed.", error)',
+                         'self.assertIn("AUTHENTICATION_REJECTED_BEFORE_SSH", output)',
+                         'self.assertIn("KEY_DESTROYED=1", output)',
+                         'self.assertNotIn("SSH_PID=", output)', 'self.assertNotIn("PIPE_READY", output)',
+                         'self.assertNotIn("TELIPHONES_LOGIN_OK", output', "WaitNamedPipeW(pipe, 100)",
+                         "PasswordAuthentication no", "KbdInteractiveAuthentication no"):
+            self.assertIn(required, method)
+        rejection = host.split('const auto cert = params.at("certificate").asString();', 1)[1]
+        rejection = rejection.split("tlp::win::SshAgent agent", 1)[0]
+        self.assertIn("key->destroy()", rejection)
+        self.assertIn("key->sign(tlp::Bytes{1})", rejection)
+        self.assertIn("key->publicKey()", rejection)
+        self.assertIn("if (!signingRejected || !publicKeyRejected)", rejection)
+        self.assertIn("throw;", rejection)
+
     def test_native_certificate_selection_and_authenticated_crash_preconditions(self):
         session = (ROOT / "src/platform/SshSession.cpp").read_text()
         fixture = (ROOT / "tests/ssh_native_check.py").read_text()
