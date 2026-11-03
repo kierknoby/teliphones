@@ -3,6 +3,7 @@
 
 #include <atomic>
 #include <memory>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -14,12 +15,20 @@
 #include "../core/Profiles.h"
 #include "../platform/WireGuard.h"
 #include "ConnectionHealthDlg.h"
+#include "DesktopLayout.h"
 
 class CMainDlg : public CDialogEx {
 public:
     explicit CMainDlg(CWnd* parent = nullptr);
 
 protected:
+    BOOL PreTranslateMessage(MSG* message) override;
+    afx_msg void OnSize(UINT type, int cx, int cy);
+    afx_msg void OnGetMinMaxInfo(MINMAXINFO* info);
+    afx_msg BOOL OnMouseWheel(UINT flags, short delta, CPoint point);
+    afx_msg LRESULT OnDpiChanged(WPARAM dpi, LPARAM rectangle);
+    afx_msg void OnPlotChanged();
+    afx_msg HBRUSH OnCtlColor(CDC* dc, CWnd* window, UINT type);
     void DoDataExchange(CDataExchange* exchange) override;
     BOOL OnInitDialog() override;
     void OnCancel() override;
@@ -45,6 +54,8 @@ protected:
     DECLARE_MESSAGE_MAP()
 
 private:
+    CWnd* GetDlgItem(int id) const { return layout_.Find(id); }
+    void SetDlgItemText(int id, LPCWSTR text) { if (CWnd* control = GetDlgItem(id)) control->SetWindowText(text); }
     struct Active {
         std::string profileId;
         std::string sessionId;
@@ -75,6 +86,7 @@ private:
     void RefreshSessions();
     void UpdateButtons();
     void SetState(const std::string& state, const std::string& guidance);
+    void RefreshConnectionText();
     void Persist();
     void StartDisconnect(const std::string& reason);
     void RemoveStaleTunnels();
@@ -88,6 +100,11 @@ private:
                   const std::string& diagnosticId = "", const std::string& attemptId = "");
 
     CListCtrl list_;
+    CDesktopLayout layout_;
+    int graphMode_ = 0;
+    std::map<std::string, tlp::HealthSnapshot> history_;
+    std::string connectionState_ = "Not connected";
+    std::string connectionGuidance_;
     CComboBox sessions_;
     std::vector<std::string> sessionIds_;
     std::vector<tlp::Profile> profiles_;

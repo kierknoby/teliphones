@@ -29,6 +29,12 @@
 #define IDC_HEALTH_INLINE_GRAPH     1019
 #define IDC_SESSION_LOG             1020
 #define IDC_HEALTH_INLINE_HISTORY   1021
+#define IDC_PBX_HEADING              1022
+#define IDC_CONNECTION_HEADING       1023
+#define IDC_SESSION_LABEL            1024
+#define IDC_HEALTH_PLOT              1025
+#define IDC_CONTENT_VIEWPORT         1026
+#define IDC_HEALTH_POP_PLOT          1027
 
 #define IDC_PAIR_NAME               1100
 #define IDC_PAIR_WORKSTATION        1101

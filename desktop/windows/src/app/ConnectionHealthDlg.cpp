@@ -132,7 +132,9 @@ void graphText(CDC& dc, CRect rect, const std::string& text, UINT alignment = DT
 }  // namespace
 
 std::string ConnectionHealthSummary(const tlp::HealthSnapshot& snapshot) {
-    std::string text = tlp::ConnectedDurationText(snapshot) + " | Authorisation remaining: " + authorization(snapshot);
+    const bool historical = snapshot.state == tlp::HealthState::Disconnected && !snapshot.samples.empty();
+    std::string text = historical ? "Recent session (not live)\r\n" : "";
+    text += tlp::ConnectedDurationText(snapshot) + "\r\nAuthorisation remaining: " + authorization(snapshot);
     text += "\r\n" + tlp::HealthyDurationText(snapshot);
     text += "\r\nTCP RTT: " + measurement(snapshot.latencyMs, "ms") +
         " | Jitter: " + measurement(snapshot.jitterMs, "ms") +
@@ -141,22 +143,20 @@ std::string ConnectionHealthSummary(const tlp::HealthSnapshot& snapshot) {
     text += "\r\nRx (download): " + rate(snapshot.receiveBytesPerSecond) +
         " | Tx (upload): " + rate(snapshot.transmitBytesPerSecond) + " | Handshake: ";
     text += snapshot.handshakeAgeSeconds ? std::to_string(*snapshot.handshakeAgeSeconds) + " s ago" : "Unknown";
-    text += " | Traffic source: " + (snapshot.trafficSource.empty() ? std::string("Unknown") : snapshot.trafficSource);
-    if (!snapshot.telemetryReason.empty()) text += "\r\nTelemetry: " + snapshot.telemetryReason;
     return text;
 }
 
-void DrawConnectionHealthGraph(CDC& dc, const CRect& rect, const tlp::HealthSnapshot& snapshot, int historySeconds) {
+void DrawConnectionHealthGraph(CDC& dc, const CRect& rect, const tlp::HealthSnapshot& snapshot, int historySeconds, int mode) {
     const int saved = dc.SaveDC();
     dc.IntersectClipRect(rect);
     dc.FillSolidRect(rect, RGB(250, 252, 254));
     dc.SetBkMode(TRANSPARENT);
     dc.SetTextColor(RGB(40, 50, 65));
-    dc.SelectStockObject(DEFAULT_GUI_FONT);
+    // The control's DPI-scaled font is selected by the owner-draw caller.
     TEXTMETRIC metrics{};
     dc.GetTextMetrics(&metrics);
     const int line = static_cast<int>(metrics.tmHeight) + 2;
-    if (rect.Width() < 200 || rect.Height() < line * 7) {
+    if (rect.Width() < 180 || rect.Height() < line * 4) {
         graphText(dc, rect, "Enlarge the monitor to view connection history.");
         dc.RestoreDC(saved);
         return;
@@ -167,61 +167,26 @@ void DrawConnectionHealthGraph(CDC& dc, const CRect& rect, const tlp::HealthSnap
     const std::int64_t range = static_cast<std::int64_t>(historySeconds) * 1000;
     const int left = static_cast<int>(rect.left) + std::max<int>(58, static_cast<int>(dc.GetTextExtent(L"999.9 MiB/s").cx) + 6);
     const int right = static_cast<int>(rect.right) - 12;
-    const int plotHeight = (rect.Height() - line * 5 - 8) / 2;
+    const int plotHeight = rect.Height() - line * 3 - 8;
     const int top = static_cast<int>(rect.top) + line + 2;
     const CRect latencyPlot(left, top, right, top + plotHeight);
-    const CRect trafficPlot(left, latencyPlot.bottom + line + 6, right,
-        latencyPlot.bottom + line + 6 + plotHeight);
+    const CRect trafficPlot = latencyPlot;
     auto xAt = [&](std::int64_t time) {
         const double fraction = std::clamp(static_cast<double>(time - now + range) / range, 0.0, 1.0);
         return left + static_cast<int>(fraction * (right - left));
     };
     auto visible = [&](std::int64_t time) { return time >= now - range && time <= now; };
 
-    struct TrafficPoint {
-        std::int64_t time;
-        double rx;
-        double tx;
-        bool join;
-    };
-    std::vector<TrafficPoint> traffic;
-    const tlp::HealthSample* previous = nullptr;
-    bool joinTraffic = false;
+    auto traffic = tlp::HealthTrafficHistory(snapshot);
+    traffic.erase(std::remove_if(traffic.begin(), traffic.end(), [&](const tlp::HealthTrafficPoint& point) {
+        return !visible(point.time);
+    }), traffic.end());
     double maxLatency = 0, maxTraffic = 0;
     for (const auto& sample : snapshot.samples) {
         if (visible(sample.timestampMs) && sample.probeKnown && sample.probeSucceeded && valid(sample.latencyMs))
             maxLatency = std::max(maxLatency, *sample.latencyMs);
-        if (sample.tunnelKnown && !sample.tunnelRunning) {
-            previous = nullptr;
-            joinTraffic = false;
-            continue;
-        }
-        if (!sample.receivedBytes || !sample.transmittedBytes) {
-            previous = nullptr;
-            joinTraffic = false;
-            continue;
-        }
-        const auto time = sample.telemetryTimestampMs > 0 ? sample.telemetryTimestampMs : sample.timestampMs;
-        if (previous != nullptr) {
-            const auto priorTime = previous->telemetryTimestampMs > 0 ? previous->telemetryTimestampMs : previous->timestampMs;
-            if (time == priorTime) continue;  // Cached counters are not new measurements.
-            if (sample.trafficSource == previous->trafficSource &&
-                time > priorTime && time - priorTime <= tlp::ConnectionHealthMonitor::kTelemetryIntervalSeconds * 3000LL &&
-                *sample.receivedBytes >= *previous->receivedBytes && *sample.transmittedBytes >= *previous->transmittedBytes) {
-                const double seconds = static_cast<double>(time - priorTime) / 1000;
-                const double rx = static_cast<double>(*sample.receivedBytes - *previous->receivedBytes) / seconds;
-                const double tx = static_cast<double>(*sample.transmittedBytes - *previous->transmittedBytes) / seconds;
-                if (visible(time)) {
-                    traffic.push_back({time, rx, tx, joinTraffic});
-                    maxTraffic = std::max({maxTraffic, rx, tx});
-                    joinTraffic = true;
-                }
-            } else {
-                joinTraffic = false;
-            }
-        }
-        previous = &sample;
     }
+    for (const auto& point : traffic) maxTraffic = std::max({maxTraffic, point.rx, point.tx});
     maxLatency = niceMaximum(maxLatency, 10);
     maxTraffic = niceMaximum(maxTraffic, 1024);
     double divisor = 1;
@@ -236,7 +201,8 @@ void DrawConnectionHealthGraph(CDC& dc, const CRect& rect, const tlp::HealthSnap
             dc.MoveTo(plot.left, y);
             dc.LineTo(plot.right, y);
             char label[48]{};
-            std::snprintf(label, sizeof(label), "%.3g %s", maximum * tick / 2, unit.c_str());
+            if (mode == 2) std::snprintf(label, sizeof(label), "%s", tick == 0 ? "OK" : tick == 2 ? "Failed" : "");
+            else std::snprintf(label, sizeof(label), "%.3g %s", maximum * tick / 2, unit.c_str());
             graphText(dc, CRect(rect.left, y - line / 2, plot.left - 5, y + line / 2 + 1), label, DT_RIGHT);
         }
         for (int tick = 0; tick <= 4; ++tick) {
@@ -245,16 +211,18 @@ void DrawConnectionHealthGraph(CDC& dc, const CRect& rect, const tlp::HealthSnap
             dc.LineTo(x, plot.bottom);
         }
     };
-    axes(latencyPlot, maxLatency, "ms");
-    axes(trafficPlot, maxTraffic / divisor, trafficUnit);
-    graphText(dc, CRect(left, rect.top, right, top), "TCP latency  |  X failed probe  |  D tunnel down / R up  |  grey ticks: missing");
-    graphText(dc, CRect(left, latencyPlot.bottom + 3, right, trafficPlot.top), "Traffic: Rx download = blue solid   |   Tx upload = orange dashed");
+    if (mode == 1) axes(trafficPlot, maxTraffic / divisor, trafficUnit);
+    else axes(latencyPlot, mode == 2 ? 1 : maxLatency, mode == 2 ? "event" : "ms");
+    graphText(dc, CRect(left, rect.top, right, top), mode == 1 ? "Download: blue / Upload: orange" :
+        mode == 2 ? "X: failed check / D: tunnel down / R: up" : "Latency: purple / Jitter: green / X: failed");
 
     CPen latencyPen(PS_SOLID, 2, RGB(112, 62, 165));
     CPen failurePen(PS_SOLID, 2, RGB(190, 40, 45));
     CPen missingPen(PS_SOLID, 1, RGB(135, 140, 150));
     CPen downPen(PS_DOT, 1, RGB(185, 45, 50));
     CPen upPen(PS_DOT, 1, RGB(30, 125, 70));
+    std::optional<double> previousLatency;
+    std::optional<bool> previousProbe;
     bool connectedPoint = false, haveLatency = false;
     std::optional<bool> lastTunnel;
     std::int64_t previousTime = 0;
@@ -275,13 +243,14 @@ void DrawConnectionHealthGraph(CDC& dc, const CRect& rect, const tlp::HealthSnap
             connectedPoint = false;
         }
         lastTunnel = sample.tunnelKnown ? std::optional<bool>(sample.tunnelRunning) : std::nullopt;
-        if (sample.probeKnown && !sample.probeSucceeded) {
+        if (mode != 1 && sample.probeKnown && !sample.probeSucceeded) {
             dc.SelectObject(&failurePen);
-            const int y = static_cast<int>(latencyPlot.bottom) - 4;
+            const int y = mode == 2 ? static_cast<int>(latencyPlot.top) + 6 : static_cast<int>(latencyPlot.bottom) - 4;
             dc.MoveTo(x - 3, y - 3); dc.LineTo(x + 4, y + 4);
             dc.MoveTo(x - 3, y + 3); dc.LineTo(x + 4, y - 4);
             connectedPoint = false;
-        } else if (sample.probeKnown && sample.probeSucceeded && valid(sample.latencyMs) &&
+            previousLatency.reset();
+        } else if (mode == 0 && sample.probeKnown && sample.probeSucceeded && valid(sample.latencyMs) &&
                    !(sample.tunnelKnown && !sample.tunnelRunning)) {
             const int y = static_cast<int>(latencyPlot.bottom) - static_cast<int>(*sample.latencyMs / maxLatency * latencyPlot.Height());
             dc.SelectObject(&latencyPen);
@@ -292,18 +261,33 @@ void DrawConnectionHealthGraph(CDC& dc, const CRect& rect, const tlp::HealthSnap
                 dc.MoveTo(x, y);
             }
             dc.FillSolidRect(x - 1, y - 1, 3, 3, RGB(112, 62, 165));
+            if (previousLatency) {
+                const double jitter = std::min(maxLatency, std::abs(*sample.latencyMs - *previousLatency));
+                const int jitterY = static_cast<int>(latencyPlot.bottom) - static_cast<int>(jitter / maxLatency * latencyPlot.Height());
+                dc.FillSolidRect(x - 1, jitterY - 1, 3, 3, RGB(30, 125, 70));
+                dc.MoveTo(x, y);
+            }
+            previousLatency = sample.latencyMs;
             connectedPoint = true;
             haveLatency = true;
-        } else {
+        } else if (!sample.probeKnown && mode != 1) {
             dc.SelectObject(&missingPen);
             dc.MoveTo(x, latencyPlot.bottom - 3); dc.LineTo(x, latencyPlot.bottom);
             connectedPoint = false;
+            previousLatency.reset();
         }
+        if (mode == 2 && sample.probeKnown && sample.probeSucceeded) {
+            dc.FillSolidRect(x - 1, latencyPlot.bottom - 3, 3, 3, RGB(30, 125, 70));
+            if (previousProbe && !*previousProbe) {
+                graphText(dc, CRect(x - 5, latencyPlot.bottom - line, x + 20, latencyPlot.bottom), "R");
+            }
+        }
+        previousProbe = sample.probeKnown ? std::optional<bool>(sample.probeSucceeded) : std::nullopt;
         previousTime = sample.timestampMs;
     }
     dc.SelectObject(&missingPen);
     for (const auto& sample : snapshot.samples) {
-        if (visible(sample.timestampMs) && sample.wireGuardTelemetryAttempted &&
+        if (mode == 1 && visible(sample.timestampMs) && sample.wireGuardTelemetryAttempted &&
             (!sample.receivedBytes || !sample.transmittedBytes)) {
             const int x = xAt(sample.timestampMs);
             dc.MoveTo(x, trafficPlot.bottom - 3);
@@ -312,7 +296,7 @@ void DrawConnectionHealthGraph(CDC& dc, const CRect& rect, const tlp::HealthSnap
     }
     CPen rxPen(PS_SOLID, 2, RGB(20, 105, 185));
     CPen txPen(PS_DASH, 1, RGB(195, 95, 10));
-    for (int direction = 0; direction < 2; ++direction) {
+    for (int direction = 0; mode == 1 && direction < 2; ++direction) {
         dc.SelectObject(direction == 0 ? &rxPen : &txPen);
         bool havePrevious = false;
         for (const auto& point : traffic) {
@@ -329,8 +313,8 @@ void DrawConnectionHealthGraph(CDC& dc, const CRect& rect, const tlp::HealthSnap
             havePrevious = true;
         }
     }
-    if (!haveLatency) graphText(dc, latencyPlot, "No successful latency measurements in this window", DT_CENTER);
-    if (traffic.empty()) graphText(dc, trafficPlot, "Traffic unavailable: awaiting two current counter readings", DT_CENTER);
+    if (mode == 0 && !haveLatency) graphText(dc, latencyPlot, "No latency measurements", DT_CENTER);
+    if (mode == 1 && traffic.empty()) graphText(dc, trafficPlot, "Awaiting two counter readings", DT_CENTER);
     const int timeTop = static_cast<int>(trafficPlot.bottom) + 2;
     graphText(dc, CRect(left, timeTop, left + 90, timeTop + line),
         historySeconds == 300 ? "-5 min" : "-60 s");
@@ -349,6 +333,7 @@ BEGIN_MESSAGE_MAP(CConnectionHealthDlg, CDialogEx)
     ON_CBN_SELCHANGE(IDC_HEALTH_HISTORY, &CConnectionHealthDlg::OnHistoryChanged)
     ON_BN_CLICKED(IDC_HEALTH_TOPMOST, &CConnectionHealthDlg::OnTopmostChanged)
     ON_BN_CLICKED(IDC_HEALTH_THRESHOLDS, &CConnectionHealthDlg::OnThresholds)
+    ON_CBN_SELCHANGE(IDC_HEALTH_POP_PLOT, &CConnectionHealthDlg::OnPlotChanged)
     ON_WM_DRAWITEM()
     ON_WM_CTLCOLOR()
 END_MESSAGE_MAP()
@@ -367,6 +352,11 @@ BOOL CConnectionHealthDlg::OnInitDialog() {
     history_.AddString(L"5 minutes");
     history_.SetCurSel(preferences_.historySeconds == 300 ? 1 : 0);
     topmost_.SetCheck(preferences_.alwaysOnTop ? BST_CHECKED : BST_UNCHECKED);
+    CComboBox* plot = static_cast<CComboBox*>(GetDlgItem(IDC_HEALTH_POP_PLOT));
+    plot->AddString(L"Latency & jitter");
+    plot->AddString(L"Upload / download");
+    plot->AddString(L"Failures & interruptions");
+    plot->SetCurSel(0);
     ApplyTopmost();
     RefreshText();
     CRect client;
@@ -459,7 +449,7 @@ void CConnectionHealthDlg::OnSize(UINT type, int cx, int cy) {
 void CConnectionHealthDlg::OnGetMinMaxInfo(MINMAXINFO* info) {
     CDialogEx::OnGetMinMaxInfo(info);
     if (!GetSafeHwnd()) return;
-    CRect minimum(0, 0, 440, 300);
+    CRect minimum(0, 0, 300, 220);
     MapDialogRect(&minimum);
     AdjustWindowRectEx(&minimum, static_cast<DWORD>(GetStyle()), FALSE, static_cast<DWORD>(GetExStyle()));
     info->ptMinTrackSize.x = minimum.Width();
@@ -469,13 +459,13 @@ void CConnectionHealthDlg::OnGetMinMaxInfo(MINMAXINFO* info) {
 void CConnectionHealthDlg::LayoutGraph(int width, int height) {
     CWnd* graph = GetDlgItem(IDC_HEALTH_GRAPH);
     if (graph == nullptr) return;
-    CRect graphDlu(8, 86, 482, 283);
+    CRect graphDlu(8, 86, 352, 185);
     CRect bottomMarginDlu(0, 0, 0, 6);
     CRect rightMarginDlu(0, 0, 8, 0);
     CRect historyDlu(8, 329, 83, 343);
-    CRect topmostDlu(96, 331, 206, 343);
+    CRect topmostDlu(8, 219, 118, 231);
     CRect limitsDlu(412, 328, 482, 344);
-    CRect warningDlu(8, 287, 482, 324);
+    CRect warningDlu(8, 187, 352, 211);
     CRect warningGapDlu(0, 0, 0, 4);
     MapDialogRect(&graphDlu);
     MapDialogRect(&bottomMarginDlu);
@@ -495,7 +485,7 @@ void CConnectionHealthDlg::LayoutGraph(int width, int height) {
             position.Height(), SWP_NOZORDER | SWP_NOMOVE);
     }
     int bottomMargin = bottomMarginDlu.bottom;
-    int historyTop = height - bottomMargin - historyDlu.Height();
+    int historyTop = height - bottomMargin - historyDlu.Height() - topmostDlu.Height() - 6;
     int topmostTop = height - bottomMargin - topmostDlu.Height();
     int limitsTop = height - bottomMargin - limitsDlu.Height();
     int warningBottom = std::min<int>({historyTop, topmostTop, limitsTop}) - static_cast<int>(warningGapDlu.bottom);
@@ -508,9 +498,16 @@ void CConnectionHealthDlg::LayoutGraph(int width, int height) {
     CRect dropdownDlu(0, 0, 0, 70);
     MapDialogRect(&dropdownDlu);
     GetDlgItem(IDC_HEALTH_HISTORY)->SetWindowPos(nullptr, historyDlu.left, historyTop, historyDlu.Width(), dropdownDlu.Height(), SWP_NOZORDER);
+    GetDlgItem(IDC_HEALTH_POP_PLOT)->SetWindowPos(nullptr, historyDlu.right + 8, historyTop,
+        std::max<int>(100, width - static_cast<int>(historyDlu.right) - 24), dropdownDlu.Height(), SWP_NOZORDER);
     GetDlgItem(IDC_HEALTH_TOPMOST)->SetWindowPos(nullptr, topmostDlu.left, topmostTop, topmostDlu.Width(), topmostDlu.Height(), SWP_NOZORDER);
     GetDlgItem(IDC_HEALTH_THRESHOLDS)->SetWindowPos(nullptr, width - limitsDlu.Width() - rightMarginDlu.right, limitsTop,
                                                     limitsDlu.Width(), limitsDlu.Height(), SWP_NOZORDER);
+}
+
+void CConnectionHealthDlg::OnPlotChanged() {
+    graphMode_ = static_cast<CComboBox*>(GetDlgItem(IDC_HEALTH_POP_PLOT))->GetCurSel();
+    GetDlgItem(IDC_HEALTH_GRAPH)->Invalidate(FALSE);
 }
 
 void CConnectionHealthDlg::OnHistoryChanged() {
@@ -537,7 +534,8 @@ void CConnectionHealthDlg::OnDrawItem(int controlId, LPDRAWITEMSTRUCT drawItem) 
     }
     CDC dc;
     dc.Attach(drawItem->hDC);
-    DrawConnectionHealthGraph(dc, CRect(drawItem->rcItem), snapshot_, preferences_.historySeconds);
+    dc.SelectObject(GetFont());
+    DrawConnectionHealthGraph(dc, CRect(drawItem->rcItem), snapshot_, preferences_.historySeconds, graphMode_);
     dc.Detach();
 }
 
@@ -585,6 +583,7 @@ void CConnectionHealthDlg::ApplyTopmost() {
 void CConnectionHealthDlg::RefreshText() {
     if (!GetSafeHwnd()) return;
     std::string state = tlp::HealthyDurationText(snapshot_);
+    if (snapshot_.state == tlp::HealthState::Disconnected && !snapshot_.samples.empty()) state += " | History (not live)";
     SetDlgItemText(IDC_HEALTH_STATE, Widen(state).c_str());
     SetDlgItemText(IDC_HEALTH_AUTH, Widen(tlp::ConnectedDurationText(snapshot_) +
         " | Authorisation remaining: " + authorization(snapshot_)).c_str());

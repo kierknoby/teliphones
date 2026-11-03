@@ -9,6 +9,7 @@
 
 #include "../src/core/CommandLine.h"
 #include "../src/core/ConnectionHealth.h"
+#include "../src/core/DesktopLayout.h"
 #include "../src/core/Encoding.h"
 #include "../src/core/Json.h"
 #include "../src/core/Launchers.h"
@@ -366,6 +367,70 @@ void testMonitor() {
 }
 
 void testConnectionHealth() {
+    const int screens[][2] = {{1024, 728}, {1366, 728}, {1920, 1040}};
+    const int scales[] = {100, 125, 150, 200};
+    for (const auto& screen : screens) {
+        for (int scale : scales) {
+            const int width = screen[0] * 100 / scale;
+            const int height = screen[1] * 100 / scale;
+            const auto layout = ArrangeDesktop(width, height);
+            for (const auto& action : layout.actions) {
+                check(action.x >= 0 && action.y >= 0 && action.x + action.width <= width &&
+                          action.bottom() <= height && action.width > 0 && action.height > 0,
+                      "primary actions fit screen/DPI matrix without scrolling");
+            }
+            for (std::size_t i = 0; i < layout.content.size(); ++i) {
+                const auto& control = layout.content[i];
+                check(control.x >= 0 && control.y >= 0 && control.x + control.width <= width &&
+                          control.bottom() <= layout.contentHeight && control.height > 0 && control.width > 0,
+                      "responsive content is within the bounded scroll extent");
+                for (std::size_t j = i + 1; j < layout.content.size(); ++j) {
+                    const auto& other = layout.content[j];
+                    check(control.x + control.width <= other.x || other.x + other.width <= control.x ||
+                              control.bottom() <= other.y || other.bottom() <= control.y,
+                          "responsive controls never overlap");
+                }
+            }
+            check(layout.viewport.bottom() <= layout.actions[0].y,
+                  "scroll viewport cannot obscure fixed connection controls");
+        }
+    }
+    const auto normal = ArrangeDesktop(1034, 580);
+    check(normal.contentHeight <= normal.viewport.height,
+          "landscape default client fits without vertical scrolling");
+    const auto compact = ArrangeDesktop(500, 350);
+    check(compact.contentHeight > compact.viewport.height &&
+              compact.content[static_cast<int>(DesktopSlot::ConnectionHeading)].y >
+                  compact.content[static_cast<int>(DesktopSlot::Details)].bottom(),
+          "small/high-DPI work areas stack panels within a scrollable extent");
+    const auto larger = ArrangeDesktop(1600, 900);
+    check(larger.content[static_cast<int>(DesktopSlot::Profiles)].height > normal.content[static_cast<int>(DesktopSlot::Profiles)].height &&
+              larger.content[static_cast<int>(DesktopSlot::Graph)].height > normal.content[static_cast<int>(DesktopSlot::Graph)].height &&
+              larger.content[static_cast<int>(DesktopSlot::Graph)].width > normal.content[static_cast<int>(DesktopSlot::Graph)].width,
+          "list and graph expand in both dimensions on larger windows");
+    HealthSnapshot graphHistory;
+    for (int i = 0; i <= 6; ++i) {
+        HealthSample sample;
+        sample.timestampMs = 1000 + i * 2000;
+        sample.tunnelKnown = true;
+        sample.tunnelRunning = true;
+        if (i % 3 == 0) {
+            sample.wireGuardTelemetryAttempted = true;
+            sample.receivedBytes = static_cast<std::uint64_t>(i) * 1000;
+            sample.transmittedBytes = static_cast<std::uint64_t>(i) * 2000;
+            sample.trafficSource = "Windows tunnel interface IP bytes";
+        }
+        graphHistory.samples.push_back(sample);
+    }
+    auto traffic = HealthTrafficHistory(graphHistory);
+    check(traffic.size() == 2 && traffic[0].rx == 500 && traffic[0].tx == 1000 &&
+              !traffic[0].join && traffic[1].join,
+          "traffic graph joins six-second counter samples across ordinary two-second probe samples");
+    graphHistory.samples[3].receivedBytes.reset();
+    graphHistory.samples[3].transmittedBytes.reset();
+    check(HealthTrafficHistory(graphHistory).empty(),
+          "unavailable telemetry breaks the graph baseline instead of inventing data");
+
     HealthPreferences preferences;
     preferences.historySeconds = 300;
     preferences.alwaysOnTop = true;
@@ -998,8 +1063,8 @@ int main() {
     for (unsigned part : versionParts) check(part <= 65535, "Windows version component fits the resource WORD");
     check(TELIPHONES_VERSION_FILE_STRING == versionBase + "." + std::to_string(versionParts[3]), "file version expands consistently");
     check(TELIPHONES_VERSION_STRING == versionBase, "product version expands without a development suffix");
-    check(std::string(TELIPHONES_VERSION_STRING) == "0.5.1", "Windows application version is independent of the module");
-    check(std::string(TELIPHONES_VERSION_FILE_STRING) == "0.5.1.0", "Windows file version is 0.5.1.0");
+    check(std::string(TELIPHONES_VERSION_STRING) == "0.5.2", "Windows application version is independent of the module");
+    check(std::string(TELIPHONES_VERSION_FILE_STRING) == "0.5.2.0", "Windows file version is 0.5.2.0");
     testEncoding();
     testJson();
     testValidation();

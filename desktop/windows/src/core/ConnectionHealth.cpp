@@ -186,6 +186,43 @@ HealthWindowBounds FitHealthWindow(HealthWindowBounds requested, HealthWindowBou
         width, height};
 }
 
+std::vector<HealthTrafficPoint> HealthTrafficHistory(const HealthSnapshot& snapshot) {
+    std::vector<HealthTrafficPoint> result;
+    const HealthSample* previous = nullptr;
+    bool join = false;
+    for (const auto& sample : snapshot.samples) {
+        if (sample.tunnelKnown && !sample.tunnelRunning) {
+            previous = nullptr;
+            join = false;
+            continue;
+        }
+        if (!sample.receivedBytes || !sample.transmittedBytes) {
+            if (sample.wireGuardTelemetryAttempted) {
+                previous = nullptr;
+                join = false;
+            }
+            continue;
+        }
+        const auto time = sample.telemetryTimestampMs > 0 ? sample.telemetryTimestampMs : sample.timestampMs;
+        if (previous) {
+            const auto prior = previous->telemetryTimestampMs > 0 ? previous->telemetryTimestampMs : previous->timestampMs;
+            if (time == prior) continue;
+            if (sample.trafficSource == previous->trafficSource && time > prior &&
+                time - prior <= ConnectionHealthMonitor::kTelemetryIntervalSeconds * 3000LL &&
+                *sample.receivedBytes >= *previous->receivedBytes && *sample.transmittedBytes >= *previous->transmittedBytes) {
+                const double seconds = static_cast<double>(time - prior) / 1000;
+                result.push_back({time, (*sample.receivedBytes - *previous->receivedBytes) / seconds,
+                    (*sample.transmittedBytes - *previous->transmittedBytes) / seconds, join});
+                join = true;
+            } else {
+                join = false;
+            }
+        }
+        previous = &sample;
+    }
+    return result;
+}
+
 std::string ConnectedDurationText(const HealthSnapshot& snapshot) {
     return "Connected for: " + (snapshot.connectedSeconds ?
         (*snapshot.connectedSeconds == 0 ? std::string("0 s") : FormatRemaining(*snapshot.connectedSeconds)) : "Not connected");

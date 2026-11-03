@@ -55,6 +55,7 @@
   <ItemGroup>
     <ClCompile Include="src\app\TeliphonesApp.cpp" />
     <ClCompile Include="src\app\MainDlg.cpp" />
+    <ClCompile Include="src\app\DesktopLayout.cpp" />
     <ClCompile Include="src\app\PairDlg.cpp" />
     <ClCompile Include="src\app\SupportDlg.cpp" />
     <ClCompile Include="src\app\AppSettingsDlg.cpp" />
@@ -82,6 +83,8 @@
     <ClInclude Include="src\app\framework.h" />
     <ClInclude Include="src\app\TeliphonesApp.h" />
     <ClInclude Include="src\app\MainDlg.h" />
+    <ClInclude Include="src\app\DesktopLayout.h" />
+    <ClInclude Include="src\core\DesktopLayout.h" />
     <ClInclude Include="src\app\PairDlg.h" />
     <ClInclude Include="src\app\SupportDlg.h" />
     <ClInclude Include="src\app\AppSettingsDlg.h" />

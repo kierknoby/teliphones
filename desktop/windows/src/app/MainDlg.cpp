@@ -3,6 +3,7 @@
 #include <objbase.h>
 
 #include <ctime>
+#include <algorithm>
 #include <exception>
 #include <functional>
 #include <thread>
@@ -105,6 +106,12 @@ std::string AccessText(const Profile& profile, std::int64_t now) {
 }  // namespace
 
 BEGIN_MESSAGE_MAP(CMainDlg, CDialogEx)
+    ON_WM_SIZE()
+    ON_WM_GETMINMAXINFO()
+    ON_WM_MOUSEWHEEL()
+    ON_WM_CTLCOLOR()
+    ON_MESSAGE(WM_DPICHANGED, &CMainDlg::OnDpiChanged)
+    ON_CBN_SELCHANGE(IDC_HEALTH_PLOT, &CMainDlg::OnPlotChanged)
     ON_BN_CLICKED(IDC_ADD_PBX, &CMainDlg::OnAddPbx)
     ON_BN_CLICKED(IDC_ADD_SUPPORT, &CMainDlg::OnAddSupport)
     ON_BN_CLICKED(IDC_UPDATE_GRANT, &CMainDlg::OnUpdateGrant)
@@ -136,13 +143,21 @@ void CMainDlg::DoDataExchange(CDataExchange* exchange) {
 
 BOOL CMainDlg::OnInitDialog() {
     CDialogEx::OnInitDialog();
+    try {
+        layout_.Initialize(*this);
+        layout_.InitialPosition();
+    } catch (const std::exception& e) {
+        ShowError(e.what());
+        EndDialog(IDCANCEL);
+        return FALSE;
+    }
     LogEvent("startup", "info", "Application started; diagnostic timestamps are UTC. PBX clock may differ.");
     SetWindowText(Widen("TELIPHONES " TELIPHONES_VERSION_STRING).c_str());
     HICON icon = LoadIconW(nullptr, IDI_APPLICATION);
     SetIcon(icon, TRUE);
     SetIcon(icon, FALSE);
 
-    list_.SetExtendedStyle(LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
+    list_.SetExtendedStyle(LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_LABELTIP);
     list_.InsertColumn(0, L"Name", LVCFMT_LEFT, 170);
     list_.InsertColumn(1, L"Type", LVCFMT_LEFT, 105);
     list_.InsertColumn(2, L"Access", LVCFMT_LEFT, 190);
@@ -179,6 +194,11 @@ BOOL CMainDlg::OnInitDialog() {
     history->AddString(L"60 seconds");
     history->AddString(L"5 minutes");
     history->SetCurSel(healthPreferences_.historySeconds == 300 ? 1 : 0);
+    CComboBox* plot = static_cast<CComboBox*>(GetDlgItem(IDC_HEALTH_PLOT));
+    plot->AddString(L"Latency & jitter");
+    plot->AddString(L"Upload / download");
+    plot->AddString(L"Failures & interruptions");
+    plot->SetCurSel(0);
     healthDialog_.preferencesChanged = [this](const tlp::HealthPreferences& preferences) {
         healthPreferences_ = preferences;
         static_cast<CComboBox*>(GetDlgItem(IDC_HEALTH_INLINE_HISTORY))->SetCurSel(preferences.historySeconds == 300 ? 1 : 0);
@@ -192,6 +212,67 @@ BOOL CMainDlg::OnInitDialog() {
     };
     if (preferencesReadable && tlp::NeedsFirstRun(storedPreferences_)) PostMessage(WM_APP_FIRST_RUN);
     return TRUE;
+}
+
+void CMainDlg::OnSize(UINT type, int cx, int cy) {
+    CDialogEx::OnSize(type, cx, cy);
+    if (type != SIZE_MINIMIZED) layout_.Arrange();
+}
+
+void CMainDlg::OnGetMinMaxInfo(MINMAXINFO* info) {
+    CDialogEx::OnGetMinMaxInfo(info);
+    MONITORINFO monitor{};
+    monitor.cbSize = sizeof(monitor);
+    if (GetSafeHwnd() && GetMonitorInfo(MonitorFromWindow(m_hWnd, MONITOR_DEFAULTTONEAREST), &monitor)) {
+        const int dpi = static_cast<int>(GetDpiForWindow(m_hWnd));
+        info->ptMinTrackSize.x = std::min<LONG>(MulDiv(420, dpi, 96), monitor.rcWork.right - monitor.rcWork.left);
+        info->ptMinTrackSize.y = std::min<LONG>(MulDiv(300, dpi, 96), monitor.rcWork.bottom - monitor.rcWork.top);
+    }
+}
+
+BOOL CMainDlg::OnMouseWheel(UINT, short delta, CPoint) { return layout_.Wheel(delta); }
+
+LRESULT CMainDlg::OnDpiChanged(WPARAM dpi, LPARAM rectangle) {
+    layout_.SetDpi(LOWORD(dpi));
+    const RECT& suggested = *reinterpret_cast<RECT*>(rectangle);
+    MONITORINFO monitor{};
+    monitor.cbSize = sizeof(monitor);
+    if (GetMonitorInfo(MonitorFromRect(&suggested, MONITOR_DEFAULTTONEAREST), &monitor)) {
+        const auto bounds = tlp::FitHealthWindow(
+            {static_cast<int>(suggested.left), static_cast<int>(suggested.top),
+             static_cast<int>(suggested.right - suggested.left), static_cast<int>(suggested.bottom - suggested.top)},
+            {static_cast<int>(monitor.rcWork.left), static_cast<int>(monitor.rcWork.top),
+             static_cast<int>(monitor.rcWork.right - monitor.rcWork.left), static_cast<int>(monitor.rcWork.bottom - monitor.rcWork.top)}, 1, 1);
+        SetWindowPos(nullptr, bounds.x, bounds.y, bounds.width, bounds.height, SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+    return 0;
+}
+
+BOOL CMainDlg::PreTranslateMessage(MSG* message) {
+    if (message->message == WM_MOUSEWHEEL && (message->hwnd == m_hWnd || ::IsChild(m_hWnd, message->hwnd)))
+        return layout_.Wheel(GET_WHEEL_DELTA_WPARAM(message->wParam));
+    const BOOL handled = CDialogEx::PreTranslateMessage(message);
+    if (message->message == WM_KEYDOWN) layout_.RevealFocus();
+    return handled;
+}
+
+void CMainDlg::OnPlotChanged() {
+    graphMode_ = static_cast<CComboBox*>(GetDlgItem(IDC_HEALTH_PLOT))->GetCurSel();
+    GetDlgItem(IDC_HEALTH_INLINE_GRAPH)->Invalidate(FALSE);
+}
+
+HBRUSH CMainDlg::OnCtlColor(CDC* dc, CWnd* window, UINT type) {
+    HBRUSH brush = CDialogEx::OnCtlColor(dc, window, type);
+    if (window->GetDlgCtrlID() == IDC_STATE) {
+        COLORREF color = GetSysColor(COLOR_WINDOWTEXT);
+        const Profile* selected = Selected();
+        if (active_ && selected && selected->id == active_->profileId) {
+            if (active_->verified) color = RGB(20, 110, 50);
+            else if (healthSnapshot_.state == tlp::HealthState::Disconnected) color = RGB(175, 35, 40);
+        }
+        dc->SetTextColor(color);
+    }
+    return brush;
 }
 
 void CMainDlg::LogEvent(const std::string& event, const std::string& severity, const std::string& detail,
@@ -208,9 +289,10 @@ void CMainDlg::LogEvent(const std::string& event, const std::string& severity, c
 }
 
 void CMainDlg::RefreshHealth() {
+    const Profile* selected = Selected();
     healthSnapshot_ = {};
     if (active_ && active_->health) {
-        healthSnapshot_ = active_->health->Snapshot(GetTickCount64(), healthPreferences_.historySeconds);
+        healthSnapshot_ = active_->health->Snapshot(GetTickCount64(), 300);
         healthSnapshot_.authorizationKnown = true;
         healthSnapshot_.authorizationPersistent = active_->expiresAt == 0;
         healthSnapshot_.authorizationExpiresAt = active_->expiresAt;
@@ -220,12 +302,24 @@ void CMainDlg::RefreshHealth() {
         }
         healthSnapshot_.sessionId = active_->diagnosticId;
         healthSnapshot_.attemptId = active_->attemptId;
+        history_[active_->profileId] = healthSnapshot_;
     }
-    healthDialog_.UpdateSnapshot(healthSnapshot_);
-    const Profile* selected = Selected();
     const bool showingActive = selected && active_ && selected->id == active_->profileId;
-    SetDlgItemText(IDC_HEALTH_INLINE_TEXT, Widen(showingActive ? ConnectionHealthSummary(healthSnapshot_)
-        : "Selected PBX is not connected. Measurements: Unknown.").c_str());
+    const auto saved = selected ? history_.find(selected->id) : history_.end();
+    const bool showingHistory = saved != history_.end();
+    tlp::HealthSnapshot display = showingActive ? healthSnapshot_ : showingHistory ? saved->second : tlp::HealthSnapshot{};
+    if (!showingActive && selected && selected->kind == ProfileKind::Administrator) {
+        display.authorizationKnown = true;
+        display.authorizationPersistent = selected->pairing.mode == "persistent";
+        display.authorizationExpiresAt = selected->pairing.expiresAt;
+        if (!display.authorizationPersistent) {
+            display.authorizationRemainingSeconds = std::max<std::int64_t>(0, display.authorizationExpiresAt - tlp::win::UnixNow());
+        }
+    }
+    healthDialog_.UpdateSnapshot(display);
+    RefreshConnectionText();
+    SetDlgItemText(IDC_HEALTH_INLINE_TEXT, Widen(showingActive || showingHistory || (selected && display.authorizationKnown) ? ConnectionHealthSummary(display)
+        : "Not connected. Select a PBX and choose Connect.\r\nMeasurements: Unknown.").c_str());
     GetDlgItem(IDC_HEALTH_INLINE_GRAPH)->Invalidate(FALSE);
 }
 
@@ -236,11 +330,14 @@ void CMainDlg::OnDrawItem(int controlId, LPDRAWITEMSTRUCT item) {
     }
     CDC dc;
     dc.Attach(item->hDC);
+    dc.SelectObject(GetDlgItem(IDC_HEALTH_INLINE_GRAPH)->GetFont());
     const Profile* selected = Selected();
     const tlp::HealthSnapshot empty;
+    const auto saved = selected ? history_.find(selected->id) : history_.end();
     DrawConnectionHealthGraph(dc, CRect(item->rcItem),
-        selected && active_ && selected->id == active_->profileId ? healthSnapshot_ : empty,
-        healthPreferences_.historySeconds);
+        selected && active_ && selected->id == active_->profileId ? healthSnapshot_ :
+            saved != history_.end() ? saved->second : empty,
+        healthPreferences_.historySeconds, graphMode_);
     dc.Detach();
 }
 
@@ -305,7 +402,7 @@ void CMainDlg::OnSettings() { ShowAppSettings(false, ""); }
 
 void CMainDlg::OnConnectionHealth() {
     const Profile* selected = Selected();
-    if (!active_ || !active_->connected || !active_->health || !selected || selected->id != active_->profileId) return;
+    if (!selected) return;
     RefreshHealth();
     try {
         healthDialog_.ShowMonitor();
@@ -406,7 +503,7 @@ void CMainDlg::UpdateButtons() {
     bool canConnect = profile != nullptr && !busy_ && !active_ && usable &&
                       (profile->kind == ProfileKind::Administrator || !SelectedSession().empty());
     const Profile* activeProfile = active_ ? FindProfile(active_->profileId) : nullptr;
-    bool connected = active_ && active_->connected && !busy_;
+    bool connected = active_ && active_->connected && !busy_ && selectedActive;
     bool sshAllowed = activeProfile != nullptr && (activeProfile->kind == ProfileKind::Support || activeProfile->pairing.ssh);
     bool verified = connected && active_->verified;
 
@@ -418,14 +515,24 @@ void CMainDlg::UpdateButtons() {
     GetDlgItem(IDC_DISCONNECT)->EnableWindow(active_ && !busy_);
     GetDlgItem(IDC_OPEN_GUI)->EnableWindow(connected);
     GetDlgItem(IDC_OPEN_SSH)->EnableWindow(verified && sshAllowed);
-    GetDlgItem(IDC_CONNECTION_HEALTH)->EnableWindow(connected && selectedActive);
+    GetDlgItem(IDC_CONNECTION_HEALTH)->EnableWindow(profile != nullptr);
     GetDlgItem(IDC_CONNECTION_HEALTH)->SetWindowTextW(L"Pop Out");
     GetDlgItem(IDC_SETTINGS)->EnableWindow(!busy_);
 }
 
 void CMainDlg::SetState(const std::string& state, const std::string& guidance) {
-    SetDlgItemText(IDC_STATE, Widen(state).c_str());
-    SetDlgItemText(IDC_GUIDANCE, Widen(guidance).c_str());
+    connectionState_ = state;
+    connectionGuidance_ = guidance;
+    RefreshConnectionText();
+}
+
+void CMainDlg::RefreshConnectionText() {
+    const Profile* selected = Selected();
+    const bool otherActive = active_ && selected && selected->id != active_->profileId;
+    SetDlgItemText(IDC_CONNECTION_HEADING, Widen(selected ? selected->name : "Connection").c_str());
+    SetDlgItemText(IDC_STATE, Widen(otherActive ? "Not connected (another PBX is active)" : connectionState_).c_str());
+    SetDlgItemText(IDC_GUIDANCE, Widen(otherActive ?
+        "Disconnect the active PBX before connecting this one. Disconnect always removes the active tunnel." : connectionGuidance_).c_str());
 }
 
 void CMainDlg::Persist() {
@@ -542,6 +649,7 @@ void CMainDlg::OnRemove() {
     } catch (const std::exception& e) {
         ShowError(std::string("Profile diagnostics cannot be saved: ") + e.what());
     }
+    history_.erase(profile->id);
     profiles_.erase(profiles_.begin() + SelectedIndex());
     Persist();
     RefreshList();
@@ -726,7 +834,10 @@ void CMainDlg::OnTimer(UINT_PTR id) {
     for (int row = 0; row < list_.GetItemCount() && static_cast<std::size_t>(row) < profiles_.size(); ++row) {
         list_.SetItemText(row, 2, Widen(AccessText(profiles_[static_cast<std::size_t>(row)], tlp::win::UnixNow())).c_str());
     }
-    if (!active_ || !active_->connected || busy_) return;
+    if (!active_ || !active_->connected || busy_) {
+        RefreshHealth();
+        return;
+    }
     if (active_->expiresAt > 0 && tlp::win::UnixNow() >= active_->expiresAt) {
         active_->verified = false;
         RefreshHealth();
@@ -965,6 +1076,13 @@ LRESULT CMainDlg::OnOperationDone(WPARAM, LPARAM lparam) {
                 break;
             }
             LogEvent("tunnel_removed", "info", "Tunnel removed: " + result->reason);
+            {
+                auto& saved = history_[active_->profileId];
+                saved = healthSnapshot_;
+                saved.state = tlp::HealthState::Disconnected;
+                saved.connectedSeconds.reset();
+                saved.continuouslyHealthySeconds.reset();
+            }
             active_.reset();
             lastTelemetryTickMs_ = 0;
             {

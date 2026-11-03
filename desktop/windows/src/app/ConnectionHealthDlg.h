@@ -6,7 +6,7 @@
 #include "../core/ConnectionHealth.h"
 
 // Shared by the main window and detachable monitor; never samples or changes the connection.
-void DrawConnectionHealthGraph(CDC& dc, const CRect& rect, const tlp::HealthSnapshot& snapshot, int historySeconds);
+void DrawConnectionHealthGraph(CDC& dc, const CRect& rect, const tlp::HealthSnapshot& snapshot, int historySeconds, int mode = 0);
 std::string ConnectionHealthSummary(const tlp::HealthSnapshot& snapshot);
 
 class CConnectionHealthDlg : public CDialogEx {
@@ -30,6 +30,7 @@ protected:
     afx_msg void OnHistoryChanged();
     afx_msg void OnTopmostChanged();
     afx_msg void OnThresholds();
+    afx_msg void OnPlotChanged();
     afx_msg void OnDrawItem(int controlId, LPDRAWITEMSTRUCT drawItem);
     afx_msg HBRUSH OnCtlColor(CDC* dc, CWnd* window, UINT controlColor);
     DECLARE_MESSAGE_MAP()
@@ -47,4 +48,5 @@ private:
     tlp::HealthSnapshot snapshot_;
     CComboBox history_;
     CButton topmost_;
+    int graphMode_ = 0;
 };

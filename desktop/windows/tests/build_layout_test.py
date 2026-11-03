@@ -27,8 +27,8 @@ class BuildLayoutTests(unittest.TestCase):
         base = ".".join(map(str, parts[:3]))
         product = base
         numeric = ".".join(map(str, parts))
-        self.assertEqual(product, "0.5.1")
-        self.assertEqual(numeric, "0.5.1.0")
+        self.assertEqual(product, "0.5.2")
+        self.assertEqual(numeric, "0.5.2.0")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
         self.assertIn(f"# TELIPHONES {product} for Windows", readme)
@@ -96,7 +96,7 @@ class BuildLayoutTests(unittest.TestCase):
 
     def test_connection_health_popout_and_integrated_panel_are_wired(self):
         resource = (ROOT / "src/app/TELIPHONES.rc").read_text()
-        self.assertRegex(resource, r"IDD_CONNECTION_HEALTH DIALOGEX 0, 0, 490, 350")
+        self.assertRegex(resource, r"IDD_CONNECTION_HEALTH DIALOGEX 0, 0, 360, 240")
         for control in ("IDC_HEALTH_STATE", "IDC_HEALTH_AUTH", "IDC_HEALTH_GRAPH", "IDC_HEALTH_WARNING",
                         "IDC_HEALTH_HISTORY", "IDC_HEALTH_TOPMOST", "IDC_HEALTH_THRESHOLDS",
                         "IDC_HEALTH_INLINE_TEXT", "IDC_HEALTH_INLINE_GRAPH", "IDC_HEALTH_INLINE_HISTORY",
@@ -107,8 +107,8 @@ class BuildLayoutTests(unittest.TestCase):
         self.assertIn("width - limitsDlu.Width() - rightMarginDlu.right", dialog)
         for source in (dialog, main):
             self.assertIn("DrawConnectionHealthGraph(", source)
-        self.assertIn("ConnectionHealthSummary(healthSnapshot_)", main)
-        self.assertIn("healthDialog_.UpdateSnapshot(healthSnapshot_)", main)
+        self.assertIn("ConnectionHealthSummary(display)", main)
+        self.assertIn("healthDialog_.UpdateSnapshot(display)", main)
         self.assertIn('const bool showingActive = selected && active_ && selected->id == active_->profileId', main)
         self.assertIn("ShowWindow(SW_HIDE)", dialog)
 
@@ -137,8 +137,8 @@ class BuildLayoutTests(unittest.TestCase):
         main = (ROOT / "src/app/MainDlg.cpp").read_text()
         dialog = (ROOT / "src/app/ConnectionHealthDlg.cpp").read_text()
         monitor = (ROOT / "src/core/Monitor.cpp").read_text()
-        self.assertIn("healthDialog_.UpdateSnapshot(healthSnapshot_)", main)
-        self.assertIn("ConnectionHealthSummary(healthSnapshot_)", main)
+        self.assertIn("healthDialog_.UpdateSnapshot(display)", main)
+        self.assertIn("ConnectionHealthSummary(display)", main)
         for field in ("ConnectedDurationText", "HealthyDurationText"):
             self.assertIn(f"tlp::{field}(snapshot)", dialog)
             self.assertIn(f"tlp::{field}(snapshot_)", dialog)
@@ -147,6 +147,26 @@ class BuildLayoutTests(unittest.TestCase):
         self.assertNotIn("authorization still has", main)
         self.assertNotIn("FormatRemaining", monitor)
         self.assertIn('decision.summary = "Connected";', monitor)
+
+    def test_responsive_desktop_layout_and_native_interactions_are_registered(self):
+        source = (ROOT / "src/app/DesktopLayout.cpp").read_text()
+        main = (ROOT / "src/app/MainDlg.cpp").read_text()
+        resource = (ROOT / "src/app/TELIPHONES.rc").read_text()
+        block = resource.split("IDD_MAIN DIALOGEX", 1)[1].split("END", 1)[0]
+        self.assertIn("WS_THICKFRAME", block)
+        self.assertIn("WS_MAXIMIZEBOX", block)
+        for feature in ("WS_EX_CONTROLPARENT", "WM_VSCROLL", "WM_MOUSEWHEEL", "RevealFocus",
+                        "SetScrollInfo", "GetSystemMetricsForDpi", "1050", "620"):
+            self.assertIn(feature, source)
+        self.assertIn("WM_DPICHANGED", main)
+        self.assertIn("history_.find(selected->id)", main)
+        native = (ROOT / "tests/health_window_tests.cpp").read_text()
+        for feature in ("1024", "1366", "1920", "96, 120, 144, 192",
+                        "critical actions stay inside client area", "scrolled content is keyboard reachable",
+                        "wheel scroll remains bounded", "Until revoked", "Expired"):
+            self.assertIn(feature, native)
+        app_sources = [node.get("Include") for node in project("HealthWindowTests.vcxproj").findall("ms:ItemGroup/ms:ClCompile", NS)]
+        self.assertIn("src\\app\\DesktopLayout.cpp", app_sources)
 
     def test_modeless_health_window_has_explicit_owner_and_native_lifecycle_tests(self):
         source = (ROOT / "src/app/ConnectionHealthDlg.cpp").read_text()
@@ -259,7 +279,7 @@ class BuildLayoutTests(unittest.TestCase):
         for path in resource_dir.iterdir():
             if path.suffix in (".cpp", ".h", ".rc"):
                 used.update(re.findall(r"\bID[CD]_[A-Z0-9_]+\b", path.read_text()))
-        self.assertEqual(used - declared, set())
+        self.assertEqual(used - declared - {"IDC_ARROW"}, set())
         rc = (resource_dir / "TELIPHONES.rc").read_text()
         for name in ("IDD_MAIN", "IDD_PAIR", "IDD_SUPPORT", "IDD_APP_SETTINGS", "IDD_CONNECTION_HEALTH", "IDD_HEALTH_LIMITS", "IDD_SESSION_LOG"):
             self.assertRegex(rc, rf"\b{name}\s+DIALOGEX\b")

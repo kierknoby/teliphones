@@ -5,33 +5,42 @@ No Windows release is declared published by this document. Earlier development
 builds lacked embedded file/product versions and cannot be assigned reliable
 version numbers retrospectively.
 
-## 0.5.1 — Unreleased
+## 0.5.2 — Unreleased
 
-Windows file version: **0.5.1.0**. FreePBX module version: **0.3.2**.
+Windows file version: **0.5.2.0**. FreePBX module version: **0.3.2**.
 No new native Windows build or live measurements have been validated locally.
 
-- Correct modeless pop-out creation to use its explicit main-window owner rather
-  than querying an uncreated HWND. Restore minimized windows, recover saved
-  geometry on every opening and expose the monitor in the task switcher.
-- Add native MFC window lifecycle tests to the existing Actions build; these
-  still require a successful Windows runner execution.
+- Replace the tall main dialog with a landscape two-column native layout and
+  responsive DPI-aware resizing. The PBX management list and connection/health
+  panels use available space; a fixed wrapping action bar keeps connection controls
+  accessible, with a vertical scroll viewport, scrollbar, mouse wheel and focus
+  reveal when the work area is too small.
+- Replace vertically stacked health graphs with selectable latency/jitter,
+  upload/download traffic, and failures/interruption plots. Fix traffic graph
+  rendering so ordinary two-second probes do not break six-second counter samples.
+- Preserve per-profile health history for disconnected review, alongside pairing,
+  Remote Support, WireGuard, SSH and session diagnostics behavior.
+- Add native MFC layout, scrolling, command-routing, graph and DPI-input tests to
+  the Actions build. Actual Windows rendering/scaling remains to be validated.
+
+## 0.5.1 — Previous development version (not released)
+
+Windows file version: **0.5.1.0**. FreePBX module version: **0.3.2**.
+
 - Correct UTC/monotonic clock separation for authorization expiry and handshake
   age. Persistent authorization displays Until revoked; absent evidence is Unknown.
-- Integrate health measurements and a shared, labelled graph into the main window,
-  retaining the independent resizable pop-out and persisted preferences.
-- Show current TCP latency, recent jitter and actual interval traffic rates rather
-  than history-wide averages. Keep continuous healthy time independent of history.
-- Separate monotonic connected duration, original authorization countdown and
-  continuously healthy duration in both displays; remove duplicated countdowns
-  and show zero elapsed time as 0 s rather than expired.
-- Report WireGuard CLI failures instead of discarding stderr. Use Windows IP Helper
-  tunnel interface byte counters when peer telemetry requires administrator access;
-  identify the traffic source and leave unavailable handshake values Unknown.
-- Add bounded local session diagnostics, transition events, failure measurement
-  context, a native log viewer and export. Pairing-lifetime correlation identifiers
-  match administrator-only PBX diagnostics; local attempts remain separate.
-- Preserve existing SSH credentials, My PBXs/Remote Support separation, firewall
-  restrictions and authorization lifetimes. No SSH key automation is included.
+- Integrate health measurements and a shared graph into the main window, retaining
+  an independent resizable pop-out and persisted preferences.
+- Show current TCP latency, recent jitter and actual interval traffic rates.
+  Separate connected duration, authorization expiry and continuously healthy time.
+- Report WireGuard CLI failures and use Windows IP Helper tunnel interface byte
+  counters when peer telemetry is unavailable, without fabricating handshake data.
+- Add bounded local diagnostics with native viewing/export and correlation to
+  administrator-only PBX logs; preserve SSH and profile separation.
+- Correct modeless pop-out ownership/visibility, restore minimized windows, recover
+  invalid geometry and expose the monitor in the task switcher.
+- Add native MFC window lifecycle tests. A successful Actions/MSVC run was not
+  verified before the subsequent 0.5.2 interface redesign.
 
 ## 0.5.0 — Previous development version (not released)
 
@@ -98,7 +107,7 @@ These are source-history milestones, **not published Windows releases**:
 
 - [Version.h](src/app/Version.h) is the authoritative Windows version definition.
 - Use plain numerical application versions: the current product/display version
-  is `0.5.1` and the Windows fixed numeric file/product version is `0.5.1.0`.
+  is `0.5.2` and the Windows fixed numeric file/product version is `0.5.2.0`.
   Do not add development suffixes or change the version for individual
   development builds. Actions records the Git commit SHA, run identity and
   executable SHA-256 alongside the version to distinguish build provenance.
@@ -113,4 +122,4 @@ These are source-history milestones, **not published Windows releases**:
   version; publication requires an explicit release decision and updates to
   the changelog, resource flags and validation.
 - Windows 0.6.0 is reserved for the upcoming fully automated SSH
-  authentication functionality. That functionality is not part of 0.5.1.
+  authentication functionality. That functionality is not part of 0.5.2.

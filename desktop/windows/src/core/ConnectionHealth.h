@@ -82,6 +82,14 @@ struct WireGuardCounters {
     std::optional<std::int64_t> handshakeUnixSeconds;
 };
 
+struct HealthTrafficPoint {
+    std::int64_t time;
+    double rx;
+    double tx;
+    bool join;
+};
+std::vector<HealthTrafficPoint> HealthTrafficHistory(const HealthSnapshot& snapshot);
+
 WireGuardCounters ParseWireGuardCounters(const std::string& transfer, const std::string& handshakes, const std::string& peerPublicKey);
 
 constexpr const char* kHealthPreferencesSchema = "teliphones-connection-health/1";
