@@ -231,6 +231,10 @@ class BuildLayoutTests(unittest.TestCase):
                 self.assertIn(library, deps.text.split(";"))
 
     def test_application_sdk_header_order(self):
+        layout = (ROOT / "src/app/DesktopLayout.cpp").read_text()
+        self.assertIn("#include <stdexcept>", layout)
+        self.assertIn('throw std::runtime_error("A required TELIPHONES layout control is missing.")', layout)
+        self.assertNotIn("tlp::Error", layout)
         applications = (ROOT / "src/platform/Applications.cpp").read_text()
         win = (ROOT / "src/platform/Win.h").read_text()
         self.assertIn("#include <windows.h>", win)

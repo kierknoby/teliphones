@@ -3,7 +3,7 @@
 #include <functional>
 #include <iterator>
 #include <cwchar>
-#include "../core/Validation.h"
+#include <stdexcept>
 #include "../platform/Win.h"
 #include "resource.h"
 
@@ -73,7 +73,7 @@ void CDesktopLayout::Initialize(CWnd& window) {
     const CWnd* previous = &CWnd::wndTop;
     for (int id : contentIds) {
         CWnd* control = window.GetDlgItem(id);
-        if (!control) throw tlp::Error("A required TELIPHONES layout control is missing.");
+        if (!control) throw std::runtime_error("A required TELIPHONES layout control is missing.");
         control->SetParent(&content_);
         control->SetWindowPos(previous, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         previous = control;
