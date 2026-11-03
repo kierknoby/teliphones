@@ -305,12 +305,47 @@ def fixture_task_state(task):
     return security_state("TaskState", task)
 
 
+def process_in_snapshot(pid):
+    """PID inventory does not request rights on a SYSTEM process object."""
+    from ctypes import wintypes
+
+    class ProcessEntry(ctypes.Structure):
+        _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD),
+                    ("th32ProcessID", wintypes.DWORD), ("th32DefaultHeapID", ctypes.c_size_t),
+                    ("th32ModuleID", wintypes.DWORD), ("cntThreads", wintypes.DWORD),
+                    ("th32ParentProcessID", wintypes.DWORD), ("pcPriClassBase", wintypes.LONG),
+                    ("dwFlags", wintypes.DWORD), ("szExeFile", wintypes.WCHAR * 260)]
+
+    kernel = kernel32()
+    kernel.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    kernel.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    for name in ("Process32FirstW", "Process32NextW"):
+        getattr(kernel, name).argtypes = [wintypes.HANDLE, ctypes.POINTER(ProcessEntry)]
+    snapshot = kernel.CreateToolhelp32Snapshot(0x2, 0)  # TH32CS_SNAPPROCESS
+    if snapshot == ctypes.c_void_p(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        entry = ProcessEntry()
+        entry.dwSize = ctypes.sizeof(entry)
+        found = kernel.Process32FirstW(snapshot, ctypes.byref(entry))
+        while found:
+            if entry.th32ProcessID == pid:
+                return True
+            found = kernel.Process32NextW(snapshot, ctypes.byref(entry))
+        error = ctypes.get_last_error()
+        if error != 18:  # ERROR_NO_MORE_FILES is the only successful enumeration end.
+            raise ctypes.WinError(error)
+        return False
+    finally:
+        kernel.CloseHandle(snapshot)
+
+
 def wait_server_exit(pid_file):
     if not pid_file.exists():
         return
     pid = int(pid_file.read_text())
     for _ in range(100):
-        if not alive(pid):
+        if not process_in_snapshot(pid):
             return
         time.sleep(0.1)
     raise RuntimeError(f"Fixture server PID {pid} survived ten seconds after owned task shutdown.")
@@ -346,17 +381,24 @@ def exchange_ssh_identification(connection):
     return banner
 
 
-def wait_fixture_listener(port, pid_file):
+def wait_fixture_listener(port, pid_file, task):
     deadline = time.monotonic() + 15
     attempts = 0
     last_error = "server PID not yet published"
     while time.monotonic() < deadline and attempts < 10:
+        state = fixture_task_state(task)
+        if state == 2:  # TASK_STATE_QUEUED
+            last_error = "controlled SYSTEM task is queued"
+            time.sleep(0.25)
+            continue
+        if state != 4:  # TASK_STATE_RUNNING
+            raise RuntimeError(f"Fixture startup: expected controlled SYSTEM task running (4); actual state={state!r}")
         if not pid_file.exists():
             time.sleep(0.25)
             continue
         pid = int(pid_file.read_text())
-        if not alive(pid):
-            raise RuntimeError(f"Fixture startup: expected live owned sshd; actual PID {pid} has exited.")
+        if not process_in_snapshot(pid):
+            raise RuntimeError(f"Fixture startup: expected owned sshd PID in process inventory; actual PID {pid} absent.")
         attempts += 1
         try:
             connection = socket.create_connection(("127.0.0.1", port), timeout=1)
@@ -369,6 +411,9 @@ def wait_fixture_listener(port, pid_file):
             continue
         with connection:
             banner = exchange_ssh_identification(connection)
+        state = fixture_task_state(task)
+        if state != 4 or not process_in_snapshot(pid):
+            raise RuntimeError(f"Fixture identification responded but owned task/server stopped: task state={state!r}, PID={pid}")
         print(f"Fixture identification ready on 127.0.0.1:{port} after {attempts} TCP attempt(s): {banner!r}. "
               "Probe intentionally closes before key exchange/authentication; native login tests remain required.",
               flush=True)
@@ -506,7 +551,7 @@ class WindowsSshTests(unittest.TestCase):
         cls.server_requested = True
         run(["schtasks.exe", "/Run", "/TN", cls.task])
         try:
-            wait_fixture_listener(cls.port, cls.server_pid)
+            wait_fixture_listener(cls.port, cls.server_pid, cls.task)
         except RuntimeError as error:
             raise RuntimeError(f"{error}\nOpenSSH/wrapper log tail (at most 30 lines/8 KiB):\n"
                                + server_log_tail(cls.root / "sshd-test.log")) from error
@@ -529,12 +574,13 @@ class WindowsSshTests(unittest.TestCase):
             cls.stop_file.touch()
             if cls.server_requested:
                 for _ in range(100):
-                    if stopped.exists() and cls.server_pid.exists() and not alive(int(cls.server_pid.read_text())):
+                    if (stopped.exists() and stopped.read_text(encoding="ascii") == "Job process count: 0\n"
+                            and cls.server_pid.exists() and not process_in_snapshot(int(cls.server_pid.read_text()))):
                         break
                     time.sleep(0.1)
                 else:
                     raise RuntimeError("SYSTEM fixture did not confirm zero Job processes before timeout; forcing owned task shutdown.")
-            if cls.server_pid.exists() and alive(int(cls.server_pid.read_text())):
+            if cls.server_pid.exists() and process_in_snapshot(int(cls.server_pid.read_text())):
                 raise RuntimeError("Fixture sshd survived stop/Job cleanup.")
             with socket.socket() as probe:
                 probe.settimeout(0.2)

@@ -141,7 +141,9 @@ reading the server identification. Reading is bounded to 255 bytes and three
 seconds; EOF, reset, timeout and invalid identification fail immediately after
 the first established connection. Only connection refusal while the server is
 binding is retried: at most ten TCP attempts within a 15-second startup window.
-The owned server PID must exist and be alive before connecting. Identification
+The controlled SYSTEM task must report running and its published server PID must
+be present in a successful process snapshot before connecting. Both are checked
+again after identification responds. Identification
 success deliberately closes **before** key exchange/authentication and labels
 that disconnect as expected; it is not evidence of authenticated login.
 
@@ -163,6 +165,45 @@ and whether later key exchange/authentication succeeds remain unverified. The
 new diagnostics expose a genuine server-side failure rather than retrying it.
 All ten actual Windows SSH tests, ACLs, Task Scheduler registration, authentication
 policy and process ownership/cleanup remain unchanged.
+
+### SYSTEM process access-denied correction
+
+The supplied `alive(pid)` failure is `OpenProcess(SYNCHRONIZE, FALSE, pid)`
+returning Win32 5, not a TCP or SSH failure. `SYNCHRONIZE` is `0x00100000`,
+required by the subsequent process-handle wait. SYSTEM-owned sshd's process DACL
+does not grant that access to the runner in the reported environment; elevation
+alone does not bypass process DACLs, and the harness intentionally disables debug
+privilege. The supplied output does not identify the exact process DACL, but it
+does establish that this requested access was denied. Access denial is never
+interpreted as liveness.
+
+Readiness now uses the existing restricted Task Scheduler COM query to require
+`TASK_STATE_RUNNING` (4), the SYSTEM wrapper's protected PID publication and a
+Toolhelp `TH32CS_SNAPPROCESS` inventory containing that PID, plus the bounded SSH
+identification exchange. Queued tasks may wait within the existing deadline;
+missing/disabled/ready/unknown tasks fail. State/PID checks repeat after the
+response. No `OpenProcess` is requested on SYSTEM sshd; no process DACL or token
+privilege is changed. Process snapshots require no per-process SYNCHRONIZE,
+query, VM-read or debug rights. Snapshot creation/enumeration errors propagate;
+only successful enumeration ending with `ERROR_NO_MORE_FILES` proves absence.
+
+Normal, failed-start and interrupted cleanup use the same inventory instead of
+reintroducing the denied `OpenProcess`. Normal shutdown still requires the
+SYSTEM wrapper's exact zero-Job-process acknowledgement, absent server PID,
+closed listener, deleted task and removed fixture directory. Forced cleanup
+retains the owned-task termination/kill-on-close Job and bounded server-absence
+check; an inventory/query error cannot make cleanup succeed. The existing
+`alive` helper remains for the same-user SSH child crash-isolation tests, where
+process-handle rights are intentionally part of those tests.
+
+Local mocks exercise inventory match/absence, snapshot/enumeration denial,
+running/queued/stopped task states, stopping during identification, successful
+readiness despite a forbidden OpenProcess helper, and verified cleanup without
+calling that helper. These do not establish native Windows interoperability.
+All ten SSH methods, security-descriptor code, Task Scheduler registration,
+authentication and production provider are preserved. Windows 0.7.0 remains the
+unreleased target for a test-only fix; FreePBX 0.4.0 is unchanged because module
+code is untouched. Actual Windows execution remains required.
 
 `--fixture-preflight` calls the **same** `setUpClass` and class cleanups used by
 the ten native tests. It checks generated Ed25519 host keys, SSHSIG support,

@@ -22,6 +22,39 @@ def project(name):
 
 
 class BuildLayoutTests(unittest.TestCase):
+    def test_system_process_inventory_never_opens_process_handles(self):
+        spec = importlib.util.spec_from_file_location("fixture_inventory", ROOT / "tests/ssh_native_check.py")
+        module = importlib.util.module_from_spec(spec)
+        with patch.dict(os.environ, {"SystemRoot": "C:/Windows"}), patch.object(sys, "argv", ["fixture", "host.exe"]):
+            spec.loader.exec_module(module)
+        kernel = MagicMock()
+        kernel.CreateToolhelp32Snapshot.return_value = 456
+
+        def first(_snapshot, entry):
+            entry._obj.th32ProcessID = 123
+            return True
+
+        kernel.Process32FirstW.side_effect = first
+        kernel.Process32NextW.return_value = False
+        with patch.object(module, "kernel32", return_value=kernel), \
+                patch.object(module.ctypes, "get_last_error", return_value=18, create=True):
+            self.assertTrue(module.process_in_snapshot(123))
+            self.assertFalse(module.process_in_snapshot(999))
+        kernel.OpenProcess.assert_not_called()
+        self.assertEqual(kernel.CloseHandle.call_count, 2)
+        kernel.CreateToolhelp32Snapshot.assert_called_with(0x2, 0)
+        with patch.object(module, "kernel32", return_value=kernel), \
+                patch.object(module.ctypes, "get_last_error", return_value=5, create=True), \
+                patch.object(module.ctypes, "WinError", return_value=PermissionError("access denied"), create=True), \
+                self.assertRaises(PermissionError):
+            module.process_in_snapshot(999)
+        kernel.CreateToolhelp32Snapshot.return_value = module.ctypes.c_void_p(-1).value
+        with patch.object(module, "kernel32", return_value=kernel), \
+                patch.object(module.ctypes, "get_last_error", return_value=5, create=True), \
+                patch.object(module.ctypes, "WinError", return_value=PermissionError("snapshot denied"), create=True), \
+                self.assertRaisesRegex(PermissionError, "snapshot denied"):
+            module.process_in_snapshot(123)
+
     def test_fixture_identification_exchange_and_bounded_startup(self):
         spec = importlib.util.spec_from_file_location("fixture_readiness", ROOT / "tests/ssh_native_check.py")
         module = importlib.util.module_from_spec(spec)
@@ -51,39 +84,88 @@ class BuildLayoutTests(unittest.TestCase):
             with patch.object(module.time, "monotonic", side_effect=[0, 16]), \
                     patch.object(module.socket, "create_connection") as connect, \
                     self.assertRaisesRegex(RuntimeError, "actual attempts=0"):
-                module.wait_fixture_listener(22001, pid)
+                module.wait_fixture_listener(22001, pid, "fixture-task")
             connect.assert_not_called()
-            with patch.object(module, "alive", return_value=True), \
+            with patch.object(module, "process_in_snapshot", return_value=True), \
+                    patch.object(module, "fixture_task_state", return_value=4), \
                     patch.object(module.time, "sleep"), patch.object(module.time, "monotonic", return_value=0), \
                     patch.object(module.socket, "create_connection", side_effect=ConnectionRefusedError("not bound")) as connect, \
                     self.assertRaisesRegex(RuntimeError, "actual attempts=10"):
-                module.wait_fixture_listener(22001, pid)
+                module.wait_fixture_listener(22001, pid, "fixture-task")
             self.assertEqual(connect.call_count, 10)
-            with patch.object(module, "alive", return_value=False), \
+            with patch.object(module, "process_in_snapshot", return_value=False), \
+                    patch.object(module, "fixture_task_state", return_value=4), \
                     patch.object(module.socket, "create_connection") as connect, \
-                    self.assertRaisesRegex(RuntimeError, "PID 123 has exited"):
-                module.wait_fixture_listener(22001, pid)
+                    self.assertRaisesRegex(RuntimeError, "PID 123 absent"):
+                module.wait_fixture_listener(22001, pid, "fixture-task")
             connect.assert_not_called()
             connection = MagicMock()
             connection.__enter__.return_value = connection
-            with patch.object(module, "alive", return_value=True), \
+            with patch.object(module, "process_in_snapshot", return_value=True), \
+                    patch.object(module, "fixture_task_state", return_value=4), \
+                    patch.object(module, "alive", side_effect=PermissionError("SYSTEM OpenProcess denied")) as alive, \
                     patch.object(module.time, "sleep"), patch.object(module.socket, "create_connection",
                         side_effect=[ConnectionRefusedError("not bound"), connection]) as connect, \
                     patch.object(module, "exchange_ssh_identification", return_value=b"SSH-2.0-test\r\n"), \
                     patch("builtins.print"):
-                module.wait_fixture_listener(22001, pid)
+                module.wait_fixture_listener(22001, pid, "fixture-task")
             self.assertEqual(connect.call_count, 2)
-            with patch.object(module, "alive", return_value=True), \
+            alive.assert_not_called()
+            with patch.object(module, "process_in_snapshot", return_value=True), \
+                    patch.object(module, "fixture_task_state", return_value=4), \
                     patch.object(module.socket, "create_connection", return_value=connection) as connect, \
                     patch.object(module, "exchange_ssh_identification", side_effect=RuntimeError("identification reset")), \
                     self.assertRaisesRegex(RuntimeError, "identification reset"):
-                module.wait_fixture_listener(22001, pid)
+                module.wait_fixture_listener(22001, pid, "fixture-task")
             connect.assert_called_once()
-            with patch.object(module, "alive", return_value=True), \
+            with patch.object(module, "process_in_snapshot", return_value=True), \
+                    patch.object(module, "fixture_task_state", return_value=4), \
                     patch.object(module.socket, "create_connection", side_effect=PermissionError("access denied")) as connect, \
                     self.assertRaisesRegex(RuntimeError, "TCP connect failed on attempt 1"):
-                module.wait_fixture_listener(22001, pid)
+                module.wait_fixture_listener(22001, pid, "fixture-task")
             connect.assert_called_once()
+            for state in (None, 0, 1, 3):
+                with self.subTest(state=state), patch.object(module, "fixture_task_state", return_value=state), \
+                        patch.object(module.socket, "create_connection") as connect, \
+                        self.assertRaisesRegex(RuntimeError, "expected controlled SYSTEM task running"):
+                    module.wait_fixture_listener(22001, pid, "fixture-task")
+                connect.assert_not_called()
+            with patch.object(module, "fixture_task_state", side_effect=[4, 3]), \
+                    patch.object(module, "process_in_snapshot", return_value=True), \
+                    patch.object(module.socket, "create_connection", return_value=connection), \
+                    patch.object(module, "exchange_ssh_identification", return_value=b"SSH-2.0-test\r\n"), \
+                    self.assertRaisesRegex(RuntimeError, "owned task/server stopped"):
+                module.wait_fixture_listener(22001, pid, "fixture-task")
+            with patch.object(module, "fixture_task_state", side_effect=[2, 4, 4]), \
+                    patch.object(module, "process_in_snapshot", return_value=True), \
+                    patch.object(module.time, "sleep") as sleep, \
+                    patch.object(module.socket, "create_connection", return_value=connection) as connect, \
+                    patch.object(module, "exchange_ssh_identification", return_value=b"SSH-2.0-test\r\n"), \
+                    patch("builtins.print"):
+                module.wait_fixture_listener(22001, pid, "fixture-task")
+            connect.assert_called_once()
+            sleep.assert_called_once_with(0.25)
+            with patch.object(module, "fixture_task_state", return_value=4), \
+                    patch.object(module, "process_in_snapshot", side_effect=PermissionError("snapshot denied")), \
+                    patch.object(module.socket, "create_connection") as connect, \
+                    self.assertRaises(PermissionError):
+                module.wait_fixture_listener(22001, pid, "fixture-task")
+            connect.assert_not_called()
+            cls = module.WindowsSshTests
+            cls.root, cls.server_pid, cls.stop_file = Path(root), pid, Path(root) / "stop"
+            cls.task, cls.port, cls.server_requested = "fixture-task", 22001, True
+            Path(str(pid) + ".stopped").write_text("Job process count: 0\n", encoding="ascii")
+            probe = MagicMock()
+            probe.__enter__.return_value = probe
+            probe.connect_ex.return_value = 10061
+            with patch.object(module, "process_in_snapshot", return_value=False), \
+                    patch.object(module, "alive", side_effect=PermissionError("OpenProcess denied")) as alive, \
+                    patch.object(module, "fixture_task_state", return_value=None), \
+                    patch.object(module, "run") as run, patch.object(module.socket, "socket", return_value=probe), \
+                    patch("builtins.print"):
+                cls.stop_server()
+            alive.assert_not_called()
+            run.assert_called_once_with(["schtasks.exe", "/Delete", "/TN", "fixture-task", "/F"])
             log = Path(root) / "server.log"
             log.write_bytes(b"old verbose log\n" * 2000 + b"actual startup failure\n")
             tail = module.server_log_tail(log)
@@ -185,13 +267,13 @@ class BuildLayoutTests(unittest.TestCase):
                 self.assertTrue(cls.root.is_dir())
                 pid_file = cls.root / "server.pid"
                 pid_file.write_text("123", encoding="ascii")
-                with patch.object(module, "alive", side_effect=[True, False]) as alive, \
+                with patch.object(module, "process_in_snapshot", side_effect=[True, False]) as alive, \
                         patch.object(module.time, "sleep") as sleep:
                     module.wait_server_exit(pid_file)
                     self.assertEqual(alive.call_count, 2)
                     sleep.assert_called_once_with(0.1)
                 with patch.object(module, "fixture_task_state", return_value=None), \
-                        patch.object(module, "alive", return_value=False):
+                        patch.object(module, "process_in_snapshot", return_value=False):
                     cls.remove_temporary()
                 self.assertFalse(cls.root.exists())
         with patch.object(cls, "setUpClass", side_effect=RuntimeError("setup operation failed")), \
