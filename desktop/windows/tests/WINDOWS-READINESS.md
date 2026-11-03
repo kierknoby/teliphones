@@ -100,6 +100,33 @@ been removed; the fixture does not spawn PowerShell.
   SYSTEM, Administrators and the runner user; actual SYSTEM SID, service-account
   logon type and highest run level verified after task registration.
 
+### SYSTEM task XML registration correction
+
+The supplied Server 2022 failure identifies the exact invalid XML element:
+`LogonType:ServiceAccount`. `TASK_LOGON_SERVICE_ACCOUNT` (numeric value 5) is a
+supported Task Scheduler COM logon type, but `ServiceAccount` is **not** a valid
+lexical value of the task XML schema's `LogonType`. The scheduler rejects the XML
+before task execution; this is unrelated to the now-working ACL implementation.
+
+The generated XML omits `LogonType`, retains `UserId` `S-1-5-18`,
+`HighestAvailable`, matching principal/action context and no automatic triggers.
+Existing `schtasks /Create /TN <unique-name> /XML <fixture.xml> /RU SYSTEM`
+registration supplies the supported passwordless SYSTEM service-account choice.
+There is no need to change the working COM descriptor helper or rewrite task
+registration. Runtime COM readback still **requires** SYSTEM SID, logon type 5,
+highest run level and the exact restrictive task DACL before `/Run` is allowed.
+Omission of the XML element does not relax that assertion.
+
+Subsequent `/Run`, diagnostic `/Query`, exact-task `/End`/`/Delete`, native
+state/absence queries, SYSTEM-wrapper identity, kill-on-close Job, PID/banner
+readiness and verified teardown are unchanged. These do not supply XML
+`LogonType` values. Regression tests verify the emitted XML, `/RU SYSTEM`
+registration, inspection-before-launch ordering and all ten native methods.
+Local XML tests do not establish native registration success: actual Server 2022
+registration, SYSTEM execution and the ten SSH tests remain Windows validation
+requirements. Windows stays 0.7.0 (test-only correction); FreePBX stays 0.4.0
+(module unchanged). No distribution is created.
+
 `--fixture-preflight` calls the **same** `setUpClass` and class cleanups used by
 the ten native tests. It checks generated Ed25519 host keys, SSHSIG support,
 `sshd -t/-T`, the protected task, real SYSTEM wrapper and loopback SSH banner with

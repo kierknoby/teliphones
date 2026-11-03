@@ -263,9 +263,20 @@ class BuildLayoutTests(unittest.TestCase):
         xml = ET.fromstring(module.task_xml("D:\\test directory\\host.exe", args))
         ns = {"t": "http://schemas.microsoft.com/windows/2004/02/mit/task"}
         self.assertEqual(xml.findtext("t:Principals/t:Principal/t:UserId", namespaces=ns), "S-1-5-18")
+        self.assertIsNone(xml.find("t:Principals/t:Principal/t:LogonType", ns))
+        self.assertEqual(xml.findtext("t:Principals/t:Principal/t:RunLevel", namespaces=ns), "HighestAvailable")
+        self.assertEqual(xml.find("t:Principals/t:Principal", ns).get("id"), "System")
+        self.assertEqual(xml.find("t:Actions", ns).get("Context"), "System")
+        self.assertIsNone(xml.find("t:Triggers", ns))
+        self.assertEqual(xml.get("version"), "1.2")
         self.assertEqual(xml.findtext("t:Actions/t:Exec/t:Command", namespaces=ns), "D:\\test directory\\host.exe")
         self.assertEqual(xml.findtext("t:Actions/t:Exec/t:Arguments", namespaces=ns), subprocess.list2cmdline(args))
         self.assertEqual(xml.findtext("t:Settings/t:ExecutionTimeLimit", namespaces=ns), "PT10M")
+        self.assertEqual(xml.findtext("t:Settings/t:AllowStartOnDemand", namespaces=ns), "true")
+        fixture = (ROOT / "tests/ssh_native_check.py").read_text(encoding="utf-8")
+        self.assertIn('run(["schtasks.exe", "/Create", "/TN", cls.task, "/XML", xml, "/RU", "SYSTEM"])', fixture)
+        self.assertLess(fixture.index('security_state("Task", cls.task, cls.sid)'),
+                        fixture.index('run(["schtasks.exe", "/Run", "/TN", cls.task])'))
         self.assertEqual(len([name for name in dir(module.WindowsSshTests) if name.startswith("test_")]), 10)
 
     def test_ctest_platform_boundary_and_native_ssh_gate(self):

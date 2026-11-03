@@ -241,7 +241,8 @@ def task_xml(program, arguments):
 
     principal = element(element(task, "Principals"), "Principal", id="System")
     element(principal, "UserId", "S-1-5-18")
-    element(principal, "LogonType", "ServiceAccount")
+    # ServiceAccount is a COM enum, not an XML LogonType value.
+    # Registration's /RU SYSTEM selects service-account logon without a password.
     element(principal, "RunLevel", "HighestAvailable")
     settings = element(task, "Settings")
     element(settings, "ExecutionTimeLimit", "PT10M")
