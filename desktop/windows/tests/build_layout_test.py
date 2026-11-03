@@ -2,6 +2,8 @@
 
 from pathlib import Path
 import re
+import subprocess
+import tempfile
 import unittest
 import xml.etree.ElementTree as ET
 
@@ -15,6 +17,44 @@ def project(name):
 
 
 class BuildLayoutTests(unittest.TestCase):
+    def test_ctest_platform_boundary_and_native_ssh_gate(self):
+        stubbed = ("project", "set_target_properties", "add_library", "add_executable",
+                   "target_compile_options", "target_include_directories", "target_link_libraries",
+                   "target_compile_definitions", "enable_testing")
+        script = "\n".join(f"macro({name})\nendmacro()" for name in stubbed)
+        script += """
+macro(find_package)
+    if("${ARGV0}" STREQUAL "Python3")
+        set(Python3_FOUND TRUE)
+        set(Python3_EXECUTABLE python)
+    endif()
+endmacro()
+function(add_test)
+    message(STATUS "REGISTERED=${ARGV1}")
+endfunction()
+"""
+        portable = {"core_tests", "session_diagnostics", "build_layout", "contract_check",
+                    "managed_ssh_check", "ssh_crypto_check"}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "registration.cmake"
+            for platform in ("Windows", "Linux"):
+                path.write_text(script + f'\nset(CMAKE_SYSTEM_NAME {platform})\n'
+                                f'set(WIN32 {"TRUE" if platform == "Windows" else "FALSE"})\n'
+                                f'include("{(ROOT / "CMakeLists.txt").as_posix()}")\n', encoding="utf-8")
+                result = subprocess.run(["cmake", "-P", str(path)], text=True,
+                                        capture_output=True, timeout=20)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                registered = re.findall(r"REGISTERED=(\w+)", result.stdout)
+                expected = portable | ({"broker_contract_check"} if platform == "Linux" else set())
+                self.assertEqual(set(registered), expected)
+                self.assertEqual(len(registered), len(expected))
+        workflow = (ROOT.parents[1] / ".github/workflows/windows-build.yml").read_text(encoding="utf-8")
+        self.assertIn("@('ssh.exe', 'ssh-keygen.exe', 'sshd.exe')", workflow)
+        self.assertLess(workflow.index("@('ssh.exe', 'ssh-keygen.exe', 'sshd.exe')"),
+                        workflow.index("ctest --test-dir"))
+        self.assertIn("python desktop/windows/tests/ssh_native_check.py", workflow)
+        self.assertIn("throw 'Native Windows named-pipe/OpenSSH integration failed.'", workflow)
+
     def test_windows_version_is_consistent_and_embedded(self):
         header = (ROOT / "src/app/Version.h").read_text()
         parts = []

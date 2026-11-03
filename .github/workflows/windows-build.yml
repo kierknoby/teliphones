@@ -170,12 +170,15 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Native SSH CMake configuration failed.' }
           cmake --build desktop/windows/build/ssh-native --config Release
           if ($LASTEXITCODE -ne 0) { throw 'Native SSH compilation failed.' }
+          $openSsh = Join-Path $env:SystemRoot 'System32/OpenSSH'
+          foreach ($name in @('ssh.exe', 'ssh-keygen.exe', 'sshd.exe')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $openSsh $name) -PathType Leaf)) {
+              throw "Native OpenSSH prerequisite missing: $name. Provision the runner before claiming integration success; no substitute or silent skip is permitted."
+            }
+          }
+          $env:PATH = "$openSsh;$env:PATH"
           ctest --test-dir desktop/windows/build/ssh-native -C Release --output-on-failure
           if ($LASTEXITCODE -ne 0) { throw 'Native portable/cryptographic SSH tests failed.' }
-          $sshd = Join-Path $env:SystemRoot 'System32/OpenSSH/sshd.exe'
-          if (-not (Test-Path -LiteralPath $sshd)) {
-            throw 'Native OpenSSH Server is missing. Provision this runner prerequisite before claiming integration success; no Unix substitute or silent skip is permitted.'
-          }
           python desktop/windows/tests/ssh_native_check.py desktop/windows/build/ssh-native/Release/ssh_native_host.exe -v
           if ($LASTEXITCODE -ne 0) { throw 'Native Windows named-pipe/OpenSSH integration failed.' }
 

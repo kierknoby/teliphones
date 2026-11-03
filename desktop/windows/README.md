@@ -86,7 +86,27 @@ The [Windows build workflow](../../.github/workflows/windows-build.yml) builds t
 
 The workflow discovers Visual Studio 2022 with `vswhere`, verifies the installed x64 MSVC tools, static Unicode MFC libraries and Windows SDK, and reports the selected versions. If anything is missing, it fails with the missing component or file path; it does not install Visual Studio components, drivers or other dependencies.
 
-The workflow runs standard-library Python project/resource layout checks, restores static OpenSSL, and builds the application and its `TELIPHONES-SSH.exe` console helper. It also builds the production cryptographic/agent/session code with CMake and runs native OpenSSH/DPAPI/Job tests, including a loopback certificate issuer that verifies actual workstation SSHSIG signatures. Missing native OpenSSH Server is an explicit prerequisite failure, not a Linux substitution or silent skip. These newly added native steps have not run yet. Existing core, diagnostics, PE/manifest and malformed tunnel-helper checks remain. This is not an interactive GUI or WireGuard integration test. Broker-contract tests are Linux-only because the root broker imports `pwd`.
+The workflow runs standard-library Python project/resource layout checks, restores static OpenSSL, and builds the application and its `TELIPHONES-SSH.exe` console helper. It also builds the production cryptographic/agent/session code with CMake and runs native OpenSSH/DPAPI/Job tests, including a loopback certificate issuer that verifies actual workstation SSHSIG signatures. Before CTest, the workflow requires the Windows system `ssh.exe`, `ssh-keygen.exe` and `sshd.exe` and puts their directory first on PATH. Missing tools are an explicit prerequisite failure, not a Linux substitution or silent skip. Successful native credential-provider/OpenSSH validation is still required; portable test success alone is not sufficient. Existing core, diagnostics, PE/manifest and malformed tunnel-helper checks remain. This is not an interactive GUI or WireGuard integration test.
+
+Windows CTest runs `core_tests`, `session_diagnostics`, `build_layout`,
+`contract_check`, `managed_ssh_check` and `ssh_crypto_check`. The portable
+`contract_check` verifies client pairing schemas, response/key/nonce binding,
+profile/tunnel rendering, route rejection, fingerprints and parity with the
+gateway's portable Remote Support renderer without importing the root broker.
+Linux additionally runs `broker_contract_check`, preserving the complete real
+broker approval/revocation and peer/firewall contract tests with privileged OS
+operations doubled. The broker imports Linux-only `fcntl` and `pwd`; it is not
+loaded in Windows tests. Python is required by CMake so these checks cannot
+silently disappear.
+
+After CTest, Windows runs all ten tests in `ssh_native_check.py`: actual
+OpenSSH login/key destruction/public-only runtime files, unrelated-process agent
+denial, process-memory/handle restrictions, concurrent-session isolation and wrong
+certificates, expiry/wrong host/tampering, controller crash, SSH crash, production
+DPAPI/certificate API/console/disconnect, certificate refusal and local
+authorisation expiry. The workflow fails on native test failure; it does not
+replace those checks with the portable suite. Real FreePBX/systemd and reboot
+validation remain separate outstanding requirements.
 
 The x64 manifest uses explicit `amd64` application and Common Controls version 6 identities. The workflow extracts and prints the actual embedded manifest, validates it using the SDK's `mt.exe`, and requires exactly one matching Common Controls dependency after linker manifest merging. It preserves `asInvoker`, `uiAccess="false"` and the DPI settings. The project disables automatic DPI manifest generation so the custom manifest is the sole source: exactly one legacy `dpiAware` (`true/pm`) and one modern `dpiAwareness` (`PerMonitorV2`) declaration, checked in the embedded manifest by Actions. The startup smoke test must launch both malformed helper invocations and receive exit code 2 (argument rejection before elevation/networking); a loader error or timeout fails the run.
 

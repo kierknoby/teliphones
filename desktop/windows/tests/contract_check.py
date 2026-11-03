@@ -1,110 +1,127 @@
 #!/usr/bin/env python3
-"""Cross-check the desktop C++ core against the real TELIPHONES broker and gateway client renderer."""
+"""Portable client contracts; Linux broker admission is tested separately."""
 
 import base64
 import hashlib
+import importlib.abc
 import importlib.util
 import json
 import os
+from pathlib import Path
 import subprocess
 import sys
-import tempfile
 import time
-from pathlib import Path
-from unittest.mock import patch
+import unittest
 
 ROOT = Path(__file__).resolve().parents[3]
-TOOL = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("TELIPHONES_CONTRACT_TOOL", "")
+TOOL = sys.argv.pop(1) if len(sys.argv) > 1 else os.environ["TELIPHONES_CONTRACT_TOOL"]
 
 
-def load(name, path):
-    spec = importlib.util.spec_from_file_location(name, path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+class PortableImports(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname in ("fcntl", "pwd", "grp", "support_broker", "broker_tests"):
+            raise ImportError("Portable client contracts must not import " + fullname)
+        return None
+
+
+sys.meta_path.insert(0, PortableImports())
+
+
+def encoded(prefix, value):
+    return prefix + base64.urlsafe_b64encode(json.dumps(value).encode()).decode().rstrip("=")
 
 
 def tool(*args, stdin=None):
-    result = subprocess.run([TOOL, *args], input=stdin, text=True, capture_output=True, timeout=10)
-    return result.returncode, result.stdout.strip() if result.returncode == 0 else result.stderr.strip()
+    return subprocess.run([TOOL, *args], input=stdin, text=True, capture_output=True, timeout=10)
 
 
-def main():
-    if not TOOL:
-        print("usage: contract_check.py <path-to-contract_tool>")
-        return 2
-    broker_tests = load("broker_tests", ROOT / "gateway" / "tests" / "test_support_broker.py")
-    broker = broker_tests.broker_module
-    engineer = load("engineer_config", ROOT / "gateway" / "engineer_config.py")
-    key = base64.b64encode(hashlib.sha256(b"workstation").digest()).decode()
-    pbx_key = base64.b64encode(hashlib.sha256(b"pbx").digest()).decode()
-    private = base64.b64encode(hashlib.sha256(b"private").digest()).decode()
-    nonce = broker.b64url_encode(os.urandom(16))
-    failures = []
+class ClientContracts(unittest.TestCase):
+    def setUp(self):
+        self.key = base64.b64encode(hashlib.sha256(b"workstation").digest()).decode()
+        self.pbx_key = base64.b64encode(hashlib.sha256(b"pbx").digest()).decode()
+        self.private = base64.b64encode(hashlib.sha256(b"private").digest()).decode()
+        self.nonce = base64.urlsafe_b64encode(bytes(range(16))).decode().rstrip("=")
+        self.now = int(time.time())
+        self.response = {
+            "schema": "teliphones-pair-response/1", "nonce": self.nonce,
+            "workstation_id": "0123456789abcdef", "workstation_public_key": self.key,
+            "address": "100.70.1.2/32", "pbx_address": "100.70.1.1",
+            "pbx_name": "PBX", "pbx_public_key": self.pbx_key,
+            "endpoint": "pbx.example.net:51821", "mode": "temporary",
+            "expires_at": self.now + 3600, "ssh": False,
+            "gui_url": "http://100.70.1.1/admin/",
+        }
 
-    status, request = tool("request", "ADMIN-PC (Office)", key, nonce)
-    parsed = broker.parse_pair_request(request) if status == 0 else None
-    if not parsed or parsed["public_key"] != key or parsed["nonce"] != nonce or parsed["workstation"] != "ADMIN-PC (Office)":
-        failures.append("broker did not accept the C++ pairing request: %s" % request)
+    def response_code(self, **changes):
+        return encoded("TELIPHONES-PAIR-RESPONSE-1:", {**self.response, **changes})
 
-    # Execute the real broker approval/revocation and C++ import/store/render logic.
-    # Only privileged OS/network calls are doubled; no response schema is invented here.
-    with tempfile.TemporaryDirectory() as directory:
-        state, enrollment = Path(directory) / "state", Path(directory) / "enrollment"
-        state.mkdir(mode=0o700)
-        network = broker_tests.FakeNetwork()
-        with patch.object(broker, "STATE", state), patch.object(broker, "ENROLLMENT", enrollment):
-            instance = broker.Broker()
-            instance.run, instance.tool = network.run, lambda name: name
-            instance.audit = lambda *args: None
-            for mode, ssh in (("temporary", "1"), ("persistent", "0")):
-                reply = instance.dispatch({"action": "pair", "request": request, "endpoint_host": "PBX.Example.NET",
-                                           "listen_port": "51821", "mode": mode, "minutes": "60", "ssh": ssh}, 1000)
-                code = reply["pairing_response"]
-                response = broker_tests.decode_response(code)
-                expected = "%s %s %s pbx.example.net:51821 %s %s %s" % (
-                    response["workstation_id"], response["address"], response["pbx_address"], mode,
-                    response["expires_at"] or 0, "ssh" if ssh == "1" else "nossh")
-                status, output = tool("response", code, nonce, key)
-                if status != 0 or output != expected:
-                    failures.append("C++ core rejected real %s broker response: %s" % (mode, output))
-                status, rendered = tool("administrator", code, nonce, key, private)
-                expected_config = ("[Interface]\nPrivateKey = %s\nAddress = %s\n\n[Peer]\nPublicKey = %s\nEndpoint = %s\n"
-                                   "AllowedIPs = %s/32\nPersistentKeepalive = 25" %
-                                   (private, response["address"], response["pbx_public_key"], response["endpoint"], response["pbx_address"]))
-                if status != 0 or rendered.replace("\r\n", "\n") != expected_config:
-                    failures.append("C++ saved profile/tunnel differs from actual broker admission: %s" % rendered)
-                if network.peers.get(key) != response["address"] or (("tcp dport 22 accept" in network.ruleset) != (ssh == "1")):
-                    failures.append("Broker peer/firewall differs from the returned pairing permissions")
-                if tool("response", code, broker.b64url_encode(os.urandom(16)), key)[0] == 0:
-                    failures.append("C++ core accepted a response bound to another nonce")
-                if tool("response", code, nonce, pbx_key)[0] == 0:
-                    failures.append("C++ core accepted a response bound to another workstation key")
-                instance.dispatch({"action": "unpair", "workstation_id": response["workstation_id"]}, 1000)
-                if network.peers or network.link or network.ruleset is not None:
-                    failures.append("Broker revocation left workstation network authority")
+    def test_pair_request_schema_and_binding(self):
+        result = tool("request", "ADMIN-PC (Office)", self.key, self.nonce)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        prefix, body = result.stdout.strip().split(":", 1)
+        self.assertEqual(prefix, "TELIPHONES-PAIR-REQUEST-1")
+        request = json.loads(base64.urlsafe_b64decode(body + "=" * (-len(body) % 4)))
+        self.assertEqual(request, {"schema": "teliphones-pair-request/1",
+                                  "workstation": "ADMIN-PC (Office)",
+                                  "public_key": self.key, "nonce": self.nonce})
+        for name, key, nonce in (("-invalid", self.key, self.nonce),
+                                 ("ADMIN-PC", "invalid", self.nonce),
+                                 ("ADMIN-PC", self.key, "invalid")):
+            with self.subTest(name=name, key=key, nonce=nonce):
+                self.assertNotEqual(tool("request", name, key, nonce).returncode, 0)
 
-    for public in (key, pbx_key):
-        if tool("fingerprint", public)[1] != broker.key_fingerprint(public):
-            failures.append("fingerprint differs from the broker for %s" % public)
+    def test_response_profile_and_administrator_tunnel(self):
+        for mode, expiry in (("temporary", self.now + 3600), ("persistent", None)):
+            with self.subTest(mode=mode):
+                code = self.response_code(mode=mode, expires_at=expiry)
+                result = tool("response", code, self.nonce, self.key)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.strip(),
+                                 f"0123456789abcdef 100.70.1.2/32 100.70.1.1 pbx.example.net:51821 {mode} {expiry or 0} nossh")
+                rendered = tool("administrator", code, self.nonce, self.key, self.private)
+                self.assertEqual(rendered.returncode, 0, rendered.stderr)
+                self.assertEqual(rendered.stdout.strip(),
+                                 f"[Interface]\nPrivateKey = {self.private}\nAddress = 100.70.1.2/32\n\n"
+                                 f"[Peer]\nPublicKey = {self.pbx_key}\nEndpoint = pbx.example.net:51821\n"
+                                 "AllowedIPs = 100.70.1.1/32\nPersistentKeepalive = 25")
 
-    now = int(time.time())
-    grant = {"schema": "teliphones-engineer-grant/1", "engineer_id": "engineer-a", "engineer_address": "10.99.0.2/32", "engineer_public_key": key,
-             "gateway_public_key": pbx_key, "endpoint": "gateway.example.net:51820",
-             "sessions": [{"session_id": "session-1", "pbx_address": "10.20.4.2", "expires_at": now + 3600}]}
-    expected = engineer.render(grant, private, key)
-    status, rendered = tool("support", private, "session-1", str(now), stdin=json.dumps(grant))
-    if status != 0 or rendered.replace("\r\n", "\n").strip() != expected.strip():
-        failures.append("Remote Support tunnel differs from gateway/engineer_config.py:\n%s\n---\n%s" % (rendered, expected))
+    def test_response_rejects_wrong_binding_or_unsafe_routes(self):
+        for code, nonce, key in (
+            (self.response_code(), "abcdefghijklmnopqrstuv", self.key),
+            (self.response_code(), self.nonce, self.pbx_key),
+            (self.response_code(address="0.0.0.0/0"), self.nonce, self.key),
+            (self.response_code(pbx_address="127.0.0.1"), self.nonce, self.key),
+            (self.response_code(mode="unrestricted"), self.nonce, self.key),
+        ):
+            with self.subTest(code=code, nonce=nonce, key=key):
+                self.assertNotEqual(tool("response", code, nonce, key).returncode, 0)
 
-    if failures:
-        print("Desktop contract checks: FAIL")
-        for failure in failures:
-            print(" -", failure)
-        return 1
-    print("Desktop contract checks: PASS (real broker approval/revocation, C++ request/import/profile/tunnel compatibility, fingerprints and support config; OS networking doubled)")
-    return 0
+    def test_fingerprints_match_sha256(self):
+        for key in (self.key, self.pbx_key):
+            expected = "SHA256:" + base64.b64encode(hashlib.sha256(base64.b64decode(key)).digest()).decode()[:16]
+            result = tool("fingerprint", key)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), expected)
+
+    def test_support_tunnel_matches_portable_gateway_renderer(self):
+        spec = importlib.util.spec_from_file_location("engineer_config", ROOT / "gateway/engineer_config.py")
+        engineer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(engineer)
+        grant = {
+            "schema": "teliphones-engineer-grant/1", "engineer_id": "engineer-a",
+            "engineer_address": "10.99.0.2/32", "engineer_public_key": self.key,
+            "gateway_public_key": self.pbx_key, "endpoint": "gateway.example.net:51820",
+            "sessions": [{"session_id": "session-1", "pbx_address": "10.20.4.2",
+                          "expires_at": self.now + 3600}],
+        }
+        rendered = tool("support", self.private, "session-1", str(self.now), stdin=json.dumps(grant))
+        self.assertEqual(rendered.returncode, 0, rendered.stderr)
+        self.assertEqual(rendered.stdout.strip(), engineer.render(grant, self.private, self.key).strip())
+        self.assertNotEqual(tool("support", self.private, "unauthorised", str(self.now),
+                                 stdin=json.dumps(grant)).returncode, 0)
+        self.assertNotEqual(tool("support", self.private, "session-1", str(self.now + 3601),
+                                 stdin=json.dumps(grant)).returncode, 0)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    unittest.main()

@@ -23,7 +23,8 @@ class ManagedSshContract(unittest.TestCase):
             root = Path(directory)
             for name in ("ca", "host", "client", "session", "wrong"):
                 subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "", "-f", str(root / name)], check=True)
-                os.chmod(root / name, 0o600)
+                if os.name != "nt":
+                    os.chmod(root / name, 0o600)
             key = lambda name: (root / (name + ".pub")).read_text().strip()
             now = int(time.time())
             expiry = now + 120
