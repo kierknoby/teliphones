@@ -23,7 +23,7 @@ Windows executes portable client contracts; Linux retains full broker contracts.
 | Native CMake build | Runner CMake/Python/compiler, same vcpkg toolchain | Compile production core plus isolated loopback fixture core, crypto and agent/session test host |
 | Win32 preflight | DPAPI, BCrypt/OpenSSL, VirtualAlloc/VirtualLock, local pipes, Jobs, process permissions | Actual native operations: locked seed/sign/destroy, user DPAPI round-trip, restrictive pipe creation, suspended child, Job assignment/process DACL/termination |
 | CTest | Dependencies listed below | All six Windows tests remain enabled; verbose output, JUnit and full stdout/stderr log retained; failure does not suppress independent native SSH integration |
-| Real fixture preflight | Same Python/C++ fixture, ICACLS, native Win32 security APIs, Task Scheduler COM and actual OpenSSH server | Separate grants/owner/inheritance commands; inspect exact file/task descriptors; reject real deliberately invalid file ACLs; generated keys/config, SYSTEM task, live server PID/SSH banner; verified teardown; no mocked replacement |
+| Real fixture preflight | Same Python/C++ fixture, ICACLS, native Win32 security APIs, Task Scheduler COM and actual OpenSSH server | Complete protected DACL replacement plus separate owner assignment; inspect exact file/task descriptors; reject and repair real deliberately invalid file ACLs; generated keys/config, SYSTEM task, live server PID/SSH banner; verified teardown; no mocked replacement |
 | Native SSH integration | Windows OpenSSH, elevated task registration, current local Windows account, loopback ports | Actual SSHSIG sign/verify feature probe, generated Ed25519 host/CA, strict host key ACL, `sshd -t` and effective `sshd -T`; real authenticated login is mandatory |
 | Always-run cleanup | Python and uniquely recorded fixture task/path | Stop marker, verified zero-Job-process acknowledgement, exact task deletion; recovery for interrupted harness; no service-name/process-name killing |
 | Remaining native tests | Existing MFC tests, dumpbin, mt.exe, loader | Window tests, actual PE/version/manifest/import checks and helper startup tests retained |
@@ -70,9 +70,18 @@ combined `/inheritance:r /grant:r ... /setowner ...`; `/setowner` is a separate
 ICACLS command form, not a grant option. This is a fixture defect, not an SSH
 provider defect.
 
-The fixture now issues **separate** `/grant:r`, `/setowner`, `/inheritance:r`
-and, for the host key, `/remove:g` operations. Explicit trusted grants are
-installed before inherited rights are removed, avoiding a transient ACL lockout.
+The later confirmed `ca.pub` failure exposed a separate construction defect:
+`icacls /grant:r` replaces grants **only for the specified SIDs**, not the whole
+DACL. `/inheritance:r` removes inherited ACEs, not an existing explicit Everyone
+read ACE. `/setowner` does not remove grants either. The supplied observation
+establishes that Everyone survived; it does not by itself establish which
+key-generation/runtime operation originally created that ACE.
+
+The fixture now uses `SetNamedSecurityInfoW` to install a complete, protected
+allowlist DACL, replacing all existing explicit and inherited entries in one
+operation. The intended trusted grants are present immediately; no empty/null
+DACL or permissive intermediate state is installed. Ownership remains a separate
+checked `icacls /setowner` invocation, followed by independent descriptor readback.
 SID-based policy is read back through native Windows APIs in
 `fixture_security.cpp`, checking owner, protected DACL, exact allowed identities,
 full-control masks, inheritance, propagation and unexpected flags. Unsupported
@@ -97,7 +106,13 @@ the ten native tests. It checks generated Ed25519 host keys, SSHSIG support,
 a live recorded server PID. Actual negative ACL probes separately change owner,
 add an unauthorised SID, enable inheritance, reduce access rights and add a deny
 ACE; every observed invalid descriptor must be rejected, then restored and
-re-verified. Success requires acknowledged zero Job processes,
+re-verified. A repair probe also seeds a real explicit Everyone read ACE, confirms
+the strict checker rejects it, reapplies the complete DACL and verifies exact
+SID/mask/flags/owner state. Both generated public keys are secured before first
+use; generated certificate files receive the same complete replacement/readback.
+Private host/CA keys, root, config, principals and task XML use the shared
+constructor; host private-key access stays restricted to SYSTEM/Administrators.
+Success requires acknowledged zero Job processes,
 closed listener, absent scheduled task and removed temporary directory. Setup
 and cleanup errors are both reported. It does not claim an authenticated login:
 that remains mandatory in the unchanged ten-test integration suite.
@@ -141,6 +156,12 @@ module manifest paths, exit codes and complete loader exceptions, comparing
 inherited versus reset discovery variables. Even if these probes cannot load
 the module, the native security checks still run independently. A later runner
 cannot retroactively prove the original runner's exact condition.
+
+Discovery tests use an explicit environment mapping, covering `PSModulePath`
+present, absent and Windows-style uppercase `PSMODULEPATH`. They compare the
+complete inherited/reset child environments and verify the parent is unchanged.
+Reset removal is case-insensitive because Windows `os.environ.copy()` produces
+uppercase keys; optional discovery variables are not assumed to exist.
 
 The actual correction removes **all** PowerShell calls from the SSH harness:
 

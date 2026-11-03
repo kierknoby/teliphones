@@ -231,6 +231,31 @@ Value fileState(std::wstring path) {
     return describe(descriptor);
 }
 
+Value restrictFile(std::wstring path, const std::string& policy) {
+    if (policy != "directory" && policy != "file" && policy != "host")
+        throw tlp::Error("Expected fixture file ACL policy: directory, file or host.");
+    const auto flags = policy == "directory" ? L"OICI" : L"";
+    std::wstring sddl = L"D:P(A;" + std::wstring(flags) + L";FA;;;SY)(A;" + flags + L";FA;;;BA)";
+    if (policy != "host")
+        sddl += L"(A;" + std::wstring(flags) + L";FA;;;" + tlp::win::Widen(tlp::win::CurrentUserSid()) + L")";
+    PSECURITY_DESCRIPTOR descriptor = nullptr;
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.c_str(), SDDL_REVISION_1, &descriptor, nullptr))
+        FixtureWin32Error("ConvertStringSecurityDescriptorToSecurityDescriptorW(exact fixture DACL)");
+    LocalMemory memory(descriptor);
+    BOOL present = FALSE, defaulted = FALSE;
+    PACL dacl = nullptr;
+    if (!GetSecurityDescriptorDacl(descriptor, &present, &dacl, &defaulted))
+        FixtureWin32Error("GetSecurityDescriptorDacl(exact fixture DACL)");
+    if (!present || !dacl) throw tlp::Error("Expected a non-NULL replacement fixture DACL.");
+    const auto error = SetNamedSecurityInfoW(path.data(), SE_FILE_OBJECT,
+        DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION, nullptr, nullptr, dacl, nullptr);
+    if (error != ERROR_SUCCESS) {
+        std::cerr << "Expected complete replacement DACL: " << tlp::win::Narrow(sddl) << "\n";
+        FixtureWin32Error("SetNamedSecurityInfoW(replace protected fixture DACL)", error);
+    }
+    return fileState(path);
+}
+
 Value identity() {
     HANDLE raw = nullptr;
     if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw)) FixtureWin32Error("OpenProcessToken");
@@ -267,6 +292,7 @@ int FixtureSecurityCommand(int argc, char** argv) {
     Value result;
     if (kind == L"Identity" && argc == 3) result = identity();
     else if (kind == L"File" && argc == 4) result = fileState(tlp::win::Widen(argv[3]));
+    else if (kind == L"RestrictFile" && argc == 5) result = restrictFile(tlp::win::Widen(argv[3]), argv[4]);
     else if ((kind == L"Task" && argc == 5) || (kind == L"TaskState" && argc == 4))
         result = taskCommand(kind, tlp::win::Widen(argv[3]), argc == 5 ? tlp::win::Widen(argv[4]) : L"");
     else throw tlp::Error("Invalid native fixture-security command/argument count.");

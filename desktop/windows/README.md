@@ -113,7 +113,8 @@ validation remain separate outstanding requirements.
 Portable CTest and native SSH integration are separate steps. If CTest fails,
 native SSH tests still execute when their build, OpenSSH and Win32 preflight
 prerequisites and the real isolated-fixture preflight succeeded. That preflight
-uses the integration fixture itself: separate SID-based ICACLS operations,
+uses the integration fixture itself: complete SID-based protected DACL replacement
+and separate owner assignment,
 native Win32/Task Scheduler read-back of file/task security descriptors, actual
 negative ACL probes, generated keys/configuration, a
 temporary SYSTEM task, real loopback SSH banner and verified shutdown/removal.

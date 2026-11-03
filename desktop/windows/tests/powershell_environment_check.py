@@ -35,8 +35,9 @@ try {
     for mode in ("inherited", "discovery-reset"):
         environment = os.environ.copy()
         if mode == "discovery-reset":
-            for name in ("PSModulePath", "PSHOME"):
-                environment.pop(name, None)
+            for name in list(environment):
+                if name.casefold() in ("psmodulepath", "pshome"):
+                    del environment[name]
         try:
             result = subprocess.run([str(executable), "-NoLogo", "-NoProfile", "-NonInteractive",
                                      "-Command", script], env=environment, capture_output=True,

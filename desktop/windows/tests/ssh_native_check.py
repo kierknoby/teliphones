@@ -129,18 +129,15 @@ def security_state(kind, path, user_sid=None):
     return json.loads(run(command, encoding="utf-8"))
 
 
-def secure_path(path, owner, sids, directory=False, remove_sid=None):
+def secure_path(path, owner, sids, directory=False):
     print(f"Securing fixture path: {path}", flush=True)
     print(f"Expected owner={owner}; protected=True; full-control SIDs={sids}; directory={directory}", flush=True)
-    # ICACLS /setowner is a separate command form, not a /grant modifier.
+    policy = "directory" if directory else "host" if owner == SYSTEM_SID else "file"
+    # Replace the entire DACL: /grant:r only replaces grants for named SIDs.
     commands = [
-        ["icacls.exe", path, "/grant:r",
-         *["*" + sid + (":(OI)(CI)(F)" if directory else ":(F)") for sid in sids]],
+        [HOST, "--security", "RestrictFile", path, policy],
         ["icacls.exe", path, "/setowner", "*" + owner],
-        ["icacls.exe", path, "/inheritance:r"],
     ]
-    if remove_sid and remove_sid not in sids:
-        commands.append(["icacls.exe", path, "/remove:g", "*" + remove_sid])
     try:
         for command in commands:
             print("ACL operation: " + subprocess.list2cmdline([str(x) for x in command]), flush=True)
@@ -162,6 +159,18 @@ def native_acl_regression(root, sid):
     path.write_text("public fixture permission probe\n", encoding="ascii")
     sids = [sid, SYSTEM_SID, ADMIN_SID]
     secure_path(path, sid, sids)
+    run(["icacls.exe", path, "/grant:r", "*S-1-1-0:(R)"])
+    contaminated = security_state("File", path)
+    if not any(rule["sid"] == "S-1-1-0" and not rule["inherited"] for rule in contaminated["rules"]):
+        raise RuntimeError("ACL replacement probe requires an actual explicit Everyone ACE.")
+    try:
+        verify_security(contaminated, sid, sids)
+    except AssertionError:
+        pass
+    else:
+        raise RuntimeError("Security verification accepted explicit Everyone read access before repair.")
+    secure_path(path, sid, sids)
+    print("Native ACL replacement removed an actual explicit Everyone ACE.", flush=True)
     cases = (
         ("unexpected SID", ["/grant:r", "*S-1-1-0:(R)"], ["/remove:g", "*S-1-1-0"]),
         ("wrong owner", ["/setowner", "*" + ADMIN_SID], ["/setowner", "*" + sid]),
@@ -374,8 +383,10 @@ class WindowsSshTests(unittest.TestCase):
         secure_path(cls.root, cls.sid, [cls.sid, SYSTEM_SID, ADMIN_SID], directory=True)
         for name in ("ca", "host"):
             run([KEYGEN, "-q", "-t", "ed25519", "-N", "", "-C", "", "-f", cls.root / name])
-        secure_path(cls.root / "host", SYSTEM_SID, [SYSTEM_SID, ADMIN_SID], remove_sid=cls.sid)
+        secure_path(cls.root / "host", SYSTEM_SID, [SYSTEM_SID, ADMIN_SID])
         secure_path(cls.root / "ca", cls.sid, [cls.sid, SYSTEM_SID, ADMIN_SID])
+        for name in ("ca.pub", "host.pub"):
+            secure_path(cls.root / name, cls.sid, [cls.sid, SYSTEM_SID, ADMIN_SID])
         message = cls.root / "feature-probe"
         message.write_bytes(b"TELIPHONES Windows SSHSIG compatibility\n")
         run([KEYGEN, "-Y", "sign", "-f", cls.root / "ca", "-n", "teliphones-preflight", message])
@@ -404,7 +415,7 @@ class WindowsSshTests(unittest.TestCase):
             "AllowAgentForwarding no\nAllowTcpForwarding no\nPermitTunnel no\nLogLevel DEBUG2\n"
             "StrictModes yes\n",
             encoding="utf-8")
-        for path in (cls.config, cls.root / "ca.pub", cls.root / "host.pub", cls.root / "principals"):
+        for path in (cls.config, cls.root / "principals"):
             secure_path(path, cls.sid, [cls.sid, SYSTEM_SID, ADMIN_SID])
         run([SSHD, "-t", "-f", cls.config])
         effective = run([SSHD, "-T", "-f", cls.config])
@@ -506,6 +517,7 @@ class WindowsSshTests(unittest.TestCase):
         run([KEYGEN, "-q", "-s", self.root / "ca", "-I", token, "-n", self.principal,
              "-V", "-10m:-5m" if expired else "-1m:+5m", "-O", "clear",
              "-O", "source-address=127.0.0.1", root / "identity.pub"])
+        secure_path(root / "identity-cert.pub", self.sid, [self.sid, SYSTEM_SID, ADMIN_SID])
         cert = (root / "identity-cert.pub").read_text().strip()
         if cert_from:
             cert = cert_from
@@ -715,6 +727,7 @@ class WindowsSshTests(unittest.TestCase):
                     run([KEYGEN, "-q", "-s", fixture.root / "ca", "-I", "ws-" + profile + "/" + value["session_id"],
                          "-n", principal, "-V", stamp(now) + ":" + stamp(until), "-O", "clear", "-O", "permit-pty",
                          "-O", "source-address=127.0.0.1/32", root / "session.pub"])
+                    secure_path(root / "session-cert.pub", fixture.sid, [fixture.sid, SYSTEM_SID, ADMIN_SID])
                     observed.append(value["ssh_public_key"])
                     self.answer({"schema": "teliphones-ssh-certificate/2", "workstation_id": profile,
                                  "session_id": value["session_id"], "ssh_public_key": value["ssh_public_key"],
