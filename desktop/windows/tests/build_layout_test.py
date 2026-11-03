@@ -27,8 +27,8 @@ class BuildLayoutTests(unittest.TestCase):
         base = ".".join(map(str, parts[:3]))
         product = base
         numeric = ".".join(map(str, parts))
-        self.assertEqual(product, "0.6.1")
-        self.assertEqual(numeric, "0.6.1.0")
+        self.assertEqual(product, "0.6.2")
+        self.assertEqual(numeric, "0.6.2.0")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
         self.assertIn(f"# TELIPHONES {product} for Windows", readme)
@@ -312,6 +312,16 @@ class BuildLayoutTests(unittest.TestCase):
         self.assertIn("const bool nativeTheme = highContrast_ || nativeFrame;", source)
         self.assertIn('SetWindowTheme(window, nativeTheme ? nullptr : L"", nativeTheme ? nullptr : L"");', source)
         self.assertIn("DwmSetWindowAttribute(window, DWMWA_USE_IMMERSIVE_DARK_MODE", source)
+
+    def test_combo_selection_uses_shared_bounded_renderer(self):
+        source = (ROOT / "src/app/Appearance.cpp").read_text()
+        self.assertIn("selection.rcItem = info.rcItem;", source)
+        self.assertIn("DrawComboItem(WM_DRAWITEM, reinterpret_cast<LPARAM>(&selection));", source)
+        self.assertIn("const bool selected = !closedField", source)
+        self.assertIn("&& !hideFocus", source)
+        self.assertNotIn("DrawFocusRect(dc, &label)", source)
+        tests = (ROOT / "tests/health_window_tests.cpp").read_text()
+        self.assertIn("closed combo owner-draw preserves surface and respects hidden focus cues", tests)
 
     def test_installer_is_fixed_verified_and_does_not_change_profiles(self):
         source = (ROOT / "src/platform/WireGuardInstaller.cpp").read_text()

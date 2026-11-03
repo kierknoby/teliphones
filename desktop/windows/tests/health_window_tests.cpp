@@ -219,6 +219,45 @@ private:
         COMBOBOXINFO info{sizeof(info)};
         check(GetComboBoxInfo(combo, &info) != FALSE, "dropdown list is available");
         check(Background(combo, WM_CTLCOLORLISTBOX, info.hwndList) == palette.surface, "dropdown list background follows theme");
+        const auto previousFocus = ::GetFocus();
+        const auto previousUiState = ::SendMessageW(combo, WM_QUERYUISTATE, 0, 0);
+        ::SetFocus(combo);
+        ::SendMessageW(combo, WM_UPDATEUISTATE, MAKEWPARAM(UIS_SET, UISF_HIDEFOCUS), 0);
+        CClientDC screen(CWnd::FromHandle(combo));
+        CDC selectionDc;
+        CBitmap selectionBitmap;
+        check(selectionDc.CreateCompatibleDC(&screen) &&
+            selectionBitmap.CreateCompatibleBitmap(&screen, rectangle.right, rectangle.bottom),
+            "create combo selection paint buffer");
+        CBitmap* previousBitmap = selectionDc.SelectObject(&selectionBitmap);
+        selectionDc.FillSolidRect(&rectangle, palette.error);
+        DRAWITEMSTRUCT selection{};
+        selection.CtlType = ODT_COMBOBOX;
+        selection.itemID = static_cast<UINT>(-1);
+        selection.itemAction = ODA_DRAWENTIRE;
+        selection.itemState = ODS_COMBOBOXEDIT | ODS_SELECTED | ODS_FOCUS;
+        selection.hwndItem = combo;
+        selection.hDC = selectionDc.GetSafeHdc();
+        selection.rcItem = info.rcItem;
+        check(::SendMessageW(::GetParent(combo), WM_DRAWITEM, ::GetDlgCtrlID(combo),
+            reinterpret_cast<LPARAM>(&selection)) != 0, "native combo selection notification is handled");
+        bool cleanSelection = true;
+        for (int y = info.rcItem.top; y < info.rcItem.bottom; ++y)
+            for (int x = info.rcItem.left; x < info.rcItem.right; ++x)
+                cleanSelection = cleanSelection && selectionDc.GetPixel(x, y) == palette.surface;
+        check(cleanSelection, "closed combo owner-draw preserves surface and respects hidden focus cues");
+        check(selectionDc.GetPixel(0, 0) == palette.error, "combo selection painting does not overwrite its frame");
+        check(ControlPixel(combo, info.rcItem.left + 1, info.rcItem.top) == palette.surface,
+            "full combo repaint has no focus overlay against the selection edge");
+        selection.itemState = ODS_SELECTED | ODS_NOFOCUSRECT;
+        check(::SendMessageW(::GetParent(combo), WM_DRAWITEM, ::GetDlgCtrlID(combo),
+            reinterpret_cast<LPARAM>(&selection)) != 0, "dropdown row selection notification is handled");
+        check(selectionDc.GetPixel(info.rcItem.left + 1, info.rcItem.top + 1) == palette.selection,
+            "open dropdown rows retain selection highlighting");
+        selectionDc.SelectObject(previousBitmap);
+        ::SendMessageW(combo, WM_UPDATEUISTATE,
+            MAKEWPARAM(previousUiState & UISF_HIDEFOCUS ? UIS_SET : UIS_CLEAR, UISF_HIDEFOCUS), 0);
+        ::SetFocus(previousFocus);
         ::SendMessageW(combo, CB_RESETCONTENT, 0, 0);
 
         CMenu menu;

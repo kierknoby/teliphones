@@ -5,7 +5,21 @@ No Windows release is declared published by this document. Earlier development
 builds lacked embedded file/product versions and cannot be assigned reliable
 version numbers retrospectively.
 
-## 0.6.1 — Unreleased
+## 0.6.2 — Unreleased
+
+Windows file version: **0.6.2.0**. FreePBX module version: **0.3.2**.
+Native MSVC/MFC compilation and visual validation of this patch remain pending.
+
+- Use the same selection renderer for full dropdown repainting and native
+  owner-draw notifications, with the native selection-field bounds. Remove
+  conflicting text/focus rectangles that could appear as overlay boxes.
+- Keep closed selection fields on the normal surface colour, clip item drawing
+  to its bounds and inset keyboard focus cues while respecting Windows' hidden
+  focus state. Dropdown-list selection highlighting remains intact.
+- Add native rendering regression cases and update version consistency checks.
+  Preserve the 0.6.1 native caption-frame correction and existing layout.
+
+## 0.6.1 — Previous development version (not released)
 
 Windows file version: **0.6.1.0**. FreePBX module version: **0.3.2**.
 Native MSVC/MFC compilation and interactive validation of this patch are pending.

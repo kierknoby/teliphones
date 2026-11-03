@@ -1117,8 +1117,8 @@ int main() {
     for (unsigned part : versionParts) check(part <= 65535, "Windows version component fits the resource WORD");
     check(TELIPHONES_VERSION_FILE_STRING == versionBase + "." + std::to_string(versionParts[3]), "file version expands consistently");
     check(TELIPHONES_VERSION_STRING == versionBase, "product version expands without a development suffix");
-    check(std::string(TELIPHONES_VERSION_STRING) == "0.6.1", "Windows application version is independent of the module");
-    check(std::string(TELIPHONES_VERSION_FILE_STRING) == "0.6.1.0", "Windows file version is 0.6.1.0");
+    check(std::string(TELIPHONES_VERSION_STRING) == "0.6.2", "Windows application version is independent of the module");
+    check(std::string(TELIPHONES_VERSION_FILE_STRING) == "0.6.2.0", "Windows file version is 0.6.2.0");
     testEncoding();
     testJson();
     testValidation();

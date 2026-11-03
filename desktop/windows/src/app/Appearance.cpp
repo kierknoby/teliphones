@@ -388,6 +388,8 @@ void CheckMark(HDC dc, RECT box, COLORREF colour, int thickness) {
     DeleteObject(pen);
 }
 
+bool DrawComboItem(UINT message, LPARAM lparam);
+
 void PaintControl(HWND window, HDC dc, bool hot) {
     const auto& p = Manager().palette_;
     const int saved = SaveDC(dc);
@@ -475,17 +477,20 @@ void PaintControl(HWND window, HDC dc, bool hot) {
         RECT arrow{rect.right - arrowWidth, rect.top + 1, rect.right - 1, rect.bottom - 1};
         Fill(dc, arrow, hot ? p.hover : p.button);
         Arrow(dc, arrow, IsWindowEnabled(window) ? p.text : p.disabled, 1);
-        RECT label = rect;
-        label.left += Scale(window, 7);
-        label.right = arrow.left - Scale(window, 3);
-        const auto row = SendMessageW(window, CB_GETCURSEL, 0, 0);
-        const auto length = row == CB_ERR ? CB_ERR : SendMessageW(window, CB_GETLBTEXTLEN, row, 0);
-        if (length >= 0) {
-            std::vector<wchar_t> text(static_cast<std::size_t>(length) + 1);
-            SendMessageW(window, CB_GETLBTEXT, row, reinterpret_cast<LPARAM>(text.data()));
-            DrawTextW(dc, text.data(), -1, &label, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+        COMBOBOXINFO info{sizeof(info)};
+        if (GetComboBoxInfo(window, &info)) {
+            DRAWITEMSTRUCT selection{};
+            selection.CtlType = ODT_COMBOBOX;
+            selection.itemID = static_cast<UINT>(SendMessageW(window, CB_GETCURSEL, 0, 0));
+            selection.itemAction = ODA_DRAWENTIRE;
+            selection.itemState = ODS_COMBOBOXEDIT;
+            if (GetFocus() == window) selection.itemState |= ODS_FOCUS;
+            if (!IsWindowEnabled(window)) selection.itemState |= ODS_DISABLED;
+            selection.hwndItem = window;
+            selection.hDC = dc;
+            selection.rcItem = info.rcItem;
+            DrawComboItem(WM_DRAWITEM, reinterpret_cast<LPARAM>(&selection));
         }
-        if (GetFocus() == window) DrawFocusRect(dc, &label);
     } else if (IsClass(window, WC_HEADERW)) {
         Fill(dc, rect, p.button);
         const int count = Header_GetItemCount(window);
@@ -589,8 +594,10 @@ bool DrawComboItem(UINT message, LPARAM lparam) {
     const auto draw = reinterpret_cast<DRAWITEMSTRUCT*>(lparam);
     if (draw->CtlType != ODT_COMBOBOX) return false;
     const auto& p = Manager().palette_;
-    const bool selected = (draw->itemState & ODS_SELECTED) != 0 && !(draw->itemState & ODS_DISABLED);
+    const bool closedField = (draw->itemState & ODS_COMBOBOXEDIT) != 0;
+    const bool selected = !closedField && (draw->itemState & ODS_SELECTED) != 0 && !(draw->itemState & ODS_DISABLED);
     const int saved = SaveDC(draw->hDC);
+    IntersectClipRect(draw->hDC, draw->rcItem.left, draw->rcItem.top, draw->rcItem.right, draw->rcItem.bottom);
     Fill(draw->hDC, draw->rcItem, selected ? p.selection : p.surface);
     SetBkMode(draw->hDC, TRANSPARENT);
     SetTextColor(draw->hDC, draw->itemState & ODS_DISABLED ? p.disabled : selected ? p.selectedText : p.text);
@@ -605,7 +612,12 @@ bool DrawComboItem(UINT message, LPARAM lparam) {
         SendMessageW(draw->hwndItem, CB_GETLBTEXT, draw->itemID, reinterpret_cast<LPARAM>(value.data()));
         DrawTextW(draw->hDC, value.data(), -1, &text, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
     }
-    if ((draw->itemState & ODS_FOCUS) && !(draw->itemState & ODS_NOFOCUSRECT)) DrawFocusRect(draw->hDC, &text);
+    const bool hideFocus = (SendMessageW(draw->hwndItem, WM_QUERYUISTATE, 0, 0) & UISF_HIDEFOCUS) != 0;
+    if ((draw->itemState & ODS_FOCUS) && !(draw->itemState & ODS_NOFOCUSRECT) && !hideFocus) {
+        RECT focus = draw->rcItem;
+        InflateRect(&focus, -Scale(draw->hwndItem, 2), -Scale(draw->hwndItem, 2));
+        DrawFocusRect(draw->hDC, &focus);
+    }
     RestoreDC(draw->hDC, saved);
     return true;
 }
