@@ -197,7 +197,10 @@ jobs:
           $vcpkg = $env:VCPKG_INSTALLATION_ROOT
           $toolchain = Join-Path $vcpkg 'scripts/buildsystems/vcpkg.cmake'
           $installed = Join-Path $env:GITHUB_WORKSPACE 'desktop/windows/vcpkg_installed'
-          cmake -S desktop/windows -B desktop/windows/build/ssh-native -A x64 "-DCMAKE_TOOLCHAIN_FILE=$toolchain" "-DVCPKG_INSTALLED_DIR=$installed" -DVCPKG_TARGET_TRIPLET=x64-windows-static -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+          cmake -S desktop/windows -B desktop/windows/build/ssh-native -A x64 `
+            "-DCMAKE_TOOLCHAIN_FILE=$toolchain" "-DVCPKG_INSTALLED_DIR=$installed" `
+            -DVCPKG_TARGET_TRIPLET=x64-windows-static -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded `
+            -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON
           if ($LASTEXITCODE -ne 0) { throw 'Native SSH CMake configuration failed.' }
           cmake --build desktop/windows/build/ssh-native --config Release
           if ($LASTEXITCODE -ne 0) { throw 'Native SSH compilation failed.' }

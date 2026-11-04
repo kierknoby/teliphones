@@ -177,7 +177,7 @@ int runMain(int argc, char** argv) {
         if (argc > 1 && std::string(argv[1]) == "--security") return FixtureSecurityCommand(argc, argv);
         if (argc == 7 && std::string(argv[1]) == "--fixture-server") return fixtureServer(argv);
         if (argc == 2 && std::string(argv[1]) == "--preflight") { preflight(); return 0; }
-        if (argc > 1 && std::string(argv[1]) == "/ssh-console")
+        if (argc > 1 && (std::string(argv[1]) == "/ssh-console" || std::string(argv[1]) == "/ssh-auth"))
             return tlp::win::RunSshConsole(std::vector<std::string>(argv + 1, argv + argc));
         tlp::win::ProtectSshProcess(GetCurrentProcess());
         const bool embeddedConsole = argc == 3 && std::string(argv[1]) == "--production-console";

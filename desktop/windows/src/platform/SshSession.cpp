@@ -143,6 +143,10 @@ json::Value request(const Profile& profile, const std::string& method, const std
 bool hex(const std::string& value, std::size_t size) {
     return value.size() == size && value.find_first_not_of("0123456789abcdef") == std::string::npos;
 }
+std::wstring authenticationEventName(const std::string& sessionId) {
+    if (!hex(sessionId, 32)) throw Error("Invalid SSH authentication signal identifier.");
+    return L"Local\\TELIPHONES-SSH-auth-" + Widen(sessionId);
+}
 std::string certificate(const Profile& profile, const SshSessionPublicKey& session) {
     auto challenge = request(profile, "GET", "/ssh/challenge?workstation_id=" + profile.pairing.workstationId);
     json::RequireExactKeys(challenge, {"schema", "workstation_id", "challenge", "expires_at"}, "SSH challenge");
@@ -232,30 +236,11 @@ struct Session final : ManagedSshConsole {
     Handle terminalControl;
     Handle stop{CreateEventW(nullptr, TRUE, FALSE, nullptr)};
     Handle finished{CreateEventW(nullptr, TRUE, FALSE, nullptr)};
+    Handle authenticationEvent;
     std::unique_ptr<SshAgent> agent;
     std::wstring directory;
     std::wstring sshLog;
     std::atomic<bool> authenticationConfirmed{false};
-#ifdef TELIPHONES_SSH_TESTING
-    std::string lastAuthenticationDiagnostic;
-    unsigned authenticationDiagnosticCount = 0;
-    void ReportAuthenticationRead(const std::string& status) {
-        if (status == lastAuthenticationDiagnostic || authenticationDiagnosticCount >= 32) return;
-        const auto diagnosticPath = sshLog + L".auth";
-        Handle diagnostic(CreateFileW(diagnosticPath.c_str(), FILE_APPEND_DATA,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_ALWAYS,
-            FILE_ATTRIBUTE_NORMAL, nullptr));
-        if (diagnostic.get() == INVALID_HANDLE_VALUE)
-            ThrowLastError("Unable to open the native SSH authentication diagnostic log");
-        const auto message = "path=" + Narrow(sshLog) + "; " + status + "\n";
-        DWORD written = 0;
-        if (!WriteFile(diagnostic.get(), message.data(), static_cast<DWORD>(message.size()), &written, nullptr) ||
-            written != static_cast<DWORD>(message.size()))
-            ThrowLastError("Unable to write the native SSH authentication diagnostic log");
-        lastAuthenticationDiagnostic = status;
-        ++authenticationDiagnosticCount;
-    }
-#endif
     std::mutex controlMutex;
     std::int64_t expiry = 0;
     std::string ReadAvailable() override {
@@ -291,10 +276,12 @@ struct Session final : ManagedSshConsole {
         send(terminalControl.get(), request);
     }
     bool IsAuthenticated() override {
-        if (authenticationConfirmed.load()) {
-#ifdef TELIPHONES_SSH_TESTING
-            ReportAuthenticationRead("cached=true");
-#endif
+        if (authenticationConfirmed.load()) return true;
+        if (authenticationEvent.get()) {
+            const auto result = WaitForSingleObject(authenticationEvent.get(), 0);
+            if (result == WAIT_TIMEOUT) return false;
+            if (result != WAIT_OBJECT_0) ThrowLastError("Unable to read SSH authentication signal");
+            authenticationConfirmed.store(true);
             return true;
         }
         if (sshLog.empty()) return false;
@@ -302,31 +289,18 @@ struct Session final : ManagedSshConsole {
                                 nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
         if (file.get() == INVALID_HANDLE_VALUE) {
             const auto error = GetLastError();
-#ifdef TELIPHONES_SSH_TESTING
-            ReportAuthenticationRead("open_error=" + std::to_string(error));
-#endif
             if (error == ERROR_FILE_NOT_FOUND || error == ERROR_SHARING_VIOLATION) return false;
             ThrowLastError("Unable to read SSH authentication status", error);
         }
         LARGE_INTEGER size{};
         if (!GetFileSizeEx(file.get(), &size)) ThrowLastError("Unable to size SSH authentication log");
-        if (size.QuadPart <= 0) {
-#ifdef TELIPHONES_SSH_TESTING
-            ReportAuthenticationRead("size=0");
-#endif
-            return false;
-        }
+        if (size.QuadPart <= 0) return false;
         const auto bytesToRead = static_cast<DWORD>(std::min<LONGLONG>(size.QuadPart, 256 * 1024));
         std::string contents(bytesToRead, '\0');
         DWORD count = 0;
         if (!ReadFile(file.get(), contents.data(), static_cast<DWORD>(contents.size()), &count, nullptr))
             ThrowLastError("Unable to read SSH authentication log");
         contents.resize(count);
-#ifdef TELIPHONES_SSH_TESTING
-        ReportAuthenticationRead("size=" + std::to_string(size.QuadPart) +
-            "; read=" + std::to_string(count) +
-            "; marker=" + (contents.find("Authenticated to ") != std::string::npos ? "true" : "false"));
-#endif
         if (contents.find("Authenticated to ") == std::string::npos) return false;
         authenticationConfirmed.store(true);
         return true;
@@ -460,6 +434,28 @@ std::shared_ptr<Session> startManagedSsh(const Profile& profile, const Preferenc
         state->sshLog = Widen(testLogPath);
     }
 #endif
+    std::string localCommandOptions = "\nPermitLocalCommand no\n";
+    if (embedded) {
+        PSECURITY_DESCRIPTOR descriptor = nullptr;
+        const auto sddl = ownerAcl();
+        if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.c_str(), SDDL_REVISION_1, &descriptor, nullptr))
+            ThrowLastError("Unable to secure SSH authentication signal");
+        SECURITY_ATTRIBUTES attributes{sizeof(attributes), descriptor, FALSE};
+        const auto eventName = authenticationEventName(session.id);
+        SetLastError(ERROR_SUCCESS);
+        state->authenticationEvent.reset(CreateEventW(&attributes, TRUE, FALSE, eventName.c_str()));
+        const auto error = GetLastError();
+        LocalFree(descriptor);
+        if (!state->authenticationEvent.get()) ThrowLastError("Unable to create SSH authentication signal", error);
+        if (error == ERROR_ALREADY_EXISTS) throw Error("SSH authentication signal identifier was already in use.");
+        const auto helperName = std::filesystem::path(consoleExecutable()).filename().wstring();
+        if (helperName.empty() ||
+            helperName.find_first_not_of(L"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-") !=
+                std::wstring::npos)
+            throw Error("Unsafe SSH authentication helper executable name.");
+        const auto localCommand = L".\\" + helperName + L" /ssh-auth " + Widen(session.id);
+        localCommandOptions = "\nPermitLocalCommand yes\nLocalCommand " + quoted(localCommand) + "\n";
+    }
     const std::string config =
         "Host *\nHostName " + profile.pairing.pbxAddress + "\nUser " + profile.pairing.sshUser +
         "\nPort " + std::to_string(profile.pairing.sshPort) + "\nHostKeyAlias " + alias +
@@ -471,7 +467,7 @@ std::shared_ptr<Session> startManagedSsh(const Profile& profile, const Preferenc
         "HostKeyAlgorithms ssh-ed25519\nPubkeyAcceptedKeyTypes ssh-ed25519-cert-v01@openssh.com\n"
         "IdentitiesOnly yes\nBatchMode yes\nPreferredAuthentications publickey\nPasswordAuthentication no\n"
         "KbdInteractiveAuthentication no\nGSSAPIAuthentication no\nAddKeysToAgent no\nForwardAgent no\nForwardX11 no\n"
-        "ClearAllForwardings yes\nControlMaster no\nControlPath none\nPermitLocalCommand no\nProxyCommand none\n"
+        "ClearAllForwardings yes\nControlMaster no\nControlPath none\n" + localCommandOptions + "ProxyCommand none\n"
         "ProxyJump none\nServerAliveInterval 15\nServerAliveCountMax 2\nConnectTimeout 10\nRequestTTY force\n";
     WriteNewFile(configPath, config, ownerAcl().c_str());
     state->agent = std::make_unique<SshAgent>(pipe, ownerAcl(), std::move(key), cert, profile.sshUser, profile.pairing.sshHostKey);
@@ -620,6 +616,25 @@ std::shared_ptr<ManagedSshConsole> StartManagedSshConsole(const Profile& profile
 }
 
 int RunSshConsole(const std::vector<std::string>& arguments) {
+    const auto reportFailure = [](const std::exception& error) {
+        const auto message = "TELIPHONES SSH: " + std::string(error.what()) + "\r\n";
+        DWORD count = 0;
+        WriteFile(GetStdHandle(STD_ERROR_HANDLE), message.data(), static_cast<DWORD>(message.size()), &count, nullptr);
+    };
+    if (arguments.size() == 2 && arguments[0] == "/ssh-auth") {
+        if (!hex(arguments[1], 32)) return 2;
+        try {
+            ProtectSshProcess(GetCurrentProcess());
+            const auto name = authenticationEventName(arguments[1]);
+            Handle event(OpenEventW(EVENT_MODIFY_STATE, FALSE, name.c_str()));
+            if (!event.get()) ThrowLastError("Unable to open SSH authentication signal");
+            if (!SetEvent(event.get())) ThrowLastError("Unable to signal successful SSH authentication");
+            return 0;
+        } catch (const std::exception& error) {
+            reportFailure(error);
+            return 1;
+        }
+    }
     if (arguments.size() != 2 || arguments[0] != "/ssh-console" || !hex(arguments[1], 32)) return 2;
     try {
         ProtectSshProcess(GetCurrentProcess(), true);
@@ -714,8 +729,9 @@ int RunSshConsole(const std::vector<std::string>& arguments) {
             startup.StartupInfo.hStdError = GetStdHandle(STD_ERROR_HANDLE);
         }
         const DWORD creationFlags = (embedded ? EXTENDED_STARTUPINFO_PRESENT : 0) | CREATE_SUSPENDED;
+        const auto helperDirectory = std::filesystem::path(executable()).parent_path().wstring();
         const BOOL created = CreateProcessW(Widen(ssh).c_str(), command.data(), nullptr, nullptr, !embedded,
-                                            creationFlags, nullptr, nullptr, &startup.StartupInfo, &process);
+                                            creationFlags, nullptr, helperDirectory.c_str(), &startup.StartupInfo, &process);
         if (startup.lpAttributeList) DeleteProcThreadAttributeList(startup.lpAttributeList);
         if (!created) ThrowLastError("Unable to start owned OpenSSH client");
         Handle child(process.hProcess), thread(process.hThread);
@@ -911,9 +927,7 @@ int RunSshConsole(const std::vector<std::string>& arguments) {
         if (!GetExitCodeProcess(child.get(), &result)) ThrowLastError("Unable to read SSH client exit status");
         return static_cast<int>(result);
     } catch (const std::exception& error) {
-        const auto message = "TELIPHONES SSH: " + std::string(error.what()) + "\r\n";
-        DWORD count = 0;
-        WriteFile(GetStdHandle(STD_ERROR_HANDLE), message.data(), static_cast<DWORD>(message.size()), &count, nullptr);
+        reportFailure(error);
         return 1;
     }
 }

@@ -111,7 +111,7 @@ static void string_fragment(VTerm *vt, const char *str, size_t len, bool final)
 size_t vterm_input_write(VTerm *vt, const char *bytes, size_t len)
 {
   size_t pos = 0;
-  const char *string_start;
+  const char *string_start = NULL;
 
   switch(vt->parser.state) {
   case NORMAL:
@@ -128,6 +128,9 @@ size_t vterm_input_write(VTerm *vt, const char *bytes, size_t len)
   case PM:
   case SOS:
     string_start = bytes;
+    break;
+  default:
+    vt->parser.state = NORMAL;
     break;
   }
 
@@ -180,7 +183,7 @@ size_t vterm_input_write(VTerm *vt, const char *bytes, size_t len)
     }
     // else fallthrough
 
-    size_t string_len = bytes + pos - string_start;
+    size_t string_len = string_start ? bytes + pos - string_start : 0;
 
     if(vt->parser.in_esc) {
       // Hoist an ESC letter into a C1 if we're not in a string mode

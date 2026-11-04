@@ -449,20 +449,30 @@ def wait_fixture_listener(port, pid_file, task):
 
 
 def server_log_tail(path):
-    if not path.exists():
+    try:
+        with path.open("rb") as stream:
+            stream.seek(0, os.SEEK_END)
+            stream.seek(max(0, stream.tell() - 8192))
+            return b"\n".join(stream.read().splitlines()[-30:]).decode("utf-8", errors="replace")
+    except FileNotFoundError:
         return "No server log produced."
-    with path.open("rb") as stream:
-        stream.seek(0, os.SEEK_END)
-        stream.seek(max(0, stream.tell() - 8192))
-        return b"\n".join(stream.read().splitlines()[-30:]).decode("utf-8", errors="replace")
+    except PermissionError as error:
+        if getattr(error, "winerror", None) == 32:
+            return f"Log is still held by a writer (Win32 32): {path.name}"
+        raise
 
 
 def ssh_client_log_summary(path):
-    if not path.exists():
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as stream:
+            prefix = stream.read(256 * 1024)
+    except FileNotFoundError:
         return "SSH client log not produced."
-    size = path.stat().st_size
-    with path.open("rb") as stream:
-        prefix = stream.read(256 * 1024)
+    except PermissionError as error:
+        if getattr(error, "winerror", None) == 32:
+            return "SSH client log is still held by OpenSSH (Win32 32); live auth uses the LocalCommand signal."
+        raise
     marker = b"Authenticated to " in prefix
     return (f"SSH client log bytes={size}; authentication marker in first 256 KiB={marker}\n"
             + server_log_tail(path))
@@ -929,12 +939,16 @@ class WindowsSshTests(unittest.TestCase):
                 return
             self.assertEqual(line(host), "PRODUCTION_STARTED")
             if console:
+                config = (runtime / "config").read_text(encoding="utf-8")
+                self.assertIn("PermitLocalCommand yes\n", config)
+                self.assertIn("/ssh-auth ", config)
                 try:
                     self.assertEqual(line(host), "CONSOLE_COMMAND_RESULT=377")
                     self.assertEqual(line(host), "CONSOLE_INTERACTIVE=1")
                 except (AssertionError, RuntimeError, TimeoutError) as error:
+                    self.stop(host)
                     self.fail(f"{error}\nClient diagnostic:\n{ssh_client_log_summary(client_log)}"
-                              f"\nProduction authentication-read diagnostic:\n{server_log_tail(client_log.with_name(client_log.name + '.auth'))}"
+                              "\nAuthentication signal was not confirmed before interactive input."
                               f"\nInput-pipe diagnostic tail:\n{server_log_tail(client_log.with_name(client_log.name + '.io'))}"
                               f"\nServer diagnostic tail:\n{server_log_tail(self.root / 'sshd-test.log')}")
             for _ in range(100):
@@ -943,9 +957,10 @@ class WindowsSshTests(unittest.TestCase):
                     break
                 time.sleep(0.1)
             else:
+                self.stop(host)
                 self.fail("Production provider did not produce an authenticated native SSH login.\n"
                           f"Controller exit={host.poll()}; issuer errors={errors}; issued certificates={len(observed)}\n"
-                          "Client diagnostic tail:\n" + server_log_tail(client_log) +
+                          "Client diagnostic tail:\n" + ssh_client_log_summary(client_log) +
                           "\nServer diagnostic tail:\n" + server_log_tail(self.root / "sshd-test.log"))
             self.assertTrue(observed, errors)
             encrypted = identity_path.read_bytes()
@@ -963,6 +978,7 @@ class WindowsSshTests(unittest.TestCase):
             if console:
                 self.assertIn("CONSOLE_INTERACTIVE=1", output)
                 self.assertIn("TEST_AUTHENTICATION_CONFIRMED=1", error)
+                self.assertIn("authentication marker in first 256 KiB=True", ssh_client_log_summary(client_log))
                 input_diagnostic = client_log.with_name(client_log.name + ".io").read_text(encoding="utf-8")
                 for stage in ("PARENT_PIPE_READ", "CONPTY_INPUT_WRITE"):
                     counts = [int(entry.split("=", 1)[1]) for entry in input_diagnostic.splitlines()

@@ -140,9 +140,10 @@ class BuildLayoutTests(unittest.TestCase):
         authentication = session.split("bool IsAuthenticated() override {", 1)[1].split(
             "bool IsAlive() override {", 1
         )[0]
-        self.assertIn("256 * 1024", authentication)
-        self.assertNotIn("size.QuadPart > 256 * 1024", authentication)
-        self.assertIn('contents.find("Authenticated to ")', authentication)
+        self.assertIn("WaitForSingleObject(authenticationEvent.get(), 0)", authentication)
+        self.assertIn("PermitLocalCommand yes", session)
+        self.assertIn("/ssh-auth ", session)
+        self.assertNotIn("ReportAuthenticationRead", session)
         native_host = (ROOT / "tests/ssh_native_host.cpp").read_text()
         self.assertLess(native_host.index("output.find('>')"), native_host.index("console->WriteInput(command)"))
         self.assertIn('const std::string command = "set /a 29*13\\r";', native_host)
@@ -776,6 +777,7 @@ endfunction()
                 self.assertEqual(set(registered), expected)
                 self.assertEqual(len(registered), len(expected))
         workflow = (ROOT.parents[1] / ".github/workflows/windows-build.yml").read_text(encoding="utf-8")
+        self.assertIn("-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON", workflow)
         self.assertIn("tests/provision_openssh.ps1", workflow)
         self.assertIn("third_party/libvterm/LICENSE", workflow)
         self.assertIn("build/artifact/libvterm-LICENSE.txt", workflow)
@@ -846,7 +848,9 @@ endfunction()
             "Windows 0.8.0 adds explicit pairing access selection",
             " ".join(changelog.split()),
         )
-        self.assertIn("FreePBX module version: **0.6.0**", changelog)
+        module_version = ET.parse(ROOT.parents[1] / "teliphones/module.xml").getroot().findtext("version")
+        self.assertRegex(module_version or "", r"^\d+\.\d+\.\d+$")
+        self.assertIn(f"FreePBX module version: **{module_version}**", changelog)
         registered = {
             item.attrib["Include"].replace("\\", "/")
             for item in project("TELIPHONES.vcxproj").findall("ms:ItemGroup/ms:ClInclude", NS)
@@ -900,11 +904,12 @@ endfunction()
         self.assertIn('SS_CENTER | SS_CENTERIMAGE | SS_ENDELLIPSIS', resource)
         self.assertNotIn('"TELIPHONES is a UK registered trademark.\\r\\n"', layout)
         self.assertIn("desktop/windows/build/artifact/LICENSE", workflow)
-        module = ET.parse(ROOT.parents[1] / "teliphones/module.xml").getroot()
-        self.assertEqual(module.findtext("version"), "0.6.0")
+        module_version = ET.parse(ROOT.parents[1] / "teliphones/module.xml").getroot().findtext("version")
+        self.assertRegex(module_version or "", r"^\d+\.\d+\.\d+$")
         for path, statement in (
             (ROOT / "README.md", "TELIPHONES 0.8.0 for Windows is licensed under GPLv3."),
-            (ROOT.parents[1] / "teliphones/README.md", "TELIPHONES 0.6.0 for FreePBX is licensed under GPLv3."),
+            (ROOT.parents[1] / "teliphones/README.md",
+             f"TELIPHONES {module_version} for FreePBX is licensed under GPLv3."),
         ):
             text = path.read_text()
             self.assertIn(statement, text)
