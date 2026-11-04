@@ -34,6 +34,11 @@ counts, exercises resize and disconnect, and now corroborates the signalled
 state with OpenSSH's diagnostic marker after teardown. A Windows run remains
 necessary to validate the native signal and input/resize path.
 
+The generated OpenSSH configuration lives in the active attempt directory
+below the profile's SSH runtime directory and is removed when the owned session
+ends. The production integration test inspects its non-secret LocalCommand
+settings only after the interactive session is confirmed and before teardown.
+
 Connect Password Protection's portable positive path has been verified in this
 Codespace using the locally available OpenSSL 3.5.8 Argon2id provider: the
 independent interoperability vector, authenticated encryption/decryption,

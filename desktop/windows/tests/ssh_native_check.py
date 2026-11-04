@@ -939,16 +939,19 @@ class WindowsSshTests(unittest.TestCase):
                 return
             self.assertEqual(line(host), "PRODUCTION_STARTED")
             if console:
-                config = (runtime / "config").read_text(encoding="utf-8")
-                self.assertIn("PermitLocalCommand yes\n", config)
-                self.assertIn("/ssh-auth ", config)
                 try:
                     self.assertEqual(line(host), "CONSOLE_COMMAND_RESULT=377")
                     self.assertEqual(line(host), "CONSOLE_INTERACTIVE=1")
-                except (AssertionError, RuntimeError, TimeoutError) as error:
+                    configs = list(runtime.glob("*/config"))
+                    self.assertEqual(len(configs), 1,
+                                     "Expected one active per-session SSH config under " + str(runtime))
+                    config = configs[0].read_text(encoding="utf-8")
+                    self.assertIn("PermitLocalCommand yes\n", config)
+                    self.assertIn("/ssh-auth ", config)
+                except (AssertionError, OSError, RuntimeError, TimeoutError) as error:
                     self.stop(host)
                     self.fail(f"{error}\nClient diagnostic:\n{ssh_client_log_summary(client_log)}"
-                              "\nAuthentication signal was not confirmed before interactive input."
+                              "\nEmbedded SSH interaction or active configuration verification failed."
                               f"\nInput-pipe diagnostic tail:\n{server_log_tail(client_log.with_name(client_log.name + '.io'))}"
                               f"\nServer diagnostic tail:\n{server_log_tail(self.root / 'sshd-test.log')}")
             for _ in range(100):
