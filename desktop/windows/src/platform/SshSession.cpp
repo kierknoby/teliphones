@@ -746,6 +746,7 @@ int RunSshConsole(const std::vector<std::string>& arguments) {
             std::atomic<bool> pumpFailed{false};
 #ifdef TELIPHONES_SSH_TESTING
             Handle inputDiagnostics;
+            std::atomic<DWORD> inputDiagnosticError{ERROR_SUCCESS};
             wchar_t inputTestLog[32768];
             const auto testLogSize = GetEnvironmentVariableW(L"TELIPHONES_SSH_TEST_LOG", inputTestLog, 32768);
             if (!testLogSize || testLogSize >= 32768)
@@ -753,16 +754,34 @@ int RunSshConsole(const std::vector<std::string>& arguments) {
             const auto inputLogPath = Widen(Narrow(std::wstring(inputTestLog, testLogSize)) + ".io");
             if (!IsShellSafeFilePath(Narrow(inputLogPath)))
                 throw Error("Unsafe SSH input diagnostic log path.");
-            inputDiagnostics.reset(CreateFileW(inputLogPath.c_str(), FILE_APPEND_DATA,
+            inputDiagnostics.reset(CreateFileW(inputLogPath.c_str(), GENERIC_WRITE,
                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, CREATE_ALWAYS,
                 FILE_ATTRIBUTE_NORMAL, nullptr));
             if (inputDiagnostics.get() == INVALID_HANDLE_VALUE)
                 ThrowLastError("Unable to create the native SSH input diagnostic log");
-            const auto reportInputStage = [&inputDiagnostics](const char* stage, DWORD count) {
+            const auto reportInputStage = [&inputDiagnostics, &inputDiagnosticError, &pumpFailed]
+                (const char* stage, DWORD count) {
                 const auto message = std::string(stage) + "=" + std::to_string(count) + "\n";
                 DWORD written = 0;
-                WriteFile(inputDiagnostics.get(), message.data(),
-                          static_cast<DWORD>(message.size()), &written, nullptr);
+                if (!WriteFile(inputDiagnostics.get(), message.data(),
+                               static_cast<DWORD>(message.size()), &written, nullptr)) {
+                    const auto error = GetLastError();
+                    inputDiagnosticError.store(error == ERROR_SUCCESS ? ERROR_WRITE_FAULT : error);
+                    pumpFailed.store(true);
+                    return false;
+                }
+                if (written != static_cast<DWORD>(message.size())) {
+                    inputDiagnosticError.store(ERROR_WRITE_FAULT);
+                    pumpFailed.store(true);
+                    return false;
+                }
+                if (!FlushFileBuffers(inputDiagnostics.get())) {
+                    const auto error = GetLastError();
+                    inputDiagnosticError.store(error == ERROR_SUCCESS ? ERROR_WRITE_FAULT : error);
+                    pumpFailed.store(true);
+                    return false;
+                }
+                return true;
             };
 #endif
             std::thread inputPump;
@@ -788,7 +807,7 @@ int RunSshConsole(const std::vector<std::string>& arguments) {
                             break;
                         }
 #ifdef TELIPHONES_SSH_TESTING
-                        reportInputStage("PARENT_PIPE_READ", count);
+                        if (!reportInputStage("PARENT_PIPE_READ", count)) break;
 #endif
                         DWORD written = 0;
                         if (!WriteFile(ptyInputWrite.get(), buffer, count, &written, nullptr) || written != count) {
@@ -798,7 +817,7 @@ int RunSshConsole(const std::vector<std::string>& arguments) {
                             break;
                         }
 #ifdef TELIPHONES_SSH_TESTING
-                        reportInputStage("CONPTY_INPUT_WRITE", written);
+                        if (!reportInputStage("CONPTY_INPUT_WRITE", written)) break;
 #endif
                     }
                 });
@@ -861,6 +880,14 @@ int RunSshConsole(const std::vector<std::string>& arguments) {
                 }
             };
             std::string pumpError;
+#ifdef TELIPHONES_SSH_TESTING
+            const auto inputDiagnosticFailure = [&inputDiagnosticError] {
+                const auto error = inputDiagnosticError.load();
+                return error == ERROR_SUCCESS ? std::string() :
+                    "Unable to record SSH pseudoconsole input diagnostics (Win32 " +
+                    std::to_string(error) + ").";
+            };
+#endif
             try {
                 for (;;) {
                     HANDLE waits[]{parent.get(), child.get()};
@@ -889,8 +916,12 @@ int RunSshConsole(const std::vector<std::string>& arguments) {
                             outputPump.join();
                         }
                         pseudoConsole.reset();
-                        if (pumpFailed.load() && pumpError.empty())
-                            pumpError = "An SSH pseudoconsole stream failed.";
+                        if (pumpFailed.load() && pumpError.empty()) {
+#ifdef TELIPHONES_SSH_TESTING
+                            pumpError = inputDiagnosticFailure();
+#endif
+                            if (pumpError.empty()) pumpError = "An SSH pseudoconsole stream failed.";
+                        }
                         break;
                     }
                     if (outcome != WAIT_TIMEOUT) ThrowLastError("Unable to monitor the SSH pseudoconsole");
@@ -908,7 +939,13 @@ int RunSshConsole(const std::vector<std::string>& arguments) {
                         if (FAILED(result)) throw Error("Unable to resize the OpenSSH pseudoconsole (HRESULT " +
                                                        std::to_string(static_cast<unsigned long>(result)) + ").");
                     }
-                    if (pumpFailed.load()) { pumpError = "An SSH pseudoconsole stream failed."; break; }
+                    if (pumpFailed.load()) {
+#ifdef TELIPHONES_SSH_TESTING
+                        pumpError = inputDiagnosticFailure();
+#endif
+                        if (pumpError.empty()) pumpError = "An SSH pseudoconsole stream failed.";
+                        break;
+                    }
                 }
             } catch (...) {
                 stopPumps();

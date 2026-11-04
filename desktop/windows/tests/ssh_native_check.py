@@ -985,6 +985,7 @@ class WindowsSshTests(unittest.TestCase):
                 console_transcript = "\n".join(console_lines + [output])
                 self.assertIn("CONSOLE_INTERACTIVE=1", console_transcript, console_transcript)
                 self.assertIn("TEST_AUTHENTICATION_CONFIRMED=1", error)
+                self.assertIn("TEST_INPUT_WRITE_RETURNED=13", error)
                 self.assertIn("authentication marker in first 256 KiB=True", ssh_client_log_summary(client_log))
                 input_diagnostic = client_log.with_name(client_log.name + ".io").read_text(encoding="utf-8")
                 for stage in ("PARENT_PIPE_READ", "CONPTY_INPUT_WRITE"):

@@ -106,6 +106,9 @@ class BuildLayoutTests(unittest.TestCase):
         self.assertIn('if (embedded) commandArgs.push_back("-tt");', helper_session)
         self.assertIn("state->sshLog = Widen(testLogPath);", helper_session)
         self.assertIn("testLogPath != logPath", helper_session)
+        self.assertIn("CreateFileW(inputLogPath.c_str(), GENERIC_WRITE", helper_session)
+        self.assertIn("FlushFileBuffers(inputDiagnostics.get())", helper_session)
+        self.assertIn("inputDiagnosticFailure()", helper_session)
 
     def test_native_mfc_terminal_integration_regressions_are_covered(self):
         main = (ROOT / "src/app/MainDlg.cpp").read_text()
