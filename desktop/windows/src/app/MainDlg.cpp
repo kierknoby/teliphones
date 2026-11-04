@@ -566,7 +566,7 @@ void CMainDlg::UpdateButtons() {
     GetDlgItem(IDC_OPEN_SSH)->EnableWindow(verified && sshAllowed);
     GetDlgItem(IDC_OPEN_SSH)->SetWindowTextW(activeProfile != nullptr && activeProfile->kind == ProfileKind::Administrator &&
         !activeProfile->pairing.ssh ? L"Request SSH" :
-        activeProfile->kind == ProfileKind::Administrator ? L"SSH Console" : L"Open SSH");
+        activeProfile != nullptr && activeProfile->kind == ProfileKind::Administrator ? L"SSH Console" : L"Open SSH");
     const bool mayChangeWorkstationPolicy = connected && verified && activeProfile != nullptr &&
         activeProfile->kind == ProfileKind::Administrator &&
         (!activePolicyLocked_ || !unlockRequestPending_);

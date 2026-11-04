@@ -116,6 +116,45 @@ class BuildLayoutTests(unittest.TestCase):
             self.assertIn("startup.StartupInfo." + stream + " = nullptr;", pseudoconsole_child)
         self.assertNotIn("GetStdHandle", pseudoconsole_child)
 
+    def test_main_window_startup_crash_is_guarded_and_smoke_tested(self):
+        main = (ROOT / "src/app/MainDlg.cpp").read_text()
+        update = main.split("void CMainDlg::UpdateButtons() {", 1)[1].split("\n}\n", 1)[0]
+        open_ssh_label = update.split("GetDlgItem(IDC_OPEN_SSH)->SetWindowTextW(", 1)[1].split(";", 1)[0]
+        # No connection is active at startup, so the fallback label must not dereference activeProfile.
+        self.assertIn('activeProfile != nullptr && activeProfile->kind == ProfileKind::Administrator ? L"SSH Console"',
+                      open_ssh_label)
+        self.assertNotIn(': activeProfile->', " ".join(open_ssh_label.split()))
+        workflow = (ROOT.parents[1] / ".github/workflows/windows-build.yml").read_text(encoding="utf-8")
+        self.assertIn("python -u desktop/windows/tests/gui_startup_smoke.py desktop/windows/build/Release/TELIPHONES.exe --local-dumps",
+                      workflow)
+        smoke_step = workflow.split("gui_startup_smoke.py", 1)[1].split("- name:", 1)[0]
+        self.assertIn("if ($LASTEXITCODE -ne 0) { throw", smoke_step)
+        self.assertLess(workflow.index("gui_startup_smoke.py"), workflow.index("- name: Prepare application artifact"))
+        self.assertIn("name: TELIPHONES-Windows-x64-symbols", workflow)
+        self.assertIn("desktop/windows/build/Release/TELIPHONES.pdb", workflow)
+        smoke = (ROOT / "tests/gui_startup_smoke.py").read_text(encoding="utf-8")
+        for required in ("windows.ping(main)", "IsWindowEnabled(main)", "IDC_OPEN_SSH = 1010", "WM_CLOSE, 0, 0",
+                         '"shutdown" not in names', "shutil.rmtree(dump_dir, ignore_errors=True)", "remove_local_dumps()"):
+            self.assertIn(required, smoke)
+        spec = importlib.util.spec_from_file_location("gui_startup_smoke", ROOT / "tests/gui_startup_smoke.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        self.assertEqual(module.describe_exit_code(-1073741819), "3221225477 (0xC0000005): access violation")
+        self.assertTrue(module.is_crash_exit_code(0xC0000005))
+        self.assertTrue(module.is_crash_exit_code(0xC0000409))
+        self.assertFalse(module.is_crash_exit_code(0))
+        self.assertFalse(module.is_crash_exit_code(2))
+        before = {'{"version":1,"utc":"2026-11-04T22:00:00Z","elapsed_ms":0,"session":"application","attempt":"",'
+                  '"event":"shutdown","severity":"info","detail":"old"}'}
+        after = before | {
+            '{"version":1,"utc":"2026-11-04T22:10:00Z","elapsed_ms":0,"session":"application","attempt":"",'
+            '"event":"startup","severity":"info","detail":"x"}',
+            '{"version":1,"utc":"2026-11-04T22:10:01Z","elapsed_ms":0,"session":"ws-1","attempt":"a",'
+            '"event":"connect","severity":"info","detail":"x"}',
+            "not json",
+        }
+        self.assertEqual(module.new_application_events(before, after), [("startup", "info")])
+
     def test_native_mfc_terminal_integration_regressions_are_covered(self):
         main = (ROOT / "src/app/MainDlg.cpp").read_text()
         probe = main.split("struct ProbeResult {", 1)[1].split("};", 1)[0]

@@ -428,6 +428,14 @@ jobs:
             }
           }
 
+      - name: Smoke-test TELIPHONES main window startup, responsiveness and clean exit
+        if: ${{ !cancelled() && steps.application_build.outcome == 'success' }}
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          python -u desktop/windows/tests/gui_startup_smoke.py desktop/windows/build/Release/TELIPHONES.exe --local-dumps 2>&1 |
+            Tee-Object -FilePath (Join-Path $env:STARTUP_DIAGNOSTICS 'gui-startup-smoke.log')
+          if ($LASTEXITCODE -ne 0) { throw 'TELIPHONES GUI startup smoke test failed; inspect the exit status, fault event and crash stack above.' }
+
       - name: Upload startup diagnostics on failure
         if: always() && env.STARTUP_DIAGNOSTICS != ''
         uses: actions/upload-artifact@v4
@@ -473,5 +481,15 @@ jobs:
             desktop/windows/build/artifact/CHANGELOG.md
             desktop/windows/build/artifact/LICENSE
             desktop/windows/build/artifact/build-info.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload matching Windows debugging symbols
+        uses: actions/upload-artifact@v4
+        with:
+          name: TELIPHONES-Windows-x64-symbols
+          path: |
+            desktop/windows/build/Release/TELIPHONES.pdb
+            desktop/windows/build/Release/TELIPHONES-SSH.pdb
           if-no-files-found: error
           retention-days: 14
