@@ -28,7 +28,7 @@ public:
     Handle& operator=(const Handle&) = delete;
     HANDLE get() const { return value_; }
     HANDLE release() { const auto value = value_; value_ = nullptr; return value; }
-    void reset(HANDLE value) {
+    void reset(HANDLE value = nullptr) {
         if (value_ && value_ != INVALID_HANDLE_VALUE) CloseHandle(value_);
         value_ = value;
     }
