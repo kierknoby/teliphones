@@ -692,11 +692,11 @@ int RunSshConsole(const std::vector<std::string>& arguments) {
             std::atomic<bool> pumpFailed{false};
 #ifdef TELIPHONES_SSH_TESTING
             Handle inputDiagnostics;
-            wchar_t testLog[32768];
-            const auto testLogSize = GetEnvironmentVariableW(L"TELIPHONES_SSH_TEST_LOG", testLog, 32768);
+            wchar_t inputTestLog[32768];
+            const auto testLogSize = GetEnvironmentVariableW(L"TELIPHONES_SSH_TEST_LOG", inputTestLog, 32768);
             if (!testLogSize || testLogSize >= 32768)
                 throw Error("Native SSH test requires a bounded input diagnostic log path.");
-            const auto inputLogPath = Widen(Narrow(std::wstring(testLog, testLogSize)) + ".io");
+            const auto inputLogPath = Widen(Narrow(std::wstring(inputTestLog, testLogSize)) + ".io");
             if (!IsShellSafeFilePath(Narrow(inputLogPath)))
                 throw Error("Unsafe SSH input diagnostic log path.");
             inputDiagnostics.reset(CreateFileW(inputLogPath.c_str(), FILE_APPEND_DATA,
