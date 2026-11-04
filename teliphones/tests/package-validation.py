@@ -25,13 +25,13 @@ def included(path):
 
 class PackageTests(unittest.TestCase):
     def test_authoritative_versions_and_archive_checksum(self):
-        self.assertEqual(VERSION, "0.6.0")
+        self.assertEqual(VERSION, "0.6.1")
         tree = ast.parse((MODULE / "support_broker.py").read_text())
         versions = [ast.literal_eval(node.value) for node in tree.body if isinstance(node, ast.Assign)
                     and any(isinstance(target, ast.Name) and target.id == "VERSION" for target in node.targets)]
-        self.assertEqual(versions, [VERSION])
+        self.assertEqual(versions, ["0.6.0"], "The UI patch must not require a new broker")
         self.assertIn("public const VERSION = '%s';" % VERSION, (MODULE / "WebSupport.php").read_text())
-        self.assertIn("TELIPHONES %s requires broker protocol 12" % VERSION,
+        self.assertIn("TELIPHONES 0.6.0 requires broker protocol 12",
                       (MODULE / "BrokerBootstrap.php").read_text())
         self.assertTrue(PACKAGE.exists(), "Build the current installation archive before package validation")
         digest = hashlib.sha256(PACKAGE.read_bytes()).hexdigest()
@@ -50,6 +50,8 @@ class PackageTests(unittest.TestCase):
             self.assertIn('VERSION = "0.4.0"', source)
             self.assertIn('self.ipt(iptables, "-I", "INPUT",', source)
 
+    @unittest.skipUnless((ROOT / "TELIPHONES-0.4.1.tgz").exists(),
+                         "The historical 0.4.1 archive is not present in the repository")
     def test_previous_0_4_1_package_remains_identifiable_and_unchanged(self):
         previous = ROOT / "TELIPHONES-0.4.1.tgz"
         self.assertEqual(hashlib.sha256(previous.read_bytes()).hexdigest(),
@@ -62,6 +64,16 @@ class PackageTests(unittest.TestCase):
             # 0.4.1 corrected the jump placement but still lacked the WireGuard listener permit.
             self.assertIn('self.ipt(iptables, "-I", FREEPBX_HOOK, "1"', source)
             self.assertNotIn("def integration_jumps(", source)
+
+    def test_previous_0_6_0_package_and_broker_remain_unchanged(self):
+        previous = ROOT / "TELIPHONES-0.6.0.tgz"
+        digest = hashlib.sha256(previous.read_bytes()).hexdigest()
+        self.assertEqual(digest, "11b69c0f78b8152279bc2a035107536331ae4bfce62627d8a448e6c232fcf0e9")
+        self.assertEqual(Path(str(previous) + ".sha256").read_text(), "%s  %s\n" % (digest, previous.name))
+        with tarfile.open(previous, "r:gz") as archive:
+            for name in ("support_broker.py", "ssh_authority.py", "FirewallListener.php", "BrokerBootstrap.php",
+                         "install.php", "uninstall.php"):
+                self.assertEqual(archive.extractfile("teliphones/" + name).read(), (MODULE / name).read_bytes(), name)
 
     def test_packaged_firewall_migrates_legacy_input_and_survives_rebuild(self):
         self.assertTrue(PACKAGE.exists(), "Build the current installation archive before package validation")
@@ -133,7 +145,7 @@ class PackageTests(unittest.TestCase):
                 for name in ("WebSupport.php", "views/support.php", "views/disclaimer.php", "support_broker.py", "ssh_authority.py", "assets/js/teliphones.js", "install.php"):
                     self.assertIn("teliphones/" + name, expected)
                 self.assertIn("def pair(", (Path(directory) / "teliphones/support_broker.py").read_text())
-                self.assertIn("Windows workstations", (Path(directory) / "teliphones/views/support.php").read_text())
+                self.assertIn("Windows Workstation Access", (Path(directory) / "teliphones/views/support.php").read_text())
                 broker = (Path(directory) / "teliphones/support_broker.py").read_text()
                 for feature in ("TELIPHONES workstation enforcement v1", 'WORKSTATION_OWNER_CHAIN = "teliphones_owner_v1"',
                                 "def start_monitor(", "def uninstall_workstations(", "def policy_equal(",

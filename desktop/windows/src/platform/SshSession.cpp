@@ -236,6 +236,26 @@ struct Session final : ManagedSshConsole {
     std::wstring directory;
     std::wstring sshLog;
     std::atomic<bool> authenticationConfirmed{false};
+#ifdef TELIPHONES_SSH_TESTING
+    std::string lastAuthenticationDiagnostic;
+    unsigned authenticationDiagnosticCount = 0;
+    void ReportAuthenticationRead(const std::string& status) {
+        if (status == lastAuthenticationDiagnostic || authenticationDiagnosticCount >= 32) return;
+        const auto diagnosticPath = sshLog + L".auth";
+        Handle diagnostic(CreateFileW(diagnosticPath.c_str(), FILE_APPEND_DATA,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_ALWAYS,
+            FILE_ATTRIBUTE_NORMAL, nullptr));
+        if (diagnostic.get() == INVALID_HANDLE_VALUE)
+            ThrowLastError("Unable to open the native SSH authentication diagnostic log");
+        const auto message = "path=" + Narrow(sshLog) + "; " + status + "\n";
+        DWORD written = 0;
+        if (!WriteFile(diagnostic.get(), message.data(), static_cast<DWORD>(message.size()), &written, nullptr) ||
+            written != static_cast<DWORD>(message.size()))
+            ThrowLastError("Unable to write the native SSH authentication diagnostic log");
+        lastAuthenticationDiagnostic = status;
+        ++authenticationDiagnosticCount;
+    }
+#endif
     std::mutex controlMutex;
     std::int64_t expiry = 0;
     std::string ReadAvailable() override {
@@ -271,24 +291,42 @@ struct Session final : ManagedSshConsole {
         send(terminalControl.get(), request);
     }
     bool IsAuthenticated() override {
-        if (authenticationConfirmed.load()) return true;
+        if (authenticationConfirmed.load()) {
+#ifdef TELIPHONES_SSH_TESTING
+            ReportAuthenticationRead("cached=true");
+#endif
+            return true;
+        }
         if (sshLog.empty()) return false;
         Handle file(CreateFileW(sshLog.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                                 nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
         if (file.get() == INVALID_HANDLE_VALUE) {
             const auto error = GetLastError();
+#ifdef TELIPHONES_SSH_TESTING
+            ReportAuthenticationRead("open_error=" + std::to_string(error));
+#endif
             if (error == ERROR_FILE_NOT_FOUND || error == ERROR_SHARING_VIOLATION) return false;
             ThrowLastError("Unable to read SSH authentication status", error);
         }
         LARGE_INTEGER size{};
         if (!GetFileSizeEx(file.get(), &size)) ThrowLastError("Unable to size SSH authentication log");
-        if (size.QuadPart <= 0) return false;
+        if (size.QuadPart <= 0) {
+#ifdef TELIPHONES_SSH_TESTING
+            ReportAuthenticationRead("size=0");
+#endif
+            return false;
+        }
         const auto bytesToRead = static_cast<DWORD>(std::min<LONGLONG>(size.QuadPart, 256 * 1024));
         std::string contents(bytesToRead, '\0');
         DWORD count = 0;
         if (!ReadFile(file.get(), contents.data(), static_cast<DWORD>(contents.size()), &count, nullptr))
             ThrowLastError("Unable to read SSH authentication log");
         contents.resize(count);
+#ifdef TELIPHONES_SSH_TESTING
+        ReportAuthenticationRead("size=" + std::to_string(size.QuadPart) +
+            "; read=" + std::to_string(count) +
+            "; marker=" + (contents.find("Authenticated to ") != std::string::npos ? "true" : "false"));
+#endif
         if (contents.find("Authenticated to ") == std::string::npos) return false;
         authenticationConfirmed.store(true);
         return true;

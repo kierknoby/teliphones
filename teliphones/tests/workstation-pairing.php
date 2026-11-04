@@ -281,7 +281,7 @@ $html = $render($status);
 $assert(strpos($html, '<code>nft</code> CLI') !== false && strpos($html, '<code>nftables.service</code> does not need to be enabled or running') !== false
     && strpos($html, 'this page does not install nftables') !== false && strpos($html, 'not zero-exposure or truly fail-closed') !== false,
     'GUI must explain essential nft userspace tools, unnecessary service activation, administrator repair and external-flush exposure limits.');
-$assert(strpos($html, '<h3 id="teliphones-workstations">Windows workstations</h3>') !== false && strpos($html, '>ADMIN-PC<br><small>Diagnostic ID: <code>ws-0123456789abcdef</code></small></td>') !== false
+$assert(strpos($html, '<h3 id="teliphones-workstations">Windows Workstation Access</h3>') !== false && strpos($html, '>ADMIN-PC<br><small>Diagnostic ID: <code>ws-0123456789abcdef</code></small></td>') !== false
     && strpos($html, 'Web interface and legacy SSH') !== false && strpos($html, 'SHA256:abcdefghijklmnop') !== false
     && strpos($html, 'LEAKED-PUBLIC-KEY') === false && strpos($html, '../../x') === false, 'Paired workstations must be listed without keys.');
 $assert(strpos($html, 'Workstation diagnostics') !== false && strpos($html, 'does not contain Windows-local attempts') !== false,

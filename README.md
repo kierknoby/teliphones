@@ -14,11 +14,14 @@ workflow for bounded support windows.
 
 | Component | Current version | Start here |
 |---|---|---|
-| FreePBX module and root broker | **0.6.0** (local experimental package) | [Install](teliphones/README.md#installing-the-module) · [Upgrade](teliphones/README.md#updating-teliphones) |
+| FreePBX module / root broker | **0.6.1** UI patch / **0.6.0** broker, protocol 12 (local experimental package) | [Install](teliphones/README.md#installing-the-module) · [Upgrade](teliphones/README.md#updating-teliphones) |
 | Windows application | **0.8.0** (file version 0.8.0.0; unreleased development target) | [Download and requirements](desktop/windows/README.md#requirements-and-download) · [Pair a PBX](desktop/windows/README.md#pair-an-administrator-workstation) |
 | Reference gateway and Checker probe | Optional laboratory infrastructure | [Integration guide](teliphones/docs/INTEGRATION.md) · [Gateway](gateway/README.md) |
 
-FreePBX **0.6.0** and Windows **0.8.0** are independently versioned.
+FreePBX **0.6.1** and Windows **0.8.0** are independently versioned.
+The 0.6.1 module refines administration panels without changing the 0.6.0
+broker or protocol 12. Updating an existing 0.6.0 installation does not
+require uninstalling, clearing pairings or refreshing that broker.
 Windows **0.8.0** adds password protection, PBX policy requests, secure
 listener migration and post-pair SSH elevation in source; it has not received a
 native Windows build verification in this environment.
@@ -226,6 +229,21 @@ test registration and execution are in the
 The [package validator](teliphones/tests/package-validation.py) checks exact
 archive/source equality. Documentation edits after packaging deliberately make
 that equality fail; they do not justify rewriting a preserved archive.
+
+Build the module-only 0.6.1 archive from the repository root using the existing
+package exclusions, then validate the exact contents and checksum:
+
+```bash
+tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
+  --mode='u+rwX,go+rX,go-w' --exclude='*/.*' --exclude='*/tests' \
+  --exclude='*/__pycache__' --exclude='*.pyc' --exclude='*.pyo' \
+  -czf TELIPHONES-0.6.1.tgz teliphones
+sha256sum TELIPHONES-0.6.1.tgz > TELIPHONES-0.6.1.tgz.sha256
+PYTHONDONTWRITEBYTECODE=1 python3 teliphones/tests/package-validation.py
+```
+
+Do not rebuild the preserved 0.6.0 archive. The 0.6.1 package still contains
+the unchanged 0.6.0 broker; no Windows or gateway sources are included.
 
 ## Contributing
 

@@ -113,7 +113,7 @@ try {
     $script = \FreePBX\modules\Teliphones\BrokerBootstrap::ROOT_BOOTSTRAP_SCRIPT;
     $guidance = static function (string $html): string {
         $start = strpos($html, 'class="teliphones-install"');
-        return $start === false ? '' : substr($html, $start, strpos($html, '<h3>System readiness</h3>') - $start);
+        return $start === false ? '' : substr($html, $start, strpos($html, '<section class="teliphones-panel') - $start);
     };
     $html = $renderBroker(['available' => false, 'condition' => 'not_installed']);
     $assert(strpos($html, '<h4>TELIPHONES Installation Incomplete</h4>') !== false && strpos($html, 'The FreePBX module installed successfully') !== false,

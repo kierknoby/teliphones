@@ -11,6 +11,24 @@ session, migration, firewall and SSH acceptance remain outstanding.
 
 Entries for 0.0.2 to 0.2.1 are summarised from the repository history. Release dates are recorded only where they were previously published.
 
+## 0.6.1, administration interface patch (local package, not published)
+
+- Group existing controls into lightweight FreePBX-style readiness, support,
+  workstation access, paired-workstation and security panels. Make policy,
+  session capacity and per-workstation permissions easier to scan.
+- Keep blockers and security warnings visible; move technical explanations
+  into expandable help. Distinguish configuration gaps from platform failures.
+- Keep diagnostics and pairing compact with native expandable panels; split
+  the unchanged pairing form into five visual groups. Reveal collapsed
+  validation errors and reopen server-rejected pairing/enrollment forms.
+- Add scoped responsive spacing, readable status badges and a keyboard-focusable
+  horizontal workstation-table region without removing management actions.
+- Retain broker 0.6.0, protocol 12, state formats and installation logic.
+  Upgrade 0.6.0 through Module Admin without uninstalling or clearing pairings;
+  an operational protocol 12 broker does not need updating.
+- Local PHP/template, JavaScript and package checks cover the patch.
+  Browser rendering and a live FreePBX 17 upgrade remain unverified.
+
 ## 0.6.0, local development target (not production-certified)
 
 - Add persistent Open, Closed and Frozen workstation connection states.

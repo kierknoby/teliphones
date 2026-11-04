@@ -104,6 +104,21 @@
         return { kind: 'plain', text: 'Missing or unavailable' };
     }
 
+    function readinessWarning(status) {
+        var missing = Object.keys(status.readiness || {}).filter(function (name) {
+            return name !== 'WireGuard wg' && status.readiness[name] !== true;
+        });
+        if (!missing.length) return '';
+        var text = 'Other dependencies missing: ' + missing.join(', ') + '.';
+        if (missing.some(function (name) { return ENROLLMENT_COMPONENTS.indexOf(name) !== -1; })) {
+            text += ' Configure the listed items in Secure gateway enrollment below.';
+        }
+        if (missing.some(function (name) { return ENROLLMENT_COMPONENTS.indexOf(name) === -1; })) {
+            text += ' Ask the PBX platform administrator to repair the listed platform requirements.';
+        }
+        return text;
+    }
+
     function sessionPhase(status) {
         if (!status || !status.available) {
             return { kind: 'plain', text: 'Not verified (broker unavailable)' };
@@ -433,10 +448,42 @@
         return { kind: 'ok', body: body, status: body.status };
     }
 
+    function bindPanels(rootElement) {
+        function reveal(element) {
+            for (var parent = element; parent && parent !== rootElement; parent = parent.parentElement) {
+                if (parent.tagName === 'DETAILS') {
+                    parent.open = true;
+                    var summary = parent.querySelector('summary');
+                    if (summary) summary.setAttribute('aria-expanded', 'true');
+                }
+            }
+        }
+        rootElement.addEventListener('invalid', function (event) {
+            reveal(event.target);
+        }, true);
+        Array.prototype.forEach.call(rootElement.querySelectorAll('details'), function (panel) {
+            var summary = panel.querySelector('summary');
+            if (!summary) return;
+            function sync() { summary.setAttribute('aria-expanded', panel.open ? 'true' : 'false'); }
+            panel.addEventListener('toggle', sync);
+            sync();
+        });
+        Array.prototype.forEach.call(rootElement.querySelectorAll('[data-teliphones-open]'), function (link) {
+            link.addEventListener('click', function () {
+                var panel = rootElement.querySelector('#' + link.getAttribute('data-teliphones-open'));
+                if (panel) reveal(panel);
+            });
+        });
+    }
+
     function bindDocument(document, window) {
         var rootElement = document.getElementById('teliphones-root');
         var initialElement = document.getElementById('teliphones-initial-status');
-        if (!rootElement || !initialElement || typeof window.fetch !== 'function') {
+        if (!rootElement) {
+            return null;
+        }
+        bindPanels(rootElement);
+        if (!initialElement || typeof window.fetch !== 'function') {
             return null;
         }
         var initial;
@@ -529,6 +576,17 @@
                     var name = cell.getAttribute('data-teliphones-component');
                     setCell(cell, readinessCell(name, status.readiness ? status.readiness[name] : undefined, status));
                 });
+                var wireguardWarning = find('#teliphones-wireguard-warning');
+                if (wireguardWarning) {
+                    wireguardWarning.hidden = !status.readiness || status.readiness['WireGuard wg'] === true;
+                    wireguardWarning.textContent = wireguardWarning.hidden ? '' : 'WireGuard tools missing. Approve their installation below.';
+                }
+                var otherWarning = find('#teliphones-other-warning');
+                if (otherWarning) {
+                    var warningText = readinessWarning(status);
+                    otherWarning.textContent = warningText;
+                    otherWarning.hidden = warningText === '';
+                }
                 setCell(find('[data-teliphones="session-phase"]'), sessionPhase(status));
                 ACTIONS.forEach(function (action) {
                     var button = find('button[value="' + action + '"]');
@@ -810,11 +868,13 @@
         STARTED_MESSAGE: STARTED_MESSAGE,
         controls: controls,
         readinessCell: readinessCell,
+        readinessWarning: readinessWarning,
         sessionPhase: sessionPhase,
         progress: progress,
         needsMonitoring: needsMonitoring,
         classify: classify,
         createMonitor: createMonitor,
-        bindDocument: bindDocument
+        bindDocument: bindDocument,
+        bindPanels: bindPanels
     };
 }));

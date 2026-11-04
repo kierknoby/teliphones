@@ -177,7 +177,8 @@ const tests = {
 
     async 'outdated broker keeps ordinary form submission'() {
         const listeners = [];
-        const element = (text) => ({ textContent: text, getAttribute: () => null, querySelector: () => null, querySelectorAll: () => [] });
+        const element = (text) => ({ textContent: text, getAttribute: () => null, querySelector: () => null,
+            querySelectorAll: () => [], addEventListener: () => {} });
         const documentStub = {
             getElementById: (id) => (id === 'teliphones-root' ? element('') : id === 'teliphones-initial-status'
                 ? element(JSON.stringify(status({ broker_current: false }))) : null),

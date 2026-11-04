@@ -934,6 +934,7 @@ class WindowsSshTests(unittest.TestCase):
                     self.assertEqual(line(host), "CONSOLE_INTERACTIVE=1")
                 except (AssertionError, RuntimeError, TimeoutError) as error:
                     self.fail(f"{error}\nClient diagnostic:\n{ssh_client_log_summary(client_log)}"
+                              f"\nProduction authentication-read diagnostic:\n{server_log_tail(client_log.with_name(client_log.name + '.auth'))}"
                               f"\nInput-pipe diagnostic tail:\n{server_log_tail(client_log.with_name(client_log.name + '.io'))}"
                               f"\nServer diagnostic tail:\n{server_log_tail(self.root / 'sshd-test.log')}")
             for _ in range(100):
@@ -961,6 +962,12 @@ class WindowsSshTests(unittest.TestCase):
             self.assertIn("IDENTITY_RETAINED", output)
             if console:
                 self.assertIn("CONSOLE_INTERACTIVE=1", output)
+                self.assertIn("TEST_AUTHENTICATION_CONFIRMED=1", error)
+                input_diagnostic = client_log.with_name(client_log.name + ".io").read_text(encoding="utf-8")
+                for stage in ("PARENT_PIPE_READ", "CONPTY_INPUT_WRITE"):
+                    counts = [int(entry.split("=", 1)[1]) for entry in input_diagnostic.splitlines()
+                              if entry.startswith(stage + "=")]
+                    self.assertEqual(sum(counts), len(b"set /a 29*13\r"), input_diagnostic)
             if expiring:
                 self.assertIn("PRODUCTION_EXPIRED", output)
             self.assertFalse(identity_path.exists())

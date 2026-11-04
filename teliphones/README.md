@@ -1,14 +1,14 @@
 # TELIPHONES for FreePBX 17: module guide
 
 Approve private access to your PBX from the FreePBX interface. TELIPHONES
-**0.6.0** pairs Windows workstations over WireGuard, with web access and,
+**0.6.1** pairs Windows workstations over WireGuard, with web access and,
 when explicitly approved, temporary SSH certificates for an existing account.
 This is the authoritative guide to installing, upgrading and operating the
 FreePBX module and its separately installed root broker.
 
 **TELIPHONES is a UK registered trademark.**
 
-**TELIPHONES 0.6.0 for FreePBX is licensed under GPLv3.**
+**TELIPHONES 0.6.1 for FreePBX is licensed under GPLv3.**
 
 The software grant is GPL version 3 or later; the product footer uses the
 GPLv3 wording above. Software licensing does not grant trademark rights.
@@ -148,10 +148,10 @@ TELIPHONES is a community module and is not listed in the FreePBX online module 
 
 ### Install through Module Admin (recommended)
 
-1. Obtain `TELIPHONES-0.6.0.tgz` and its SHA-256 checksum from a trusted source, then verify the archive:
+1. Obtain `TELIPHONES-0.6.1.tgz` and its SHA-256 checksum from a trusted source, then verify the archive:
 
    ```bash
-   sha256sum -c TELIPHONES-0.6.0.tgz.sha256
+   sha256sum -c TELIPHONES-0.6.1.tgz.sha256
    ```
 
 2. In FreePBX, open **Admin > Module Admin**, choose **Upload modules**, and upload the archive.
@@ -249,6 +249,18 @@ On success, `systemctl status` shows `Loaded: loaded (/etc/systemd/system/teliph
 ## Updating TELIPHONES
 
 Update TELIPHONES in place. Do not uninstall the module first: uninstalling removes workstation pairings.
+
+**0.6.0 to 0.6.1 (administration-only patch):** upload the verified 0.6.1
+archive through Module Admin as an upgrade. Do not uninstall the module or
+delete workstation configuration. The installer, persisted state and broker
+helpers are unchanged; an operational 0.6.0 broker reporting protocol 12 needs
+no refresh or restart for this UI patch. This compatibility is verified from
+source and package comparisons; a live FreePBX upgrade remains an acceptance
+check.
+
+The following steps and root-broker procedure apply to older or incomplete
+installations, not an otherwise operational 0.6.0 installation receiving this
+UI patch:
 
 1. Confirm, as root, that no support session is active: `fwconsole teliphones status`.
 2. Disconnect Windows workstation tunnels.
@@ -826,7 +838,7 @@ Never include private keys, credentials, pairing requests or responses, gateway 
 
 TELIPHONES is a UK registered trademark.
 
-TELIPHONES 0.6.0 for FreePBX is licensed under GPLv3.
+TELIPHONES 0.6.1 for FreePBX is licensed under GPLv3.
 
 The software grant is **GPL version 3 or, at your option, any later version
 (GPL-3.0-or-later)**, expressed as `GPLv3+` in module metadata. The product
@@ -851,7 +863,19 @@ The human contributor remains solely responsible for the contribution. AI tools 
 
 ## Release History
 
-The complete [FreePBX module change history](docs/CHANGELOG.md) is bundled with the module. Version 0.6.0 adds persisted Open/Closed/Frozen connection states and builds on 0.5.0's managed WireGuard listener and configurable management web services. Windows is independently versioned at 0.8.0; use an updated build for the pairing access selector and copy feedback. Neither product has been released from this working tree.
+The complete [FreePBX module change history](docs/CHANGELOG.md) is bundled with the module. Version 0.6.1 refines administration layout and validation visibility over 0.6.0's persisted Open/Closed/Frozen connection states. It retains the 0.6.0 root broker and protocol 12. Windows remains independently versioned at 0.8.0; this patch makes no Windows changes. Neither product has been published from this working tree.
+
+The administration page groups System Readiness, Remote Support, Windows
+Workstation Access, Paired Workstations and Security & Access Restrictions.
+Technical dependency and firewall explanations are expandable; missing
+requirements and security warnings remain visible. Diagnostics and Pair a
+Workstation use native, keyboard-operable expandable panels. Pairing retains
+one form with five visual groups, not a wizard. Invalid fields reveal their
+containing panel; server-rejected pairing/enrollment forms reopen on reload.
+Styles and panel events are scoped to TELIPHONES. Layout/control regressions
+and JavaScript behaviour are tested locally, but no browser engine is
+available here: desktop/narrow FreePBX rendering, keyboard interaction and a
+live 0.6.0 upgrade must still be checked in FreePBX 17.
 
 ### Non-standard management ports
 
@@ -867,9 +891,9 @@ redirects from an authorised peer. A listening socket alone is not proof.
 The [historical root-cause report and read-only live-PBX verification procedure](docs/CONNECTIVITY-REGRESSION.md)
 describe confirmed evidence, hypotheses and outstanding release gates.
 Do not install an earlier review archive expecting these source changes.
-The historical root-level `TELIPHONES-0.5.0.tgz` and checksum are retained
-unchanged. The root-level `TELIPHONES-0.6.0.tgz` and checksum are rebuilt from
-the current module source and pass local package validation. This is an
+The root-level `TELIPHONES-0.6.0.tgz` and checksum are retained unchanged.
+The root-level `TELIPHONES-0.6.1.tgz` and checksum are built from the current
+module source and checked for exact archive/source equality. This is an
 experimental local package, not a production release or verified public
 download.
 

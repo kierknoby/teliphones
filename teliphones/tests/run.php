@@ -1,5 +1,5 @@
 <?php
-$tests = ['module-menu.php', 'freepbx-compatibility.php', 'web-support.php', 'live-status.php', 'workstation-pairing.php', 'firewall-listener.php', 'broker-uninstall.php', 'broker-upgrade.php', 'route-containment.php', 'address-policy.php', 'connect-response.php', 'checker-evidence.php'];
+$tests = ['module-menu.php', 'freepbx-compatibility.php', 'web-support.php', 'live-status.php', 'workstation-pairing.php', 'admin-layout.php', 'firewall-listener.php', 'broker-uninstall.php', 'broker-upgrade.php', 'route-containment.php', 'address-policy.php', 'connect-response.php', 'checker-evidence.php'];
 foreach ($tests as $test) {
     $command = escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg(__DIR__ . '/' . $test);
     passthru($command, $status);
@@ -19,6 +19,8 @@ if ($node === '') {
     echo "Live status JavaScript tests: SKIPPED (Node.js not available)\n";
 } else {
     passthru(escapeshellarg($node) . ' ' . escapeshellarg(__DIR__ . '/live-status.test.js'), $status);
+    if ($status !== 0) exit($status);
+    passthru(escapeshellarg($node) . ' ' . escapeshellarg(__DIR__ . '/admin-panels.test.js'), $status);
     if ($status !== 0) exit($status);
 }
 

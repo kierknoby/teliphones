@@ -22,7 +22,52 @@ def project(name):
     return ET.parse(ROOT / name).getroot()
 
 
+def object_collisions(tree, configuration):
+    objects = {}
+    collisions = []
+    for item in tree.findall("ms:ItemGroup/ms:ClCompile", NS):
+        include = item.attrib["Include"].replace("\\", "/")
+        excluded = {
+            path.replace("\\", "/").casefold()
+            for path in item.get("Exclude", "").split(";") if path
+        }
+        sources = sorted(ROOT.glob(include)) if "*" in include or "?" in include else [ROOT / include]
+        for source in sources:
+            relative = source.relative_to(ROOT).as_posix()
+            if relative.casefold() in excluded:
+                continue
+            output = item.findtext("ms:ObjectFileName", default="$(IntDir)%(Filename).obj", namespaces=NS)
+            output = (output.replace("$(IntDir)", "obj/" + configuration + "/")
+                      .replace("$(Configuration)", configuration)
+                      .replace("%(Filename)", source.stem).replace("%(Extension)", source.suffix)
+                      .replace("\\", "/"))
+            if output.endswith("/"):
+                output += source.stem + ".obj"
+            key = str(PureWindowsPath(output)).casefold()
+            if key in objects:
+                collisions.append((objects[key], relative, key))
+            objects[key] = relative
+    return collisions
+
+
 class BuildLayoutTests(unittest.TestCase):
+    def test_native_projects_have_no_case_insensitive_object_collisions(self):
+        for path in sorted(ROOT.glob("*.vcxproj")):
+            for configuration in ("Debug", "Release"):
+                with self.subTest(project=path.name, configuration=configuration):
+                    self.assertEqual(object_collisions(project(path.name), configuration), [])
+
+    def test_object_collision_check_detects_encoding_collision(self):
+        tree = project("TELIPHONES.vcxproj")
+        vendor = tree.find("ms:ItemGroup/ms:ClCompile[@Include='third_party\\libvterm\\src\\encoding.c']", NS)
+        override = vendor.find("ms:ObjectFileName", NS)
+        if override is not None:
+            vendor.remove(override)
+        for configuration in ("Debug", "Release"):
+            self.assertEqual(len(object_collisions(tree, configuration)), 1)
+            first, second, _ = object_collisions(tree, configuration)[0]
+            self.assertEqual({first, second}, {"third_party/libvterm/src/encoding.c", "src/core/Encoding.cpp"})
+
     def test_integrated_terminal_dependencies_and_native_cleanup_regression_are_registered(self):
         cmake = (ROOT / "CMakeLists.txt").read_text()
         for source in ("src/core/TerminalEmulator.cpp", "tests/terminal_emulator_tests.cpp",

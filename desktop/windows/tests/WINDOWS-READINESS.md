@@ -6,6 +6,32 @@ independently versioned; neither entry declares a published release.
 
 ## Current evidence
 
+### Encoding object collision and embedded-console authentication investigation
+
+The MFC project assigns libvterm's `encoding.c` the object filename
+`$(IntDir)libvterm_encoding.obj`, distinct from the default `Encoding.obj`
+produced by the application's `Encoding.cpp`. The project-layout suite expands
+the current explicit and wildcard source lists for every Visual Studio project
+and checks object paths case-insensitively in Debug and Release. Its negative
+control removes this override and reproduces the encoding collision.
+
+The reported embedded-console failure is not a rejected SSH login: the supplied
+diagnostics show successful authentication, PTY/shell acceptance and a prompt.
+Source inspection shows the controller and helper use the same test log path;
+the positive authentication cache is set only after reading the marker and is
+not reset. The existing failure report reads the client log after the host
+exits, so it cannot establish which live file operation returned no evidence.
+No authentication-semantic change is justified by those observations alone.
+Test builds now record at most 32 changed authentication-read states in a
+fixture-local `.auth` sidecar: path, Win32 open error, file size, bytes read,
+marker presence and positive-cache use. No log contents or credentials are
+copied into this sidecar. The native fixture reports authentication separately
+from prompt readiness, requires the real arithmetic command result through the
+production input path, checks input byte counts, resizes again and checks the
+positive cache before owned-process teardown. A Windows run is still required
+to establish the authentication discrepancy's cause and verify input delivery;
+portable tests do not certify either path.
+
 Connect Password Protection's portable positive path has been verified in this
 Codespace using the locally available OpenSSL 3.5.8 Argon2id provider: the
 independent interoperability vector, authenticated encryption/decryption,

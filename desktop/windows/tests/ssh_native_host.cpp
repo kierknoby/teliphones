@@ -211,7 +211,7 @@ int runMain(int argc, char** argv) {
                     const auto deadline = GetTickCount64() + 15000;
                     while (GetTickCount64() < deadline) {
                         output += console->ReadAvailable();
-                        if (console->IsAuthenticated() && output.find('>') != std::string::npos) break;
+                        if (console->IsAuthenticated()) break;
                         if (!console->IsAlive()) {
                             output += console->ReadAvailable();
                             throw tlp::Error("Embedded SSH console ended before interactive output; authenticated=" +
@@ -221,13 +221,24 @@ int runMain(int argc, char** argv) {
                         }
                         Sleep(20);
                     }
-                    if (!console->IsAuthenticated() || output.find('>') == std::string::npos) {
+                    if (!console->IsAuthenticated()) {
                         output += console->ReadAvailable();
-                        throw tlp::Error("Embedded SSH console did not reach an authenticated shell prompt; authenticated=" +
+                        throw tlp::Error("Embedded SSH console authentication log was not readable or did not confirm authentication; authenticated=" +
                             std::string(console->IsAuthenticated() ? "true" : "false") +
                             "; terminal output bytes=" + std::to_string(output.size()) +
                             "; terminal output=" + output);
                     }
+                    std::cerr << "TEST_AUTHENTICATION_CONFIRMED=1" << std::endl;
+                    while (GetTickCount64() < deadline && output.find('>') == std::string::npos) {
+                        output += console->ReadAvailable();
+                        if (!console->IsAlive()) throw tlp::Error("Embedded SSH console ended before its shell prompt.");
+                        Sleep(20);
+                    }
+                    if (output.find('>') == std::string::npos)
+                        throw tlp::Error("Authenticated SSH console did not return a shell prompt; terminal output=" + output);
+                    if (!console->IsAuthenticated())
+                        throw tlp::Error("Embedded SSH console lost its confirmed authentication state.");
+                    output.clear();
                     const std::string command = "set /a 29*13\r";
                     console->WriteInput(command);
                     std::cerr << "TEST_INPUT_WRITE_RETURNED=" << command.size() << std::endl;
@@ -262,6 +273,9 @@ int runMain(int argc, char** argv) {
                             "; terminal output bytes=" + std::to_string(output.size()) +
                             "; terminal output=" + output);
                     }
+                    console->Resize(120, 35);
+                    if (!console->IsAuthenticated())
+                        throw tlp::Error("Embedded SSH console lost authentication after command execution and resizing.");
                     std::cout << "CONSOLE_COMMAND_RESULT=377" << std::endl;
                     std::cout << "CONSOLE_INTERACTIVE=1" << std::endl;
                     if (!std::getline(std::cin, line) || line != "close")

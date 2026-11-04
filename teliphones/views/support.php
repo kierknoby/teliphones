@@ -51,14 +51,56 @@ $outdated = $available && WebSupport::brokerOperational($support) && !$live['bro
 $markdown = static function (string $text) use ($escape): string {
     return preg_replace(['/`([^`]+)`/', '/\*\*([^*]+)\*\*/'], ['<code>$1</code>', '<strong>$1</strong>'], $escape($text));
 };
+$failedAction = isset($notice) && is_array($notice) && empty($notice['ok'])
+    && is_string($_POST['action'] ?? null) ? $_POST['action'] : '';
+$expand = static function (array $actions) use ($failedAction): string {
+    return in_array($failedAction, $actions, true) ? ' open' : '';
+};
 ?>
 <style>
-.teliphones-spinner{display:inline-block;width:1em;height:1em;margin-right:.4em;vertical-align:-.15em;border:2px solid #ccc;border-top-color:#337ab7;border-radius:50%;animation:teliphones-spin .8s linear infinite}
-.teliphones-spinner[hidden],.teliphones-progress[hidden]{display:none}
-.teliphones-ok{color:#3c763d}.teliphones-fail{color:#a94442;font-weight:bold}.teliphones-busy{color:#31708f}
-.teliphones-operation-failure{border:3px solid #a94442}
+#teliphones-root .teliphones-spinner{display:inline-block;width:1em;height:1em;margin-right:.4em;vertical-align:-.15em;border:2px solid #ccc;border-top-color:#337ab7;border-radius:50%;animation:teliphones-spin .8s linear infinite}
+#teliphones-root [hidden]{display:none!important}
+#teliphones-root .teliphones-ok{color:#3c763d}
+#teliphones-root .teliphones-fail{color:#a94442;font-weight:bold}
+#teliphones-root .teliphones-busy{color:#31708f}
+#teliphones-root .teliphones-operation-failure{border:3px solid #a94442}
+#teliphones-root .teliphones-panel{border:1px solid #ddd;border-radius:4px;padding:16px 20px;margin:20px 0;background:#fff}
+#teliphones-root .teliphones-panel>h3{font-size:20px;margin:0 -20px 16px;padding:0 20px 12px;border-bottom:1px solid #eee}
+#teliphones-root h4{font-size:16px;margin:20px 0 12px}
+#teliphones-root p{line-height:1.5}
+#teliphones-root label{display:block;margin:12px 0 5px}
+#teliphones-root .form-control{width:100%;max-width:100%;height:auto;min-height:34px}
+#teliphones-root select.form-control{max-width:30em}
+#teliphones-root form{margin:12px 0}
+#teliphones-root .btn{margin:6px 6px 6px 0;white-space:normal}
+#teliphones-root .help-block{font-size:13px;margin:6px 0 12px}
+#teliphones-root details{border-top:1px solid #eee;margin:14px 0;padding-top:12px}
+#teliphones-root summary{cursor:pointer;font-weight:600;padding:4px 0}
+#teliphones-root summary:focus-visible{outline:2px solid #337ab7;outline-offset:3px}
+#teliphones-root details.teliphones-panel>summary{font-size:20px;padding:0}
+#teliphones-root details.teliphones-panel[open]>summary{border-bottom:1px solid #eee;padding-bottom:12px;margin-bottom:16px}
+#teliphones-root .teliphones-overview{display:flex;flex-wrap:wrap;gap:12px;list-style:none;padding:0}
+#teliphones-root .teliphones-overview li{flex:1 1 190px;background:#f5f5f5;border:1px solid #e5e5e5;border-radius:3px;padding:10px 12px}
+#teliphones-root .teliphones-overview strong{display:block;margin-bottom:5px}
+#teliphones-root .teliphones-status{background:#f5f5f5;border-left:4px solid #337ab7;padding:12px 16px;margin:14px 0}
+#teliphones-root .teliphones-policy-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px}
+#teliphones-root .teliphones-table-scroll{overflow-x:auto}
+#teliphones-root .table th,#teliphones-root .table td{padding:10px 12px;vertical-align:top;overflow-wrap:anywhere}
+#teliphones-root .teliphones-workstations{min-width:1050px}
+#teliphones-root .teliphones-banned-list .table{min-width:560px}
+#teliphones-root .teliphones-workstations td:last-child{min-width:240px}
+#teliphones-root .table code{overflow-wrap:anywhere;white-space:normal}
+#teliphones-root .teliphones-workstations form{margin:6px 0}
+#teliphones-root .teliphones-workstations .help-block{max-width:24em}
+#teliphones-root .teliphones-badge{display:inline-block;padding:3px 7px;border-radius:3px;font-size:12px;font-weight:600;line-height:1.5;background:#eee;color:#444;margin:2px 0}
+#teliphones-root .teliphones-badge-success{background:#dff0d8;color:#315d32}
+#teliphones-root .teliphones-badge-warning{background:#fcf8e3;color:#775c2b}
+#teliphones-root .teliphones-pair-step{border-top:1px solid #eee;margin-top:18px;padding-top:4px}
+#teliphones-root .teliphones-empty{padding:20px!important;color:#666;text-align:center}
+#teliphones-root pre{max-width:100%;white-space:pre-wrap;overflow-wrap:anywhere}
 @keyframes teliphones-spin{to{transform:rotate(360deg)}}
-@media (prefers-reduced-motion:reduce){.teliphones-spinner{animation-duration:2.4s}}
+@media (prefers-reduced-motion:reduce){#teliphones-root .teliphones-spinner{animation-duration:2.4s}}
+@media (max-width:767px){#teliphones-root .teliphones-policy-grid{grid-template-columns:1fr;gap:0}#teliphones-root .teliphones-panel{padding:14px}#teliphones-root .teliphones-panel>h3{margin-left:-14px;margin-right:-14px;padding-left:14px;padding-right:14px}#teliphones-root .btn{max-width:100%}}
 </style>
 <div class="container-fluid" id="teliphones-root" data-teliphones-ajax="ajax.php?module=teliphones">
 <h2>TELIPHONES</h2>
@@ -155,8 +197,25 @@ $markdown = static function (string $text) use ($escape): string {
 <p>Do not change the socket's ownership or mode, or the state directory permissions, to make the page work: the broker deliberately accepts only the FreePBX <code>asterisk</code> account.</p>
 </details>
 <?php endif; ?>
-<h3>System readiness</h3>
+<section class="teliphones-panel panel panel-default" aria-labelledby="teliphones-readiness-heading">
+<h3 id="teliphones-readiness-heading">System Readiness</h3>
 <p><strong data-teliphones="phase"><?=$escape($phase)?></strong>. Module status: <?=$escape($available ? (!empty($status['enabled']) ? 'Enabled' : 'Disabled') : 'Not verified (broker unavailable)')?>.</p>
+<ul class="teliphones-overview">
+<li><strong>Privileged root broker</strong><span class="teliphones-badge<?=$available ? ' teliphones-badge-success' : ' teliphones-badge-warning'?>"><?=$available ? 'Operational (control socket verified)' : $escape($conditions[$condition][0] ?? 'Not verified')?></span></li>
+<?php foreach (array_intersect_key($readiness, array_flip(['WireGuard wg', 'Temporary SSH server', 'SSH key generation', 'Gateway enrollment', 'Checker trusted public key'])) as $component => $value): ?>
+<li><strong><?=$escape($component)?></strong><span data-teliphones-component="<?=$escape($component)?>"><?=$cell(WebSupport::readinessCell((string)$component, $value, $live))?></span></li>
+<?php endforeach; ?>
+<?php if (!$available): ?><li><strong>Dependencies</strong>Not verified (requires the privileged broker)</li><?php endif; ?>
+</ul>
+<?php if ($available): ?>
+<div class="alert alert-warning" id="teliphones-wireguard-warning"<?=$wireguardMissing ? '' : ' hidden'?>><?=$wireguardMissing ? 'WireGuard tools missing. Approve their installation below.' : ''?></div>
+<div class="alert alert-warning" id="teliphones-other-warning"<?=$otherMissing ? '' : ' hidden'?>>
+<?php if ($otherMissing): ?>Other dependencies missing: <?=$escape(implode(', ', $otherMissing))?>.<?php endif; ?>
+<?php if (array_intersect($otherMissing, ['Gateway enrollment', 'Checker trusted public key'])): ?>Configure the listed items in <strong>Secure gateway enrollment</strong> below.<?php endif; ?>
+<?php if (array_diff($otherMissing, ['Gateway enrollment', 'Checker trusted public key'])): ?>Ask the PBX platform administrator to repair the listed platform requirements.<?php endif; ?>
+</div>
+<?php endif; ?>
+<details class="teliphones-dependency-help"><summary>Technical dependency details</summary>
 <table class="table table-striped"><thead><tr><th>Required component</th><th>Status</th></tr></thead><tbody>
 <tr><td>Privileged root broker</td><td><?=$available ? 'Operational (control socket verified)' : $escape($conditions[$condition][0] ?? 'Not verified')?></td></tr>
 <?php if (!$available): ?>
@@ -166,15 +225,38 @@ $markdown = static function (string $text) use ($escape): string {
 <tr><td><?=$escape($component)?></td><td data-teliphones-component="<?=$escape($component)?>"><?=$cell(WebSupport::readinessCell((string)$component, $value, $live))?></td></tr>
 <?php endforeach; ?>
 </tbody></table>
-<?php if ($available && $wireguardMissing): ?><div class="alert alert-warning" id="teliphones-wireguard-warning">WireGuard tools missing. Approve their installation below.</div><?php endif; ?>
-<?php if ($available && $otherMissing): ?><div class="alert alert-warning">Other dependencies missing: <?=$escape(implode(', ', $otherMissing))?>. Missing PHP, Python, OpenSSH, systemd or FreePBX components must be repaired by the PBX platform administrator; gateway enrollment and the Checker key are configured below.</div><?php endif; ?>
+<p>Component detection confirms installation or configuration, not end-to-end operation. The root broker cannot repair PHP, Python, OpenSSH, systemd or FreePBX platform components or elevate web PHP.</p>
+</details>
 <form method="post" data-teliphones-form>
 <input type="hidden" name="token" value="<?=$escape($token ?? '')?>">
 <button class="btn btn-default" name="action" value="dependencies" type="submit"<?=$off('dependencies')?>><?=$wireguardInstalled ? 'WireGuard tools installed' : 'Approve installation of WireGuard tools'?></button><?=$liveExtras('dependencies')?>
 <?php if (!$available): ?><p class="help-block"><?=$escape($unavailableReason)?> The broker performs the package installation as root.</p><?php endif; ?>
-<p>Installs only Debian's wireguard-tools using the root broker and the system's configured package repositories. No SSH service or firewall policy is changed. Missing PHP, Python, OpenSSH, systemd or root bootstrap requires the PBX platform administrator / Module Admin to repair the platform; this module cannot elevate web PHP.</p>
+<p class="help-block">Installs only Debian's wireguard-tools from the system's configured repositories. No SSH service or firewall policy is changed.</p>
 </form>
-<h3>Remote support</h3>
+<details class="teliphones-enrollment"<?=$expand(['configure'])?>><summary>Secure gateway enrollment</summary>
+<p>Use a separately deployed gateway and a customer client certificate enrolled there. TLS verification is mandatory. Credentials are stored root-only by the broker and are never returned to the browser. Submit this form over HTTPS. Configuration changes are refused during an active session.</p>
+<?php if (!$available): ?><p class="help-block"><?=$escape($unavailableReason)?> Enrollment credentials are stored by the broker; do not paste them until it is operational.</p><?php endif; ?>
+<form method="post" autocomplete="off" data-teliphones-form>
+<input type="hidden" name="token" value="<?=$escape($token ?? '')?>">
+<fieldset<?=$off('configure')?> id="teliphones-enrollment-fields">
+<?php foreach (['url' => 'Gateway HTTPS URL', 'certificate' => 'Customer client certificate PEM', 'private_key' => 'Customer client private key PEM', 'ca' => 'Gateway CA certificate PEM', 'checker_key' => 'Independent Checker ECDSA P-256 public key PEM'] as $field => $label): ?>
+<label for="teliphones-<?=$field?>"><?=$escape($label)?></label>
+<?php if ($field === 'url'): ?><input id="teliphones-url" class="form-control" name="url" type="url" required>
+<?php else: ?><textarea id="teliphones-<?=$field?>" class="form-control" name="<?=$field?>" rows="3" maxlength="16384" required></textarea><?php endif; ?>
+<?php endforeach; ?>
+<button class="btn btn-default" type="submit" name="action" value="configure"<?=$off('configure')?>>Save secure enrollment</button><?=$liveExtras('configure')?>
+</fieldset>
+</form></details>
+</section>
+<section class="teliphones-panel panel panel-default" aria-labelledby="teliphones-support-heading">
+<h3 id="teliphones-support-heading">Remote Support</h3>
+<div class="teliphones-status" role="status">
+<strong>Session status: <span data-teliphones="session-phase"><?=$cell(WebSupport::sessionPhase($live))?></span></strong>
+<p id="teliphones-session-details"<?=$session ? '' : ' hidden'?>>Session: <code data-teliphones="session-id"><?=$escape($session['session_id'] ?? '')?></code><br>
+Authorised engineer identity: <span data-teliphones="engineer"><?=$escape($status['engineer'] ?? 'Not yet established')?></span> (gateway-enrolled SSH key fingerprint; presence is not reported)<br>
+Remaining: <span data-teliphones="remaining"><?=$escape($session ? max(0, (int)($session['expires_at'] ?? 0) - time()) : '')?></span> seconds<br>
+Permitted access: <span data-teliphones="access"><?=!empty($status['access_verified']) ? 'WireGuard-scoped web access and temporary source-restricted, public-key-only root SSH.' : 'No current engineer SSH access has been confirmed.'?></span></p>
+</div>
 <form method="post" data-teliphones-form>
 <input type="hidden" name="token" value="<?=$escape($token ?? '')?>">
 <label for="teliphones-minutes">Duration (minutes)</label>
@@ -182,19 +264,15 @@ $markdown = static function (string $text) use ($escape): string {
 <?php foreach ([5, 15, 30, 60, 120, 240] as $minutes): ?><option value="<?=$minutes?>"><?=$minutes?></option><?php endforeach; ?>
 </select>
 <p>Authorisation permits the gateway-enrolled engineer's temporary public-key-only root SSH shell on the WireGuard address (port 22222) and the gateway's enrolled web service scope. Engineer access remains closed until local and independent Checker verification pass.</p>
-<button class="btn btn-primary" name="action" value="authorise" type="submit"<?=$off('authorise')?>>Authorise Remote Support</button><?=$liveExtras('authorise')?>
-<button class="btn btn-danger" name="action" value="revoke" type="submit"<?=$off('revoke')?>>Revoke Remote Support</button><?=$liveExtras('revoke')?>
+<div class="teliphones-actions">
+<button class="btn btn-primary" name="action" value="authorise" type="submit"<?=$off('authorise')?>>Authorise Remote Support</button>
+<button class="btn btn-danger" name="action" value="revoke" type="submit"<?=$off('revoke')?>>Revoke Remote Support</button>
+</div><?=$liveExtras('authorise')?><?=$liveExtras('revoke')?>
 <?php if (!$available): ?>
 <p class="help-block"><?=$escape($unavailableReason)?> Authorisation and revocation are performed by the broker; neither can be carried out from this page now, and pressing them would not change any session.</p>
 <div class="alert alert-warning teliphones-emergency"><strong>Emergency revocation.</strong> If a support session may be active, a root user on the PBX can revoke it immediately and independently of this page:<?=$command('fwconsole teliphones revoke')?>Scheduled expiry is enforced by PBX systemd timers and the temporary SSH lifetime, not by the broker or this page.</div>
 <?php endif; ?>
 </form>
-<h3>Active session</h3>
-<p>Session state: <strong data-teliphones="session-phase"><?=$cell(WebSupport::sessionPhase($live))?></strong></p>
-<p id="teliphones-session-details"<?=$session ? '' : ' hidden'?>>Session: <code data-teliphones="session-id"><?=$escape($session['session_id'] ?? '')?></code><br>
-Authorised engineer identity: <span data-teliphones="engineer"><?=$escape($status['engineer'] ?? 'Not yet established')?></span> (gateway-enrolled SSH key fingerprint; presence is not reported)<br>
-Remaining: <span data-teliphones="remaining"><?=$escape($session ? max(0, (int)($session['expires_at'] ?? 0) - time()) : '')?></span> seconds<br>
-Permitted access: <span data-teliphones="access"><?=!empty($status['access_verified']) ? 'WireGuard-scoped web access and temporary source-restricted, public-key-only root SSH.' : 'No current engineer SSH access has been confirmed.'?></span></p>
 <a class="btn btn-default" href="config.php?display=teliphones">Refresh session status</a>
 <?php $challenge = is_array($status['challenge'] ?? null); ?>
 <div id="teliphones-evidence-section"<?=$challenge ? '' : ' hidden'?>>
@@ -209,21 +287,8 @@ Permitted access: <span data-teliphones="access"><?=!empty($status['access_verif
 <?php if (!$available): ?><p class="help-block"><?=$escape($unavailableReason)?></p><?php endif; ?>
 </form>
 </div>
-<details><summary>Secure gateway enrollment</summary>
-<p>Use a separately deployed gateway and a customer client certificate enrolled there. TLS verification is mandatory. Credentials are stored root-only by the broker and are never returned to the browser. Submit this form over HTTPS. Configuration changes are refused during an active session.</p>
-<?php if (!$available): ?><p class="help-block"><?=$escape($unavailableReason)?> Enrollment credentials are stored by the broker; do not paste them until it is operational.</p><?php endif; ?>
-<form method="post" autocomplete="off" data-teliphones-form>
-<input type="hidden" name="token" value="<?=$escape($token ?? '')?>">
-<fieldset<?=$off('configure')?> id="teliphones-enrollment-fields">
-<?php foreach (['url' => 'Gateway HTTPS URL', 'certificate' => 'Customer client certificate PEM', 'private_key' => 'Customer client private key PEM', 'ca' => 'Gateway CA certificate PEM', 'checker_key' => 'Independent Checker ECDSA P-256 public key PEM'] as $field => $label): ?>
-<label for="teliphones-<?=$field?>"><?=$escape($label)?></label>
-<?php if ($field === 'url'): ?><input id="teliphones-url" class="form-control" name="url" type="url" required>
-<?php else: ?><textarea id="teliphones-<?=$field?>" class="form-control" name="<?=$field?>" rows="3" maxlength="16384" required></textarea><?php endif; ?>
-<?php endforeach; ?>
-<button class="btn btn-default" type="submit" name="action" value="configure"<?=$off('configure')?>>Save secure enrollment</button><?=$liveExtras('configure')?>
-</fieldset>
-</form></details>
 <p>Expiry is enforced by PBX timers and the temporary SSH systemd lifetime, independently of this page. Cleanup failures quarantine support; revocation may be retried, but quarantine is not cleared from the GUI.</p>
+</section>
 <?php
 $workstations = WebSupport::workstations($support);
 $pairingResponse = isset($notice) && is_array($notice) && !empty($notice['ok']) && WebSupport::validPairingResponse($notice['pairing_response'] ?? null) ? $notice['pairing_response'] : null;
@@ -256,10 +321,16 @@ foreach ($workstations['items'] as $workstation) {
     }
 }
 ?>
-<h3 id="teliphones-workstations">Windows workstations</h3>
-<p>Workstation policy requires the <code>nft</code> CLI; <code>nftables.service</code> does not need to be enabled or running. Missing tools must be repaired by the platform administrator; this page does not install nftables. External firewall flushes can briefly remove restrictions: this is not zero-exposure or truly fail-closed protection.</p>
+<section class="teliphones-panel panel panel-default" aria-labelledby="teliphones-workstations">
+<h3 id="teliphones-workstations">Windows Workstation Access</h3>
+<div class="alert alert-warning">External firewall flushes can briefly remove restrictions: this is not zero-exposure or truly fail-closed protection. Never publish the certificate or managed SSH ports. Router/NAT forwarding of WireGuard UDP remains the administrator's responsibility.</div>
+<details><summary>WireGuard, firewall and managed SSH details</summary>
+<p>Workstation policy requires the <code>nft</code> CLI; <code>nftables.service</code> does not need to be enabled or running. Missing tools must be repaired by the platform administrator; this page does not install nftables.</p>
 <p>Workstation enforcement requires <code>wg</code>, <code>ip</code> and <code>nft</code>. The broker owns only its isolated nft table and a marked jump inside <code>fpbxfirewall</code>, after INPUT's Fail2Ban hooks. The jump itself is not interface-filtered so dedicated Locked interfaces can use the same hook; every TELIPHONES ACCEPT rule is scoped to an exact interface, peer address, PBX address and port, and all other traffic returns to FreePBX Firewall. It never inserts a rule above FreePBX's INPUT hook. The public WireGuard UDP listeners use persistent FreePBX Custom Services: FreePBX owns its generated zone rules and applies changes asynchronously. Unlocked workstations share one listener; each Locked workstation uses a dedicated listener with an IP/CIDR/domain-derived source allowlist and is removed from the shared peer roster. WireGuard authenticates peers cryptographically. Reject zones, blacklists, Fail2Ban and unrelated services are not changed. External firewall flushes can briefly remove restrictions before detection; this is not zero-exposure protection. Managed SSH/API listeners also bind the WireGuard device independently of firewall rules.</p>
 <p>Pair the TELIPHONES Windows application on a workstation you control to reach only this PBX's web interface (the configured management web services, default TCP 80/443) over WireGuard. New SSH-approved pairings use a dedicated, WireGuard-device-bound SSH listener and certificate endpoint (TCP 8765); each workstation receives only its own SSH port. Explicitly approve an existing Linux account below. Windows generates and retains its own SSH key; no accounts or passwords are created and root is never selected automatically. Existing system SSH and Remote Support are unchanged. Legacy pairings retain their original network permissions but must be re-paired for automated SSH. The broker opens the WireGuard UDP port through the PBX host firewall; any router/NAT port forwarding remains the administrator's responsibility. Never publish the certificate or managed SSH ports.</p>
+</details>
+<div class="teliphones-policy-grid">
+<div>
 <?php if ($workstations['policy_supported']): ?>
 <div class="alert alert-info teliphones-connection-state" role="status">
 <strong>Workstation connection state: <?=htmlspecialchars(ucfirst($workstations['connection_state']), ENT_QUOTES, 'UTF-8')?></strong>
@@ -282,6 +353,8 @@ foreach ($workstations['items'] as $workstation) {
 <?php elseif ($workstations['supported']): ?>
 <div class="alert alert-warning">Connection states require the updated root broker. Follow the root broker update procedure above, then refresh this page.</div>
 <?php endif; ?>
+</div>
+<div>
 <?php if ($workstations['session_supported']): ?>
 <p class="teliphones-session-capacity"><strong>PBX-admitted workstation sessions:</strong> <?=$escape($workstations['connected_workstations'])?> of <?=$escape($workstations['max_sessions'])?>. Only admitted workstations can reach the configured management web services and approved SSH listener; a WireGuard handshake alone does not consume a session or prove administrative access.</p>
 <form method="post" id="teliphones-session-limit-form">
@@ -296,6 +369,11 @@ foreach ($workstations['items'] as $workstation) {
 <?php elseif ($workstations['supported']): ?>
 <div class="alert alert-warning">Enforced workstation session capacity and status require the updated root broker (protocol 11). Update the root broker, then refresh this page.</div>
 <?php endif; ?>
+</div>
+</div>
+</section>
+<section class="teliphones-panel panel panel-default" aria-labelledby="teliphones-paired-heading">
+<h3 id="teliphones-paired-heading">Paired Workstations</h3>
 <?php if ($pairingResponse !== null): ?>
 <div class="alert alert-success teliphones-pairing-response" role="status"><strong>Pairing response.</strong> Copy it into the TELIPHONES Windows application to finish pairing. It contains no secret keys.
 <pre id="teliphones-pairing-response" style="user-select:all;white-space:pre-wrap;word-break:break-all"><?=$escape($pairingResponse)?></pre>
@@ -351,15 +429,16 @@ foreach ($workstations['items'] as $workstation) {
 <?php elseif ($integrationActive): ?>
 <p class="help-block teliphones-firewall-integration">FreePBX Firewall integration active<?=$integration['backend'] !== null ? ' (iptables ' . $escape($integration['backend']) . ')' : ''?>. <?=$escape($integration['message'])?></p>
 <?php endif; ?>
-<table class="table table-striped teliphones-workstations"><thead><tr><th>Workstation</th><th>Key fingerprint</th><th>Address</th><th>Access</th><th>Pairing</th><th>WireGuard status</th><th>Administrative session</th><th></th></tr></thead><tbody>
-<?php if (!$workstations['items']): ?><tr><td colspan="8">No workstations are paired.</td></tr><?php endif; ?>
+<div class="teliphones-table-scroll" role="region" aria-label="Paired workstation management" tabindex="0">
+<table class="table table-striped teliphones-workstations"><thead><tr><th scope="col">Workstation</th><th scope="col">Key fingerprint</th><th scope="col">Address</th><th scope="col">Access</th><th scope="col">Pairing</th><th scope="col">WireGuard status</th><th scope="col">Administrative session</th><th scope="col">Actions</th></tr></thead><tbody>
+<?php if (!$workstations['items']): ?><tr><td colspan="8" class="teliphones-empty">No workstations are paired. <a href="#teliphones-pair-panel" data-teliphones-open="teliphones-pair-panel">Pair a workstation</a> to approve access.</td></tr><?php endif; ?>
 <?php foreach ($workstations['items'] as $item): ?>
 <?php $currentSourceOff = $item['current_source_verified'] ? '' : ' disabled aria-disabled="true"'; ?>
 <tr><td><?=$escape($item['name'])?><br><small>Diagnostic ID: <code>ws-<?=$escape($item['id'])?></code></small></td><td><code><?=$escape($item['fingerprint'])?></code></td><td><?=$escape($item['address'])?></td>
-<td><?=$item['locked'] ? 'Locked to ' . $escape(implode(', ', $item['sources'])) . ' (UDP ' . $escape($item['listener_port']) . ')<br>Currently resolved: ' . $escape(implode(', ', $item['effective_sources'])) : 'Unlocked (shared listener)'?><br><?php if ($item['source_resolution_failures']): ?><span class="text-danger">Unresolved (not allowed): <?=$escape(implode(', ', $item['source_resolution_failures']))?></span><br><?php endif; ?><?=$item['ssh'] ? ($item['ssh_managed'] ? 'Web interface and managed SSH (' . $escape($item['ssh_user']) . ')' : 'Web interface and legacy SSH (existing credentials)') : 'Web interface only'?></td>
-<td><?=$item['mode'] === 'persistent' ? 'Persistent (until revoked)' : 'Temporary, expires ' . $escape(gmdate('Y-m-d H:i', (int)$item['expires_at'])) . ' UTC'?></td>
-<td><?=$workstations['connection_state'] === 'closed' ? 'Listener closed' : ($item['last_handshake'] === null ? 'Not verified (status unavailable)' : ($item['last_handshake'] === 0 ? 'Authorised; no handshake yet' : 'Last handshake ' . $escape(gmdate('Y-m-d H:i:s', $item['last_handshake'])) . ' UTC'))?><?php if ($item['verified_endpoint'] !== null): ?><br>Verified public endpoint: <code><?=$escape(strpos($item['verified_endpoint']['address'], ':') === false ? $item['verified_endpoint']['address'] : '[' . $item['verified_endpoint']['address'] . ']')?>:<?=$escape($item['verified_endpoint']['port'])?></code><?php endif; ?><?php if (is_int($item['last_handshake']) && $item['last_handshake'] > 0 && !$integrationActive && $integration['state'] !== 'not-detected'): ?><br><span class="text-danger teliphones-handshake-blocked">Handshake succeeded, but FreePBX Firewall integration is not active: HTTP/HTTPS may be dropped by FreePBX Firewall.</span><?php endif; ?></td>
-<td><?=$workstations['session_supported'] ? ($item['session_active'] && $item['session_expires_at'] > time() ? 'Admitted until ' . $escape(gmdate('Y-m-d H:i:s', $item['session_expires_at'])) . ' UTC' : 'Not admitted') : 'Unavailable'?></td>
+<td><?=$item['locked'] ? 'Locked to ' . $escape(implode(', ', $item['sources'])) . ' (UDP ' . $escape($item['listener_port']) . ')<br>Currently resolved: ' . $escape(implode(', ', $item['effective_sources'])) : 'Unlocked (shared listener)'?><br><?php if ($item['source_resolution_failures']): ?><span class="text-danger">Unresolved (not allowed): <?=$escape(implode(', ', $item['source_resolution_failures']))?></span><br><?php endif; ?><span class="teliphones-badge"><?=$item['ssh'] ? ($item['ssh_managed'] ? 'Web interface and managed SSH (' . $escape($item['ssh_user']) . ')' : 'Web interface and legacy SSH (existing credentials)') : 'Web interface only'?></span></td>
+<td><span class="teliphones-badge"><?=$item['mode'] === 'persistent' ? 'Persistent (until revoked)' : 'Temporary, expires ' . $escape(gmdate('Y-m-d H:i', (int)$item['expires_at'])) . ' UTC'?></span></td>
+<td><span class="teliphones-badge"><?=$workstations['connection_state'] === 'closed' ? 'Listener closed' : ($item['last_handshake'] === null ? 'Not verified (status unavailable)' : ($item['last_handshake'] === 0 ? 'Authorised; no handshake yet' : 'Last handshake ' . $escape(gmdate('Y-m-d H:i:s', $item['last_handshake'])) . ' UTC'))?></span><?php if ($item['verified_endpoint'] !== null): ?><br>Verified public endpoint: <code><?=$escape(strpos($item['verified_endpoint']['address'], ':') === false ? $item['verified_endpoint']['address'] : '[' . $item['verified_endpoint']['address'] . ']')?>:<?=$escape($item['verified_endpoint']['port'])?></code><?php endif; ?><?php if (is_int($item['last_handshake']) && $item['last_handshake'] > 0 && !$integrationActive && $integration['state'] !== 'not-detected'): ?><br><span class="text-danger teliphones-handshake-blocked">Handshake succeeded, but FreePBX Firewall integration is not active: HTTP/HTTPS may be dropped by FreePBX Firewall.</span><?php endif; ?></td>
+<td><span class="teliphones-badge<?=$workstations['session_supported'] && $item['session_active'] && $item['session_expires_at'] > time() ? ' teliphones-badge-success' : ''?>"><?=$workstations['session_supported'] ? ($item['session_active'] && $item['session_expires_at'] > time() ? 'Admitted until ' . $escape(gmdate('Y-m-d H:i:s', $item['session_expires_at'])) . ' UTC' : 'Not admitted') : 'Unavailable'?></span></td>
 <td>
 <?php if ($workstations['management_supported']): ?>
 <form method="post" class="teliphones-workstation-lock-form">
@@ -389,7 +468,7 @@ foreach ($workstations['items'] as $workstation) {
 <?php endif; ?>
 <?php endif; ?>
 <?php if ($item['ssh_request_pending']): ?>
-<p class="text-warning"><strong>SSH elevation: Pending Approval</strong></p>
+<p class="teliphones-badge teliphones-badge-warning"><strong>SSH elevation: Pending Approval</strong></p>
 <?php if ($workstations['ssh_accounts']): ?>
 <form method="post">
 <input type="hidden" name="token" value="<?=$escape($token ?? '')?>">
@@ -409,7 +488,7 @@ foreach ($workstations['items'] as $workstation) {
 </form>
 <?php endif; ?>
 <?php if ($item['unlock_request_pending']): ?>
-<p class="text-warning"><strong>Workstation unlock: Pending Approval</strong></p>
+<p class="teliphones-badge teliphones-badge-warning"><strong>Workstation unlock: Pending Approval</strong></p>
 <form method="post">
 <input type="hidden" name="token" value="<?=$escape($token ?? '')?>">
 <input type="hidden" name="workstation_id" value="<?=$escape($item['id'])?>">
@@ -418,7 +497,7 @@ foreach ($workstations['items'] as $workstation) {
 </form>
 <?php endif; ?>
 <?php if ($item['sources_request_pending']): ?>
-<p class="text-warning"><strong>Allowed List change: Pending Approval</strong><br>Requested: <code><?=$escape(implode(', ', $item['requested_sources']))?></code></p>
+<p class="teliphones-badge teliphones-badge-warning"><strong>Allowed List change: Pending Approval</strong><br>Requested: <code><?=$escape(implode(', ', $item['requested_sources']))?></code></p>
 <form method="post">
 <input type="hidden" name="token" value="<?=$escape($token ?? '')?>">
 <input type="hidden" name="workstation_id" value="<?=$escape($item['id'])?>">
@@ -437,15 +516,20 @@ foreach ($workstations['items'] as $workstation) {
 <button class="btn btn-danger btn-sm" type="submit" name="action" value="unpair"<?=$unpairOff?>>Revoke</button></form></td></tr>
 <?php endforeach; ?>
 </tbody></table>
+</div>
 <?php if (count($workstations['items']) > 1 || $workstations['error'] !== ''): ?>
 <form method="post"><input type="hidden" name="token" value="<?=$escape($token ?? '')?>"><input type="hidden" name="workstation_id" value="all">
 <button class="btn btn-danger" type="submit" name="action" value="unpair"<?=$unpairOff?>>Revoke all workstations</button></form>
 <?php endif; ?>
-<details class="teliphones-banned-list" id="teliphones-banned-list">
-<summary><strong>Manually managed Banned list</strong></summary>
+</section>
+<section class="teliphones-panel panel panel-default" aria-labelledby="teliphones-security-heading">
+<h3 id="teliphones-security-heading">Security &amp; Access Restrictions</h3>
+<div class="teliphones-banned-list" id="teliphones-banned-list">
+<h4>Manually managed Banned list</h4>
 <p>These IP/CIDR entries are dropped only on TELIPHONES WireGuard UDP listener ports. They do not change Fail2Ban, SIP/RTP or other FreePBX services. A ban can block this administrator or legitimate workstations sharing a public IP; verify the source and recovery route before applying it.</p>
 <?php if (!$workstations['ban_supported']): ?><p class="help-block">Manual bans require broker protocol 10 or later; upgrade the root broker before managing this list.</p><?php endif; ?>
 <?php if ($workstations['bans']): ?>
+<div class="teliphones-table-scroll" role="region" aria-label="Manual listener bans" tabindex="0">
 <table class="table table-striped"><thead><tr><th>Source</th><th>Reason</th><th>Expiry</th><th>Status</th><th></th></tr></thead><tbody>
 <?php foreach ($workstations['bans'] as $ban): ?>
 <tr><td><code><?=$escape($ban['source'])?></code></td><td><?=$escape($ban['reason'])?></td>
@@ -455,7 +539,9 @@ foreach ($workstations['items'] as $workstation) {
 <button class="btn btn-default btn-sm" type="submit" name="action" value="workstation-unban"<?=$banOff?>>Remove ban</button></form></td></tr>
 <?php endforeach; ?>
 </tbody></table>
+</div>
 <?php else: ?><p>No manual TELIPHONES listener bans are configured.</p><?php endif; ?>
+<h4>Add a manual ban</h4>
 <form method="post" autocomplete="off" id="teliphones-ban-form"
  data-administrator-source="<?=$escape($administratorSource)?>"
  data-workstation-sources="<?=$escape(json_encode($workstationSources, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?: '[]')?>">
@@ -513,10 +599,10 @@ foreach ($workstations['items'] as $workstation) {
     });
 })();
 </script>
-</details>
+</div>
 <?php if ($workstations['web_supported']): ?>
-<details class="teliphones-web" id="teliphones-web">
-<summary><strong>Management web services</strong></summary>
+<div class="teliphones-web" id="teliphones-web">
+<h4>Management web services</h4>
 <p>Authorised workstations may reach exactly these PBX web services through the tunnel. The first entry is the GUI address given to newly paired Windows applications. Changing this list immediately updates the firewall permissions for every paired workstation and removes obsolete ones; already-paired workstations keep their saved GUI address until re-paired.</p>
 <?php foreach ($notListening as $entry): ?>
 <div class="alert alert-warning teliphones-web-listening">No service is listening for <code><?=$escape($entry['scheme'] . ':' . $entry['port'])?></code> on an address reachable through the tunnel. The firewall permits it, but workstations cannot use it until the web server listens on the wildcard or tunnel address.</div>
@@ -530,11 +616,12 @@ foreach ($workstations['items'] as $workstation) {
 <input id="teliphones-web-services" class="form-control" name="web" maxlength="120" pattern="\s*(https?:[0-9]{1,5})(\s*,\s*https?:[0-9]{1,5}){0,3}\s*" required value="<?=$escape($webText !== '' ? $webText : 'http:80, https:443')?>">
 <button class="btn btn-default" type="submit" name="action" value="web"<?=$unpairOff?>>Update management web services</button>
 </form>
-</details>
+</div>
 <?php endif; ?>
-<details class="teliphones-diagnostics" id="teliphones-diagnostics">
-<summary><strong>Workstation diagnostics</strong></summary>
-<p>View or export the bounded PBX-side record for one pairing-lifetime diagnostic ID. This contains server-observed broker and WireGuard events only; it does not contain Windows-local attempts. No recent handshake or traffic is not evidence that a workstation is disconnected.</p>
+</section>
+<details class="teliphones-diagnostics teliphones-panel panel panel-default" id="teliphones-diagnostics"<?=!WebSupport::supportsDiagnostics($support) ? ' open' : ''?>>
+<summary>Diagnostics <small>— workstation lookup and export</small></summary>
+<p>Workstation diagnostics: view or export the bounded PBX-side record for one pairing-lifetime diagnostic ID. This contains server-observed broker and WireGuard events only; it does not contain Windows-local attempts. No recent handshake or traffic is not evidence that a workstation is disconnected.</p>
 <?php if (!WebSupport::supportsDiagnostics($support)): ?>
 <div class="alert alert-warning">Workstation diagnostics require the updated root broker. Follow the root broker update procedure above, then refresh this page.</div>
 <?php else: ?>
@@ -548,30 +635,31 @@ foreach ($workstations['items'] as $workstation) {
 </form>
 <?php endif; ?>
 </details>
-<details class="teliphones-pair"><summary><strong>Pair a workstation</strong></summary>
+<?php if (!$workstations['ssh_ready']): ?><div class="alert alert-warning">Managed SSH is not ready. <?=$escape($workstations['ssh_error'] ?: 'Update the root broker and check OpenSSH/service prerequisites. Web-only pairing remains available.')?></div><?php endif; ?>
+<details class="teliphones-pair teliphones-panel panel panel-default" id="teliphones-pair-panel"<?=$expand(['pair'])?>><summary>Pair a Workstation</summary>
 <p>In the TELIPHONES Windows application, choose <strong>Add my PBX...</strong>, then <strong>Generate request</strong> and <strong>Copy request</strong>. Pairing explicitly authorises access to this PBX's web administration interface; SSH is a separate choice below and is not permitted by default. Check that the key fingerprint shown in the application matches the fingerprint listed above after pairing. Pairing must be performed over HTTPS.</p>
 <form method="post" autocomplete="off">
 <input type="hidden" name="token" value="<?=$escape($token ?? '')?>">
 <fieldset<?=$pairOff?> id="teliphones-pair-fields">
+<div class="teliphones-pair-step">
+<h4>1. Windows application request</h4>
 <label for="teliphones-pair-request">Pairing request from the Windows application</label>
 <textarea id="teliphones-pair-request" class="form-control" name="request" rows="3" maxlength="4096" required></textarea>
+</div>
+<div class="teliphones-pair-step">
+<h4>2. PBX hostname and WireGuard</h4>
 <label for="teliphones-pair-host">PBX public hostname or IP address (used by the workstation to reach WireGuard)</label>
 <input id="teliphones-pair-host" class="form-control" name="endpoint_host" maxlength="253" required value="<?=$escape($defaultHost)?>">
 <label for="teliphones-pair-port">WireGuard UDP port on the PBX</label>
 <input id="teliphones-pair-port" class="form-control" name="listen_port" inputmode="numeric" pattern="[0-9]{4,5}" required value="<?=$escape($workstations['listen_port'] ?? 51821)?>">
+</div>
+<div class="teliphones-pair-step">
+<h4>3. Management services and permissions</h4>
 <?php if ($workstations['web_supported']): ?>
 <label for="teliphones-pair-web">Management web services reachable through the tunnel (first entry becomes this workstation's GUI address)</label>
 <input id="teliphones-pair-web" class="form-control" name="web" maxlength="120" pattern="\s*(https?:[0-9]{1,5})(\s*,\s*https?:[0-9]{1,5}){0,3}\s*" value="<?=$escape($defaultWebText)?>">
 <p class="help-block">Defaults to the saved configuration, or this server's current scheme/port when it is not listed. Behind a reverse proxy, enter the PBX's actual listener, not the proxy port. Verify service reachability on the tunnel address; firewall permissions alone do not configure Apache. Applies to all paired workstations.</p>
 <?php endif; ?>
-<label for="teliphones-pair-mode">Pairing</label>
-<select id="teliphones-pair-mode" class="form-control" name="mode"><option value="temporary">Temporary</option><option value="persistent">Persistent trusted workstation (until revoked)</option></select>
-<label for="teliphones-pair-minutes">Temporary pairing duration (minutes)</label>
-<select id="teliphones-pair-minutes" class="form-control" name="minutes"><?php foreach ([60, 240, 480, 1440] as $minutes): ?><option value="<?=$minutes?>"><?=$minutes?></option><?php endforeach; ?></select>
-<label for="teliphones-pair-sources">Lock this workstation to approved IPs/domains (optional, comma-separated)</label>
-<input id="teliphones-pair-sources" class="form-control" name="sources" maxlength="2048" placeholder="198.51.100.24, office.example.net"<?=$sourceLockOff?>>
-<p class="help-block">A non-empty list uses a dedicated WireGuard listener port and tunnel interface; FreePBX Firewall service rules are managed automatically. If the PBX is behind router/NAT, forward the allocated UDP port to the PBX. DNS names are resolved and refreshed by the PBX; unresolved names do not add access. This initial lock is administrator-set during pairing.</p>
-<?php if ($sourceLockOff): ?><p class="help-block">Source-lock controls require broker protocol 8; update the root broker before using this option.</p><?php endif; ?>
 <div id="teliphones-pair-ssh-controls" hidden>
 <label for="teliphones-pair-ssh">SSH approval</label>
 <select id="teliphones-pair-ssh" class="form-control" name="ssh"><option value="0">FreePBX Web Access only</option><option value="1">FreePBX Web + SSH Access</option></select>
@@ -582,8 +670,22 @@ foreach ($workstations['items'] as $workstation) {
 </div>
 </div>
 <p class="help-block" id="teliphones-pair-ssh-unavailable" aria-live="polite">SSH approval controls appear only for a valid Windows request that includes SSH capability.</p>
-<?php if (!$workstations['ssh_ready']): ?><p class="text-warning">Managed SSH is not ready. <?=$escape($workstations['ssh_error'] ?: 'Update the root broker and check OpenSSH/service prerequisites. Web-only pairing remains available.')?></p><?php endif; ?>
+</div>
+<div class="teliphones-pair-step">
+<h4>4. Duration and optional source restrictions</h4>
+<label for="teliphones-pair-mode">Pairing</label>
+<select id="teliphones-pair-mode" class="form-control" name="mode"><option value="temporary">Temporary</option><option value="persistent">Persistent trusted workstation (until revoked)</option></select>
+<label for="teliphones-pair-minutes">Temporary pairing duration (minutes)</label>
+<select id="teliphones-pair-minutes" class="form-control" name="minutes"><?php foreach ([60, 240, 480, 1440] as $minutes): ?><option value="<?=$minutes?>"><?=$minutes?></option><?php endforeach; ?></select>
+<label for="teliphones-pair-sources">Lock this workstation to approved IPs/domains (optional, comma-separated)</label>
+<input id="teliphones-pair-sources" class="form-control" name="sources" maxlength="2048" placeholder="198.51.100.24, office.example.net"<?=$sourceLockOff?>>
+<p class="help-block">A non-empty list uses a dedicated WireGuard listener port and tunnel interface; FreePBX Firewall service rules are managed automatically. If the PBX is behind router/NAT, forward the allocated UDP port to the PBX. DNS names are resolved and refreshed by the PBX; unresolved names do not add access. This initial lock is administrator-set during pairing.</p>
+<?php if ($sourceLockOff): ?><p class="help-block">Source-lock controls require broker protocol 8; update the root broker before using this option.</p><?php endif; ?>
+</div>
+<div class="teliphones-pair-step">
+<h4>5. Approve pairing</h4>
 <button class="btn btn-primary" type="submit" name="action" value="pair"<?=$pairOff?>>Pair workstation</button>
+</div>
 </fieldset>
 </form></details>
 <script>
