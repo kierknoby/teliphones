@@ -918,7 +918,11 @@ class WindowsSshTests(unittest.TestCase):
                 return
             self.assertEqual(line(host), "PRODUCTION_STARTED")
             if console:
-                self.assertEqual(line(host), "CONSOLE_INTERACTIVE=1")
+                try:
+                    self.assertEqual(line(host), "CONSOLE_INTERACTIVE=1")
+                except (AssertionError, RuntimeError, TimeoutError) as error:
+                    self.fail(f"{error}\nClient diagnostic tail:\n{server_log_tail(client_log)}"
+                              f"\nServer diagnostic tail:\n{server_log_tail(self.root / 'sshd-test.log')}")
             for _ in range(100):
                 tail = (self.root / "sshd-test.log").read_bytes()[log_offset:].decode(errors="replace")
                 if "Accepted publickey" in tail and "ws-" + profile + "/" in tail:

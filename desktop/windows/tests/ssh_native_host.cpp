@@ -214,11 +214,22 @@ int runMain(int argc, char** argv) {
                         output += console->ReadAvailable();
                         if (console->IsAuthenticated() &&
                             output.find("TELIPHONES_CONSOLE_READY") != std::string::npos) break;
-                        if (!console->IsAlive()) throw tlp::Error("Embedded SSH console ended before interactive output.");
+                        if (!console->IsAlive()) {
+                            output += console->ReadAvailable();
+                            throw tlp::Error("Embedded SSH console ended before interactive output; authenticated=" +
+                                std::string(console->IsAuthenticated() ? "true" : "false") +
+                                "; terminal output bytes=" + std::to_string(output.size()) +
+                                "; terminal output=" + output);
+                        }
                         Sleep(20);
                     }
-                    if (!console->IsAuthenticated() || output.find("TELIPHONES_CONSOLE_READY") == std::string::npos)
-                        throw tlp::Error("Embedded SSH console did not return interactive PTY output.");
+                    if (!console->IsAuthenticated() || output.find("TELIPHONES_CONSOLE_READY") == std::string::npos) {
+                        output += console->ReadAvailable();
+                        throw tlp::Error("Embedded SSH console did not return interactive PTY output; authenticated=" +
+                            std::string(console->IsAuthenticated() ? "true" : "false") +
+                            "; terminal output bytes=" + std::to_string(output.size()) +
+                            "; terminal output=" + output);
+                    }
                     std::cout << "CONSOLE_INTERACTIVE=1" << std::endl;
                     if (!std::getline(std::cin, line) || line != "close")
                         throw tlp::Error("Embedded console teardown requires an explicit close command.");

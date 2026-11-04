@@ -46,6 +46,7 @@ target_link_libraries(teliphones_terminal PUBLIC teliphones_vterm)
 target_compile_options(teliphones_terminal PRIVATE ${TELIPHONES_WARNING_OPTIONS})
 add_executable(terminal_emulator_tests tests/terminal_emulator_tests.cpp)
 target_link_libraries(terminal_emulator_tests PRIVATE teliphones_terminal)
+target_compile_options(terminal_emulator_tests PRIVATE ${TELIPHONES_WARNING_OPTIONS})
 
 add_executable(core_tests tests/core_tests.cpp)
 target_link_libraries(core_tests PRIVATE teliphones_core)

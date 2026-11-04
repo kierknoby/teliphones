@@ -406,6 +406,17 @@ std::shared_ptr<Session> startManagedSsh(const Profile& profile, const Preferenc
     WriteNewFile(state->directory + L"\\known_hosts", alias + " " + profile.pairing.sshHostKey + "\n", ownerAcl().c_str());
     const auto configPath = state->directory + L"\\config";
     state->sshLog = state->directory + L"\\ssh.log";
+#ifdef TELIPHONES_SSH_TESTING
+    if (embedded) {
+        wchar_t testLog[32768];
+        const auto logSize = GetEnvironmentVariableW(L"TELIPHONES_SSH_TEST_LOG", testLog, 32768);
+        if (!logSize || logSize >= 32768)
+            throw Error("Native SSH test requires a bounded client diagnostic log path.");
+        const auto testLogPath = Narrow(std::wstring(testLog, logSize));
+        if (!IsShellSafeFilePath(testLogPath)) throw Error("Unsafe SSH test log path.");
+        state->sshLog = Widen(testLogPath);
+    }
+#endif
     const std::string config =
         "Host *\nHostName " + profile.pairing.pbxAddress + "\nUser " + profile.pairing.sshUser +
         "\nPort " + std::to_string(profile.pairing.sshPort) + "\nHostKeyAlias " + alias +
@@ -593,12 +604,14 @@ int RunSshConsole(const std::vector<std::string>& arguments) {
             throw Error("Unable to set the managed SSH terminal type.");
         std::vector<std::string> commandArgs{ssh, "-F", path};
         if (embedded) commandArgs.insert(commandArgs.end(), {"-v", "-E", logPath});
+        if (embedded) commandArgs.push_back("-tt");
 #ifdef TELIPHONES_SSH_TESTING
         wchar_t testLog[32768];
         const auto logSize = GetEnvironmentVariableW(L"TELIPHONES_SSH_TEST_LOG", testLog, 32768);
         if (!logSize || logSize >= 32768) throw Error("Native SSH test requires a bounded client diagnostic log path.");
         const auto testLogPath = Narrow(std::wstring(testLog, logSize));
         if (!IsShellSafeFilePath(testLogPath)) throw Error("Unsafe SSH test log path.");
+        if (embedded && testLogPath != logPath) throw Error("SSH test diagnostic paths do not match.");
         if (embedded) commandArgs[3] = "-vvv";
         else commandArgs.insert(commandArgs.end(), {"-vvv", "-E", testLogPath});
 #endif

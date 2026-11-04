@@ -21,6 +21,30 @@ std::uint32_t safeCodepoint(std::uint32_t codepoint) {
     if (codepoint > 0x10ffff || (codepoint >= 0xd800 && codepoint <= 0xdfff)) return 0xfffd;
     return codepoint;
 }
+
+std::size_t incompleteUtf8Suffix(const std::string& bytes) {
+    if (bytes.empty()) return 0;
+    std::size_t start = bytes.size();
+    while (start > 0 &&
+           (static_cast<unsigned char>(bytes[start - 1]) & 0xc0) == 0x80) {
+        --start;
+    }
+    if (start == bytes.size()) start = bytes.size() - 1;
+    const auto lead = static_cast<unsigned char>(bytes[start]);
+    std::size_t expected = 0;
+    if (lead >= 0xc2 && lead <= 0xdf) expected = 2;
+    else if (lead >= 0xe0 && lead <= 0xef) expected = 3;
+    else if (lead >= 0xf0 && lead <= 0xf4) expected = 4;
+    if (!expected || bytes.size() - start >= expected) return bytes.size();
+    if (start + 1 < bytes.size()) {
+        const auto second = static_cast<unsigned char>(bytes[start + 1]);
+        if ((lead == 0xe0 && second < 0xa0) || (lead == 0xed && second > 0x9f) ||
+            (lead == 0xf0 && second < 0x90) || (lead == 0xf4 && second > 0x8f)) {
+            return bytes.size();
+        }
+    }
+    return start;
+}
 }
 
 TerminalEmulator::TerminalEmulator(int columns, int rows, Output output)
@@ -55,12 +79,15 @@ TerminalEmulator::~TerminalEmulator() {
 }
 
 void TerminalEmulator::Feed(const std::string& bytes) {
+    pendingUtf8_.append(bytes);
+    const auto completeSize = incompleteUtf8Suffix(pendingUtf8_);
     std::size_t offset = 0;
-    while (offset < bytes.size()) {
-        const auto count = vterm_input_write(terminal_, bytes.data() + offset, bytes.size() - offset);
+    while (offset < completeSize) {
+        const auto count = vterm_input_write(terminal_, pendingUtf8_.data() + offset, completeSize - offset);
         if (!count) throw std::runtime_error("VT parser stopped before consuming terminal output.");
         offset += count;
     }
+    pendingUtf8_.erase(0, completeSize);
     vterm_screen_flush_damage(screen_);
 }
 

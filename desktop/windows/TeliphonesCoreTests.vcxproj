@@ -35,6 +35,7 @@
     <ClCompile Include="src\core\TunnelConfig.cpp" />
     <ClCompile Include="src\core\Validation.cpp" />
     <ClCompile Include="src\core\WireGuardSetup.cpp" />
+    <ClCompile Include="src\core\WorkstationHeartbeat.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

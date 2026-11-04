@@ -63,6 +63,7 @@ private:
     VTermScreen* screen_ = nullptr;
     VTermState* state_ = nullptr;
     Output output_;
+    std::string pendingUtf8_;
     std::deque<std::vector<TerminalCell>> scrollback_;
     int columns_;
     int rows_;

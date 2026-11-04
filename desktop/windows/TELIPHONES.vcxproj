@@ -53,15 +53,15 @@
     <ResourceCompile><AdditionalIncludeDirectories>$(ProjectDir)src\app;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories></ResourceCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="third_party\libvterm\src\encoding.c" />
-    <ClCompile Include="third_party\libvterm\src\keyboard.c" />
-    <ClCompile Include="third_party\libvterm\src\mouse.c" />
-    <ClCompile Include="third_party\libvterm\src\parser.c" />
-    <ClCompile Include="third_party\libvterm\src\pen.c" />
-    <ClCompile Include="third_party\libvterm\src\screen.c" />
-    <ClCompile Include="third_party\libvterm\src\state.c" />
-    <ClCompile Include="third_party\libvterm\src\unicode.c" />
-    <ClCompile Include="third_party\libvterm\src\vterm.c" />
+    <ClCompile Include="third_party\libvterm\src\encoding.c"><PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
+    <ClCompile Include="third_party\libvterm\src\keyboard.c"><PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
+    <ClCompile Include="third_party\libvterm\src\mouse.c"><PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
+    <ClCompile Include="third_party\libvterm\src\parser.c"><PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
+    <ClCompile Include="third_party\libvterm\src\pen.c"><PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
+    <ClCompile Include="third_party\libvterm\src\screen.c"><PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
+    <ClCompile Include="third_party\libvterm\src\state.c"><PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
+    <ClCompile Include="third_party\libvterm\src\unicode.c"><PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
+    <ClCompile Include="third_party\libvterm\src\vterm.c"><PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
     <ClCompile Include="src\core\TerminalEmulator.cpp" />
     <ClCompile Include="src\core\ConnectProtection.cpp" />
     <ClCompile Include="src\app\ConnectPasswordDlg.cpp" />

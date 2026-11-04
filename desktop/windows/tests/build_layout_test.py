@@ -57,6 +57,10 @@ class BuildLayoutTests(unittest.TestCase):
         self.assertIn("src\\core\\SshCrypto.cpp", window_core.get("Exclude", ""))
         terminal_dialog = (ROOT / "src/app/SshTerminalDlg.cpp").read_text()
         self.assertIn("key == VK_F4 && (flags & KF_ALTDOWN)", terminal_dialog)
+        helper_session = (ROOT / "src/platform/SshSession.cpp").read_text()
+        self.assertIn('if (embedded) commandArgs.push_back("-tt");', helper_session)
+        self.assertIn("state->sshLog = Widen(testLogPath);", helper_session)
+        self.assertIn("testLogPath != logPath", helper_session)
 
     def test_workstation_heartbeat_updates_are_outside_migration_path(self):
         cmake = (ROOT / "CMakeLists.txt").read_text()
@@ -80,6 +84,30 @@ class BuildLayoutTests(unittest.TestCase):
             "ApplyWorkstationSshApproval",
         ):
             self.assertGreater(handler.index(transition), successful_admission)
+
+    def test_windows_targets_register_heartbeat_and_vendor_only_legacy_c_runtime_suppression(self):
+        core_tests = project("TeliphonesCoreTests.vcxproj")
+        core_sources = {
+            item.get("Include", "").replace("\\", "/")
+            for item in core_tests.findall("ms:ItemGroup/ms:ClCompile", NS)
+        }
+        self.assertIn("src/core/WorkstationHeartbeat.cpp", core_sources)
+
+        application = project("TELIPHONES.vcxproj")
+        vendor_sources = {
+            item.get("Include", "").replace("\\", "/"): item
+            for item in application.findall("ms:ItemGroup/ms:ClCompile", NS)
+            if item.get("Include", "").replace("\\", "/").startswith("third_party/libvterm/src/")
+        }
+        self.assertEqual(len(vendor_sources), 9)
+        for source, item in vendor_sources.items():
+            definitions = item.findtext("ms:PreprocessorDefinitions", default="", namespaces=NS)
+            self.assertIn("_CRT_SECURE_NO_WARNINGS", definitions, source)
+        for item in application.findall("ms:ItemGroup/ms:ClCompile", NS):
+            include = item.get("Include", "").replace("\\", "/")
+            if include.startswith("src/"):
+                definitions = item.findtext("ms:PreprocessorDefinitions", default="", namespaces=NS)
+                self.assertNotIn("_CRT_SECURE_NO_WARNINGS", definitions, include)
 
     def test_connect_protection_is_credential_driven_not_a_settings_flag(self):
         services = (ROOT / "src/platform/Services.cpp").read_text()

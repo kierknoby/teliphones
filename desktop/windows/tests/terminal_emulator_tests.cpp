@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <string>
+#include <vector>
 
 namespace {
 void check(bool condition, const char* message) {
@@ -32,6 +33,37 @@ int main() {
     terminal.Feed(std::string("\x82\xac", 2));
     check(terminal.CellAt(0, 0).text == U"€", "UTF-8 characters may span output chunks");
     check(terminal.TextAll().find("€") != std::string::npos, "copy-all text preserves UTF-8 characters");
+
+    struct Utf8Case {
+        std::string bytes;
+        char32_t codepoint;
+    };
+    const std::vector<Utf8Case> utf8Cases{
+        {std::string("\xc2\xa2", 2), U'¢'},
+        {std::string("\xe2\x82\xac", 3), U'€'},
+        {std::string("\xf0\x9f\x92\xa9", 4), U'💩'}
+    };
+    for (const auto& test : utf8Cases) {
+        for (std::size_t split = 1; split < test.bytes.size(); ++split) {
+            tlp::TerminalEmulator fragmented(20, 4, [](const std::string&) {});
+            fragmented.Feed(test.bytes.substr(0, split));
+            check(fragmented.CellAt(0, 0).text.empty(),
+                  "incomplete UTF-8 prefixes remain buffered until the codepoint is complete");
+            fragmented.Feed(test.bytes.substr(split) + "\x1b[2;4H!");
+            check(fragmented.CellAt(0, 0).text == std::u32string(1, test.codepoint) &&
+                      fragmented.CellAt(1, 3).text == U"!",
+                  "UTF-8 characters split at every byte boundary survive adjacent VT escapes");
+        }
+
+        tlp::TerminalEmulator repeated(20, 4, [](const std::string&) {});
+        for (std::size_t index = 0; index + 1 < test.bytes.size(); ++index) {
+            repeated.Feed(test.bytes.substr(index, 1));
+            if (index == 0) repeated.Resize(24, 6);
+        }
+        repeated.Feed(test.bytes.substr(test.bytes.size() - 1));
+        check(repeated.CellAt(0, 0).text == std::u32string(1, test.codepoint),
+              "UTF-8 characters survive repeated partial reads and terminal resizing");
+    }
 
     terminal.Resize(30, 8);
     check(terminal.Columns() == 30 && terminal.Rows() == 8, "resizing updates terminal grid dimensions");
