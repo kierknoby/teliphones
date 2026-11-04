@@ -109,6 +109,12 @@ class BuildLayoutTests(unittest.TestCase):
         self.assertIn("CreateFileW(inputLogPath.c_str(), GENERIC_WRITE", helper_session)
         self.assertIn("FlushFileBuffers(inputDiagnostics.get())", helper_session)
         self.assertIn("inputDiagnosticFailure()", helper_session)
+        # The ConPTY child must not receive the helper's redirected stdio pipes, or input bypasses the pump.
+        pseudoconsole_child = helper_session.split("PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE", 1)[1].split("} else {", 1)[0]
+        self.assertIn("startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;", pseudoconsole_child)
+        for stream in ("hStdInput", "hStdOutput", "hStdError"):
+            self.assertIn("startup.StartupInfo." + stream + " = nullptr;", pseudoconsole_child)
+        self.assertNotIn("GetStdHandle", pseudoconsole_child)
 
     def test_native_mfc_terminal_integration_regressions_are_covered(self):
         main = (ROOT / "src/app/MainDlg.cpp").read_text()

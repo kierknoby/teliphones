@@ -722,6 +722,12 @@ int RunSshConsole(const std::vector<std::string>& arguments) {
                 DeleteProcThreadAttributeList(startup.lpAttributeList);
                 ThrowLastError("Unable to attach OpenSSH to the pseudoconsole");
             }
+            // Without explicit null standard handles, Windows duplicates this helper's redirected stdio
+            // pipes into the console child, letting OpenSSH bypass the pseudoconsole entirely.
+            startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+            startup.StartupInfo.hStdInput = nullptr;
+            startup.StartupInfo.hStdOutput = nullptr;
+            startup.StartupInfo.hStdError = nullptr;
         } else {
             startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
             startup.StartupInfo.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
