@@ -227,7 +227,7 @@ PairResponse ParsePairResponse(const std::string& input, const std::string& expe
     if ((address & 0xFFC00000u) != 0x64400000u || (address & 0xFFFFFF00u) != (pbx & 0xFFFFFF00u) || address == pbx || (pbx & 255) != 1) {
         throw Error("The pairing response addresses are outside the TELIPHONES workstation range.");
     }
-    if (result.guiUrl != "http://" + result.pbxAddress + "/admin/") throw Error("The pairing response contains an unexpected GUI address.");
+    if (!IsManagementUrl(result.guiUrl, result.pbxAddress)) throw Error("The pairing response contains an unexpected GUI address.");
     const json::Value& expires = value.at("expires_at");
     if (result.mode == "temporary") {
         result.expiresAt = expires.asInteger();

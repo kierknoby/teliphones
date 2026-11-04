@@ -143,4 +143,17 @@ bool IsEndpoint(const std::string& text) {
     return ParseIPv4(host, ipv4) || IsHostname(host);
 }
 
+bool IsManagementUrl(const std::string& text, const std::string& expectedAddress) {
+    std::size_t start = text.rfind("http://", 0) == 0 ? 7 : (text.rfind("https://", 0) == 0 ? 8 : 0);
+    const std::string suffix = "/admin/";
+    if (start == 0 || text.size() <= start + suffix.size() ||
+        text.compare(text.size() - suffix.size(), suffix.size(), suffix) != 0) return false;
+    std::string authority = text.substr(start, text.size() - start - suffix.size());
+    std::size_t colon = authority.find(':');
+    std::string address = authority.substr(0, colon);
+    std::uint32_t parsed = 0;
+    if (!ParseIPv4(address, parsed) || (!expectedAddress.empty() && address != expectedAddress)) return false;
+    return colon == std::string::npos || IsEndpoint(authority);
+}
+
 }  // namespace tlp

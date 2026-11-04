@@ -230,10 +230,22 @@ $pairingResponse = isset($notice) && is_array($notice) && !empty($notice['ok']) 
 $pairOff = $available && $workstations['ready'] ? '' : ' disabled aria-disabled="true"';
 $unpairOff = $available && $workstations['supported'] ? '' : ' disabled aria-disabled="true"';
 $defaultHost = preg_replace('/:[0-9]+$/', '', (string)($_SERVER['HTTP_HOST'] ?? ''));
+$webEntries = $workstations['web'];
+$webText = implode(', ', array_map(static function ($entry) { return $entry['scheme'] . ':' . $entry['port']; }, $webEntries));
+// Direct server metadata, not client-controlled Host or forwarded headers.
+$currentScheme = strtolower((string)($_SERVER['HTTPS'] ?? '')) === 'on' ? 'https' : 'http';
+$currentPort = (int)($_SERVER['SERVER_PORT'] ?? 0) ?: ($currentScheme === 'https' ? 443 : 80);
+$currentListed = in_array($currentPort, array_map(static function ($entry) { return $entry['port']; }, $webEntries), true);
+$defaultWebText = $webText === '' ? 'http:80, https:443' : $webText;
+if (!$currentListed && $currentPort >= 1 && $currentPort <= 65535) {
+    $defaultWebText = $currentScheme . ':' . $currentPort;
+}
+$notListening = array_values(array_filter($webEntries, static function ($entry) { return $entry['listening'] === false; }));
 ?>
 <h3 id="teliphones-workstations">Windows workstations</h3>
-<p>Workstation enforcement requires the <code>nft</code> CLI (nftables userspace tools); the <code>nftables.service</code> does not need to be enabled or running. The root broker owns only the isolated <code>inet teliphones_workstations</code> table, watches local nft events and periodically verifies its complete rules. Missing tools must be repaired by the platform administrator; this page does not install nftables. Because an nftables accept cannot override a later FreePBX Firewall drop, the broker also maintains its own iptables chain <code>teliphones-ws</code>, reached by one marked jump inside <code>fpbxfirewall</code>, after INPUT's Fail2Ban hooks. It never inserts a rule above FreePBX's INPUT hook; the old intrusive jump is removed automatically. It admits TCP 80/443 and explicitly approved SSH services from each paired workstation address to this PBX's tunnel address: new managed pairings use their own SSH port and TCP 8765, while legacy SSH pairings retain TCP 22. All other tunnel traffic returns to normal FreePBX Firewall processing. Only the marked jump is edited inside FreePBX's chain; unrelated rules, zones, settings and services are unchanged, and Custom Rules need not be enabled. External firewall flushes can briefly remove web and legacy-network restrictions before detection disables the interface: this is not zero-exposure or truly fail-closed protection against external changes. New managed SSH/API listeners additionally bind the WireGuard device independently of firewall rules.</p>
-<p>Pair the TELIPHONES Windows application on a workstation you control to reach only this PBX's web interface (TCP 80/443) over WireGuard. New SSH-approved pairings use a dedicated, WireGuard-device-bound SSH listener and certificate endpoint (TCP 8765); each workstation receives only its own SSH port. Explicitly approve an existing Linux account below. Windows generates and retains its own SSH key; no accounts or passwords are created and root is never selected automatically. Existing system SSH and Remote Support are unchanged. Legacy pairings retain their original network permissions but must be re-paired for automated SSH. Only the WireGuard UDP port needs router reachability; never publish the certificate or managed SSH ports.</p>
+<p>Workstation policy requires the <code>nft</code> CLI; <code>nftables.service</code> does not need to be enabled or running. Missing tools must be repaired by the platform administrator; this page does not install nftables. External firewall flushes can briefly remove restrictions: this is not zero-exposure or truly fail-closed protection.</p>
+<p>Workstation enforcement requires <code>wg</code>, <code>ip</code> and <code>nft</code>. The broker owns only its isolated nft table and one interface-scoped, marked jump inside <code>fpbxfirewall</code>, after INPUT's Fail2Ban hooks. It never inserts a rule above FreePBX's INPUT hook. Per-peer tunnel permissions cover the configured web ports and explicitly approved SSH/API services. The public WireGuard UDP listener uses a persistent FreePBX Custom Service: FreePBX owns its generated zone rules and applies changes asynchronously. No public workstation IP is whitelisted; WireGuard authenticates peers cryptographically. Reject zones, blacklists, Fail2Ban and unrelated services are not changed. External firewall flushes can briefly remove restrictions before detection; this is not zero-exposure protection. Managed SSH/API listeners also bind the WireGuard device independently of firewall rules.</p>
+<p>Pair the TELIPHONES Windows application on a workstation you control to reach only this PBX's web interface (the configured management web services, default TCP 80/443) over WireGuard. New SSH-approved pairings use a dedicated, WireGuard-device-bound SSH listener and certificate endpoint (TCP 8765); each workstation receives only its own SSH port. Explicitly approve an existing Linux account below. Windows generates and retains its own SSH key; no accounts or passwords are created and root is never selected automatically. Existing system SSH and Remote Support are unchanged. Legacy pairings retain their original network permissions but must be re-paired for automated SSH. The broker opens the WireGuard UDP port through the PBX host firewall; any router/NAT port forwarding remains the administrator's responsibility. Never publish the certificate or managed SSH ports.</p>
 <?php if ($pairingResponse !== null): ?>
 <div class="alert alert-success teliphones-pairing-response" role="status"><strong>Pairing response.</strong> Copy it into the TELIPHONES Windows application to finish pairing. It contains no secret keys.
 <pre id="teliphones-pairing-response" style="user-select:all;white-space:pre-wrap;word-break:break-all"><?=$escape($pairingResponse)?></pre>
@@ -295,6 +307,24 @@ $defaultHost = preg_replace('/:[0-9]+$/', '', (string)($_SERVER['HTTP_HOST'] ?? 
 <form method="post"><input type="hidden" name="token" value="<?=$escape($token ?? '')?>"><input type="hidden" name="workstation_id" value="all">
 <button class="btn btn-danger" type="submit" name="action" value="unpair"<?=$unpairOff?>>Revoke all workstations</button></form>
 <?php endif; ?>
+<?php if ($workstations['web_supported']): ?>
+<details class="teliphones-web" id="teliphones-web">
+<summary><strong>Management web services</strong></summary>
+<p>Authorised workstations may reach exactly these PBX web services through the tunnel. The first entry is the GUI address given to newly paired Windows applications. Changing this list immediately updates the firewall permissions for every paired workstation and removes obsolete ones; already-paired workstations keep their saved GUI address until re-paired.</p>
+<?php foreach ($notListening as $entry): ?>
+<div class="alert alert-warning teliphones-web-listening">No service is listening for <code><?=$escape($entry['scheme'] . ':' . $entry['port'])?></code> on an address reachable through the tunnel. The firewall permits it, but workstations cannot use it until the web server listens on the wildcard or tunnel address.</div>
+<?php endforeach; ?>
+<?php if (!$currentListed): ?>
+<div class="alert alert-info teliphones-web-current">This page is currently served over <code><?=$escape($currentScheme . ':' . $currentPort)?></code>, which is not in the configured management web services. Add it below so workstations reach the interface you actually use.</div>
+<?php endif; ?>
+<form method="post">
+<input type="hidden" name="token" value="<?=$escape($token ?? '')?>">
+<label for="teliphones-web-services">Management web services (comma-separated scheme:port, first entry is the workstation GUI address)</label>
+<input id="teliphones-web-services" class="form-control" name="web" maxlength="120" pattern="\s*(https?:[0-9]{1,5})(\s*,\s*https?:[0-9]{1,5}){0,3}\s*" required value="<?=$escape($webText !== '' ? $webText : 'http:80, https:443')?>">
+<button class="btn btn-default" type="submit" name="action" value="web"<?=$unpairOff?>>Update management web services</button>
+</form>
+</details>
+<?php endif; ?>
 <details class="teliphones-diagnostics" id="teliphones-diagnostics">
 <summary><strong>Workstation diagnostics</strong></summary>
 <p>View or export the bounded PBX-side record for one pairing-lifetime diagnostic ID. This contains server-observed broker and WireGuard events only; it does not contain Windows-local attempts. No recent handshake or traffic is not evidence that a workstation is disconnected.</p>
@@ -322,6 +352,11 @@ $defaultHost = preg_replace('/:[0-9]+$/', '', (string)($_SERVER['HTTP_HOST'] ?? 
 <input id="teliphones-pair-host" class="form-control" name="endpoint_host" maxlength="253" required value="<?=$escape($defaultHost)?>">
 <label for="teliphones-pair-port">WireGuard UDP port on the PBX</label>
 <input id="teliphones-pair-port" class="form-control" name="listen_port" inputmode="numeric" pattern="[0-9]{4,5}" required value="<?=$escape($workstations['listen_port'] ?? 51821)?>">
+<?php if ($workstations['web_supported']): ?>
+<label for="teliphones-pair-web">Management web services reachable through the tunnel (first entry becomes this workstation's GUI address)</label>
+<input id="teliphones-pair-web" class="form-control" name="web" maxlength="120" pattern="\s*(https?:[0-9]{1,5})(\s*,\s*https?:[0-9]{1,5}){0,3}\s*" value="<?=$escape($defaultWebText)?>">
+<p class="help-block">Defaults to the saved configuration, or this server's current scheme/port when it is not listed. Behind a reverse proxy, enter the PBX's actual listener, not the proxy port. Verify service reachability on the tunnel address; firewall permissions alone do not configure Apache. Applies to all paired workstations.</p>
+<?php endif; ?>
 <label for="teliphones-pair-mode">Pairing</label>
 <select id="teliphones-pair-mode" class="form-control" name="mode"><option value="temporary">Temporary</option><option value="persistent">Persistent trusted workstation (until revoked)</option></select>
 <label for="teliphones-pair-minutes">Temporary pairing duration (minutes)</label>

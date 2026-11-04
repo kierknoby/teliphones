@@ -25,5 +25,7 @@ std::string FormatIPv4(std::uint32_t address);
 bool ParseHostRoute(const std::string& text, std::uint32_t& address);
 // "host:port" or "[ipv6]:port", the forms accepted by gateway/engineer_config.py.
 bool IsEndpoint(const std::string& text);
+// HTTP(S), an IPv4 tunnel address, optional port, and exactly /admin/.
+bool IsManagementUrl(const std::string& text, const std::string& expectedAddress = "");
 
 }  // namespace tlp

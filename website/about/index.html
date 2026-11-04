@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>About TELIPHONES — Purpose, licensing and project links</title>
+  <meta name="description" content="TELIPHONES is an open-source FreePBX administration project maintained by FreePBX UK. Learn its purpose, GPL licensing, trademark distinction and website privacy.">
+  <link rel="canonical" href="https://teliphones.com/about/">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="TELIPHONES">
+  <meta property="og:title" content="About TELIPHONES — Engineering for deliberate access">
+  <meta property="og:description" content="The project, the licence, the trademark and the boundaries of this website.">
+  <meta property="og:url" content="https://teliphones.com/about/">
+  <meta property="og:image" content="https://teliphones.com/assets/social.png">
+  <meta property="og:image:type" content="image/png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="TELIPHONES private, administrator-approved FreePBX access.">
+  <meta name="theme-color" content="#132d29">
+  <link rel="icon" href="/assets/mark.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/assets/site.css">
+  <script src="/assets/site.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="masthead">
+  <div class="wrap masthead-inner">
+    <a class="brand" href="/" aria-label="TELIPHONES home"><svg viewBox="0 0 32 32" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 5h22M16 5v22M5 16h22"/><circle cx="5" cy="27" r="1"/><circle cx="27" cy="27" r="1"/></svg>TELIPHONES</a>
+    <nav class="desktop-nav" aria-label="Primary"><a href="/windows/">Windows</a><a href="/freepbx/">FreePBX</a><a href="/security/">Security</a><a href="/docs/">Docs</a></nav>
+    <div class="header-actions">
+      <a class="button small" href="/downloads/">Get the software <span aria-hidden="true">↗</span></a>
+      <button class="theme-toggle" type="button" data-theme-toggle hidden aria-label="Switch appearance"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 0 0 16Z" fill="currentColor"/></svg></button>
+      <details class="site-menu"><summary>Explore</summary><nav class="menu-panel" aria-label="All pages"><div class="wrap menu-grid"><a href="/">Home</a><a href="/features/">Features</a><a href="/windows/">For Windows</a><a href="/freepbx/">For FreePBX</a><a href="/remote-support/">Remote Support</a><a href="/security/">Security &amp; evidence</a><a href="/docs/">Documentation</a><a href="/downloads/">Downloads</a><a href="/faq/">FAQ</a><a href="/roadmap/">Roadmap</a><a href="/about/" aria-current="page">About the project</a><a href="/docs/getting-started/">Getting started</a></div></nav></details>
+    </div>
+  </div>
+</header>
+<main id="main">
+  <div class="page-head"><div class="wrap"><nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/">Home</a><span aria-hidden="true">/</span><span>About</span></nav><p class="eyebrow">Purpose / People / Principles</p><h1>Make access easier.<br><em>Keep authority explicit.</em></h1><p class="lead">TELIPHONES is a FreePBX administration project: connect familiar tools to deliberate permissions, rather than making permanent access the easiest option.</p></div></div>
+  <div class="wrap page-layout">
+    <nav class="toc" aria-label="On this page"><strong>About</strong><a href="#purpose">Project purpose</a><a href="#ecosystem">FreePBX ecosystem</a><a href="#licence">Licence &amp; trademark</a><a href="#website">This website</a><a href="#links">Project links</a></nav>
+    <div class="article">
+      <section id="purpose"><h2>Administration is a workflow.<br>Not just a tunnel.</h2><p>For an independent administrator, useful remote access means more than a network route. It means knowing which PBX you are connected to, which account is approved, whether the service is reachable and when the authority ends.</p><p>For MSPs, customer approval and temporary support windows are different from everyday workstation pairing. TELIPHONES keeps those workflows separate while publishing the underlying contracts.</p><p>The project joins a native Windows application with a FreePBX module and a root-owned broker. It aims to reduce routine VPN, key and permission coordination without making secure configuration optional.</p><p>The repository identifies <a href="https://github.com/kierknoby">Kieran Knowles-Byrne (@kierknoby)</a> as author, with maintenance by <a href="https://github.com/freepbxUK">FreePBX UK</a>. Source and its development history are available for inspection.</p></section>
+      <section id="ecosystem"><h2>Alongside FreePBX.<br>Not endorsed by implication.</h2><p>TELIPHONES targets FreePBX 17 on Debian 12 and genuine WireGuard for Windows. It does not replace FreePBX authentication, FreePBX Firewall, OpenSSH or the administrator's network policy.</p><p>It is a community module installed manually, not a module claimed to be included in the FreePBX online repository. No endorsement, certification or affiliation with Sangoma, the FreePBX project, WireGuard or another organisation is asserted here.</p><p>The experimental software is not production-ready. Initial live SSH and native tests are meaningful milestones, but not independent audit or complete lifecycle assurance. <a href="/security/#evidence">The evidence register</a> makes that distinction explicit.</p></section>
+      <section id="licence"><h2>Open software.<br><em>A distinct trademark.</em></h2><p><strong>TELIPHONES is a UK registered trademark.</strong></p><p>The product statements are:</p><blockquote><p>TELIPHONES 0.7.0 for Windows is licensed under GPLv3.</p><p>TELIPHONES 0.5.0 for FreePBX is licensed under GPLv3.</p></blockquote><p>The software grant is <strong>GPL version 3 or, at your option, any later version (GPL-3.0-or-later)</strong>. The module metadata expresses this as <code>GPLv3+</code>; the product footer's GPLv3 wording is shorthand, not a narrower grant.</p><p>Software licensing does not grant trademark rights. Windows distributions also include the OpenSSL licence. Read the actual licence texts with the source or distribution rather than treating this summary as a replacement.</p><a href="https://github.com/kierknoby/teliphones/blob/main/LICENSE">Read the repository licence ↗</a></section>
+      <section id="website"><h2>A quiet website.<br>No background product connection.</h2><p>This site uses static HTML, local CSS, vanilla JavaScript and locally created SVG illustrations. There are no analytics, tracking scripts, external fonts, embedded third-party services or application connections required for rendering.</p><p>The appearance control changes the current page only; the site does not store that preference. The documentation filter runs locally and sends nothing. Download checkboxes are a reading aid, not a system check. Navigation, documentation and FAQ answers remain usable without JavaScript.</p><p>No genuine product screenshots were available for the site. Diagrams are labelled illustrations, not simulated application screens or live demonstrations. The social illustration and typographic mark are website artwork, not claims about the application interface.</p><p>Hosting providers may keep normal access/security logs. Links to GitHub and FreePBX UK leave this site and are subject to those sites' policies. This site itself sets no cookies or browser storage.</p><p>Content reflects the local FreePBX 0.5.0 test package, updated Windows 0.7.0 source and recorded validation as of 4 November 2026. Earlier native/live observations are labelled separately. Remote build availability and publication were not checked; current changes may not yet be public. Refer to the documentation matching your exact trusted build.</p></section>
+      <section id="links"><h2>Genuine project destinations.</h2><a class="resource" href="https://github.com/kierknoby/teliphones"><strong>Source repository</strong><span>Code, tests, contracts, documentation and independent version histories.</span></a><a class="resource" href="https://github.com/kierknoby/teliphones/blob/main/teliphones/docs/CHANGELOG.md"><strong>FreePBX module history</strong><span>Including the operational correction from installed/tested 0.4.0 to 0.4.1.</span></a><a class="resource" href="https://github.com/kierknoby/teliphones/blob/main/desktop/windows/CHANGELOG.md"><strong>Windows application history</strong><span>The independent 0.7.0 target, native SSH implementation and earlier development records.</span></a><a class="resource" href="https://freepbx.uk/support/"><strong>FreePBX UK support</strong><span>Installation/testing feedback and private handling of sensitive or security concerns.</span></a></section>
+    </div>
+  </div>
+</main>
+<footer class="site-footer"><div class="wrap">
+  <div class="footer-grid"><div><a class="brand" href="/">TELIPHONES</a><p>Private administration.<br>Authority stays with your PBX.</p><span class="tag">Experimental software</span></div><div><h2>Product</h2><a href="/features/">Features</a><a href="/windows/">Windows</a><a href="/freepbx/">FreePBX</a><a href="/remote-support/">Remote Support</a></div><div><h2>Resources</h2><a href="/docs/">Documentation</a><a href="/downloads/">Downloads</a><a href="/security/">Security</a><a href="/faq/">FAQ</a></div><div><h2>Project</h2><a href="/roadmap/">Roadmap</a><a href="/about/">About &amp; licensing</a><a href="https://github.com/kierknoby/teliphones">Source on GitHub ↗</a><a href="https://freepbx.uk/support/">FreePBX UK support ↗</a></div></div>
+  <div class="legal"><p>TELIPHONES is a UK registered trademark. Software licensed under GPL version 3 or later. No endorsement by Sangoma or the FreePBX project is implied.</p><p>No analytics. No third-party scripts. <a href="/about/#website">About this website</a></p></div>
+</div></footer>
+</body>
+</html>

@@ -239,16 +239,23 @@ std::string FreePbxUrl(const Profile& profile, const std::string& sessionId) {
     std::string address = ConnectionAddress(profile, sessionId);
     std::uint32_t parsed = 0;
     if (!ParseIPv4(address, parsed)) throw Error("Invalid PBX tunnel address.");
+    if (profile.kind == ProfileKind::Administrator) {
+        if (!IsManagementUrl(profile.pairing.guiUrl, address)) throw Error("Invalid PBX management address.");
+        return profile.pairing.guiUrl;
+    }
     return "http://" + address + "/admin/";
 }
 
+int ManagementProbePort(const std::string& url) {
+    if (!IsManagementUrl(url)) throw Error("Invalid PBX management address.");
+    const std::size_t start = url.find("://") + 3;
+    const std::size_t colon = url.find(':', start);
+    if (colon == std::string::npos) return url.rfind("https://", 0) == 0 ? 443 : 80;
+    return std::stoi(url.substr(colon + 1, url.find('/', colon) - colon - 1));
+}
+
 LaunchPlan BrowserLaunch(const std::string& browserId, const std::string& executable, const std::string& url) {
-    const std::string prefix = "http://";
-    const std::string suffix = "/admin/";
-    std::uint32_t parsed = 0;
-    if (url.size() <= prefix.size() + suffix.size() || url.compare(0, prefix.size(), prefix) != 0 ||
-        url.compare(url.size() - suffix.size(), suffix.size(), suffix) != 0 ||
-        !ParseIPv4(url.substr(prefix.size(), url.size() - prefix.size() - suffix.size()), parsed)) {
+    if (!IsManagementUrl(url)) {
         throw Error("Refusing to open an unexpected FreePBX address.");
     }
     LaunchPlan plan;

@@ -109,7 +109,7 @@ PairResponse pairingFromJson(const Value& value) {
         !ParseHostRoute(p.address, address) || !ParseIPv4(p.pbxAddress, pbx) || !IsEndpoint(p.endpoint) || !IsPbxName(p.pbxName) ||
         (p.mode != "temporary" && p.mode != "persistent") ||
         (address & 0xFFC00000u) != 0x64400000u || (address & 0xFFFFFF00u) != (pbx & 0xFFFFFF00u) || address == pbx ||
-        (pbx & 255) != 1 || p.guiUrl != "http://" + p.pbxAddress + "/admin/") {
+        (pbx & 255) != 1 || !IsManagementUrl(p.guiUrl, p.pbxAddress)) {
         throw Error("A saved pairing is invalid.");
     }
     return p;

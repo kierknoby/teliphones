@@ -14,11 +14,11 @@ workflow for bounded support windows.
 
 | Component | Current version | Start here |
 |---|---|---|
-| FreePBX module and root broker | **0.4.1** | [Install](teliphones/README.md#installing-the-module) · [Upgrade](teliphones/README.md#updating-teliphones) |
+| FreePBX module and root broker | **0.5.0** (local test package) | [Install](teliphones/README.md#installing-the-module) · [Upgrade](teliphones/README.md#updating-teliphones) |
 | Windows application | **0.7.0** (file version 0.7.0.0) | [Download and requirements](desktop/windows/README.md#requirements-and-download) · [Pair a PBX](desktop/windows/README.md#pair-an-administrator-workstation) |
 | Reference gateway and Checker probe | Optional laboratory infrastructure | [Integration guide](teliphones/docs/INTEGRATION.md) · [Gateway](gateway/README.md) |
 
-FreePBX **0.4.1** and Windows **0.7.0** are independently versioned.
+FreePBX **0.5.0** and Windows **0.7.0** are independently versioned.
 The Windows application is not included in the Module Admin package.
 
 > [!WARNING]
@@ -37,6 +37,12 @@ The Windows application is not included in the Module Admin package.
 > root broker bootstrap**, even if protocol 5 is already reported.
 > [Follow the upgrade procedure](teliphones/README.md#updating-teliphones).
 > Do not disable FreePBX Firewall or enable Custom Rules as a workaround.
+
+The local 0.5.0 test package additionally manages the public WireGuard listener
+through a persistent FreePBX Custom Service and supports configured management
+ports. Its [investigation and validation limits](teliphones/docs/CONNECTIVITY-REGRESSION.md)
+remain explicit: no real-PBX roaming/watchdog or native Windows validation is
+claimed. Use an updated Windows 0.7.0 build for custom-port launch and health checks.
 
 ## Find your route
 

@@ -11,6 +11,7 @@ import subprocess
 import sys
 import time
 import unittest
+from unittest.mock import patch
 
 import test_support_broker as helpers
 
@@ -18,6 +19,7 @@ broker = helpers.broker_module
 MARK = broker.INTEGRATION_MARK
 CHAIN = broker.INTEGRATION_CHAIN
 JUMP = ["-i", broker.WORKSTATION_IFACE, "-m", "comment", "--comment", MARK, "-j", CHAIN]
+DEFAULT_WEB = [dict(entry) for entry in broker.DEFAULT_WEB]
 BANS = helpers.FREEPBX17_FAIL2BAN
 EXPECTED = BANS + ["fpbxfirewall"]
 BASELINE = BANS + ["fpbxfirewall"]
@@ -44,7 +46,7 @@ class IntegrationTests(unittest.TestCase):
         return [broker.iptables_rule(rule) for rule in self.net.filter.get(CHAIN, [])]
 
     def accepted(self):
-        return {(rule["s"], rule["dport"]) for rule in self.rules() if rule and rule["j"] == "ACCEPT"}
+        return {(rule["s"], rule["dport"]) for rule in self.rules() if rule and rule["j"] == "ACCEPT" and "s" in rule}
 
     def input_targets(self):
         return [broker.iptables_target(rule) for rule in self.net.filter["INPUT"]]
@@ -221,7 +223,7 @@ class IntegrationTests(unittest.TestCase):
         self.assertTrue(self.net.up)
         status = self.broker.status()["workstations"]["firewall_integration"]
         self.assertEqual(status["state"], "error")
-        self.assertIn("handshakes may succeed while FreePBX Firewall drops HTTP/HTTPS", status["message"])
+        self.assertIn("may now drop WireGuard handshakes and tunnel HTTP/HTTPS", status["message"])
 
     def test_unverifiable_integration_cleanup_fails_closed(self):
         self.net.fail = lambda name, rest: name == "iptables" and ("-I" in rest or "-X" in rest)
@@ -430,13 +432,128 @@ class IntegrationTests(unittest.TestCase):
             self.assertIsNone(broker.iptables_rule(tokens))
         self.assertEqual(broker.iptables_rule(broker.iptables_arguments(broker.INTEGRATION_JUMP)), broker.INTEGRATION_JUMP)
         with self.assertRaises(broker.BrokerError):
-            broker.integration_rules("100.70.1.1", [{"address": "100.70.1.0/24", "ssh": False}])
+            broker.integration_rules("100.70.1.1", [{"address": "100.70.1.0/24", "ssh": False}], DEFAULT_WEB)
+
+    def test_wireguard_listener_accepts_unknown_sources_without_whitelisting(self):
+        """Regression: the public WireGuard handshake permit must exist and never name a source address."""
+        self.pair()
+        self.assertIn((broker.FWCONSOLE, ("teliphones", "listener", "--listen-port=51821")), self.net.calls)
+        self.assertFalse(any(rule.get("p") == "udp" for rule in self.rules()))
+        # Every source-scoped rule is a tunnel peer; no public address is ever whitelisted.
+        for rule in self.rules():
+            self.assertTrue(rule is not None)
+            if "s" in rule:
+                self.assertTrue(broker.ipaddress.IPv4Network(rule["s"]).subnet_of(broker.WORKSTATION_POOL), rule)
+
+    def test_custom_listen_port_and_stale_udp_permits_are_reconciled(self):
+        self.pair(port="51899")
+        self.assertIn((broker.FWCONSOLE, ("teliphones", "listener", "--listen-port=51899")), self.net.calls)
+        self.net.calls = []
+        self.broker.expire_workstations()
+        self.assertIn((broker.FWCONSOLE, ("teliphones", "listener", "--listen-port=51899")), self.net.calls)
+        self.assertEqual(self.broker.integration["state"], "active")
+        # Revoking every workstation removes the listener permit entirely.
+        self.unpair("all")
+        self.assertIn((broker.FWCONSOLE, ("teliphones", "listener", "--listen-port=0")), self.net.calls)
+        self.assertNotIn(CHAIN, self.net.filter)
+        self.assertEqual(self.input_targets(), BASELINE)
+        self.assertNotIn("51899", json.dumps(self.net.filter))
+
+    def test_management_web_services_follow_configuration_without_stale_rules(self):
+        _, response = self.pair(web="https:8443")
+        self.assertEqual(response["gui_url"], "https://" + response["pbx_address"] + ":8443/admin/")
+        self.assertEqual(self.accepted(), {(response["address"], "8443")})
+        self.assertIn("tcp dport { 8443 } accept", self.net.ruleset)
+        # Changing the management ports while the workstation stays paired reconciles both
+        # firewall layers and leaves no stale permits.
+        result = self.broker.dispatch({"action": "web", "web": "http:80, https:443"}, 1000)
+        self.assertTrue(result["ok"])
+        self.assertEqual(self.accepted(), {(response["address"], "80"), (response["address"], "443")})
+        self.assertNotIn("8443", json.dumps(self.net.filter))
+        self.assertIn("tcp dport { 80, 443 } accept", self.net.ruleset)
+        self.assertNotIn("8443", self.net.ruleset)
+        self.assert_placement()
+        status = self.broker.status()["workstations"]
+        self.assertEqual([(entry["scheme"], entry["port"]) for entry in status["web"]], [("http", 80), ("https", 443)])
+        self.assertEqual(status["gui_url"], "http://" + response["pbx_address"] + "/admin/")
+        # The saved pairing keeps working after a broker restart with the new ports.
+        replacement = broker.Broker()
+        replacement.run = self.net.run
+        replacement.tool = self.broker.tool
+        replacement.iptables_tool = self.broker.iptables_tool
+        replacement.audit = lambda *args: None
+        try:
+            replacement.restore_workstations()
+            self.assertEqual(replacement.integration["state"], "active")
+            self.assertEqual(self.accepted(), {(response["address"], "80"), (response["address"], "443")})
+        finally:
+            if replacement.monitor:
+                replacement.monitor.close()
+
+    def test_web_action_inputs_are_strictly_validated(self):
+        for value in ("", "ftp:80", "http:0", "http:65536", "https:08", "http:80,http:80", "http", ":443",
+                      "http:22", "https:8765", "https:22002",
+                      "http:80,https:443,http:81,https:444,http:82", 443):
+            with self.assertRaises(broker.BrokerError, msg=str(value)):
+                broker.validate({"action": "web", "web": value})
+        self.assertEqual(broker.validate({"action": "web", "web": "HTTPS:8443"}), "web")
+        self.assertEqual(broker.parse_web("HTTPS:8443, http:80"),
+                         [{"scheme": "https", "port": 8443}, {"scheme": "http", "port": 80}])
+
+    def test_listener_transient_failure_recovers_disabled_interface(self):
+        self.pair()
+        self.net.fail = lambda name, rest: name == broker.FWCONSOLE
+        self.broker.expire_workstations()
+        self.assertFalse(self.net.up)
+        self.assertTrue(self.broker.workstation_error)
+        self.net.fail = None
+        self.broker.expire_workstations()
+        self.assertTrue(self.net.up)
+        self.assertFalse(self.broker.workstation_error)
+        self.assert_placement()
+
+    def test_listener_removal_failure_does_not_skip_other_teardown(self):
+        self.pair()
+        self.net.fail = lambda name, rest: name == broker.FWCONSOLE
+        with self.assertRaises(broker.BrokerError):
+            self.broker.teardown_workstations()
+        self.assertFalse(self.net.link)
+        self.assertIsNone(self.broker.owned_table())
+        self.assertNotIn(CHAIN, self.net.filter)
+        self.net.fail = None
+        self.broker.teardown_workstations()
+
+    def test_web_persistence_failure_restores_active_permissions(self):
+        self.pair()
+        before, _ = self.broker.workstation_state()
+        with patch.object(self.broker, "save_workstations", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                self.broker.configure_web({"web": "https:8443"}, 1000)
+        after, _ = self.broker.workstation_state()
+        self.assertEqual(after, before)
+        self.assertEqual({port for _, port in self.accepted()}, {"80", "443"})
+        self.assertNotIn("8443", self.net.ruleset)
+        self.assertTrue(self.net.up)
+
+    def test_both_custom_web_ports_and_actual_listener_binding(self):
+        _, response = self.pair(web="http:8080, https:8443")
+        self.assertEqual(response["gui_url"], "http://" + response["pbx_address"] + ":8080/admin/")
+        self.assertEqual({port for _, port in self.accepted()}, {"8080", "8443"})
+        self.assertIn("tcp dport { 8080, 8443 } accept", self.net.ruleset)
+        address = response["pbx_address"]
+        exact = broker.socket.inet_aton(address)[::-1].hex().upper()
+        for bound, expected in ((exact, True), ("00000000", True), ("0100007F", False)):
+            tcp4 = "header\n0: %s:20FB 00000000:0000 0A\n" % bound  # TCP 8443
+            with patch.object(broker.Path, "read_text", side_effect=[tcp4, "header\n"]):
+                self.assertEqual(broker.web_listening(8443, address), expected)
+        with patch.object(broker.Path, "read_text", side_effect=OSError("unreadable")):
+            self.assertIsNone(broker.web_listening(8443, address))
 
 
 class NamespaceIntegrationTests(unittest.TestCase):
     def run_lab(self, backend):
         binary = {"nft": "iptables-nft", "legacy": "iptables-legacy"}[backend]
-        if not all(shutil.which(tool) for tool in ("unshare", "nsenter", "nft", "ip", binary)):
+        if not all(shutil.which(tool) for tool in ("unshare", "nsenter", "nft", "ip", "php", binary)):
             self.skipTest("unshare/nsenter/nft/ip/%s unavailable; no host network mutation attempted" % binary)
         probe = subprocess.run(["unshare", "--user", "--map-root-user", "--net", "true"], capture_output=True, text=True)
         if probe.returncode:

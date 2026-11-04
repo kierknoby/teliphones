@@ -10,7 +10,7 @@ This guide covers installing and using the Windows application. The
 [FreePBX administration guide](../../teliphones/README.md) covers server setup.
 
 Windows **0.7.0** (file version **0.7.0.0**) is independent of FreePBX module
-**0.4.1**. Windows 0.7.0 introduces managed My PBXs SSH certificates.
+**0.5.0**. Windows 0.7.0 introduces managed My PBXs SSH certificates.
 The [version definition](src/app/Version.h), not the manifest assembly identity,
 defines the application version.
 
@@ -118,21 +118,22 @@ During installation the dialog cannot be closed until the worker finishes; cance
 
 ## Pair an administrator workstation
 
-1. Install `TELIPHONES-0.4.1.tgz` through FreePBX Module Admin and complete its [documented root broker bootstrap](../../teliphones/README.md#complete-installation-on-freepbx-17). After upgrading the module, rerun the bootstrap with no active support session and Windows tunnels disconnected so the separately installed broker is current. A module upgrade alone does not replace the privileged broker.
+1. Install the locally validated `TELIPHONES-0.5.0.tgz` test package through FreePBX Module Admin and complete its [documented root broker bootstrap](../../teliphones/README.md#complete-installation-on-freepbx-17). After upgrading the module, rerun the bootstrap with no active support session and Windows tunnels disconnected so the separately installed broker is current. A module upgrade alone does not replace the privileged broker.
 2. Select **Add my PBX...** and enter a workstation name. Leave **Request SSH in next generated request** unchecked for GUI-only access (no OpenSSH dependency), or select it to enrol an independent DPAPI-protected workstation SSH identity. Choose **Generate request** and copy it. This identity authenticates future certificate requests; it is never used as the session certificate subject.
 3. In the PBX web interface, open **Connectivity > TELIPHONES > Windows workstations**, paste the request, provide the PBX's externally reachable WireGuard hostname/IP and UDP port, select temporary or persistent access, and explicitly choose whether SSH is allowed. The pairing operation requires HTTPS.
 4. Leave SSH **Not permitted** for a GUI-only request. For SSH-capable requests the PBX administrator explicitly selects the existing account; root is never implicit. Copy the response into Windows and **Save connection**. The response supplies the account and pinned host/CA keys; no manual username or fingerprint acceptance is needed.
 5. Select the profile and **Connect**, approving Windows tunnel setup. Wait
    for Connection Health to confirm that the PBX is reachable.
 6. Select **Open FreePBX** and sign in with your normal FreePBX credentials.
-   The browser opens `http://<PBX tunnel address>/admin/` inside the encrypted
+   The browser opens the approved HTTP/HTTPS management URL (including a custom
+   port, when configured) on the PBX tunnel address inside the encrypted
    tunnel. Redirects and HTTPS certificates still depend on the PBX web setup;
    never disable certificate checks to work around a mismatch.
 
 The client adds only the PBX's host route; ordinary workstation traffic does not
 use the tunnel. The PBX does not forward the workstation onto other networks.
 If a handshake succeeds but FreePBX does not load, check the module's firewall
-integration status and the [0.4.1 upgrade guidance](../../teliphones/README.md#updating-teliphones).
+integration status and the [upgrade guidance](../../teliphones/README.md#updating-teliphones).
 The corrected internal firewall jump still needs real-PBX validation.
 
 ## Open an authorised SSH session

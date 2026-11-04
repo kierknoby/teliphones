@@ -31,6 +31,16 @@ $assert($result['notice']['pairing_response'] === $recorder->reply['pairing_resp
 $modern = $operational;
 $modern['status']['protocol'] = 5;
 $modern['status']['workstations']['ssh_ready'] = true;
+$webBroker = $modern;
+$webBroker['status']['protocol'] = 6;
+$recorder->sent = [];
+$result = WebSupport::handleAction($recorder, ['web' => 'https:8443'] + $post, 'known', $webBroker,
+    ['HTTPS' => 'on', 'SERVER_PORT' => '8443']);
+$assert($result['dispatched'] && $recorder->sent[0]['web'] === 'https:8443',
+    'Custom HTTPS management ports must reach a compatible broker unchanged.');
+$recorder->sent = [];
+$result = WebSupport::handleAction($recorder, ['web' => 'https:8443'] + $post, 'known', $modern, $https);
+$assert(!$result['dispatched'] && $recorder->sent === [], 'An old broker must not silently discard configured web permissions.');
 $managedPost = ['request' => 'TELIPHONES-PAIR-REQUEST-2:abc', 'ssh_user' => 'root'] + $post;
 $recorder->sent = [];
 $result = WebSupport::handleAction($recorder, $managedPost, 'known', $modern, $https);

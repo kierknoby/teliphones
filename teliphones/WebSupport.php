@@ -3,7 +3,7 @@ namespace FreePBX\modules\Teliphones;
 
 class WebSupport
 {
-    public const VERSION = '0.4.1';
+    public const VERSION = '0.5.0';
     public const DIAGNOSTIC_ID_PATTERN = '/^ws-[a-f0-9]{16}$/';
 
     public static function authorised($sessionUser, $frameworkUser = null): bool
@@ -35,7 +35,7 @@ class WebSupport
         return null;
     }
 
-    public const BROKER_ACTIONS = ['authorise', 'revoke', 'dependencies', 'evidence', 'configure', 'pair', 'unpair'];
+    public const BROKER_ACTIONS = ['authorise', 'revoke', 'dependencies', 'evidence', 'configure', 'pair', 'unpair', 'web'];
     public const ACTION_LABELS = [
         'authorise' => 'Authorise Remote Support',
         'revoke' => 'Revoke Remote Support',
@@ -44,11 +44,13 @@ class WebSupport
         'configure' => 'Save secure gateway enrollment',
         'pair' => 'Pair Windows workstation',
         'unpair' => 'Revoke workstation access',
+        'web' => 'Update management web services',
     ];
     /** Exact fields forwarded for workstation pairing actions; other actions keep their existing forwarding. */
     public const PAIRING_FIELDS = [
-        'pair' => ['request', 'endpoint_host', 'listen_port', 'mode', 'minutes', 'ssh', 'ssh_user'],
+        'pair' => ['request', 'endpoint_host', 'listen_port', 'mode', 'minutes', 'ssh', 'ssh_user', 'web'],
         'unpair' => ['workstation_id'],
+        'web' => ['web'],
     ];
 
     private string $socket;
@@ -68,6 +70,8 @@ class WebSupport
     public const BROKER_PROTOCOL = 3;
     public const DIAGNOSTICS_PROTOCOL = 4;
     public const SSH_PROTOCOL = 5;
+    /** Protocol 6 adds the WireGuard listener firewall permit and configurable management web services. */
+    public const WEB_PROTOCOL = 6;
 
     public static function brokerOperational(array $response): bool
     {
@@ -79,6 +83,13 @@ class WebSupport
         return self::brokerOperational($response)
             && is_int($response['status']['protocol'] ?? null)
             && $response['status']['protocol'] >= self::DIAGNOSTICS_PROTOCOL;
+    }
+
+    public static function supportsWeb(array $response): bool
+    {
+        return self::brokerOperational($response)
+            && is_int($response['status']['protocol'] ?? null)
+            && $response['status']['protocol'] >= self::WEB_PROTOCOL;
     }
 
     public function brokerState(array $support): array
@@ -100,6 +111,24 @@ class WebSupport
         $operation = self::ACTION_LABELS[$request['action']];
         foreach (self::PAIRING_FIELDS[$request['action']] ?? ['minutes', 'evidence', 'url', 'certificate', 'private_key', 'ca', 'checker_key'] as $field) {
             if (isset($post[$field]) && is_string($post[$field])) $request[$field] = $post[$field];
+        }
+        if ($request['action'] === 'pair' && !empty($request['web']) && !self::supportsWeb($support)) {
+            return ['code' => 409, 'dispatched' => false, 'notice' => ['ok' => false, 'action_failed' => true,
+                'error' => 'Update the root broker before pairing with configured management web services.']];
+        }
+        // An empty value preserves the saved configuration.
+        if ($request['action'] === 'pair' && isset($request['web'])
+            && trim($request['web']) === '') {
+            unset($request['web']);
+        }
+        if ($request['action'] === 'web' && !self::supportsWeb($support)) {
+            return ['code' => 200, 'dispatched' => false, 'notice' => ['ok' => false, 'action_failed' => true, 'action' => 'web', 'operation' => $operation,
+                'error' => 'Management web services require the updated root broker. Follow the root broker update procedure, then refresh this page.']];
+        }
+        if ($request['action'] === 'web' && strtolower((string)($server['HTTPS'] ?? '')) !== 'on'
+            && (string)($server['SERVER_PORT'] ?? '') !== '443') {
+            return ['code' => 403, 'dispatched' => false, 'notice' => ['ok' => false,
+                'error' => 'Management web permissions may only be changed over HTTPS.']];
         }
         if (!self::brokerOperational($support)) {
             return ['code' => 200, 'dispatched' => false, 'notice' => ['ok' => false, 'action_failed' => true, 'unavailable' => true, 'action' => $request['action'], 'operation' => $operation,
@@ -412,11 +441,22 @@ class WebSupport
         $firewallIntegration = ['state' => $integrationState,
             'message' => is_string($integration['message'] ?? null) ? substr($integration['message'], 0, 500) : '',
             'backend' => in_array($integration['backend'] ?? null, ['nf_tables', 'legacy'], true) ? $integration['backend'] : null];
+        $web = [];
+        foreach ($supported && is_array($raw['web'] ?? null) ? $raw['web'] : [] as $entry) {
+            if (is_array($entry) && in_array($entry['scheme'] ?? null, ['http', 'https'], true)
+                && is_int($entry['port'] ?? null) && $entry['port'] >= 1 && $entry['port'] <= 65535) {
+                $web[] = ['scheme' => $entry['scheme'], 'port' => $entry['port'],
+                    'listening' => is_bool($entry['listening'] ?? null) ? $entry['listening'] : null];
+            }
+        }
         return ['supported' => $supported, 'ready' => $supported && $raw['ready'] === true && !in_array(false, $requirements, true) && ($status['enabled'] ?? true) === true, 'requirements' => $requirements,
             'ssh_ready' => $supported && ($status['protocol'] ?? 0) >= self::SSH_PROTOCOL && ($raw['ssh_ready'] ?? false) === true,
             'ssh_error' => $supported && is_string($raw['ssh_error'] ?? null) ? substr($raw['ssh_error'], 0, 500) : '',
             'error' => $supported && is_string($raw['error'] ?? null) ? substr($raw['error'], 0, 500) : '',
             'firewall_integration' => $firewallIntegration,
+            'web' => $web, 'web_supported' => $supported && ($status['protocol'] ?? 0) >= self::WEB_PROTOCOL,
+            'gui_url' => $supported && is_string($raw['gui_url'] ?? null)
+                && preg_match('#^https?://[0-9.]{7,15}(:[0-9]{1,5})?/admin/$#D', $raw['gui_url']) === 1 ? $raw['gui_url'] : null,
             'listen_port' => $supported && is_int($raw['listen_port'] ?? null) ? $raw['listen_port'] : null, 'items' => $items];
     }
 

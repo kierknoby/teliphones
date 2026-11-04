@@ -689,10 +689,10 @@ endfunction()
         self.assertNotIn('"TELIPHONES is a UK registered trademark.\\r\\n"', layout)
         self.assertIn("desktop/windows/build/artifact/LICENSE", workflow)
         module = ET.parse(ROOT.parents[1] / "teliphones/module.xml").getroot()
-        self.assertEqual(module.findtext("version"), "0.4.1")
+        self.assertEqual(module.findtext("version"), "0.5.0")
         for path, statement in (
             (ROOT / "README.md", "TELIPHONES 0.7.0 for Windows is licensed under GPLv3."),
-            (ROOT.parents[1] / "teliphones/README.md", "TELIPHONES 0.4.1 for FreePBX is licensed under GPLv3."),
+            (ROOT.parents[1] / "teliphones/README.md", "TELIPHONES 0.5.0 for FreePBX is licensed under GPLv3."),
         ):
             text = path.read_text()
             self.assertIn(statement, text)
@@ -1049,7 +1049,10 @@ endfunction()
         self.assertIn("SetWindowPos(preferences_.alwaysOnTop", health_source)
         self.assertIn("tlp::win::SaveHealthPreferences(preferences)", main_source)
         self.assertIn("std::thread([window, generation", main_source)
-        self.assertIn("MeasureTcpProbe(address, 443, 1200)", main_source)
+        self.assertIn("MeasureTcpProbe(address, tlp::ManagementProbePort(managementUrl), 1200)", main_source)
+        self.assertIn("connectedProfile->pairing.guiUrl", main_source)
+        self.assertNotIn("MeasureTcpProbe(address, 443, 1200)", main_source)
+        self.assertNotIn("MeasureTcpProbe(address, 80, 1200)", main_source)
         self.assertIn("ReadWireGuardCounters(wgExecutable, tunnelName, peerPublicKey)", main_source)
         self.assertIn("The Connection Health monitor will keep checking; existing terminal windows are not closed.", main_source)
         self.assertIn("probes are not packet loss", health_source)

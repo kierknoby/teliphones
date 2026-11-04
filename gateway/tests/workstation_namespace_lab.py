@@ -47,6 +47,7 @@ with tempfile.TemporaryDirectory(prefix=".workstation-lab-", dir=ROOT) as direct
         instance.enforcement_event.clear()
         instance.mutate_policy(expected, instance.owned_table())
         assert broker.policy_equal(instance.owned_table(), expected)
+        instance.reconcile_listener = lambda port: None  # No FreePBX service API in this nft-only namespace.
         instance.teardown_workstations()
         assert instance.link_state() is None and instance.owned_table() is None
         assert nft("-j", "list", "table", "inet", "teliphones_lab_foreign") == foreign

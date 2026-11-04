@@ -11,6 +11,20 @@ authentication/client disconnect success; complete server lifecycle and real
 
 Entries for 0.0.2 to 0.2.1 are summarised from the repository history. Release dates are recorded only where they were previously published.
 
+## 0.5.0, local test package (not production-certified)
+
+- Manage the public WireGuard UDP listener through FreePBX's persistent Custom
+  Service API, with journalled ownership, interrupted-operation recovery and
+  read-only generated-rule verification. Preserve INPUT/Fail2Ban ordering.
+- Add approved HTTP/HTTPS management ports in both tunnel enforcement layers;
+  preserve the configured URL in updated Windows profiles and Connection Health.
+- Restore historical-package integrity tests and retain the locally validated
+  installation archive/checksum. Real FreePBX roaming, watchdog, Apache and
+  systemd lifecycle validation remain outstanding.
+- Minor module/broker increment for the management-port feature, protocol 6.
+  Windows keeps its unreleased 0.7.0 target; custom-port support requires an
+  updated build. Package checksums distinguish this test build.
+
 ## 0.4.1, FreePBX Firewall coexistence correction
 
 - Patch increment because 0.4.0 was already installed and tested on a real

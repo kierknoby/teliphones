@@ -40,7 +40,9 @@ broker.IPTABLES = [IPTABLES]
 broker.ENV = {**broker.ENV, "XTABLES_LOCKFILE": LOCK}
 ENV = {**os.environ, "XTABLES_LOCKFILE": LOCK}
 PBX, SSH_PEER, WEB_PEER, STRANGER = "100.70.1.1", "100.70.1.2", "100.70.1.4", "100.70.1.3"
-PORTS = (22, 80, 443, 3306, 5038, 5060, broker.ssh.API_PORT, 22002, 22004)
+PORTS = (22, 80, 443, 3306, 5038, 5060, broker.ssh.API_PORT, 8443, 22002, 22004)
+# Public-side networks: FreePBX drops everything from these by default (external-zone shape).
+WAN = (("198.51.100.50", "198.51.100.1"), ("203.0.113.9", "203.0.113.1"))
 
 
 def run(*arguments, check=True):
@@ -56,7 +58,7 @@ def freepbx(reload_order="normal"):
     for line in ipt("-S", "INPUT").splitlines():
         if line.split()[-1] in ["fpbxfirewall", *BANS]:
             ipt("-D", "INPUT", *line.split()[2:])
-    for chain in ("fpbxfirewall", "zone-external", *BANS):
+    for chain in ("fpbxfirewall", "zone-external", "zone-internal", "zone-other", *BANS):
         if run(IPTABLES, "-w", "5", "-S", chain, check=False):
             ipt("-F", chain)
         else:
@@ -66,7 +68,7 @@ def freepbx(reload_order="normal"):
     ipt("-A", "fpbxfirewall", "-i", "lo", "-j", "ACCEPT")
     ipt("-A", "fpbxfirewall", "-i", "lan0", "-p", "udp", "-m", "multiport", "--dports", "5060,10000:10010", "-j", "ACCEPT")
     ipt("-A", "fpbxfirewall", "-i", "lan0", "-p", "tcp", "-m", "multiport", "--dports", "22,443", "-j", "ACCEPT")
-    ipt("-A", "fpbxfirewall", "-i", broker.WORKSTATION_IFACE, "-j", "zone-external")
+    ipt("-A", "fpbxfirewall", "-j", "zone-external")
     ipt("-A", "fpbxfirewall", "-j", "DROP")
     if reload_order == "hook-first":
         ipt("-I", "INPUT", "1", "-j", "fpbxfirewall")
@@ -77,11 +79,16 @@ def freepbx(reload_order="normal"):
         for chain in BANS:
             ipt("-A", "INPUT", *fail2ban_hook(chain))
         ipt("-A", "INPUT", "-j", "fpbxfirewall")
+    if listener_port:
+        listener_service(listener_port)
 
 
 def freepbx_snapshot():
-    return [[line for line in ipt("-S", chain).splitlines()
-             if broker.iptables_rule(shlex.split(line)[2:]) != broker.INTEGRATION_JUMP]
+    def owned(line):
+        rule = broker.iptables_rule(shlex.split(line)[2:])
+        return ((rule is not None and rule.get("comment") == broker.INTEGRATION_MARK)
+                or "-j fpbxsvc-" in line)
+    return [[line for line in ipt("-S", chain).splitlines() if not owned(line)]
             for chain in ("INPUT", "fpbxfirewall", "zone-external", *BANS)] + [ipt("-S").splitlines()[:3]]
 
 
@@ -171,6 +178,22 @@ def udp_echo(port):
     threading.Thread(target=echo, daemon=True).start()
 
 
+def udp_probe(workstation, source, destination, port):
+    """One datagram exchange, like a WireGuard handshake initiation/response pair."""
+    output = run("nsenter", "--net=/proc/%d/ns/net" % workstation.pid, sys.executable, "-c", r"""
+import socket, sys
+with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client:
+    client.settimeout(0.6)
+    client.bind((sys.argv[1], 0))
+    client.sendto(b"teliphones-wg", (sys.argv[2], int(sys.argv[3])))
+    try:
+        print("open" if client.recv(64) == b"teliphones-wg" else "other")
+    except socket.timeout:
+        print("closed")
+""", source, destination, str(port))
+    return output.strip() == "open"
+
+
 def check_unrelated(workstation):
     results = reachable(workstation, [("192.0.2.2", "192.0.2.1", port) for port in PORTS])
     check({port for (_, _, port), ok in results.items() if ok} == {22, 443},
@@ -196,11 +219,22 @@ def expect_raises(function, message):
     raise AssertionError(message)
 
 
-workstation = subprocess.Popen(["unshare", "--net", "sleep", "120"])
+listener_port = 0
+
+
+def listener_service(port):
+    global listener_port
+    run("php", str(Path(__file__).with_name("firewall_listener_model.php")),
+        str(broker.STATE), str(port), IPTABLES, sys.argv[1])
+    listener_port = port
+
+
+workstation = subprocess.Popen(["unshare", "--net", "sleep", "180"])
 with tempfile.TemporaryDirectory(prefix=".firewall-lab-", dir=ROOT) as directory:
     broker.STATE = Path(directory)
     instance = broker.Broker()
     instance.audit = lambda *args: None
+    instance.reconcile_listener = listener_service
     try:
         run("ip", "link", "set", "lo", "up")
         run("ip", "link", "add", broker.WORKSTATION_IFACE, "type", "veth", "peer", "name", "ws0")
@@ -220,11 +254,22 @@ with tempfile.TemporaryDirectory(prefix=".firewall-lab-", dir=ROOT) as directory
         run("ip", "link", "set", "lan0", "up")
         run(*enter, "ip", "address", "add", "192.0.2.2/24", "dev", "lan1")
         run(*enter, "ip", "link", "set", "lan1", "up")
+        # Public side: a WAN link where the workstation can source traffic from changing, previously
+        # unknown addresses, exactly like a roaming TELIPHONES workstation on new public IPs.
+        run("ip", "link", "add", "wan0", "type", "veth", "peer", "name", "wan1")
+        run("ip", "link", "set", "wan1", "netns", str(workstation.pid))
+        for _, gateway in WAN:
+            run("ip", "address", "add", gateway + "/24", "dev", "wan0")
+        run("ip", "link", "set", "wan0", "up")
+        for source, _ in WAN:
+            run(*enter, "ip", "address", "add", source + "/24", "dev", "wan1")
+        run(*enter, "ip", "link", "set", "wan1", "up")
         for port in PORTS:
             listen(port)
             listen(port, socket.AF_INET6)
         for port in (5060, 10000):
             udp_echo(port)
+        udp_echo(51821)
 
         state = {"subnet": "100.70.1.0/24", "listen_port": 51821, "workstations": [
             {"id": "a" * 16, "name": "ssh", "public_key": "A" * 42 + "A=", "address": SSH_PEER + "/32", "mode": "persistent", "ssh": True},
@@ -241,11 +286,14 @@ with tempfile.TemporaryDirectory(prefix=".firewall-lab-", dir=ROOT) as directory
         check(open_set(workstation) == {(source, port) for source in (SSH_PEER, WEB_PEER, STRANGER) for port in (80, 443)} | {(SSH_PEER, 22)},
               "baseline without FreePBX simulation should follow the nft policy only")
         freepbx()
-        before = freepbx_snapshot()
         check(open_set(workstation) == set(), "reproduction: nft ACCEPT must not override the simulated FreePBX DROP")
+        check(not udp_probe(workstation, WAN[0][0], WAN[0][1], 51821),
+              "reproduction: without integration, FreePBX DROP must block unknown-source WireGuard UDP")
         check_unrelated(workstation)
 
         instance.firewall_integration(state)
+        listener_service(51821)
+        before = freepbx_snapshot()
         output = run(*enter, sys.executable, "-c", r"""
 import socket
 for port in (5060, 10000):
@@ -265,6 +313,14 @@ print("ok")
         expected_open = {(SSH_PEER, 80), (SSH_PEER, 443), (SSH_PEER, 22), (WEB_PEER, 80), (WEB_PEER, 443)}
         check(instance.integration["state"] == "active", instance.integration)
         check(open_set(workstation) == expected_open, "integration must open exactly authorised web/SSH flows")
+        # The WireGuard listener accepts handshakes from any public address, including a previously
+        # unknown one and a changed one, without any per-source configuration (the live regression).
+        for source, gateway in WAN:
+            check(udp_probe(workstation, source, gateway, 51821),
+                  "WireGuard handshake UDP must reach the listener from previously unknown source %s" % source)
+        check(not udp_probe(workstation, WAN[0][0], WAN[0][1], 51822), "only the WireGuard listener port may be opened")
+        wan_tcp = reachable(workstation, [(WAN[0][0], WAN[0][1], port) for port in PORTS])
+        check(not any(wan_tcp.values()), "no TCP service may become reachable from the public side")
         listing = ipt("-S", "INPUT").splitlines()
         check([line.split()[-1] for line in listing[1:]] == BANS + ["fpbxfirewall"], listing)
         check(freepbx_snapshot() == before, "unrelated FreePBX rules or policy were modified")
@@ -346,6 +402,7 @@ print("ok")
             check(instance.integration["state"] == "active" and len(jumps()) == 1, instance.integration)
             check(valid_order(), input_targets())
             check(open_set(workstation) == expected_open, "reconciliation did not restore exact access")
+            check(udp_probe(workstation, WAN[0][0], WAN[0][1], 51821), "reload must restore WireGuard reachability")
             check_unrelated(workstation)
 
         # Reload that moves an observed Fail2Ban hook after fpbxfirewall: integration is withdrawn (Fail2Ban is never
@@ -392,6 +449,18 @@ print("ok")
         state["workstations"] = state["workstations"][1:]
         instance.firewall_integration(state)
         check(open_set(workstation) == {(WEB_PEER, 80), (WEB_PEER, 443)}, "revoked peer retained access")
+        check(udp_probe(workstation, WAN[1][0], WAN[1][1], 51821), "revoking one peer must not close the listener")
+
+        # Management web ports follow configuration on both firewall layers, with no stale permits.
+        web_state = json.loads(json.dumps(state))
+        web_state["web"] = [{"scheme": "https", "port": 8443}]
+        instance.mutate_policy(instance.expected_policy(web_state), instance.owned_table())
+        instance.firewall_integration(web_state)
+        check(open_set(workstation, (WEB_PEER,)) == {(WEB_PEER, 8443)}, "custom management port not applied or stale ports kept")
+        check(udp_probe(workstation, WAN[0][0], WAN[0][1], 51821), "management port change must not affect the listener")
+        instance.mutate_policy(instance.expected_policy(state), instance.owned_table())
+        instance.firewall_integration(state)
+        check(open_set(workstation, (WEB_PEER,)) == {(WEB_PEER, 80), (WEB_PEER, 443)}, "management port restore failed")
 
         # Unknown hook ordering and missing hooks never produce integration rules.
         move_hook("fail2ban-sshd")
@@ -406,6 +475,7 @@ print("ok")
         # Teardown removes only TELIPHONES' rules; FreePBX, nft foreign table and ip6tables are preserved.
         instance.teardown_workstations()
         check(not jumps() and broker.INTEGRATION_CHAIN not in ipt("-S"), "integration not removed")
+        check(not udp_probe(workstation, WAN[0][0], WAN[0][1], 51821), "teardown must close the WireGuard listener permit")
         check(freepbx_snapshot() == before, "teardown changed FreePBX rules")
         check(run("nft", "-j", "list", "table", "inet", "teliphones_lab_foreign") == foreign, "foreign nft table changed")
         check(run(IP6TABLES, "-w", "5", "-S") == ip6_before, "ip6tables changed")
@@ -418,8 +488,10 @@ print("ok")
         expect_raises(lambda: instance.firewall_integration({**state, "workstations": state["workstations"]}), "unfamiliar chain accepted")
         expect_raises(instance.remove_integration, "unfamiliar chain removed")
         check(ipt("-S", broker.INTEGRATION_CHAIN) == foreign_chain and not jumps(), "unfamiliar chain modified")
-        print("PASS (%s): FreePBX DROP reproduced; exact per-peer 80/443 and approved-SSH access; SIP/AMI/DB/other peers/IPv6 blocked; "
-              "observed fail2ban-* precedence and reordering; reload repair without duplicates; revocation; FreePBX/ip6tables/foreign preservation" % BACKEND)
+        print("PASS (%s): FreePBX DROP reproduced; WireGuard UDP listener reachable from unknown/changed public sources without "
+              "whitelisting and closed on teardown; exact per-peer management-web and approved-SSH access with configurable ports; "
+              "SIP/AMI/DB/other peers/IPv6 blocked; observed fail2ban-* precedence and reordering; reload repair without duplicates; "
+              "revocation; FreePBX/ip6tables/foreign preservation" % BACKEND)
     finally:
         instance.monitor and instance.monitor.close()
         workstation.kill()

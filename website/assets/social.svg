@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-labelledby="title description">
+  <title id="title">TELIPHONES</title>
+  <desc id="description">Private, administrator-approved access to FreePBX. Windows application and FreePBX integration. Experimental software.</desc>
+  <rect width="1200" height="630" fill="#f5f4ef"/>
+  <rect x="780" width="420" height="630" fill="#132d29"/>
+  <g fill="none" stroke="#a9cdb3" stroke-width="2">
+    <rect x="855" y="140" width="270" height="100"/>
+    <path d="M990 240v130" stroke-dasharray="6 6"/>
+    <rect x="855" y="370" width="270" height="100"/>
+  </g>
+  <g font-family="Segoe UI,Arial,sans-serif">
+    <text x="70" y="105" fill="#20583f" font-size="25" letter-spacing="5">TELIPHONES</text>
+    <text x="70" y="245" fill="#172923" font-size="66" letter-spacing="-2">Your PBX.</text>
+    <text x="70" y="325" fill="#172923" font-size="66" letter-spacing="-2">A private route.</text>
+    <text x="70" y="420" fill="#506159" font-size="27">Administrator-approved access to FreePBX.</text>
+    <text x="70" y="555" fill="#b23d21" font-size="21">Windows + FreePBX / Experimental</text>
+    <text x="900" y="200" fill="#f5f4ef" font-size="25">Workstation</text>
+    <text x="1010" y="315" fill="#bfd6c5" font-size="18">WireGuard</text>
+    <text x="900" y="430" fill="#f5f4ef" font-size="25">Your FreePBX</text>
+  </g>
+</svg>

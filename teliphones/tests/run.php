@@ -1,5 +1,5 @@
 <?php
-$tests = ['module-menu.php', 'freepbx-compatibility.php', 'web-support.php', 'live-status.php', 'workstation-pairing.php', 'broker-uninstall.php', 'broker-upgrade.php', 'route-containment.php', 'address-policy.php', 'connect-response.php', 'checker-evidence.php'];
+$tests = ['module-menu.php', 'freepbx-compatibility.php', 'web-support.php', 'live-status.php', 'workstation-pairing.php', 'firewall-listener.php', 'broker-uninstall.php', 'broker-upgrade.php', 'route-containment.php', 'address-policy.php', 'connect-response.php', 'checker-evidence.php'];
 foreach ($tests as $test) {
     $command = escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg(__DIR__ . '/' . $test);
     passthru($command, $status);

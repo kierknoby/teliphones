@@ -113,7 +113,7 @@ The response is a copyable enrollment artifact, not proof that arbitrary access 
 
 ## Access and revocation
 
-- Workstation web access is limited to the paired PBX's TCP ports 80 and 443.
+- Workstation web access is limited to the paired PBX's approved management ports (default TCP 80/443).
 - SSH TCP 22 is included only when the administrator explicitly selects it.
 - The workstation interface is not forwarded to other networks.
 - Temporary pairing expires at its PBX-side deadline. Persistent pairing remains until revoked.
@@ -129,7 +129,7 @@ The response is a copyable enrollment artifact, not proof that arbitrary access 
 
 This also applies when upgrading from 0.2.1. Install the current module and rerun the root bootstrap before relying on the separately installed broker.
 
-Install the current `TELIPHONES-0.4.1.tgz` through Module Admin, then rerun the documented root bootstrap with no active support session and Windows tunnels disconnected. Installation does not delete `workstations.json`, `workstation-recovery.json` or `workstation-wg.key`. Valid pairings keep their identities, addresses, permissions and original deadlines.
+Install the current test package `TELIPHONES-0.5.0.tgz` through Module Admin, then rerun the documented root bootstrap with no active support session and Windows tunnels disconnected. Installation does not delete `workstations.json`, `workstation-recovery.json` or `workstation-wg.key`. Valid pairings keep their identities, addresses, permissions and original deadlines.
 
 The bootstrap copies the current broker into its protected root-owned installation and restarts it. Protocol 3 was already used in 0.2.0: an operational socket or protocol number alone does **not** prove these security corrections are installed. Rerunning the bootstrap is mandatory even if no update warning appears.
 
@@ -139,22 +139,29 @@ An unmarked legacy table is migrated only when its complete nft JSON exactly mat
 
 The 0.3.1 broker adds the hookless `teliphones_owner_v1` chain because Debian 12 nftables 1.0.6 drops table comments from kernel JSON readback. The operator reports that this ownership correction was tested successfully on the actual FreePBX 17 test PBX. The repository code still needs to be installed and verified on that PBX through the normal upgrade/bootstrap procedure; this document does not claim that deployment has occurred.
 
-Install the current `TELIPHONES-0.4.1.tgz`, confirm there is no active support session, disconnect Windows tunnels, then rerun [Complete Installation on FreePBX 17](../README.md#complete-installation-on-freepbx-17) from an existing root shell. The 0.3.1 ownership correction originally kept protocol 3; current protocol 5 alone likewise does not prove the installed helper's version or contents. On restart, the broker verifies the tunnel is down, safely migrates only the exact known 0.3.0 policy, restores current policy from saved state and readmits valid, unexpired pairings. Pairing identities, addresses, SSH permissions, deadlines and the PBX WireGuard key are preserved. If exact ownership cannot be established, migration is refused and recovery data remains intact.
+Install the current test package `TELIPHONES-0.5.0.tgz`, confirm there is no active support session, disconnect Windows tunnels, then rerun [Complete Installation on FreePBX 17](../README.md#complete-installation-on-freepbx-17) from an existing root shell. The 0.3.1 ownership correction originally kept protocol 3; current protocol 6 alone likewise does not prove the installed helper's version or contents. On restart, the broker verifies the tunnel is down, safely migrates only the exact known 0.3.0 policy, restores current policy from saved state and readmits valid, unexpired pairings. Pairing identities, addresses, SSH permissions, deadlines and the PBX WireGuard key are preserved. If exact ownership cannot be established, migration is refused and recovery data remains intact.
 
 ## Upgrading from 0.3.1
 
 The historical 0.3.2 change added bounded diagnostics and protocol 4 without
 changing firewall permissions or pairing protocol. For a current upgrade,
-install 0.4.1, disconnect workstation tunnels, confirm no active support session,
+use the reviewed 0.5.0 test package, disconnect workstation tunnels, confirm no active support session,
 and rerun the root bootstrap. Preserve pairing state and the WireGuard key.
 Current managed SSH requires protocol 5 and both installed helpers; protocol 4
 identifies diagnostics support only. Follow [current upgrade verification](../README.md#updating-teliphones).
 
 ## Network requirements
 
-The workstation connects directly to the configured PBX WireGuard UDP endpoint. The PBX's chosen UDP port must be reachable through the PBX host firewall, FreePBX Firewall, and any router/NAT. The module does not configure port forwarding or change unrelated network services. No relay or universal NAT traversal is provided.
+The workstation connects directly to the configured PBX WireGuard UDP endpoint. The broker maintains one persistent FreePBX Custom Service for the listener port, using the supported service API; FreePBX owns generated zone rules and applies updates asynchronously. The chosen UDP port must also be reachable through any router/NAT. No workstation public IP whitelist, router configuration, relay or universal NAT traversal is provided. Reject zones, blacklists and Fail2Ban remain authoritative.
 
-The `nft` CLI is essential; enabling or running `nftables.service` is **not** required. The broker programs the kernel directly. Missing userspace tools require platform-administrator repair; the GUI has no nftables installer. Apart from its marked jump inside `fpbxfirewall` and removal of the exact legacy INPUT jump (see [FreePBX Firewall integration](#freepbx-firewall-integration)), TELIPHONES never changes foreign tables or chains, their default policies, or firewall services.
+The `nft` CLI is essential; enabling or running `nftables.service` is **not** required. Missing tools require platform-administrator repair. Apart from the owned Custom Service, its marked tunnel jump inside `fpbxfirewall`, and removal of the exact legacy INPUT jump, TELIPHONES does not change unrelated firewall services, tables or policies.
+
+Management web services are configurable as `scheme:port` entries, for example
+`https:8443`. Both enforcement layers replace obsolete permissions, and updated
+Windows builds preserve the approved scheme and port. Re-pair saved profiles
+after a URL change. Apache must actually listen on the tunnel/wildcard address;
+firewall permission is not proof of HTTP/TLS reachability. See the
+[investigation, ownership model and live verification procedure](CONNECTIVITY-REGRESSION.md).
 
 ## Enforcement integrity and exposure limits
 

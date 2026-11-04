@@ -167,6 +167,24 @@ void testPairing() {
     check(ok.workstationId == "0123456789abcdef" && ok.pbxAddress == "100.70.1.1" && ok.expiresAt == 2000000000 && ok.ssh, "valid response parsed");
     PairResponse persistent = ParsePairResponse(response({{"mode", "persistent"}, {"expires_at", nullptr}}), kNonce, kWorkstationKey);
     check(persistent.mode == "persistent" && persistent.expiresAt == 0, "persistent response parsed");
+    for (const char* url : {"http://100.70.1.1:8080/admin/", "https://100.70.1.1/admin/", "https://100.70.1.1:8443/admin/"}) {
+        PairResponse custom = ParsePairResponse(response({{"gui_url", url}}), kNonce, kWorkstationKey);
+        Profile profile = adminProfile();
+        profile.pairing = custom;
+        auto saved = ParseProfiles(SerializeProfiles({profile}));
+        check(saved[0].pairing.guiUrl == url && FreePbxUrl(saved[0], "") == url, "custom management URL survives import, save and launch");
+        check(BrowserLaunch(kWindowsDefaultBrowser, "", url).target == url, "custom URL passed to system browser unchanged");
+        check(ManagementProbePort(url) == (std::string(url).find(":8080") != std::string::npos ? 8080 :
+              (std::string(url).find(":8443") != std::string::npos ? 8443 : 443)), "health probes approved management port");
+    }
+    check(ManagementProbePort("http://100.70.1.1/admin/") == 80, "standard HTTP health port");
+    check(ManagementProbePort("https://100.70.1.1:443/admin/") == 443, "explicit standard HTTPS health port");
+    for (const char* url : {"https://100.70.1.2:8443/admin/", "https://100.70.1.1:0/admin/",
+                            "https://100.70.1.1:65536/admin/", "https://user@100.70.1.1/admin/",
+                            "https://100.70.1.1:8443/admin/?x", "https://100.70.1.1:8443/admin/#x",
+                            "https://100.70.1.1:8443/admin/ --flag", "https://100.70.1.1:08443/admin/"}) {
+        check(throws([&] { ParsePairResponse(response({{"gui_url", url}}), kNonce, kWorkstationKey); }), "unsafe or foreign management URL rejected");
+    }
 
     struct Case {
         json::Value::Object fields;

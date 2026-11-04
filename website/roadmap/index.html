@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Roadmap — Reliability, lifecycle assurance and a native terminal | TELIPHONES</title>
+  <meta name="description" content="TELIPHONES development direction: real-world firewall reliability, complete lifecycle validation, a planned native terminal and more mature Remote Support.">
+  <link rel="canonical" href="https://teliphones.com/roadmap/">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="TELIPHONES">
+  <meta property="og:title" content="TELIPHONES roadmap — Earn reliability before promising it">
+  <meta property="og:description" content="Planned direction, explicit validation gates and no invented delivery dates.">
+  <meta property="og:url" content="https://teliphones.com/roadmap/">
+  <meta property="og:image" content="https://teliphones.com/assets/social.png">
+  <meta property="og:image:type" content="image/png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="TELIPHONES experimental private administration software.">
+  <meta name="theme-color" content="#132d29">
+  <link rel="icon" href="/assets/mark.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/assets/site.css">
+  <script src="/assets/site.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="masthead">
+  <div class="wrap masthead-inner">
+    <a class="brand" href="/" aria-label="TELIPHONES home"><svg viewBox="0 0 32 32" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 5h22M16 5v22M5 16h22"/><circle cx="5" cy="27" r="1"/><circle cx="27" cy="27" r="1"/></svg>TELIPHONES</a>
+    <nav class="desktop-nav" aria-label="Primary"><a href="/windows/">Windows</a><a href="/freepbx/">FreePBX</a><a href="/security/">Security</a><a href="/docs/">Docs</a></nav>
+    <div class="header-actions">
+      <a class="button small" href="/downloads/">Get the software <span aria-hidden="true">↗</span></a>
+      <button class="theme-toggle" type="button" data-theme-toggle hidden aria-label="Switch appearance"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 0 0 16Z" fill="currentColor"/></svg></button>
+      <details class="site-menu"><summary>Explore</summary><nav class="menu-panel" aria-label="All pages"><div class="wrap menu-grid"><a href="/">Home</a><a href="/features/">Features</a><a href="/windows/">For Windows</a><a href="/freepbx/">For FreePBX</a><a href="/remote-support/">Remote Support</a><a href="/security/">Security &amp; evidence</a><a href="/docs/">Documentation</a><a href="/downloads/">Downloads</a><a href="/faq/">FAQ</a><a href="/roadmap/" aria-current="page">Roadmap</a><a href="/about/">About the project</a><a href="/docs/getting-started/">Getting started</a></div></nav></details>
+    </div>
+  </div>
+</header>
+<main id="main">
+  <div class="page-head"><div class="wrap"><nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/">Home</a><span aria-hidden="true">/</span><span>Roadmap</span></nav><p class="eyebrow">Development direction / Not a delivery promise</p><h1>Earn reliability.<br><em>Then build on it.</em></h1><p class="lead">Initial real connections matter. So does everything that happens when a session expires, a process fails or the firewall rebuilds. That is the next standard to meet.</p></div></div>
+  <div class="wrap page-layout">
+    <nav class="toc" aria-label="On this page"><strong>Roadmap</strong><a href="#baseline">Current baseline</a><a href="#validation">Validation priorities</a><a href="#terminal">Native terminal</a><a href="#support">Support maturity</a><a href="#participate">Help with evidence</a></nav>
+    <div class="article">
+      <section id="baseline"><h2>A working foundation,<br>not a finished assurance case.</h2><p>The source implements workstation pairing, controlled WireGuard, managed certificates, health monitoring and diagnostics. Earlier operator reports include native builds, ten SSH tests, an authenticated FreePBX 17 login and owned-terminal closure on disconnect.</p><p>After 0.4.1 corrected intrusive firewall placement, FreePBX 0.5.0 adds persistent listener permissions, recovery safeguards and custom management ports. Updated Windows 0.7.0 source retains and probes the approved endpoint. These are implemented and locally tested, not planned features or proof of real-PBX readiness.</p><a href="/security/#evidence">Read the baseline and its boundaries →</a></section>
+      <section id="validation"><h2>First: close the validation gaps.</h2><div class="timeline"><article class="milestone"><span class="tag">Validation outstanding</span><h3>Firewall coexistence on a real PBX</h3><p>Verify the installed 0.5.0 broker and managed Custom Service, actual WireGuard roaming from unfamiliar public IPs, watchdog intervals and approved firewall rebuilds. Check Fail2Ban ordering and unchanged unrelated rules.</p><p>Exercise actual SIP calls, bidirectional RTP and unrelated management traffic throughout connection, rebuild, revocation and uninstall.</p></article><article class="milestone"><span class="tag">Validation outstanding</span><h3>The entire session lifetime</h3><p>Prove revocation and temporary authorisation expiry terminate owned PBX processes and leave empty cgroups, while unrelated SSH survives. Cover certificate refusal, lost reachability and client/server failure separately.</p></article><article class="milestone"><span class="tag">Validation outstanding</span><h3>Restarts, upgrades and recovery</h3><p>Test Windows/PBX reboots, broker restart, interrupted service operations, failed cleanup, upgrade, rollback and uninstall. Preserve original deadlines and an independent management route.</p></article><article class="milestone"><span class="tag">Validation outstanding</span><h3>The real Windows and web-service matrix</h3><p>Verify custom-port import, browser launch and Connection Health on native Windows, with actual Apache/TLS and redirects over WireGuard. Also check supported terminals, Unicode paths, UAC, installation, multiple users, scaling and monitor transitions. Portable build success does not replace these cases.</p></article></div></section>
+      <section id="terminal"><span class="tag planned">Planned / Not implemented</span><h2>A native TELIPHONES<br><em>SSH terminal.</em></h2><p>The intended direction is an integrated native terminal inspired by the usability of my-console: a coherent SSH experience within TELIPHONES, rather than a necessary jump to another application's window.</p><p>This is a development objective, not a feature in Windows 0.7.0. No preview screenshot, implementation deadline or finished design is claimed here.</p><div class="grid two"><article class="feature"><h3>Keep external choice</h3><p>Continue to support external terminal preferences alongside the intended integrated default. Familiar tools should remain an option.</p></article><article class="feature"><h3>Investigate PuTTY carefully</h3><p>Managed PuTTY compatibility is conditional: certificate authentication, key isolation and owned-session termination must survive intact. No password/shared-key fallback should be introduced to make it work.</p></article></div></section>
+      <section id="support"><span class="tag planned">Planned development direction</span><h2>Remote Support and<br>deployment maturity.</h2><p>Improve the separate support workflow through complete end-to-end testing against explicit Connect, Checker and Console implementations. Verify expiry, cleanup and firewall reachability rather than assuming workstation success proves support success.</p><p>Deployment maturity includes reviewed packages, consistent source/build provenance, clear upgrade procedures and dependable recovery. It does not imply a hosted service, an engineer portal or universal NAT traversal already exists.</p><p>Rendezvous and relay ideas are documented separately as future design. They are not connectivity capabilities in the present product.</p></section>
+      <section id="participate"><h2>Useful contributions<br>make evidence reproducible.</h2><p>Record exact versions, source revisions, build identifiers, test commands and sanitised outcomes. Distinguish operator observation from independently repeatable tests. Keep screenshots genuine and free of keys or customer data.</p><p>There are no promised release dates on this page. Goals may change as testing exposes constraints. Use the repository histories and evidence register for the implemented state, not the roadmap.</p><div class="actions"><a class="button" href="/docs/">Find the test programme →</a><a href="https://github.com/kierknoby/teliphones">Project repository ↗</a></div></section>
+    </div>
+  </div>
+</main>
+<footer class="site-footer"><div class="wrap">
+  <div class="footer-grid"><div><a class="brand" href="/">TELIPHONES</a><p>Private administration.<br>Authority stays with your PBX.</p><span class="tag">Experimental software</span></div><div><h2>Product</h2><a href="/features/">Features</a><a href="/windows/">Windows</a><a href="/freepbx/">FreePBX</a><a href="/remote-support/">Remote Support</a></div><div><h2>Resources</h2><a href="/docs/">Documentation</a><a href="/downloads/">Downloads</a><a href="/security/">Security</a><a href="/faq/">FAQ</a></div><div><h2>Project</h2><a href="/roadmap/">Roadmap</a><a href="/about/">About &amp; licensing</a><a href="https://github.com/kierknoby/teliphones">Source on GitHub ↗</a><a href="https://freepbx.uk/support/">FreePBX UK support ↗</a></div></div>
+  <div class="legal"><p>TELIPHONES is a UK registered trademark. Software licensed under GPL version 3 or later. No endorsement by Sangoma or the FreePBX project is implied.</p><p>No analytics. No third-party scripts. <a href="/about/#website">About this website</a></p></div>
+</div></footer>
+</body>
+</html>

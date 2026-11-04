@@ -34,10 +34,10 @@ STATE = Path("/var/lib/teliphones")
 ENROLLMENT = Path("/etc/teliphones")
 SOCKET = "/run/teliphones/control.sock"
 # Version 5 adds paired-key certificate issuance and isolated managed SSH.
-PROTOCOL = 5
-VERSION = "0.4.1"
+PROTOCOL = 6
+VERSION = "0.5.0"
 FWCONSOLE = "/usr/sbin/fwconsole"
-ACTIONS = {"status", "authorise", "revoke", "dependencies", "evidence", "configure", "pair", "unpair", "diagnostics"}
+ACTIONS = {"status", "authorise", "revoke", "dependencies", "evidence", "configure", "pair", "unpair", "web", "diagnostics"}
 ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C", "HOME": "/root", "DEBIAN_FRONTEND": "noninteractive"}
 # Administrator-owned workstation pairing (TELIPHONES Windows application). Separate from the support interface.
 WORKSTATION_IFACE = "tlp-admin"
@@ -57,6 +57,7 @@ TOOLS = {"wg": ["/usr/bin/wg", "/usr/sbin/wg"], "ip": ["/usr/sbin/ip", "/sbin/ip
 # FreePBX Firewall integration. An nft ACCEPT in TELIPHONES' own table is not final: FreePBX Firewall's
 # separate iptables INPUT processing can still drop the packet. FreePBX polices rules above its INPUT hook.
 # Put only our marked, interface-scoped jump inside fpbxfirewall, after INPUT's Fail2Ban hooks.
+# The public UDP listener is a persistent FreePBX Custom Service, not a second raw ACCEPT.
 # Everything not explicitly authorised returns to the existing FreePBX rules.
 IPTABLES = ["/usr/sbin/iptables", "/sbin/iptables"]
 FREEPBX_HOOK = "fpbxfirewall"
@@ -66,6 +67,10 @@ FAIL2BAN_PREFIXES = ("fail2ban-", "f2b-")
 INTEGRATION_CHAIN = "teliphones-ws"
 INTEGRATION_MARK = "TELIPHONES workstation integration v1"
 INTEGRATION_JUMP = {"i": WORKSTATION_IFACE, "comment": INTEGRATION_MARK, "j": INTEGRATION_CHAIN}
+# Management web services reachable by authorised peers; the first entry forms the workstation GUI URL.
+# The default preserves standard FreePBX HTTP/HTTPS installations.
+DEFAULT_WEB = ({"scheme": "http", "port": 80}, {"scheme": "https", "port": 443})
+MAX_WEB_SERVICES = 4
 DIAGNOSTIC_ID = re.compile(r"ws-[a-f0-9]{16}")
 LOGGER = logging.getLogger("teliphones.broker")
 
@@ -322,7 +327,8 @@ def validate(request):
         "status": set(), "revoke": set(), "dependencies": set(),
         "authorise": {"minutes"}, "evidence": {"evidence"},
         "configure": {"url", "certificate", "private_key", "ca", "checker_key"},
-        "pair": {"request", "endpoint_host", "listen_port", "mode", "minutes", "ssh", "ssh_user"}, "unpair": {"workstation_id"},
+        "pair": {"request", "endpoint_host", "listen_port", "mode", "minutes", "ssh", "ssh_user", "web"}, "unpair": {"workstation_id"},
+        "web": {"web"},
         "diagnostics": {"diagnostic_id"},
     }[action]
     if set(request) - fields - {"action"}:
@@ -359,6 +365,15 @@ def validate(request):
         if request["mode"] == "temporary" and (not isinstance(request.get("minutes"), str) or not re.fullmatch(r"[0-9]{2,4}", request["minutes"])
                                                or not 15 <= int(request["minutes"]) <= 1440):
             raise BrokerError("Temporary pairing must last between 15 and 1440 minutes.")
+        if "web" in request:
+            if not isinstance(request["web"], str):
+                raise BrokerError("Management web services must be supplied as text.")
+            if request["web"].strip():
+                parse_web(request["web"])
+    if action == "web":
+        if not isinstance(request.get("web"), str):
+            raise BrokerError("Complete management web service details are required.")
+        parse_web(request["web"])
     if action == "unpair":
         if not isinstance(request.get("workstation_id"), str) or not re.fullmatch(r"[a-f0-9]{16}|all", request["workstation_id"]):
             raise BrokerError("Unknown workstation.")
@@ -421,12 +436,85 @@ def key_fingerprint(public_key):
     return "SHA256:" + base64.b64encode(hashlib.sha256(base64.b64decode(public_key)).digest()).decode().rstrip("=")[:16]
 
 
-def workstation_ruleset(pbx_address, ssh_sources):
+def parse_web(value):
+    """Comma-separated "scheme:port" management web services, e.g. "https:8443" or "http:80, https:443".
+
+    The first entry forms the GUI URL given to the Windows application at pairing.
+    """
+    if not isinstance(value, str) or not value.strip():
+        raise BrokerError("Enter the management web services as scheme:port entries, for example https:8443.")
+    entries = []
+    for token in value.split(","):
+        scheme, _, port = token.strip().lower().partition(":")
+        if scheme not in ("http", "https") or not re.fullmatch(r"[1-9][0-9]{0,4}", port) or not 1 <= int(port) <= 65535:
+            raise BrokerError("Management web services must be comma-separated scheme:port entries (http or https, port 1-65535).")
+        if int(port) in (22, ssh.API_PORT) or ssh.SSH_PORT_BASE <= int(port) <= ssh.SSH_PORT_BASE + 255:
+            raise BrokerError("A management web service must not use a TELIPHONES SSH or certificate API port.")
+        if int(port) in [entry["port"] for entry in entries]:
+            raise BrokerError("Each management web service port may be listed only once.")
+        entries.append({"scheme": scheme, "port": int(port)})
+    if len(entries) > MAX_WEB_SERVICES:
+        raise BrokerError("At most %d management web services may be authorised." % MAX_WEB_SERVICES)
+    return entries
+
+
+def normalise_web(value):
+    """Only missing legacy state gets defaults; malformed stored permissions fail closed."""
+    if value is None:
+        return [dict(entry) for entry in DEFAULT_WEB]
+    if (not isinstance(value, list) or not value
+            or any(not isinstance(item, dict) or set(item) != {"scheme", "port"}
+                   or item["scheme"] not in ("http", "https") or type(item["port"]) is not int for item in value)):
+        raise BrokerError("Invalid stored management web services.")
+    return parse_web(web_text(value))
+
+
+def web_text(web):
+    return ", ".join("%s:%d" % (entry["scheme"], entry["port"]) for entry in web)
+
+
+def gui_url(web, pbx_address):
+    """GUI address for the Windows application: the first configured management web service."""
+    primary = web[0]
+    default = 80 if primary["scheme"] == "http" else 443
+    return "%s://%s%s/admin/" % (primary["scheme"], pbx_address,
+                                 "" if primary["port"] == default else ":%d" % primary["port"])
+
+
+def web_listening(port, pbx_address=None):
+    """Whether a local TCP listener covers the PBX tunnel address for this port (wildcard or exact bind).
+
+    A firewall permit alone is not reachability; the management service must also listen on an address
+    the tunnel peers reach. Returns True, False, or None when /proc/net/tcp* cannot be read.
+    """
+    try:
+        hex_port = "%04X" % int(port)
+        mapped = None
+        wanted4 = {"00000000"}
+        if pbx_address:
+            little_endian = socket.inet_aton(pbx_address)[::-1].hex().upper()
+            wanted4.add(little_endian)
+            mapped = "0000000000000000FFFF0000" + little_endian
+        # An IPv6 wildcard may be v6-only; do not report IPv4 reachability on that evidence.
+        wanted6 = {mapped} if mapped else set()
+        for path, wanted in ((Path("/proc/net/tcp"), wanted4), (Path("/proc/net/tcp6"), wanted6)):
+            for line in path.read_text().splitlines()[1:]:
+                fields = line.split()
+                local, _, local_port = fields[1].partition(":")
+                if fields[3] == "0A" and local_port == hex_port and local in wanted:
+                    return True
+    except (OSError, ValueError, IndexError):
+        return None
+    return False
+
+
+def workstation_ruleset(pbx_address, ssh_sources, web_ports=(80, 443)):
     """Human-readable policy illustration; enforcement uses workstation_policy JSON."""
     lines = ["table inet " + WORKSTATION_TABLE + " {",
              "    chain " + WORKSTATION_OWNER_CHAIN + " { }",
              "    chain input {", "        type filter hook input priority -10; policy accept;",
-             '        iifname "%s" ip daddr %s tcp dport { 80, 443 } accept' % (WORKSTATION_IFACE, pbx_address)]
+             '        iifname "%s" ip daddr %s tcp dport { %s } accept' % (WORKSTATION_IFACE, pbx_address,
+                                                                           ", ".join(str(port) for port in web_ports))]
     if ssh_sources:
         lines.append('        iifname "%s" ip saddr { %s } ip daddr %s tcp dport 22 accept' % (WORKSTATION_IFACE, ", ".join(sorted(ssh_sources)), pbx_address))
     lines += ['        iifname "%s" ip daddr %s icmp type echo-request accept' % (WORKSTATION_IFACE, pbx_address),
@@ -436,7 +524,7 @@ def workstation_ruleset(pbx_address, ssh_sources):
     return "\n".join(lines) + "\n"
 
 
-def workstation_policy(pbx_address, ssh_sources, managed_sources=()):
+def workstation_policy(pbx_address, ssh_sources, managed_sources=(), web_ports=(80, 443)):
     """Offline expected nft JSON, deliberately without sets, counters or implicit expressions."""
     family = {"family": "inet", "table": WORKSTATION_TABLE}
     # nftables 1.0.6 accepts table comments in JSON but drops them from kernel state.
@@ -466,7 +554,7 @@ def workstation_policy(pbx_address, ssh_sources, managed_sources=()):
                            destination, match(payload("tcp", "dport"), ssh_destination), {"drop": None}])
             rule("input", [incoming, match(payload("ip", "saddr"), str(ipaddress.IPv4Address(source))),
                            destination, match(payload("tcp", "dport"), ssh_destination), {"accept": None}])
-    for port in (80, 443):
+    for port in web_ports:
         rule("input", [incoming, destination, match(payload("tcp", "dport"), port), {"accept": None}])
     for source in sorted(set(ssh_sources)):
         rule("input", [incoming, match(payload("ip", "saddr"), str(ipaddress.IPv4Address(source))),
@@ -508,8 +596,8 @@ def is_fail2ban_hook(target):
 
 
 def integration_placement_valid(hooks, bans, jumps):
-    """One jump at the start of fpbxfirewall; INPUT's Fail2Ban hooks must precede entry."""
-    return (jumps == [0] and bool(hooks) and all(index < hooks[0] for index in bans))
+    """One interface jump inside FreePBX, after INPUT's Fail2Ban hooks."""
+    return jumps == [0] and bool(hooks) and all(index < hooks[0] for index in bans)
 
 
 def iptables_arguments(rule):
@@ -522,15 +610,16 @@ def iptables_arguments(rule):
     return arguments + ["-m", "comment", "--comment", rule["comment"], "-j", rule["j"]]
 
 
-def integration_rules(pbx_address, workstations):
-    """Exact per-peer ACCEPTs: TCP 80/443, plus 22 only for SSH-approved peers. Nothing else is trusted."""
+def integration_rules(pbx_address, workstations, web=DEFAULT_WEB):
+    """Per-peer management TCP and explicitly approved SSH; no public services."""
     pbx = str(ipaddress.IPv4Address(pbx_address)) + "/32"
+    web_ports = tuple(entry["port"] for entry in web)
     rules = []
     for item in sorted(workstations, key=lambda entry: ipaddress.IPv4Network(entry["address"])):
         source = ipaddress.IPv4Network(item["address"])
         if source.prefixlen != 32:
             raise BrokerError("Workstation integration requires a single-address peer.")
-        ports = (80, 443, ssh.API_PORT, ssh.port(item)) if ssh.managed(item) else ((80, 443, 22) if item.get("ssh") is True else (80, 443))
+        ports = (*web_ports, ssh.API_PORT, ssh.port(item)) if ssh.managed(item) else ((*web_ports, 22) if item.get("ssh") is True else web_ports)
         for port in ports:
             rules.append({"s": str(source), "d": pbx, "i": WORKSTATION_IFACE, "p": "tcp", "dport": str(port),
                           "comment": INTEGRATION_MARK, "j": "ACCEPT"})
@@ -820,9 +909,11 @@ class Broker:
         if stream:
             return subprocess.Popen(arguments, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                     stderr=subprocess.DEVNULL, text=True, env=ENV)
-        result = subprocess.run(arguments, input=stdin, capture_output=True, text=True, timeout=20, env=ENV)
+        listener = arguments[:3] == [FWCONSOLE, "teliphones", "listener"]
+        result = subprocess.run(arguments, input=stdin, capture_output=True, text=True, timeout=60 if listener else 20, env=ENV)
         if result.returncode and check:
-            raise BrokerError("Workstation network operation failed: " + os.path.basename(arguments[0]) + " " + arguments[1] + ".")
+            detail = (" " + result.stdout.strip()[-500:]) if listener else ""
+            raise BrokerError("Workstation network operation failed: " + os.path.basename(arguments[0]) + " " + arguments[1] + "." + detail)
         return result.stdout if result.returncode == 0 else None
 
     def workstation_state(self):
@@ -834,6 +925,7 @@ class Broker:
                  and (item.get("mode") == "persistent" or (isinstance(item.get("expires_at"), int) and item["expires_at"] > now))]
         state = {"subnet": state.get("subnet") if isinstance(state.get("subnet"), str) else None,
                  "listen_port": state.get("listen_port") if isinstance(state.get("listen_port"), int) else None,
+                 "web": normalise_web(state.get("web")),
                  "workstations": valid}
         return state, len(valid) != len(items)
 
@@ -979,7 +1071,8 @@ class Broker:
             raise BrokerError("Invalid workstation subnet.")
         return workstation_policy(str(network[1]),
                                   [item["address"].split("/")[0] for item in state["workstations"] if item.get("ssh") is True and not ssh.managed(item)],
-                                  [(item["address"].split("/")[0], ssh.port(item)) for item in state["workstations"] if ssh.managed(item)])
+                                  [(item["address"].split("/")[0], ssh.port(item)) for item in state["workstations"] if ssh.managed(item)],
+                                  tuple(entry["port"] for entry in normalise_web(state.get("web"))))
 
     def start_monitor(self):
         if self.monitor is None:
@@ -1073,7 +1166,8 @@ class Broker:
                                     "Firewall may drop tunnel traffic. Check with: iptables -S INPUT" % (", ".join(late)[:200], FREEPBX_HOOK), backend)
             return
         network = ipaddress.IPv4Network(state["subnet"])
-        expected = integration_rules(str(network[1]), state["workstations"])
+        web = normalise_web(state.get("web"))
+        expected = integration_rules(str(network[1]), state["workstations"], web)
         for item in state["workstations"]:
             if not ipaddress.IPv4Network(item["address"]).subnet_of(network):
                 raise BrokerError("Workstation address is outside the workstation subnet.")
@@ -1098,10 +1192,15 @@ class Broker:
                 or not integration_placement_valid(hooks, bans, jumps)
                 or any(chain == "INPUT" and iptables_target(tokens) == INTEGRATION_CHAIN for chain, tokens in rules)):
             raise BrokerError("FreePBX Firewall integration could not be verified after update.")
-        self.integration_status("active", "Authorised workstation peers may reach TCP 80/443%s on the PBX tunnel address inside %s; "
-                                "all other tunnel traffic returns to FreePBX Firewall." % (
+        web_ports = "/".join(str(entry["port"]) for entry in web)
+        self.integration_status("active", "Authorised workstation peers may reach TCP %s%s on the PBX tunnel address inside %s; "
+                                "all other traffic returns to FreePBX Firewall." % (
+                                    web_ports,
                                     " (and explicitly approved per-peer SSH services)" if any(item.get("ssh") is True for item in state["workstations"]) else "",
                                     FREEPBX_HOOK), backend)
+
+    def reconcile_listener(self, port):
+        self.run([FWCONSOLE, "teliphones", "listener", "--listen-port=" + str(port)])
 
     def remove_integration(self):
         iptables = self.iptables_tool()
@@ -1129,8 +1228,8 @@ class Broker:
             except (BrokerError, OSError, ValueError, subprocess.SubprocessError) as cleanup_error:
                 self.integration_status("error", "FreePBX Firewall integration could not be verified or removed: " + reason)
                 raise BrokerError("FreePBX Firewall integration could not be verified or removed: " + str(cleanup_error)) from error
-            self.integration_status("error", "FreePBX Firewall integration failed and was removed; WireGuard handshakes may succeed while "
-                                    "FreePBX Firewall drops HTTP/HTTPS: " + reason)
+            self.integration_status("error", "FreePBX Firewall integration failed and was removed; FreePBX Firewall may now drop "
+                                    "WireGuard handshakes and tunnel HTTP/HTTPS until integration is restored: " + reason)
 
     def mutate_policy(self, expected, existing, registration_retry=True):
         nft = self.tool("nft")
@@ -1181,6 +1280,11 @@ class Broker:
         """Shared by revoke, failure, shutdown and the trusted uninstall entry point."""
         interface_present = self.link_state() is not None
         self.disable_workstations()
+        listener_error = None
+        try:
+            self.reconcile_listener(0)
+        except (BrokerError, OSError, subprocess.SubprocessError) as error:
+            listener_error = error
         try:
             self.ssh.reconcile({"workstations": []})
         except (ssh.SshError, OSError, subprocess.SubprocessError) as error:
@@ -1203,6 +1307,8 @@ class Broker:
         if integration_error is not None:
             raise BrokerError("Workstation interface was removed, but FreePBX Firewall integration cleanup is incomplete: "
                               + (str(integration_error) if isinstance(integration_error, BrokerError) else "iptables failed."))
+        if listener_error is not None:
+            raise BrokerError("Workstation access removed, but listener cleanup requires retry: " + str(listener_error))
         if interface_present:
             for diagnostic_id in self.diagnostic_active_peers:
                 self.diagnostic(diagnostic_id, "interface.removed")
@@ -1259,6 +1365,7 @@ class Broker:
             # Only after the nft restrictions are verified may the narrower FreePBX Firewall ACCEPTs be added.
             previous_integration = dict(self.integration)
             self.reconcile_integration(state)
+            self.reconcile_listener(state["listen_port"])
             self.ssh.reconcile(state)
             self.run([ip, "link", "set", "up", "dev", WORKSTATION_IFACE])
             if not interface_present:
@@ -1316,8 +1423,8 @@ class Broker:
                            if isinstance(item, dict) and re.fullmatch(r"[a-f0-9]{16}", str(item.get("id", "")))
                            and item.get("mode") != "persistent" and isinstance(item.get("expires_at"), int)
                            and item["expires_at"] <= now]
-            state, changed = self.workstation_state()
             try:
+                state, changed = self.workstation_state()
                 if state["workstations"]:
                     if self.monitor is None or not self.monitor.alive():
                         raise BrokerError("Workstation nft monitor is unavailable; access disabled. Restart the broker.")
@@ -1328,7 +1435,9 @@ class Broker:
                         matches = False
                     if not matches:
                         event = True
-                if changed or event or (STATE / "disabled").exists():
+                link = self.link_state() if state["workstations"] else None
+                if changed or event or (STATE / "disabled").exists() or (
+                        state["workstations"] and (link is None or "UP" not in link["flags"])):
                     self.apply_workstations(state)
                     if changed:
                         self.save_workstations(state)
@@ -1341,6 +1450,7 @@ class Broker:
                     if link is not None and "UP" in link["flags"]:
                         # Repairs a FreePBX Firewall reload without re-admitting peers; a no-op when already exact.
                         self.reconcile_integration(state)
+                        self.reconcile_listener(state["listen_port"])
                         if any(ssh.managed(item) for item in state["workstations"]):
                             self.ssh.reconcile(state)
             except (BrokerError, ssh.SshError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
@@ -1377,6 +1487,8 @@ class Broker:
         if not state["workstations"] or not state["subnet"]:
             state["subnet"] = self.choose_subnet()
         state["listen_port"] = port
+        if isinstance(request.get("web"), str) and request["web"].strip():
+            state["web"] = parse_web(request["web"])
         network = ipaddress.IPv4Network(state["subnet"])
         existing = next((item for item in state["workstations"] if item["public_key"] == pairing["public_key"]), None)
         if existing:
@@ -1406,14 +1518,16 @@ class Broker:
             self.apply_workstations(state)
             pbx_public = self.server_public_key()
             self.save_workstations(state)
-        except BrokerError:
+        except (BrokerError, OSError, subprocess.SubprocessError) as error:
             if self.workstation_cleanup_failed:
                 atomic(STATE / "workstation-recovery.json", json.dumps(state, indent=2, sort_keys=True))
                 raise
             try:
                 self.apply_workstations(previous)
-            except BrokerError:
-                pass
+            except (BrokerError, OSError, subprocess.SubprocessError) as rollback_error:
+                self.disable_workstations()
+                self.workstation_error = "Pairing rollback failed: " + str(rollback_error)
+                raise BrokerError(self.workstation_error) from error
             raise
         for diagnostic_id in expired_ids:
             self.diagnostic(diagnostic_id, "pairing.expired", reason="deadline")
@@ -1427,7 +1541,7 @@ class Broker:
                     "workstation_public_key": entry["public_key"], "address": address, "pbx_address": pbx_address,
                     "pbx_name": re.sub(r"[^A-Za-z0-9._-]", "", socket.gethostname())[:64] or "FreePBX",
                     "pbx_public_key": pbx_public, "endpoint": host + ":" + str(port), "mode": entry["mode"],
-                    "expires_at": entry["expires_at"], "ssh": entry["ssh"], "gui_url": "http://" + pbx_address + "/admin/"}
+                    "expires_at": entry["expires_at"], "ssh": entry["ssh"], "gui_url": gui_url(state["web"], pbx_address)}
         prefix = PAIR_RESPONSE_PREFIX
         if pairing["schema"] == "teliphones-pair-request/2":
             prefix = PAIR_RESPONSE_V2
@@ -1452,6 +1566,32 @@ class Broker:
             self.diagnostic_observations.pop(diagnostic_id, None)
             self.diagnostic(diagnostic_id, "pairing.revoked", reason="administrator")
         self.audit("unpair", uid, "completed")
+
+    def configure_web(self, request, uid):
+        """Replace the management web services and reconcile both firewall layers; no stale permits remain."""
+        state, _ = self.workstation_state()
+        web = parse_web(request["web"])
+        previous = json.loads(json.dumps(state))
+        state["web"] = web
+        if state["workstations"]:
+            try:
+                self.apply_workstations(state)
+                self.save_workstations(state)
+            except (BrokerError, OSError, subprocess.SubprocessError) as error:
+                if self.workstation_cleanup_failed:
+                    atomic(STATE / "workstation-recovery.json", json.dumps(state, indent=2, sort_keys=True))
+                    raise
+                try:
+                    self.apply_workstations(previous)
+                except (BrokerError, OSError, subprocess.SubprocessError) as rollback_error:
+                    self.disable_workstations()
+                    self.workstation_error = "Management update rollback failed: " + str(rollback_error)
+                    raise BrokerError(self.workstation_error) from error
+                raise
+        else:
+            self.save_workstations(state)
+        self.audit("web", uid, "completed")
+        return web
 
     def observe_workstations(self, state, handshakes, transfers):
         now = time.monotonic()
@@ -1507,13 +1647,17 @@ class Broker:
             self.ssh.host_key()
         except (ssh.SshError, OSError, subprocess.SubprocessError) as failure:
             ssh_error = str(failure)
+        pbx_address = str(ipaddress.IPv4Network(state["subnet"])[1]) if state["subnet"] and state["workstations"] else None
         return {"ready": all(requirements.values()) and not error and not (STATE / "disabled").exists(), "requirements": requirements, "error": error,
                 "ssh_ready": not ssh_error, "ssh_error": ssh_error,
                 "listen_port": state["listen_port"],
+                "web": [{"scheme": entry["scheme"], "port": entry["port"],
+                         "listening": web_listening(entry["port"], pbx_address)} for entry in state["web"]],
+                "gui_url": gui_url(state["web"], pbx_address) if pbx_address else None,
                 "firewall_integration": {"state": self.integration["state"] if state["workstations"] else "inactive",
                                          "message": self.integration["message"] if state["workstations"] else "",
                                          "backend": self.integration["backend"], "hook": FREEPBX_HOOK, "chain": INTEGRATION_CHAIN},
-                "pbx_address": str(ipaddress.IPv4Network(state["subnet"])[1]) if state["subnet"] and state["workstations"] else None,
+                "pbx_address": pbx_address,
                 "items": [{"id": item["id"], "name": item["name"], "address": item["address"], "mode": item["mode"],
                            "ssh": item.get("ssh") is True, "ssh_managed": ssh.managed(item),
                            "ssh_user": item.get("ssh_user", ""), "ssh_port": ssh.port(item) if ssh.managed(item) else 0,
@@ -1657,6 +1801,11 @@ class Broker:
             with self.wslock:
                 self.unpair(request, uid)
             return {"ok": True, "message": "Workstation access revoked." if request["workstation_id"] != "all" else "All workstation access revoked."}
+        if action == "web":
+            with self.wslock:
+                web = self.configure_web(request, uid)
+            return {"ok": True, "message": "Management web services set to %s. Workstation firewall permissions were "
+                    "reconciled; already-paired workstations keep their saved GUI address until re-paired." % web_text(web)}
         if action == "revoke":
             self.cancel.set()
             self.revoking = True

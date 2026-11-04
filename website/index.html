@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TELIPHONES — A private route to your FreePBX</title>
+  <meta name="description" content="Administrator-approved FreePBX access from a native Windows application. WireGuard pairing, private web access and managed SSH certificates. Explore the experimental project.">
+  <link rel="canonical" href="https://teliphones.com/">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="TELIPHONES">
+  <meta property="og:title" content="TELIPHONES — Your PBX. A private route.">
+  <meta property="og:description" content="Native Windows access. FreePBX approval. WireGuard connectivity and temporary SSH certificates, with authority kept on your PBX.">
+  <meta property="og:url" content="https://teliphones.com/">
+  <meta property="og:image" content="https://teliphones.com/assets/social.png">
+  <meta property="og:image:type" content="image/png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="TELIPHONES: private, administrator-approved access to FreePBX. Experimental software.">
+  <meta name="theme-color" content="#132d29">
+  <link rel="icon" href="/assets/mark.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/assets/site.css">
+  <script src="/assets/site.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="masthead">
+  <div class="wrap masthead-inner">
+    <a class="brand" href="/" aria-label="TELIPHONES home"><svg viewBox="0 0 32 32" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 5h22M16 5v22M5 16h22"/><circle cx="5" cy="27" r="1"/><circle cx="27" cy="27" r="1"/></svg>TELIPHONES</a>
+    <nav class="desktop-nav" aria-label="Primary"><a href="/windows/">Windows</a><a href="/freepbx/">FreePBX</a><a href="/security/">Security</a><a href="/docs/">Docs</a></nav>
+    <div class="header-actions">
+      <a class="button small" href="/downloads/">Get the software <span aria-hidden="true">↗</span></a>
+      <button class="theme-toggle" type="button" data-theme-toggle hidden aria-label="Switch appearance"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 0 0 16Z" fill="currentColor"/></svg></button>
+      <details class="site-menu"><summary>Explore</summary><nav class="menu-panel" aria-label="All pages"><div class="wrap menu-grid"><a href="/" aria-current="page">Home</a><a href="/features/">Features</a><a href="/windows/">For Windows</a><a href="/freepbx/">For FreePBX</a><a href="/remote-support/">Remote Support</a><a href="/security/">Security &amp; evidence</a><a href="/docs/">Documentation</a><a href="/downloads/">Downloads</a><a href="/faq/">FAQ</a><a href="/roadmap/">Roadmap</a><a href="/about/">About the project</a><a href="/docs/getting-started/">Getting started</a></div></nav></details>
+    </div>
+  </div>
+</header>
+<main id="main">
+  <section class="hero wrap" aria-labelledby="intro">
+    <div class="hero-grid">
+      <div class="hero-copy">
+        <p class="eyebrow">Windows workstation. FreePBX authority.</p>
+        <h1 id="intro">Your PBX.<br>A <em>private</em> route.</h1>
+        <p class="lead">Bring the connection, the approval and the tools together. Reach FreePBX over WireGuard, open its web interface and start an explicitly authorised SSH session.</p>
+        <div class="actions"><a class="button" href="/features/">Explore TELIPHONES <span aria-hidden="true">→</span></a><a href="/docs/getting-started/">Start with a test PBX</a></div>
+        <p class="fine">Native Windows 10/11 x64 · FreePBX 17 / Debian 12<br>Open-source software. Experimental, not production-ready.</p>
+      </div>
+      <div class="hero-aside">
+        <figure class="diagram" aria-labelledby="route-caption">
+          <div class="diagram-head micro"><span>01 / My PBXs</span><span>Architecture illustration</span></div>
+          <div class="diagram-node"><span class="micro">Your Windows workstation</span><strong>One saved connection.</strong><p>Local keys · preferred browser · OpenSSH-backed terminal</p></div>
+          <div class="diagram-link">↓ Direct WireGuard · PBX host route only</div>
+          <div class="diagram-node"><span class="micro">Your FreePBX server</span><strong>Explicitly approved access.</strong><p>Workstation identity + permissions + original expiry</p><div class="diagram-endpoints"><span>FreePBX GUI<small>Normal sign-in</small></span><span>Managed SSH<small>Only if authorised</small></span></div></div>
+          <figcaption id="route-caption">A connection diagram, not a software screenshot or live connection. No route to the wider PBX network is granted.</figcaption>
+        </figure>
+      </div>
+    </div>
+  </section>
+  <div class="wrap status-line"><span class="status-label">Development status</span><p>FreePBX 0.5.0 adds managed WireGuard listener permissions and custom web ports. Local tests pass; real-PBX acceptance testing is next.</p><a href="/security/#evidence">Read the evidence →</a></div>
+  <section class="section wrap" aria-labelledby="reason">
+    <div class="section-heading"><div><span class="section-no">01 / Less coordination</span><h2 id="reason">Remote administration,<br><em>with the pieces connected.</em></h2></div><p>A manually configured VPN gets you a route. You still need to coordinate who may use it, which services they can reach, their SSH credentials and when access should end. TELIPHONES makes those decisions part of the PBX workflow.</p></div>
+    <div class="grid">
+      <article class="feature"><span class="micro">Approval</span><h3>Pair a workstation.<br>Not a whole network.</h3><p>A full FreePBX administrator approves one key-bound request, with web-only or explicitly authorised SSH access. The workstation gets a host route to that PBX.</p><a href="/features/#pairing">How pairing works →</a></article>
+      <article class="feature"><span class="micro">Identity</span><h3>Open SSH.<br>Not a key-sharing exercise.</h3><p>Managed SSH uses an approved existing account, pinned host identity and a temporary certificate for a fresh session key. No permanent administrator key needs to be handed to the workstation.</p><a href="/security/#ssh">Inside managed SSH →</a></article>
+      <article class="feature"><span class="micro">Authority</span><h3>Set a lifetime.<br>Keep the decision on the PBX.</h3><p>Choose temporary access or persistent approval until revoked. Reconnecting does not renew the original deadline. Removing a local profile does not revoke the PBX pairing.</p><a href="/features/#authority">Understand the lifecycle →</a></article>
+    </div>
+  </section>
+  <section class="section band" aria-labelledby="components"><div class="wrap">
+    <div class="section-heading"><div><span class="section-no">02 / Two complementary components</span><h2 id="components">At your desk.<br><em>Under your control.</em></h2></div><p>The Windows application handles the working connection. The FreePBX module handles the approval. A separately installed root broker carries out the narrow set of privileged server operations.</p></div>
+    <div class="grid two"><article><span class="micro">Windows / 0.7.0</span><h3>Your everyday administration tools.</h3><p>Saved PBXs, preferred applications, health monitoring and a local session timeline. Updated builds open and check the configured management endpoint, including custom HTTP/HTTPS ports.</p><a class="button" href="/windows/">TELIPHONES for Windows →</a></article><article><span class="micro">FreePBX / 0.5.0</span><h3>A visible approval boundary.</h3><p>Pair, inspect and revoke workstations from Connectivity &gt; TELIPHONES. Managed listener permissions are designed to let paired devices connect from changing public IPs, without individual IP whitelists.</p><a class="button secondary" href="/freepbx/">TELIPHONES for FreePBX →</a></article></div>
+  </div></section>
+  <section class="section wrap" aria-labelledby="flow">
+    <div class="section-heading"><div><span class="section-no">03 / A deliberate exchange</span><h2 id="flow">Request. Approve.<br><em>Connect. Work.</em></h2></div><p>There is no background service deciding who should have access. Pairing is an explicit exchange between the workstation and a full administrator on the PBX.</p></div>
+    <ol class="workflow"><li><h3>Request</h3><p>Generate a pairing request in Windows. Opt in to SSH only if you need it.</p></li><li><h3>Approve</h3><p>The PBX administrator sets the lifetime and, for SSH, deliberately selects an existing account.</p></li><li><h3>Connect</h3><p>Import the bound response and establish WireGuard to the PBX's reachable UDP endpoint.</p></li><li><h3>Work</h3><p>Open FreePBX or authorised SSH. Disconnect locally; revoke authority on the PBX when finished with the pairing.</p></li></ol>
+    <a href="/docs/getting-started/">Follow the complete starting sequence →</a>
+  </section>
+  <section class="section wrap" aria-labelledby="support">
+    <div class="section-heading"><div><span class="section-no">04 / A separate support workflow</span><h2 id="support">A customer's support window.<br><em>Not your workstation pairing.</em></h2></div><div><p>Remote Support is for temporary, customer-authorised engineer access. It uses separately operated Connect, Checker and Console integrations, with an absolute support deadline and independent reachability evidence.</p><p>Contracts and laboratory components exist. A complete production-validated service does not. No hosted gateway or relay is supplied.</p><a href="/remote-support/">Explore Remote Support →</a></div></div>
+  </section>
+  <section class="section wrap" aria-labelledby="next"><span class="section-no">05 / Read the engineering</span><h2 id="next">Understand it before<br><em>you depend on it.</em></h2><div class="grid"><a class="resource local" href="/security/"><strong>Security &amp; current evidence</strong><span>Keys, restrictions, failure modes and the limits of what has been demonstrated.</span></a><a class="resource local" href="/docs/"><strong>Operational documentation</strong><span>Installation, root bootstrap, troubleshooting and the source contracts.</span></a><a class="resource local" href="/roadmap/"><strong>What comes next</strong><span>Reliability, lifecycle validation and a planned integrated native terminal.</span></a></div></section>
+</main>
+<footer class="site-footer"><div class="wrap">
+  <div class="footer-grid"><div><a class="brand" href="/">TELIPHONES</a><p>Private administration.<br>Authority stays with your PBX.</p><span class="tag">Experimental software</span></div><div><h2>Product</h2><a href="/features/">Features</a><a href="/windows/">Windows</a><a href="/freepbx/">FreePBX</a><a href="/remote-support/">Remote Support</a></div><div><h2>Resources</h2><a href="/docs/">Documentation</a><a href="/downloads/">Downloads</a><a href="/security/">Security</a><a href="/faq/">FAQ</a></div><div><h2>Project</h2><a href="/roadmap/">Roadmap</a><a href="/about/">About &amp; licensing</a><a href="https://github.com/kierknoby/teliphones">Source on GitHub ↗</a><a href="https://freepbx.uk/support/">FreePBX UK support ↗</a></div></div>
+  <div class="legal"><p>TELIPHONES is a UK registered trademark. Software licensed under GPL version 3 or later. No endorsement by Sangoma or the FreePBX project is implied.</p><p>No analytics. No third-party scripts. <a href="/about/#website">About this website</a></p></div>
+</div></footer>
+</body>
+</html>

@@ -879,6 +879,8 @@ void CMainDlg::OnTimer(UINT_PTR id) {
     std::string address = active_->pbxAddress;
     std::string peerPublicKey = active_->peerPublicKey;
     const auto* connectedProfile = FindProfile(active_->profileId);
+    const std::string managementUrl = connectedProfile && connectedProfile->kind == ProfileKind::Administrator ?
+                                     connectedProfile->pairing.guiUrl : "http://" + address + "/admin/";
     std::string managedSshProfile = connectedProfile && connectedProfile->kind == ProfileKind::Administrator ?
                                    connectedProfile->id : std::string();
     std::wstring wgExecutable = wireguard_.wgExe;
@@ -888,7 +890,7 @@ void CMainDlg::OnTimer(UINT_PTR id) {
                             tickNow - lastTelemetryTickMs_ >= tlp::ConnectionHealthMonitor::kTelemetryIntervalSeconds * 1000ULL;
     if (collectTelemetry) lastTelemetryTickMs_ = tickNow;
     try {
-    std::thread([window, generation, tunnelName, address, peerPublicKey, managedSshProfile, wgExecutable, expiresAt, collectTelemetry]() {
+    std::thread([window, generation, tunnelName, address, managementUrl, peerPublicKey, managedSshProfile, wgExecutable, expiresAt, collectTelemetry]() {
         auto* result = new ProbeResult;
         result->sample.authorizationExpiresAt = expiresAt;
         result->sample.authorizationKnown = true;
@@ -905,13 +907,7 @@ void CMainDlg::OnTimer(UINT_PTR id) {
             result->sample.tunnelKnown = result->statusKnown;
             result->sample.tunnelRunning = result->serviceRunning;
             if (result->serviceRunning && (expiresAt == 0 || tlp::win::UnixNow() < expiresAt)) {
-                tlp::win::TcpProbeMeasurement probe = tlp::win::MeasureTcpProbe(address, 443, 1200);
-                if (!probe.known || !probe.succeeded) {
-                    const std::string httpsError = probe.error;
-                    tlp::win::TcpProbeMeasurement fallback = tlp::win::MeasureTcpProbe(address, 80, 1200);
-                    if (fallback.known) probe = fallback;
-                    if (!probe.succeeded) probe.error = "HTTPS 443: " + httpsError + "; HTTP 80: " + fallback.error;
-                }
+                tlp::win::TcpProbeMeasurement probe = tlp::win::MeasureTcpProbe(address, tlp::ManagementProbePort(managementUrl), 1200);
                 result->sample.probeKnown = probe.known;
                 result->error = probe.error;
                 result->sample.probeSucceeded = probe.known && probe.succeeded;

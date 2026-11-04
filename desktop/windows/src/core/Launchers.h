@@ -97,8 +97,9 @@ struct LaunchPlan {
     bool newConsole = false;
 };
 
-// http://<validated tunnel address>/admin/ - unchanged from earlier releases.
+// My PBXs uses the approved HTTP(S) URL; Remote Support keeps its independent HTTP URL.
 std::string FreePbxUrl(const Profile& profile, const std::string& sessionId);
+int ManagementProbePort(const std::string& url);
 LaunchPlan BrowserLaunch(const std::string& browserId, const std::string& executable, const std::string& url);
 
 // sshExecutable is the Windows OpenSSH client; it is required for every terminal except PuTTY.

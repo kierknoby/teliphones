@@ -33,6 +33,7 @@ function exec($command, &$output = null, &$result = null) {
     $output = [];
     $result = 0;
     if (strpos($command, ' -c ') !== false && $model['failure'] === 'import') $result = 1;
+    if (strpos($command, ' -l ') !== false && $model['failure'] === 'php') $result = 1;
     if (strpos($command, 'systemctl restart teliphones-broker.service') !== false) {
         ++$model['restarts'];
         if ($model['failure'] === 'activation' && $model['restarts'] === 1) $result = 1;
@@ -42,6 +43,7 @@ require_once dirname(__DIR__) . '/BrokerBootstrap.php';
 $reset = static function (string $failure = '') use (&$model): void {
     $model = ['files' => [BrokerBootstrap::BROKER_FILE => 'previous broker',
         BrokerBootstrap::BROKER_DIR . '/ssh_authority.py' => 'previous authority',
+        BrokerBootstrap::BROKER_DIR . '/FirewallListener.php' => 'previous listener',
         BrokerBootstrap::BROKER_UNIT => 'previous unit'], 'commands' => [], 'failure' => $failure,
         'fail_rollback' => false, 'restarts' => 0];
 };
@@ -50,15 +52,17 @@ $assert = static function (bool $value, string $message): void {
 };
 $reset();
 $assert(BrokerBootstrap::install('/module'), 'Successful validated upgrade must start the broker.');
-$assert($model['files'][BrokerBootstrap::BROKER_FILE] === \file_get_contents(dirname(__DIR__) . '/support_broker.py')
+$assert($model['files'][BrokerBootstrap::BROKER_DIR . '/FirewallListener.php'] === \file_get_contents(dirname(__DIR__) . '/FirewallListener.php')
+    && $model['files'][BrokerBootstrap::BROKER_FILE] === \file_get_contents(dirname(__DIR__) . '/support_broker.py')
     && $model['files'][BrokerBootstrap::BROKER_DIR . '/ssh_authority.py'] === \file_get_contents(dirname(__DIR__) . '/ssh_authority.py'),
     'Both current module helpers must replace the separately installed root helpers byte-for-byte.');
-$assert(strpos($model['files'][BrokerBootstrap::BROKER_FILE], 'VERSION = "0.4.1"') !== false
-    && strpos($model['files'][BrokerBootstrap::BROKER_FILE], 'self.ipt(iptables, "-I", FREEPBX_HOOK, "1"') !== false,
-    'The upgraded root broker must be 0.4.1 with the internal FreePBX jump correction.');
+$assert(strpos($model['files'][BrokerBootstrap::BROKER_FILE], 'VERSION = "0.5.0"') !== false
+    && strpos($model['files'][BrokerBootstrap::BROKER_FILE], 'self.ipt(iptables, "-I", FREEPBX_HOOK, "1"') !== false
+    && strpos($model['files'][BrokerBootstrap::BROKER_FILE], 'def reconcile_listener(') !== false,
+    'The upgraded root broker must be 0.5.0 with the internal FreePBX jump and persistent listener service reconciliation.');
 $commands = implode("\n", $model['commands']);
 $assert(strpos($commands, ' -c ') < strpos($commands, 'systemctl restart teliphones-broker.service'), 'Import validation must precede activation.');
-foreach (['import', 'activation'] as $failure) {
+foreach (['import', 'php', 'activation'] as $failure) {
     $reset($failure);
     try {
         BrokerBootstrap::install('/module');
@@ -68,6 +72,7 @@ foreach (['import', 'activation'] as $failure) {
     }
     $assert($model['files'][BrokerBootstrap::BROKER_FILE] === 'previous broker'
         && $model['files'][BrokerBootstrap::BROKER_DIR . '/ssh_authority.py'] === 'previous authority'
+        && $model['files'][BrokerBootstrap::BROKER_DIR . '/FirewallListener.php'] === 'previous listener'
         && $model['files'][BrokerBootstrap::BROKER_UNIT] === 'previous unit', 'Upgrade failure must restore all prior root artifacts.');
     $assert($model['restarts'] >= 1, 'Previously active broker must be restarted after rollback.');
 }

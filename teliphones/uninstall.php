@@ -52,7 +52,8 @@ if ($sshClean && $wireguardClean && $attestationClean && $checkerClean && $remot
 }
 
 foreach (['/etc/systemd/system/teliphones-broker.service', '/usr/local/lib/teliphones-broker/support_broker.py',
-    '/usr/local/lib/teliphones-broker/ssh_authority.py', '/run/teliphones/control.sock'] as $brokerFile) {
+    '/usr/local/lib/teliphones-broker/ssh_authority.py', '/usr/local/lib/teliphones-broker/FirewallListener.php',
+    '/run/teliphones/control.sock'] as $brokerFile) {
     if (file_exists($brokerFile) && !unlink($brokerFile)) throw new RuntimeException('Unable to remove TELIPHONES broker artifact.');
 }
 

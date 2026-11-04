@@ -25,18 +25,19 @@ def included(path):
 
 class PackageTests(unittest.TestCase):
     def test_authoritative_versions_and_archive_checksum(self):
-        self.assertEqual(VERSION, "0.4.1")
+        self.assertEqual(VERSION, "0.5.0")
         tree = ast.parse((MODULE / "support_broker.py").read_text())
         versions = [ast.literal_eval(node.value) for node in tree.body if isinstance(node, ast.Assign)
                     and any(isinstance(target, ast.Name) and target.id == "VERSION" for target in node.targets)]
         self.assertEqual(versions, [VERSION])
         self.assertIn("public const VERSION = '%s';" % VERSION, (MODULE / "WebSupport.php").read_text())
-        self.assertIn("TELIPHONES %s requires broker protocol 5" % VERSION,
+        self.assertIn("TELIPHONES %s requires broker protocol 6" % VERSION,
                       (MODULE / "BrokerBootstrap.php").read_text())
+        self.assertTrue(PACKAGE.exists(), "Build the current installation archive before package validation")
         digest = hashlib.sha256(PACKAGE.read_bytes()).hexdigest()
         self.assertEqual(Path(str(PACKAGE) + ".sha256").read_text(), "%s  %s\n" % (digest, PACKAGE.name))
 
-    def test_previous_package_remains_identifiable_and_unchanged(self):
+    def test_previous_packages_remain_identifiable_and_unchanged(self):
         previous = ROOT / "TELIPHONES-0.4.0.tgz"
         self.assertEqual(hashlib.sha256(previous.read_bytes()).hexdigest(),
                          "f67dfaaf4cd78564c1599efe2e227580c751a1a40f59c9e4a6c3f08f418af670")
@@ -46,8 +47,20 @@ class PackageTests(unittest.TestCase):
             source = archive.extractfile("teliphones/support_broker.py").read().decode()
             self.assertIn('VERSION = "0.4.0"', source)
             self.assertIn('self.ipt(iptables, "-I", "INPUT",', source)
+        previous = ROOT / "TELIPHONES-0.4.1.tgz"
+        self.assertEqual(hashlib.sha256(previous.read_bytes()).hexdigest(),
+                         "d4b867af617b05c4b306137e4db31e8c2708acc1751295ad9b6f928eaff20800")
+        with tarfile.open(previous, "r:gz") as archive:
+            self.assertEqual(ET.fromstring(archive.extractfile("teliphones/module.xml").read()).findtext("version"),
+                             "0.4.1")
+            source = archive.extractfile("teliphones/support_broker.py").read().decode()
+            self.assertIn('VERSION = "0.4.1"', source)
+            # 0.4.1 corrected the jump placement but still lacked the WireGuard listener permit.
+            self.assertIn('self.ipt(iptables, "-I", FREEPBX_HOOK, "1"', source)
+            self.assertNotIn("def integration_jumps(", source)
 
     def test_packaged_firewall_migrates_legacy_input_and_survives_rebuild(self):
+        self.assertTrue(PACKAGE.exists(), "Build the current installation archive before package validation")
         sys.path.insert(0, str(ROOT / "gateway/tests"))
         try:
             from test_support_broker import FakeNetwork, FREEPBX17_FAIL2BAN, fail2ban_hook
@@ -60,21 +73,25 @@ class PackageTests(unittest.TestCase):
             network = FakeNetwork().freepbx()
             instance.run = network.run
             instance.iptables_tool = lambda: "iptables"
-            state = {"subnet": "100.70.1.0/24", "workstations": [
+            state = {"subnet": "100.70.1.0/24", "listen_port": 51821, "workstations": [
                 {"address": "100.70.1.2/32", "ssh": True, "ssh_public_key": "fixture"}]}
             chain = namespace["INTEGRATION_CHAIN"]
-            jump = namespace["iptables_arguments"](namespace["INTEGRATION_JUMP"])
+            jumps = [namespace["iptables_arguments"](namespace["INTEGRATION_JUMP"])]
             baseline = [fail2ban_hook(name) for name in FREEPBX17_FAIL2BAN] + [["-j", "fpbxfirewall"]]
             network.filter[chain] = []
-            network.filter["INPUT"].insert(len(FREEPBX17_FAIL2BAN), jump[:])
+            # Model a legacy 0.4.0 intrusive INPUT jump awaiting migration.
+            network.filter["INPUT"].insert(len(FREEPBX17_FAIL2BAN), jumps[0][:])
             for _ in range(2):
                 instance.firewall_integration(state)
                 self.assertEqual(network.filter["INPUT"], baseline)
-                self.assertEqual(network.filter["fpbxfirewall"][0], jump)
-                self.assertEqual(network.filter["fpbxfirewall"].count(jump), 1)
+                self.assertEqual(network.filter["fpbxfirewall"][:1], jumps)
+                for jump in jumps:
+                    self.assertEqual(network.filter["fpbxfirewall"].count(jump), 1)
                 rules = [namespace["iptables_rule"](rule) for rule in network.filter[chain]]
-                self.assertEqual({rule["dport"] for rule in rules if rule["j"] == "ACCEPT"},
+                self.assertEqual({rule["dport"] for rule in rules if rule["j"] == "ACCEPT" and rule.get("p") == "tcp"},
                                  {"80", "443", "8765", "22002"})
+                self.assertEqual([rule["dport"] for rule in rules if rule["j"] == "ACCEPT" and rule.get("p") == "udp"],
+                                 [])
                 stable = network.filter.copy()
                 with patch.object(instance, "ipt", wraps=instance.ipt) as ipt:
                     instance.firewall_integration(state)
@@ -86,6 +103,7 @@ class PackageTests(unittest.TestCase):
             self.assertNotIn(chain, network.filter)
 
     def test_archive_extracts_and_matches_module_source(self):
+        self.assertTrue(PACKAGE.exists(), "Build the current installation archive before package validation")
         expected = {
             "teliphones/" + path.relative_to(MODULE).as_posix(): path
             for path in MODULE.rglob("*") if path.is_file() and included(path)
@@ -105,7 +123,7 @@ class PackageTests(unittest.TestCase):
                 for name, source in expected.items():
                     self.assertEqual((Path(directory) / name).read_bytes(), source.read_bytes(), name)
                 metadata = ET.parse(Path(directory) / "teliphones/module.xml").getroot()
-                self.assertEqual(metadata.findtext("version"), "0.4.1")
+                self.assertEqual(metadata.findtext("version"), "0.5.0")
                 self.assertEqual(metadata.findtext("rawname"), "teliphones")
                 self.assertEqual(metadata.findtext("category"), "Connectivity")
                 for name in ("WebSupport.php", "views/support.php", "views/disclaimer.php", "support_broker.py", "ssh_authority.py", "assets/js/teliphones.js", "install.php"):
@@ -117,7 +135,7 @@ class PackageTests(unittest.TestCase):
                                 "def start_monitor(", "def uninstall_workstations(", "def policy_equal(",
                                 "TELIPHONES workstation integration v1", 'FREEPBX_HOOK = "fpbxfirewall"',
                                 'FAIL2BAN_PREFIXES = ("fail2ban-", "f2b-")', "def reconcile_integration(",
-                                "class DiagnosticLog", "PROTOCOL = 5"):
+                                "class DiagnosticLog", "PROTOCOL = 6", "def reconcile_listener(", "def parse_web("):
                     self.assertIn(feature, broker)
                 bootstrap = (Path(directory) / "teliphones/BrokerBootstrap.php").read_text()
                 self.assertIn("copy($moduleDir . '/support_broker.py', $brokerFile)", bootstrap)
