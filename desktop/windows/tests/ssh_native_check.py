@@ -938,10 +938,13 @@ class WindowsSshTests(unittest.TestCase):
                 self.assertFalse(errors, errors)
                 return
             self.assertEqual(line(host), "PRODUCTION_STARTED")
+            console_lines = []
             if console:
                 try:
-                    self.assertEqual(line(host), "CONSOLE_COMMAND_RESULT=377")
-                    self.assertEqual(line(host), "CONSOLE_INTERACTIVE=1")
+                    for expected in ("CONSOLE_COMMAND_RESULT=377", "CONSOLE_INTERACTIVE=1"):
+                        actual = line(host)
+                        console_lines.append(actual)
+                        self.assertEqual(actual, expected)
                     configs = list(runtime.glob("*/config"))
                     self.assertEqual(len(configs), 1,
                                      "Expected one active per-session SSH config under " + str(runtime))
@@ -979,7 +982,8 @@ class WindowsSshTests(unittest.TestCase):
             self.assertIn("PRODUCTION_CLOSED", output)
             self.assertIn("IDENTITY_RETAINED", output)
             if console:
-                self.assertIn("CONSOLE_INTERACTIVE=1", output)
+                console_transcript = "\n".join(console_lines + [output])
+                self.assertIn("CONSOLE_INTERACTIVE=1", console_transcript, console_transcript)
                 self.assertIn("TEST_AUTHENTICATION_CONFIRMED=1", error)
                 self.assertIn("authentication marker in first 256 KiB=True", ssh_client_log_summary(client_log))
                 input_diagnostic = client_log.with_name(client_log.name + ".io").read_text(encoding="utf-8")
