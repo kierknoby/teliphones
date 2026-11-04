@@ -134,11 +134,55 @@ class BuildLayoutTests(unittest.TestCase):
         self.assertIn("desktop/windows/build/Release/TELIPHONES.pdb", workflow)
         smoke = (ROOT / "tests/gui_startup_smoke.py").read_text(encoding="utf-8")
         for required in ("windows.ping(main)", "IsWindowEnabled(main)", "IDC_OPEN_SSH = 1010", "WM_CLOSE, 0, 0",
-                         '"shutdown" not in names', "shutil.rmtree(dump_dir, ignore_errors=True)", "remove_local_dumps()"):
+                         '"shutdown" not in names', "shutil.rmtree(dump_dir, ignore_errors=True)", "remove_local_dumps()",
+                         "with IsolatedProfile([local, roaming]):", "complete_first_run(launch, startup_timeout, preferences_file)",
+                         "wait_for_main_without_wizard(launch, startup_timeout)", "windows.click(wizard, IDOK)",
+                         "the completed first-run wizard was shown again"):
             self.assertIn(required, smoke)
+        # The smoke test must only press the wizard's own primary button; never the installer or setup actions.
+        self.assertEqual(re.findall(r"windows\.click\(\w+, (\w+)\)", smoke), ["IDOK"])
         spec = importlib.util.spec_from_file_location("gui_startup_smoke", ROOT / "tests/gui_startup_smoke.py")
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
+        # Wizard expectations must match the strings the application actually sets.
+        settings = (ROOT / "src/app/AppSettingsDlg.cpp").read_text(encoding="utf-8")
+        self.assertIn(f'SetWindowText(L"{module.WELCOME_TITLE}")', settings)
+        headings = [heading for heading, _ in module.WIZARD_STEPS]
+        actions = [action for _, action in module.WIZARD_STEPS]
+        self.assertIn('L"{}" : step_ == 2 ? L"{}" : L"{}"'.format(*headings), settings)
+        self.assertIn('L"{}" : step_ == 2 ? L"{}" : L"{}"'.format(*actions), settings)
+        resource = (ROOT / "src/app/resource.h").read_text(encoding="utf-8")
+        self.assertRegex(resource, rf"#define IDC_APPS_HEADING\s+{module.IDC_APPS_HEADING}\b")
+        self.assertRegex(resource, rf"#define IDC_MESSAGE_TEXT\s+{module.IDC_MESSAGE_TEXT}\b")
+        self.assertTrue(module.is_main_window_title("TELIPHONES 0.8.0"))
+        self.assertFalse(module.is_main_window_title(module.WELCOME_TITLE))
+        self.assertFalse(module.is_main_window_title("TELIPHONES Settings"))
+        self.assertEqual(module.first_run_preferences(
+            '{"schema":"x","browser":"default","terminal":"","locations":{},"setup":"completed","appearance":"system"}'),
+            {"browser": "default", "terminal": "(none)"})
+        for invalid in ('{"browser":"default","terminal":"","setup":"skipped"}', '{"browser":"","terminal":"","setup":"completed"}',
+                        "[]", "not json"):
+            with self.assertRaises(module.SmokeFailure):
+                module.first_run_preferences(invalid)
+        with tempfile.TemporaryDirectory() as temporary:
+            local, roaming = Path(temporary, "Local"), Path(temporary, "Roaming")
+            (local / "TELIPHONES").mkdir(parents=True)
+            (local / "TELIPHONES/preferences.json").write_text("original")
+            roaming.mkdir()
+            with patch("builtins.print"), module.IsolatedProfile([local, roaming]):
+                self.assertFalse((local / "TELIPHONES").exists())
+                (local / "TELIPHONES/Diagnostics").mkdir(parents=True)
+                (roaming / "TELIPHONES").mkdir()
+            self.assertEqual((local / "TELIPHONES/preferences.json").read_text(), "original")
+            self.assertFalse((local / "TELIPHONES/Diagnostics").exists())
+            self.assertFalse((roaming / "TELIPHONES").exists())
+            self.assertFalse((local / ("TELIPHONES" + module.PROFILE_BACKUP_SUFFIX)).exists())
+            # A leftover backup from an interrupted run is never overwritten.
+            (local / ("TELIPHONES" + module.PROFILE_BACKUP_SUFFIX)).mkdir()
+            with self.assertRaises(module.SmokeFailure):
+                with module.IsolatedProfile([local, roaming]):
+                    pass
+            self.assertEqual((local / "TELIPHONES/preferences.json").read_text(), "original")
         self.assertEqual(module.describe_exit_code(-1073741819), "3221225477 (0xC0000005): access violation")
         self.assertTrue(module.is_crash_exit_code(0xC0000005))
         self.assertTrue(module.is_crash_exit_code(0xC0000409))

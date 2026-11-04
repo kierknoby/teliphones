@@ -428,7 +428,7 @@ jobs:
             }
           }
 
-      - name: Smoke-test TELIPHONES main window startup, responsiveness and clean exit
+      - name: Smoke-test TELIPHONES first-run wizard, main window, relaunch and clean exit
         if: ${{ !cancelled() && steps.application_build.outcome == 'success' }}
         run: |
           $PSNativeCommandUseErrorActionPreference = $false
