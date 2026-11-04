@@ -34,7 +34,7 @@
 #define IDC_PBX_HEADING              1022
 #define IDC_CONNECTION_HEADING       1023
 #define IDC_LOCK_WORKSTATION         1024
-#define IDC_SESSION_LABEL            1024
+#define IDC_SESSION_LABEL            1031
 #define IDC_HEALTH_PLOT              1025
 #define IDC_CONTENT_VIEWPORT         1026
 #define IDC_HEALTH_POP_PLOT          1027

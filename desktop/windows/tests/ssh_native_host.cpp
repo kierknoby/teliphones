@@ -207,13 +207,11 @@ int runMain(int argc, char** argv) {
                     auto console = tlp::win::StartManagedSshConsole(profile);
                     std::cout << "PRODUCTION_STARTED" << std::endl;
                     console->Resize(100, 30);
-                    console->WriteInput("echo TELIPHONES_CONSOLE_READY\r");
                     std::string output;
                     const auto deadline = GetTickCount64() + 15000;
                     while (GetTickCount64() < deadline) {
                         output += console->ReadAvailable();
-                        if (console->IsAuthenticated() &&
-                            output.find("TELIPHONES_CONSOLE_READY") != std::string::npos) break;
+                        if (console->IsAuthenticated() && output.find('>') != std::string::npos) break;
                         if (!console->IsAlive()) {
                             output += console->ReadAvailable();
                             throw tlp::Error("Embedded SSH console ended before interactive output; authenticated=" +
@@ -223,13 +221,48 @@ int runMain(int argc, char** argv) {
                         }
                         Sleep(20);
                     }
-                    if (!console->IsAuthenticated() || output.find("TELIPHONES_CONSOLE_READY") == std::string::npos) {
+                    if (!console->IsAuthenticated() || output.find('>') == std::string::npos) {
                         output += console->ReadAvailable();
-                        throw tlp::Error("Embedded SSH console did not return interactive PTY output; authenticated=" +
+                        throw tlp::Error("Embedded SSH console did not reach an authenticated shell prompt; authenticated=" +
                             std::string(console->IsAuthenticated() ? "true" : "false") +
                             "; terminal output bytes=" + std::to_string(output.size()) +
                             "; terminal output=" + output);
                     }
+                    const std::string command = "set /a 29*13\r";
+                    console->WriteInput(command);
+                    std::cerr << "TEST_INPUT_WRITE_RETURNED=" << command.size() << std::endl;
+                    const auto hasCommandResult = [&output] {
+                        std::size_t offset = 0;
+                        while ((offset = output.find("377", offset)) != std::string::npos) {
+                            const bool atLineStart = offset == 0 || output[offset - 1] == '\r' || output[offset - 1] == '\n';
+                            const auto end = offset + 3;
+                            const bool atLineEnd = end == output.size() || output[end] == '\r' || output[end] == '\n';
+                            if (atLineStart && atLineEnd) return true;
+                            offset = end;
+                        }
+                        return false;
+                    };
+                    const auto inputDeadline = GetTickCount64() + 15000;
+                    while (GetTickCount64() < inputDeadline &&
+                           !hasCommandResult()) {
+                        output += console->ReadAvailable();
+                        if (!console->IsAlive()) {
+                            output += console->ReadAvailable();
+                            throw tlp::Error("Embedded SSH console ended after input; authenticated=" +
+                                std::string(console->IsAuthenticated() ? "true" : "false") +
+                                "; terminal output bytes=" + std::to_string(output.size()) +
+                                "; terminal output=" + output);
+                        }
+                        Sleep(20);
+                    }
+                    if (!hasCommandResult()) {
+                        output += console->ReadAvailable();
+                        throw tlp::Error("Embedded SSH console did not return interactive PTY output after input; authenticated=" +
+                            std::string(console->IsAuthenticated() ? "true" : "false") +
+                            "; terminal output bytes=" + std::to_string(output.size()) +
+                            "; terminal output=" + output);
+                    }
+                    std::cout << "CONSOLE_COMMAND_RESULT=377" << std::endl;
                     std::cout << "CONSOLE_INTERACTIVE=1" << std::endl;
                     if (!std::getline(std::cin, line) || line != "close")
                         throw tlp::Error("Embedded console teardown requires an explicit close command.");

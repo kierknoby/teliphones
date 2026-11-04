@@ -457,6 +457,17 @@ def server_log_tail(path):
         return b"\n".join(stream.read().splitlines()[-30:]).decode("utf-8", errors="replace")
 
 
+def ssh_client_log_summary(path):
+    if not path.exists():
+        return "SSH client log not produced."
+    size = path.stat().st_size
+    with path.open("rb") as stream:
+        prefix = stream.read(256 * 1024)
+    marker = b"Authenticated to " in prefix
+    return (f"SSH client log bytes={size}; authentication marker in first 256 KiB={marker}\n"
+            + server_log_tail(path))
+
+
 def cleanup_interrupted_fixture():
     descriptor = Path(os.environ["STARTUP_DIAGNOSTICS"]) / "native-fixture.json"
     if not descriptor.exists():
@@ -919,9 +930,11 @@ class WindowsSshTests(unittest.TestCase):
             self.assertEqual(line(host), "PRODUCTION_STARTED")
             if console:
                 try:
+                    self.assertEqual(line(host), "CONSOLE_COMMAND_RESULT=377")
                     self.assertEqual(line(host), "CONSOLE_INTERACTIVE=1")
                 except (AssertionError, RuntimeError, TimeoutError) as error:
-                    self.fail(f"{error}\nClient diagnostic tail:\n{server_log_tail(client_log)}"
+                    self.fail(f"{error}\nClient diagnostic:\n{ssh_client_log_summary(client_log)}"
+                              f"\nInput-pipe diagnostic tail:\n{server_log_tail(client_log.with_name(client_log.name + '.io'))}"
                               f"\nServer diagnostic tail:\n{server_log_tail(self.root / 'sshd-test.log')}")
             for _ in range(100):
                 tail = (self.root / "sshd-test.log").read_bytes()[log_offset:].decode(errors="replace")

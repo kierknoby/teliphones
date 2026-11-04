@@ -64,6 +64,7 @@ struct ProbeResult {
     int maximumWorkstations = 0;
     bool policyLocked = false;
     bool unlockRequestPending = false;
+    bool sourcesRequestPending = false;
     std::string policySummary;
     std::optional<tlp::PairResponse> migration;
     std::optional<tlp::PairResponse> pairingUpdate;

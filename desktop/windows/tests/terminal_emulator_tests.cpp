@@ -1,9 +1,18 @@
-#include "TerminalEmulator.h"
-
+#include <cstdint>
 #include <cstdlib>
+#include <deque>
+#include <functional>
 #include <iostream>
+#include <memory>
 #include <string>
 #include <vector>
+
+#define small char
+#include "TerminalEmulator.h"
+#ifndef small
+#error "TerminalEmulator.h must restore the Windows small macro after including libvterm."
+#endif
+#undef small
 
 namespace {
 void check(bool condition, const char* message) {

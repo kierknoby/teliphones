@@ -7,7 +7,14 @@
 #include <string>
 #include <vector>
 
+#ifdef small
+#pragma push_macro("small")
+#undef small
 #include <vterm.h>
+#pragma pop_macro("small")
+#else
+#include <vterm.h>
+#endif
 
 namespace tlp {
 

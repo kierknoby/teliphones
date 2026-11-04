@@ -62,6 +62,49 @@ class BuildLayoutTests(unittest.TestCase):
         self.assertIn("state->sshLog = Widen(testLogPath);", helper_session)
         self.assertIn("testLogPath != logPath", helper_session)
 
+    def test_native_mfc_terminal_integration_regressions_are_covered(self):
+        main = (ROOT / "src/app/MainDlg.cpp").read_text()
+        probe = main.split("struct ProbeResult {", 1)[1].split("};", 1)[0]
+        self.assertIn("bool sourcesRequestPending = false;", probe)
+        heartbeat = main.split("MaintainWorkstationSession(address, false, &pairing)", 1)[1].split(
+            "} catch (const std::exception& e)", 1
+        )[0]
+        self.assertIn("result->sourcesRequestPending = lease.sourcesRequestPending;", heartbeat)
+
+        terminal = (ROOT / "src/app/SshTerminalDlg.cpp").read_text()
+        self.assertIn("static_cast<VTermKey>(", terminal)
+        self.assertIn("CFont* oldFont = dc.SelectObject(&font_);", terminal)
+        self.assertIn("dc.SelectObject(oldFont);", terminal)
+
+        terminal_header = (ROOT / "src/core/TerminalEmulator.h").read_text()
+        self.assertIn('#pragma push_macro("small")', terminal_header)
+        self.assertIn('#pragma pop_macro("small")', terminal_header)
+        app_header = (ROOT / "src/app/Appearance.h").read_text()
+        framework = (ROOT / "src/app/framework.h").read_text()
+        self.assertIn('#include "framework.h"', app_header)
+        self.assertIn("#include <afxwin.h>", framework)
+
+        resources = (ROOT / "src/app/resource.h").read_text()
+        self.assertIn("#define IDC_SESSION_LABEL            1031", resources)
+        self.assertNotEqual(
+            re.search(r"^#define IDC_SESSION_LABEL\s+(\d+)$", resources, re.MULTILINE).group(1),
+            re.search(r"^#define IDC_LOCK_WORKSTATION\s+(\d+)$", resources, re.MULTILINE).group(1),
+        )
+
+        session = (ROOT / "src/platform/SshSession.cpp").read_text()
+        authentication = session.split("bool IsAuthenticated() override {", 1)[1].split(
+            "bool IsAlive() override {", 1
+        )[0]
+        self.assertIn("256 * 1024", authentication)
+        self.assertNotIn("size.QuadPart > 256 * 1024", authentication)
+        self.assertIn('contents.find("Authenticated to ")', authentication)
+        native_host = (ROOT / "tests/ssh_native_host.cpp").read_text()
+        self.assertLess(native_host.index("output.find('>')"), native_host.index("console->WriteInput(command)"))
+        self.assertIn('const std::string command = "set /a 29*13\\r";', native_host)
+        self.assertIn("hasCommandResult()", native_host)
+        for stage in ("PARENT_PIPE_READ", "CONPTY_INPUT_WRITE"):
+            self.assertIn('reportInputStage("' + stage + '"', session)
+
     def test_workstation_heartbeat_updates_are_outside_migration_path(self):
         cmake = (ROOT / "CMakeLists.txt").read_text()
         self.assertIn("src/core/WorkstationHeartbeat.cpp", cmake)

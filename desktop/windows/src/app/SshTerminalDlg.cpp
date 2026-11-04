@@ -242,7 +242,8 @@ protected:
                 case VK_NEXT: terminalKey = VTERM_KEY_PAGEDOWN; break;
                 default:
                     if (key >= VK_F1 && key <= VK_F24)
-                        terminalKey = VTERM_KEY_FUNCTION(static_cast<int>(key - VK_F1 + 1));
+                        terminalKey = static_cast<VTermKey>(
+                            VTERM_KEY_FUNCTION(static_cast<int>(key - VK_F1 + 1)));
                     break;
             }
             if (terminalKey != VTERM_KEY_NONE) terminal_.Key(terminalKey, modifiers);
@@ -349,7 +350,7 @@ private:
             wcscpy_s(font.lfFaceName, L"Consolas");
             if (!font_.CreateFontIndirectW(&font)) throw tlp::Error("Unable to create the terminal font.");
         }
-        const auto* oldFont = dc.SelectObject(&font_);
+        CFont* oldFont = dc.SelectObject(&font_);
         TEXTMETRICW metrics{};
         dc.GetTextMetricsW(&metrics);
         dc.SelectObject(oldFont);

@@ -235,6 +235,7 @@ struct Session final : ManagedSshConsole {
     std::unique_ptr<SshAgent> agent;
     std::wstring directory;
     std::wstring sshLog;
+    std::atomic<bool> authenticationConfirmed{false};
     std::mutex controlMutex;
     std::int64_t expiry = 0;
     std::string ReadAvailable() override {
@@ -270,6 +271,7 @@ struct Session final : ManagedSshConsole {
         send(terminalControl.get(), request);
     }
     bool IsAuthenticated() override {
+        if (authenticationConfirmed.load()) return true;
         if (sshLog.empty()) return false;
         Handle file(CreateFileW(sshLog.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                                 nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
@@ -280,13 +282,16 @@ struct Session final : ManagedSshConsole {
         }
         LARGE_INTEGER size{};
         if (!GetFileSizeEx(file.get(), &size)) ThrowLastError("Unable to size SSH authentication log");
-        if (size.QuadPart <= 0 || size.QuadPart > 256 * 1024) return false;
-        std::string contents(static_cast<std::size_t>(size.QuadPart), '\0');
+        if (size.QuadPart <= 0) return false;
+        const auto bytesToRead = static_cast<DWORD>(std::min<LONGLONG>(size.QuadPart, 256 * 1024));
+        std::string contents(bytesToRead, '\0');
         DWORD count = 0;
         if (!ReadFile(file.get(), contents.data(), static_cast<DWORD>(contents.size()), &count, nullptr))
             ThrowLastError("Unable to read SSH authentication log");
         contents.resize(count);
-        return contents.find("Authenticated to ") != std::string::npos;
+        if (contents.find("Authenticated to ") == std::string::npos) return false;
+        authenticationConfirmed.store(true);
+        return true;
     }
     bool IsAlive() override {
         return helper.get() && ssh.get() &&
@@ -685,6 +690,27 @@ int RunSshConsole(const std::vector<std::string>& arguments) {
         if (embedded) {
             std::atomic<bool> stopInput{false};
             std::atomic<bool> pumpFailed{false};
+#ifdef TELIPHONES_SSH_TESTING
+            Handle inputDiagnostics;
+            wchar_t testLog[32768];
+            const auto testLogSize = GetEnvironmentVariableW(L"TELIPHONES_SSH_TEST_LOG", testLog, 32768);
+            if (!testLogSize || testLogSize >= 32768)
+                throw Error("Native SSH test requires a bounded input diagnostic log path.");
+            const auto inputLogPath = Widen(Narrow(std::wstring(testLog, testLogSize)) + ".io");
+            if (!IsShellSafeFilePath(Narrow(inputLogPath)))
+                throw Error("Unsafe SSH input diagnostic log path.");
+            inputDiagnostics.reset(CreateFileW(inputLogPath.c_str(), FILE_APPEND_DATA,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, CREATE_ALWAYS,
+                FILE_ATTRIBUTE_NORMAL, nullptr));
+            if (inputDiagnostics.get() == INVALID_HANDLE_VALUE)
+                ThrowLastError("Unable to create the native SSH input diagnostic log");
+            const auto reportInputStage = [&inputDiagnostics](const char* stage, DWORD count) {
+                const auto message = std::string(stage) + "=" + std::to_string(count) + "\n";
+                DWORD written = 0;
+                WriteFile(inputDiagnostics.get(), message.data(),
+                          static_cast<DWORD>(message.size()), &written, nullptr);
+            };
+#endif
             std::thread inputPump;
             std::thread outputPump;
             try {
@@ -707,6 +733,9 @@ int RunSshConsole(const std::vector<std::string>& arguments) {
                             pumpFailed.store(true);
                             break;
                         }
+#ifdef TELIPHONES_SSH_TESTING
+                        reportInputStage("PARENT_PIPE_READ", count);
+#endif
                         DWORD written = 0;
                         if (!WriteFile(ptyInputWrite.get(), buffer, count, &written, nullptr) || written != count) {
                             const auto error = GetLastError();
@@ -714,6 +743,9 @@ int RunSshConsole(const std::vector<std::string>& arguments) {
                                 error != ERROR_OPERATION_ABORTED) pumpFailed.store(true);
                             break;
                         }
+#ifdef TELIPHONES_SSH_TESTING
+                        reportInputStage("CONPTY_INPUT_WRITE", written);
+#endif
                     }
                 });
                 outputPump = std::thread([&] {
