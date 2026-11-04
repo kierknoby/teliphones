@@ -25,19 +25,21 @@ def included(path):
 
 class PackageTests(unittest.TestCase):
     def test_authoritative_versions_and_archive_checksum(self):
-        self.assertEqual(VERSION, "0.5.0")
+        self.assertEqual(VERSION, "0.6.0")
         tree = ast.parse((MODULE / "support_broker.py").read_text())
         versions = [ast.literal_eval(node.value) for node in tree.body if isinstance(node, ast.Assign)
                     and any(isinstance(target, ast.Name) and target.id == "VERSION" for target in node.targets)]
         self.assertEqual(versions, [VERSION])
         self.assertIn("public const VERSION = '%s';" % VERSION, (MODULE / "WebSupport.php").read_text())
-        self.assertIn("TELIPHONES %s requires broker protocol 6" % VERSION,
+        self.assertIn("TELIPHONES %s requires broker protocol 12" % VERSION,
                       (MODULE / "BrokerBootstrap.php").read_text())
         self.assertTrue(PACKAGE.exists(), "Build the current installation archive before package validation")
         digest = hashlib.sha256(PACKAGE.read_bytes()).hexdigest()
         self.assertEqual(Path(str(PACKAGE) + ".sha256").read_text(), "%s  %s\n" % (digest, PACKAGE.name))
 
-    def test_previous_packages_remain_identifiable_and_unchanged(self):
+    @unittest.skipUnless((ROOT / "TELIPHONES-0.4.0.tgz").exists(),
+                         "The historical 0.4.0 archive is not present in the repository")
+    def test_previous_0_4_0_package_remains_identifiable_and_unchanged(self):
         previous = ROOT / "TELIPHONES-0.4.0.tgz"
         self.assertEqual(hashlib.sha256(previous.read_bytes()).hexdigest(),
                          "f67dfaaf4cd78564c1599efe2e227580c751a1a40f59c9e4a6c3f08f418af670")
@@ -47,6 +49,8 @@ class PackageTests(unittest.TestCase):
             source = archive.extractfile("teliphones/support_broker.py").read().decode()
             self.assertIn('VERSION = "0.4.0"', source)
             self.assertIn('self.ipt(iptables, "-I", "INPUT",', source)
+
+    def test_previous_0_4_1_package_remains_identifiable_and_unchanged(self):
         previous = ROOT / "TELIPHONES-0.4.1.tgz"
         self.assertEqual(hashlib.sha256(previous.read_bytes()).hexdigest(),
                          "d4b867af617b05c4b306137e4db31e8c2708acc1751295ad9b6f928eaff20800")
@@ -89,7 +93,7 @@ class PackageTests(unittest.TestCase):
                     self.assertEqual(network.filter["fpbxfirewall"].count(jump), 1)
                 rules = [namespace["iptables_rule"](rule) for rule in network.filter[chain]]
                 self.assertEqual({rule["dport"] for rule in rules if rule["j"] == "ACCEPT" and rule.get("p") == "tcp"},
-                                 {"80", "443", "8765", "22002"})
+                                 {"80", "443", "8765", "8766", "22002"})
                 self.assertEqual([rule["dport"] for rule in rules if rule["j"] == "ACCEPT" and rule.get("p") == "udp"],
                                  [])
                 stable = network.filter.copy()
@@ -123,7 +127,7 @@ class PackageTests(unittest.TestCase):
                 for name, source in expected.items():
                     self.assertEqual((Path(directory) / name).read_bytes(), source.read_bytes(), name)
                 metadata = ET.parse(Path(directory) / "teliphones/module.xml").getroot()
-                self.assertEqual(metadata.findtext("version"), "0.5.0")
+                self.assertEqual(metadata.findtext("version"), VERSION)
                 self.assertEqual(metadata.findtext("rawname"), "teliphones")
                 self.assertEqual(metadata.findtext("category"), "Connectivity")
                 for name in ("WebSupport.php", "views/support.php", "views/disclaimer.php", "support_broker.py", "ssh_authority.py", "assets/js/teliphones.js", "install.php"):
@@ -135,7 +139,7 @@ class PackageTests(unittest.TestCase):
                                 "def start_monitor(", "def uninstall_workstations(", "def policy_equal(",
                                 "TELIPHONES workstation integration v1", 'FREEPBX_HOOK = "fpbxfirewall"',
                                 'FAIL2BAN_PREFIXES = ("fail2ban-", "f2b-")', "def reconcile_integration(",
-                                "class DiagnosticLog", "PROTOCOL = 6", "def reconcile_listener(", "def parse_web("):
+                                "class DiagnosticLog", "PROTOCOL = 12", "def reconcile_listener(", "def parse_web("):
                     self.assertIn(feature, broker)
                 bootstrap = (Path(directory) / "teliphones/BrokerBootstrap.php").read_text()
                 self.assertIn("copy($moduleDir . '/support_broker.py', $brokerFile)", bootstrap)

@@ -1,4 +1,102 @@
-# TELIPHONES 0.4.1 workstation pairing contract
+# TELIPHONES 0.6.0 workstation pairing and connection policy
+
+The current broker is protocol 12. It enforces a default maximum of one
+simultaneous admitted workstation with atomic lease admission, authenticated
+heartbeats, expiry and restart recovery. A WireGuard handshake only proves
+tunnel authentication; it does not grant management access. The PBX firewall
+admits management traffic only for an active session lease.
+
+## Persistent connection state
+
+The FreePBX workstation page can set the broker policy to **Open**, **Closed**
+or **Frozen**. Open admits new pairings and allows approved peers to connect.
+Closed removes the workstation interface and listener while retaining every
+pairing and its original expiry. Frozen keeps existing pairings available but
+rejects enrolment of new WireGuard identities. Changing state does not extend
+temporary approvals. A new installation defaults to Closed; an older
+installation with valid saved pairings migrates to Open to preserve access.
+
+The broker persists a requested state before applying it, so startup reconciles
+the chosen policy after interruption. A failed operation is reported rather
+than presented as successful. The page labels paired workstations as having a
+closed listener while Closed is selected; handshake history is not treated as
+proof of current connectivity.
+
+Locked pairings use a dedicated WireGuard interface, tunnel subnet and UDP
+listener port. The peer key is removed from the shared listener roster before
+the dedicated peer is admitted. The broker installs source-specific UDP
+accepts followed by a drop for all other sources on that port; IPv4, IPv6,
+CIDR and DNS names are supported. DNS failures contribute no allowed address,
+and resolved addresses are cached briefly before reconciliation. The owned
+nft policy also restricts traffic entering the dedicated interface to its PBX
+web services. Open pairings continue to use the shared listener.
+
+The FreePBX page reports configured and resolved sources, DNS failures,
+verified public endpoints, session occupancy and pending requests. Administrators
+can add, edit and remove IPv4/IPv6/CIDR/DNS sources, Lock and Unlock existing
+workstations, and lock to a recently verified WireGuard public source.
+
+Windows displays the effective policy and may request an Allowed List change
+or Unlock over its authenticated session-control channel. These requests do
+not change the effective policy until a FreePBX administrator explicitly
+approves them. Windows can self-restrict with Lock to Current IP; that source
+is derived from a recent PBX-verified handshake, not client-supplied input.
+When listener configuration changes, the broker revokes the management lease,
+keeps the previous tunnel path only for the session-control port, and delivers
+an identity-bound migration over the authenticated tunnel. Windows preserves
+its WireGuard identity, saves the new profile and reconnects. The old path is
+retired only after acknowledgement on the new tunnel. A disconnected or
+interrupted client cannot use its stale listener for management access; the
+migration state is persisted across broker restarts.
+
+An existing web-only Windows workstation can request SSH elevation after
+pairing. FreePBX explicitly approves or rejects the request, and the approving
+administrator selects an existing Linux account; there is no implicit root
+selection. Managed SSH uses short-lived certificates. Rejection or revocation
+does not revoke the workstation's web access.
+
+Portable gateway and Windows-core regressions cover admission, migration,
+policy requests and post-pair SSH. Native Windows compilation/UI integration
+and live FreePBX/WireGuard/firewall acceptance remain outstanding; these local
+results are not production certification.
+
+## Protocol 10: manual TELIPHONES listener bans
+
+The FreePBX page can add or remove manual IPv4/IPv6 address or CIDR bans with
+a reason and optional expiry. The broker applies each ban to the shared and
+dedicated TELIPHONES UDP listener ports in its owned nftables policy, before
+source-specific listener accepts. It does not modify Fail2Ban or other
+FreePBX firewall services. Expiry is reconciled by the broker without
+restarting the WireGuard interfaces. A ban can block an administrator or
+multiple workstations sharing a public address; check the source and recovery
+route before applying it. This is not an automatic intrusion-prevention
+system.
+
+## Protocol 8: dedicated source-restricted listeners
+
+Broker protocol **8** adds dedicated source-restricted listeners while
+preserving protocol 7's persisted Open/Closed/Frozen policy and
+server-side enforcement that SSH permission requires an SSH-capable pairing
+request. Updated Windows builds expose a web-only or web-plus-SSH request
+choice, show explicit SSH authorization status, and use temporary inline
+clipboard feedback instead of success dialogs. Module and Windows versions
+are independent; the current development targets are FreePBX **0.6.0** and
+Windows **0.8.0**.
+
+When a pairing is Locked, an approved managed SSH listener and its short-lived
+certificate API bind to the dedicated `tlpw...` interface and tunnel address.
+FreePBX Firewall integration and the owned nft policy allow these SSH ports
+only for that workstation identity; the shared listener does not receive its
+peer key. Protocol 12 additionally supports post-pair SSH elevation and
+authenticated Windows source-list and unlock requests with explicit FreePBX
+approval.
+
+Broker protocol **9** adds this dedicated-interface SSH binding. A protocol-8
+broker can enforce the Locked web-only tunnel but cannot safely approve SSH
+for it; the FreePBX page refuses that combination until the broker is upgraded.
+Protocol 10 adds manual listener bans. Protocol 11 adds PBX-enforced
+simultaneous-session admission; protocol 12 adds post-pair policy requests,
+identity-preserving listener migration and SSH elevation.
 
 ## Version 2: managed My PBXs SSH
 
@@ -114,7 +212,7 @@ The response is a copyable enrollment artifact, not proof that arbitrary access 
 ## Access and revocation
 
 - Workstation web access is limited to the paired PBX's approved management ports (default TCP 80/443).
-- SSH TCP 22 is included only when the administrator explicitly selects it.
+- New managed SSH access uses the workstation-specific SSH listener and certificate API; it does not grant ordinary system SSH TCP 22.
 - The workstation interface is not forwarded to other networks.
 - Temporary pairing expires at its PBX-side deadline. Persistent pairing remains until revoked.
 - The broker's approximately 15-second reconciliation loop also removes workstation network access while TELIPHONES is disabled, and startup cannot restore access while disabled. Pairing metadata is retained; after re-enabling, a broker restart or fresh approved pairing reapplies valid entries without extending expiry.
@@ -129,7 +227,7 @@ The response is a copyable enrollment artifact, not proof that arbitrary access 
 
 This also applies when upgrading from 0.2.1. Install the current module and rerun the root bootstrap before relying on the separately installed broker.
 
-Install the current test package `TELIPHONES-0.5.0.tgz` through Module Admin, then rerun the documented root bootstrap with no active support session and Windows tunnels disconnected. Installation does not delete `workstations.json`, `workstation-recovery.json` or `workstation-wg.key`. Valid pairings keep their identities, addresses, permissions and original deadlines.
+Install the current test package `TELIPHONES-0.6.0.tgz` through Module Admin, then rerun the documented root bootstrap with no active support session and Windows tunnels disconnected. Installation does not delete `workstations.json`, `workstation-recovery.json` or `workstation-wg.key`. Valid pairings keep their identities, keys and original deadlines; a required listener migration is authenticated and coordinated rather than requiring re-pairing.
 
 The bootstrap copies the current broker into its protected root-owned installation and restarts it. Protocol 3 was already used in 0.2.0: an operational socket or protocol number alone does **not** prove these security corrections are installed. Rerunning the bootstrap is mandatory even if no update warning appears.
 
@@ -139,20 +237,27 @@ An unmarked legacy table is migrated only when its complete nft JSON exactly mat
 
 The 0.3.1 broker adds the hookless `teliphones_owner_v1` chain because Debian 12 nftables 1.0.6 drops table comments from kernel JSON readback. The operator reports that this ownership correction was tested successfully on the actual FreePBX 17 test PBX. The repository code still needs to be installed and verified on that PBX through the normal upgrade/bootstrap procedure; this document does not claim that deployment has occurred.
 
-Install the current test package `TELIPHONES-0.5.0.tgz`, confirm there is no active support session, disconnect Windows tunnels, then rerun [Complete Installation on FreePBX 17](../README.md#complete-installation-on-freepbx-17) from an existing root shell. The 0.3.1 ownership correction originally kept protocol 3; current protocol 6 alone likewise does not prove the installed helper's version or contents. On restart, the broker verifies the tunnel is down, safely migrates only the exact known 0.3.0 policy, restores current policy from saved state and readmits valid, unexpired pairings. Pairing identities, addresses, SSH permissions, deadlines and the PBX WireGuard key are preserved. If exact ownership cannot be established, migration is refused and recovery data remains intact.
+Install the current test package `TELIPHONES-0.6.0.tgz`, confirm there is no active support session, disconnect Windows tunnels, then rerun [Complete Installation on FreePBX 17](../README.md#complete-installation-on-freepbx-17) from an existing root shell. The 0.3.1 ownership correction originally kept protocol 3; protocol 12 alone likewise does not prove the installed helper's version or contents. On restart, the broker verifies the tunnel is down, safely migrates only the exact known 0.3.0 policy, restores current policy from saved state and readmits valid, unexpired pairings. Pairing identities, addresses, SSH permissions, deadlines and the PBX WireGuard key are preserved. If exact ownership cannot be established, migration is refused and recovery data remains intact.
 
 ## Upgrading from 0.3.1
 
 The historical 0.3.2 change added bounded diagnostics and protocol 4 without
 changing firewall permissions or pairing protocol. For a current upgrade,
-use the reviewed 0.5.0 test package, disconnect workstation tunnels, confirm no active support session,
+use the reviewed 0.6.0 test package, disconnect workstation tunnels, confirm no active support session,
 and rerun the root bootstrap. Preserve pairing state and the WireGuard key.
 Current managed SSH requires protocol 5 and both installed helpers; protocol 4
 identifies diagnostics support only. Follow [current upgrade verification](../README.md#updating-teliphones).
 
 ## Network requirements
 
-The workstation connects directly to the configured PBX WireGuard UDP endpoint. The broker maintains one persistent FreePBX Custom Service for the listener port, using the supported service API; FreePBX owns generated zone rules and applies updates asynchronously. The chosen UDP port must also be reachable through any router/NAT. No workstation public IP whitelist, router configuration, relay or universal NAT traversal is provided. Reject zones, blacklists and Fail2Ban remain authoritative.
+Unlocked workstations connect through the shared PBX WireGuard UDP endpoint.
+Each Locked workstation uses a broker-managed dedicated UDP listener and a
+source allowlist enforced at that listener. The broker reconciles the shared
+and dedicated ports as FreePBX Custom Services; FreePBX owns generated zone
+rules and applies updates asynchronously. The selected UDP ports must also be
+reachable through any router/NAT. TELIPHONES does not configure routers,
+provide a relay or universal NAT traversal, or change Reject zones, blacklists
+or Fail2Ban.
 
 The `nft` CLI is essential; enabling or running `nftables.service` is **not** required. Missing tools require platform-administrator repair. Apart from the owned Custom Service, its marked tunnel jump inside `fpbxfirewall`, and removal of the exact legacy INPUT jump, TELIPHONES does not change unrelated firewall services, tables or policies.
 
@@ -177,26 +282,32 @@ A local `nft -j monitor ruleset` stream observes external mutations, including a
 
 An accept verdict in TELIPHONES' nftables table is final only for that base chain. A later independent hook can still drop the packet. On a real Debian 12 / FreePBX 17 PBX with FreePBX Firewall enabled, WireGuard handshakes succeeded and TCP SYNs reached `tlp-admin`. FreePBX Firewall classified the interface as `zone-external`, and its final DROP counters increased. TELIPHONES' nft policy was not sufficient to admit traffic.
 
-No supported mechanism for narrowly authorising traffic from an independently managed interface was available for inspection in the development workspace. FreePBX Firewall source and documentation were not present locally, and no external search was performed. Trusting `tlp-admin` as an interface zone or adding the workstation subnet to trusted networks would admit every service, so neither approach is used.
+The broker uses the existing FreePBX Firewall chain rather than trusting an
+interface zone or adding workstation subnets to trusted networks. A single
+marked jump is placed inside `fpbxfirewall`; the jump itself is not interface
+filtered so it can serve both the shared and dedicated listeners. Every
+TELIPHONES ACCEPT rule inside the owned chain is instead scoped to the exact
+WireGuard interface, authenticated peer tunnel address, PBX tunnel address,
+protocol and port. The chain returns for all other traffic.
 
 The old integration inserted its jump above `fpbxfirewall` in INPUT. During Windows 0.7.0 / module 0.4.0 testing, the PBX journal identified that exact rule as invading and repeatedly reset iptables, approximately every 41 seconds. Broker reconciliation restored the very rule that FreePBX rejected, creating competing management loops.
 
 The corrected root broker maintains a dedicated chain, `teliphones-ws`, in the iptables filter table selected by `/usr/sbin/iptables`. That command's backend is reported as `nf_tables` or `legacy` in the GUI. One marked jump is placed **inside `fpbxfirewall`, at position 1**, not above its INPUT hook:
 
 ```
--A fpbxfirewall -i tlp-admin -m comment --comment "TELIPHONES workstation integration v1" -j teliphones-ws
+-A fpbxfirewall -m comment --comment "TELIPHONES workstation integration v1" -j teliphones-ws
 ```
 
-INPUT is left in FreePBX's order. Every direct INPUT Fail2Ban hook must precede entry to `fpbxfirewall`. Fail2Ban hooks are recognised by the case-insensitive prefixes `fail2ban-` and `f2b-`. The FreePBX 17 test installation uses `fail2ban-sshd`, `fail2ban-SIP`, `fail2ban-BadBots`, `fail2ban-api`, `fail2ban-SSH`, `fail2ban-apache-auth`, `fail2ban-recidive` and `fail2ban-PBX-GUI`; upstream Fail2Ban uses `f2b-<jail>`. Banned addresses therefore remain banned for tunnel traffic. Each rule in the owned chain carries the same marker:
+INPUT is left in FreePBX's order. Every direct INPUT Fail2Ban hook must precede entry to `fpbxfirewall`. Fail2Ban hooks are recognised by the case-insensitive prefixes `fail2ban-` and `f2b-`. The FreePBX 17 test installation uses `fail2ban-sshd`, `fail2ban-SIP`, `fail2ban-BadBots`, `fail2ban-api`, `fail2ban-SSH`, `fail2ban-apache-auth`, `fail2ban-recidive` and `fail2ban-PBX-GUI`; upstream Fail2Ban uses `f2b-<jail>`. Banned addresses therefore remain effective for shared and dedicated peers. Each rule in the owned chain carries the same marker:
 
 ```
--A teliphones-ws -s <workstation>/32 -d <PBX tunnel address>/32 -i tlp-admin -p tcp -m tcp --dport 80  ... -j ACCEPT
--A teliphones-ws -s <workstation>/32 -d <PBX tunnel address>/32 -i tlp-admin -p tcp -m tcp --dport 443 ... -j ACCEPT
+-A teliphones-ws -s <workstation>/32 -d <PBX tunnel address>/32 -i <exact WG interface> -p tcp -m tcp --dport 80  ... -j ACCEPT
+-A teliphones-ws -s <workstation>/32 -d <PBX tunnel address>/32 -i <exact WG interface> -p tcp -m tcp --dport 443 ... -j ACCEPT
 -A teliphones-ws -s <SSH-approved workstation>/32 ... --dport 22 ... -j ACCEPT
 -A teliphones-ws ... -j RETURN
 ```
 
-Only active, unexpired paired addresses are listed. Legacy SSH-approved pairings retain TCP 22; managed certificate SSH pairings instead receive TCP 8765 and their own dedicated SSH port, never system TCP 22. Certificate authentication, account approval, device binding and certificate lifetimes are unchanged. Every other packet, including SIP/RTP, AMI, database and other ports, other sources, IPv6 and ICMP, returns to normal FreePBX Firewall processing. The owned nft table still applies its own drops. IPv6 is not integrated, and `ip6tables` is not modified. Non-`tlp-admin` traffic never enters the owned chain.
+Only active, unexpired paired addresses are listed. Shared peers use `tlp-admin`; Locked peers use their dedicated `tlpw...` interface and PBX tunnel address. Legacy SSH-approved pairings retain TCP 22; managed certificate SSH pairings instead receive TCP 8765 and their own dedicated SSH port, never system TCP 22. Certificate authentication, account approval, device binding and certificate lifetimes are unchanged. The owned chain returns for traffic not matching an exact ACCEPT rule, including SIP/RTP, AMI, databases, other ports and other sources; FreePBX Firewall then applies its normal policy. The owned nft table independently blocks unapproved tunnel traffic. IPv6 tunnel traffic is not integrated, and `ip6tables` is not modified.
 
 Lifecycle and safeguards:
 

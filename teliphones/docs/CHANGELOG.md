@@ -4,12 +4,58 @@
 
 Historical entries describe their versions at the time, not current behaviour
 or current test status. Windows has an independent history in the source
-repository. The current report is native SSH 10/10 and initial live
-authentication/client disconnect success; complete server lifecycle and real
-0.4.1 firewall validation remain outstanding.
+repository. Portable Linux validation is current for the broker, FreePBX module and
+Windows core. Native Windows compilation/UI integration and live FreePBX
+session, migration, firewall and SSH acceptance remain outstanding.
 
 
 Entries for 0.0.2 to 0.2.1 are summarised from the repository history. Release dates are recorded only where they were previously published.
+
+## 0.6.0, local development target (not production-certified)
+
+- Add persistent Open, Closed and Frozen workstation connection states.
+  Closed tears down network access without deleting pairings; Frozen blocks
+  enrolment of new WireGuard identities while retaining existing authority.
+  Existing installations with valid pairings migrate to Open; a new install
+  defaults to Closed.
+- Reject SSH approval for web-only pairing requests. Show SSH authorization
+  choices only when the request supports them.
+- Protocol 7 carries the connection-state policy. State is persisted before
+  enforcement so a broker restart after interruption converges on the
+  administrator's selected policy.
+- Protocol 8 adds dedicated WireGuard listeners and source restrictions for
+  Locked pairings. Unlocked workstations retain the shared listener, and the
+  Locked peer is removed from that shared roster.
+- Protocol 9 permits explicitly approved managed SSH for Locked pairings by
+  binding the certificate API and SSH listener to the workstation's dedicated
+  tunnel interface and address. Local isolated packet tests verify the
+  interface-scoped SSH ports; live PBX and native Windows acceptance remain
+  outstanding.
+- Protocol 10 adds a manually managed IP/CIDR Banned list on the TELIPHONES
+  listener ports only. It is persisted with workstation policy, applied before
+  listener accepts and expires through firewall-only reconciliation. Focused
+  broker tests cover ordering, expiry and avoiding tunnel-interface restarts;
+  live nftables/FreePBX validation remains outstanding.
+- Protocol 11 adds atomic PBX-enforced active-session leases and heartbeats,
+  defaulting to one workstation. The owned firewall policy grants management
+  access only to admitted peer addresses; expired or removed leases reconcile
+  without treating WireGuard handshake timestamps as active sessions.
+- Protocol 12 adds post-pair lock/unlock and source-list management. Current-IP
+  locking uses the broker-observed recent WireGuard endpoint; failed policy
+  updates revoke the affected peer without taking unrelated workstation
+  interfaces down. Windows receives the effective source list, current
+  verified public source, DNS failures and capacity, and can request source-list
+  changes or unlocks. Relaxing changes remain pending until explicit FreePBX
+  administrator approval. Listener migrations deliver the updated profile
+  over the authenticated existing tunnel, restrict the old tunnel to session
+  control, and retire it after acknowledgement on the new tunnel.
+- Protocol 12 also permits web-only workstations to request SSH after pairing.
+  FreePBX explicitly approves/rejects the request and selects an existing Linux
+  account; SSH revocation preserves web access. Short-lived managed SSH
+  certificates remain identity-bound.
+- Increment the module independently to 0.6.0 for the new server policy.
+  Gateway, FreePBX and portable Windows suites pass; live FreePBX and native
+  Windows validation remain outstanding.
 
 ## 0.5.0, local test package (not production-certified)
 

@@ -41,6 +41,7 @@ struct Profile {
     std::string workstationName;
     PairResponse pairing;
     std::string sshUser;
+    bool connectPasswordSkippedPermanently = false;
     // Remote Support profiles: the engineer key is created first and enrolled by the gateway operator,
     // who then issues a grant for it.
     std::string engineerPublicKey;

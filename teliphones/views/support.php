@@ -228,7 +228,13 @@ Permitted access: <span data-teliphones="access"><?=!empty($status['access_verif
 $workstations = WebSupport::workstations($support);
 $pairingResponse = isset($notice) && is_array($notice) && !empty($notice['ok']) && WebSupport::validPairingResponse($notice['pairing_response'] ?? null) ? $notice['pairing_response'] : null;
 $pairOff = $available && $workstations['ready'] ? '' : ' disabled aria-disabled="true"';
+$sourceLockOff = WebSupport::supportsSourceLocks($support) ? '' : ' disabled aria-disabled="true"';
 $unpairOff = $available && $workstations['supported'] ? '' : ' disabled aria-disabled="true"';
+$policyOff = $available && $workstations['policy_supported'] ? '' : ' disabled aria-disabled="true"';
+$banOff = $available && $workstations['ban_supported'] ? '' : ' disabled aria-disabled="true"';
+$sessionLimitOff = $available && $workstations['session_supported'] ? '' : ' disabled aria-disabled="true"';
+$manageOff = $available && $workstations['management_supported'] ? '' : ' disabled aria-disabled="true"';
+$sshApprovalOff = $available && $workstations['management_supported'] && $workstations['ssh_ready'] ? '' : ' disabled aria-disabled="true"';
 $defaultHost = preg_replace('/:[0-9]+$/', '', (string)($_SERVER['HTTP_HOST'] ?? ''));
 $webEntries = $workstations['web'];
 $webText = implode(', ', array_map(static function ($entry) { return $entry['scheme'] . ':' . $entry['port']; }, $webEntries));
@@ -241,11 +247,55 @@ if (!$currentListed && $currentPort >= 1 && $currentPort <= 65535) {
     $defaultWebText = $currentScheme . ':' . $currentPort;
 }
 $notListening = array_values(array_filter($webEntries, static function ($entry) { return $entry['listening'] === false; }));
+$administratorSource = filter_var((string)($_SERVER['REMOTE_ADDR'] ?? ''), FILTER_VALIDATE_IP) !== false
+    ? (string)$_SERVER['REMOTE_ADDR'] : '';
+$workstationSources = [];
+foreach ($workstations['items'] as $workstation) {
+    if ($workstation['verified_endpoint'] !== null) {
+        $workstationSources[] = ['name' => $workstation['name'], 'address' => $workstation['verified_endpoint']['address']];
+    }
+}
 ?>
 <h3 id="teliphones-workstations">Windows workstations</h3>
 <p>Workstation policy requires the <code>nft</code> CLI; <code>nftables.service</code> does not need to be enabled or running. Missing tools must be repaired by the platform administrator; this page does not install nftables. External firewall flushes can briefly remove restrictions: this is not zero-exposure or truly fail-closed protection.</p>
-<p>Workstation enforcement requires <code>wg</code>, <code>ip</code> and <code>nft</code>. The broker owns only its isolated nft table and one interface-scoped, marked jump inside <code>fpbxfirewall</code>, after INPUT's Fail2Ban hooks. It never inserts a rule above FreePBX's INPUT hook. Per-peer tunnel permissions cover the configured web ports and explicitly approved SSH/API services. The public WireGuard UDP listener uses a persistent FreePBX Custom Service: FreePBX owns its generated zone rules and applies changes asynchronously. No public workstation IP is whitelisted; WireGuard authenticates peers cryptographically. Reject zones, blacklists, Fail2Ban and unrelated services are not changed. External firewall flushes can briefly remove restrictions before detection; this is not zero-exposure protection. Managed SSH/API listeners also bind the WireGuard device independently of firewall rules.</p>
+<p>Workstation enforcement requires <code>wg</code>, <code>ip</code> and <code>nft</code>. The broker owns only its isolated nft table and a marked jump inside <code>fpbxfirewall</code>, after INPUT's Fail2Ban hooks. The jump itself is not interface-filtered so dedicated Locked interfaces can use the same hook; every TELIPHONES ACCEPT rule is scoped to an exact interface, peer address, PBX address and port, and all other traffic returns to FreePBX Firewall. It never inserts a rule above FreePBX's INPUT hook. The public WireGuard UDP listeners use persistent FreePBX Custom Services: FreePBX owns its generated zone rules and applies changes asynchronously. Unlocked workstations share one listener; each Locked workstation uses a dedicated listener with an IP/CIDR/domain-derived source allowlist and is removed from the shared peer roster. WireGuard authenticates peers cryptographically. Reject zones, blacklists, Fail2Ban and unrelated services are not changed. External firewall flushes can briefly remove restrictions before detection; this is not zero-exposure protection. Managed SSH/API listeners also bind the WireGuard device independently of firewall rules.</p>
 <p>Pair the TELIPHONES Windows application on a workstation you control to reach only this PBX's web interface (the configured management web services, default TCP 80/443) over WireGuard. New SSH-approved pairings use a dedicated, WireGuard-device-bound SSH listener and certificate endpoint (TCP 8765); each workstation receives only its own SSH port. Explicitly approve an existing Linux account below. Windows generates and retains its own SSH key; no accounts or passwords are created and root is never selected automatically. Existing system SSH and Remote Support are unchanged. Legacy pairings retain their original network permissions but must be re-paired for automated SSH. The broker opens the WireGuard UDP port through the PBX host firewall; any router/NAT port forwarding remains the administrator's responsibility. Never publish the certificate or managed SSH ports.</p>
+<?php if ($workstations['policy_supported']): ?>
+<div class="alert alert-info teliphones-connection-state" role="status">
+<strong>Workstation connection state: <?=htmlspecialchars(ucfirst($workstations['connection_state']), ENT_QUOTES, 'UTF-8')?></strong>
+<?php if ($workstations['connection_state'] === 'frozen'): ?><br>Existing pairings remain usable; new workstation pairings are suspended.
+<?php elseif ($workstations['connection_state'] === 'closed'): ?><br>The listener is closed. Pairings are retained and can be reopened later.
+<?php else: ?><br>The listener is open to authorised WireGuard peers. Pairing approval and existing service restrictions still apply.
+<?php endif; ?>
+</div>
+<form method="post" id="teliphones-connection-state-form" data-current-state="<?=$escape($workstations['connection_state'])?>">
+<input type="hidden" name="token" value="<?=$escape($token ?? '')?>">
+<label for="teliphones-connection-state">Windows workstation access</label>
+<select id="teliphones-connection-state" class="form-control" name="state">
+<option value="open"<?=$workstations['connection_state'] === 'open' ? ' selected' : ''?>>Open</option>
+<option value="closed"<?=$workstations['connection_state'] === 'closed' ? ' selected' : ''?>>Closed</option>
+<option value="frozen"<?=$workstations['connection_state'] === 'frozen' ? ' selected' : ''?>>Frozen</option>
+</select>
+<p class="help-block">Closed terminates workstation tunnels but retains pairings. Frozen keeps existing pairings available and prevents new pairing approvals. Open allows authorised peers to connect; WireGuard key authentication and service restrictions remain enforced.</p>
+<button class="btn btn-default" type="submit" name="action" value="workstation-policy"<?=$policyOff?>>Save connection state</button>
+</form>
+<?php elseif ($workstations['supported']): ?>
+<div class="alert alert-warning">Connection states require the updated root broker. Follow the root broker update procedure above, then refresh this page.</div>
+<?php endif; ?>
+<?php if ($workstations['session_supported']): ?>
+<p class="teliphones-session-capacity"><strong>PBX-admitted workstation sessions:</strong> <?=$escape($workstations['connected_workstations'])?> of <?=$escape($workstations['max_sessions'])?>. Only admitted workstations can reach the configured management web services and approved SSH listener; a WireGuard handshake alone does not consume a session or prove administrative access.</p>
+<form method="post" id="teliphones-session-limit-form">
+<input type="hidden" name="token" value="<?=$escape($token ?? '')?>">
+<label for="teliphones-session-limit">Maximum simultaneous workstation sessions</label>
+<select id="teliphones-session-limit" class="form-control" name="maximum">
+<?php foreach (range(1, 128) as $maximum): ?><option value="<?=$maximum?>"<?=$workstations['max_sessions'] === $maximum ? ' selected' : ''?>><?=$maximum?></option><?php endforeach; ?>
+</select>
+<p class="help-block">Defaults to one. Lowering the limit below the number of currently active sessions is refused; disconnect sessions first. Existing admitted sessions expire automatically after a missed heartbeat.</p>
+<button class="btn btn-default" type="submit" name="action" value="workstation-limit"<?=$sessionLimitOff?>>Save session limit</button>
+</form>
+<?php elseif ($workstations['supported']): ?>
+<div class="alert alert-warning">Enforced workstation session capacity and status require the updated root broker (protocol 11). Update the root broker, then refresh this page.</div>
+<?php endif; ?>
 <?php if ($pairingResponse !== null): ?>
 <div class="alert alert-success teliphones-pairing-response" role="status"><strong>Pairing response.</strong> Copy it into the TELIPHONES Windows application to finish pairing. It contains no secret keys.
 <pre id="teliphones-pairing-response" style="user-select:all;white-space:pre-wrap;word-break:break-all"><?=$escape($pairingResponse)?></pre>
@@ -255,16 +305,25 @@ $notListening = array_values(array_filter($webEntries, static function ($entry) 
     var button = document.getElementById('teliphones-copy-pairing');
     var source = document.getElementById('teliphones-pairing-response');
     if (!button || !source) return;
+    var originalLabel = button.textContent;
+    var copiedTimer = null;
+    var showLabel = function (label) {
+        button.textContent = label;
+        if (copiedTimer) window.clearTimeout(copiedTimer);
+        copiedTimer = window.setTimeout(function () { button.textContent = originalLabel; }, 1800);
+    };
     button.addEventListener('click', function () {
         var select = function () {
             var range = document.createRange();
             range.selectNodeContents(source);
             window.getSelection().removeAllRanges();
             window.getSelection().addRange(range);
-            button.textContent = 'Press Ctrl+C to copy the selected response';
+            showLabel('Press Ctrl+C to copy the selected response');
         };
         if (navigator.clipboard && window.isSecureContext) {
-            navigator.clipboard.writeText(source.textContent).then(function () { button.textContent = 'Pairing response copied'; }, select);
+            navigator.clipboard.writeText(source.textContent).then(function () {
+                showLabel('Copied');
+            }, select);
         } else {
             select();
         }
@@ -292,14 +351,89 @@ $notListening = array_values(array_filter($webEntries, static function ($entry) 
 <?php elseif ($integrationActive): ?>
 <p class="help-block teliphones-firewall-integration">FreePBX Firewall integration active<?=$integration['backend'] !== null ? ' (iptables ' . $escape($integration['backend']) . ')' : ''?>. <?=$escape($integration['message'])?></p>
 <?php endif; ?>
-<table class="table table-striped teliphones-workstations"><thead><tr><th>Workstation</th><th>Key fingerprint</th><th>Address</th><th>Access</th><th>Pairing</th><th>WireGuard status</th><th></th></tr></thead><tbody>
-<?php if (!$workstations['items']): ?><tr><td colspan="7">No workstations are paired.</td></tr><?php endif; ?>
+<table class="table table-striped teliphones-workstations"><thead><tr><th>Workstation</th><th>Key fingerprint</th><th>Address</th><th>Access</th><th>Pairing</th><th>WireGuard status</th><th>Administrative session</th><th></th></tr></thead><tbody>
+<?php if (!$workstations['items']): ?><tr><td colspan="8">No workstations are paired.</td></tr><?php endif; ?>
 <?php foreach ($workstations['items'] as $item): ?>
+<?php $currentSourceOff = $item['current_source_verified'] ? '' : ' disabled aria-disabled="true"'; ?>
 <tr><td><?=$escape($item['name'])?><br><small>Diagnostic ID: <code>ws-<?=$escape($item['id'])?></code></small></td><td><code><?=$escape($item['fingerprint'])?></code></td><td><?=$escape($item['address'])?></td>
-<td><?=$item['ssh'] ? ($item['ssh_managed'] ? 'Web interface and managed SSH (' . $escape($item['ssh_user']) . ')' : 'Web interface and legacy SSH (existing credentials)') : 'Web interface only'?></td>
+<td><?=$item['locked'] ? 'Locked to ' . $escape(implode(', ', $item['sources'])) . ' (UDP ' . $escape($item['listener_port']) . ')<br>Currently resolved: ' . $escape(implode(', ', $item['effective_sources'])) : 'Unlocked (shared listener)'?><br><?php if ($item['source_resolution_failures']): ?><span class="text-danger">Unresolved (not allowed): <?=$escape(implode(', ', $item['source_resolution_failures']))?></span><br><?php endif; ?><?=$item['ssh'] ? ($item['ssh_managed'] ? 'Web interface and managed SSH (' . $escape($item['ssh_user']) . ')' : 'Web interface and legacy SSH (existing credentials)') : 'Web interface only'?></td>
 <td><?=$item['mode'] === 'persistent' ? 'Persistent (until revoked)' : 'Temporary, expires ' . $escape(gmdate('Y-m-d H:i', (int)$item['expires_at'])) . ' UTC'?></td>
-<td><?=$item['last_handshake'] === null ? 'Not verified (status unavailable)' : ($item['last_handshake'] === 0 ? 'Authorised; no handshake yet' : 'Last handshake ' . $escape(gmdate('Y-m-d H:i:s', $item['last_handshake'])) . ' UTC')?><?php if (is_int($item['last_handshake']) && $item['last_handshake'] > 0 && !$integrationActive && $integration['state'] !== 'not-detected'): ?><br><span class="text-danger teliphones-handshake-blocked">Handshake succeeded, but FreePBX Firewall integration is not active: HTTP/HTTPS may be dropped by FreePBX Firewall.</span><?php endif; ?></td>
-<td><form method="post"><input type="hidden" name="token" value="<?=$escape($token ?? '')?>"><input type="hidden" name="workstation_id" value="<?=$escape($item['id'])?>">
+<td><?=$workstations['connection_state'] === 'closed' ? 'Listener closed' : ($item['last_handshake'] === null ? 'Not verified (status unavailable)' : ($item['last_handshake'] === 0 ? 'Authorised; no handshake yet' : 'Last handshake ' . $escape(gmdate('Y-m-d H:i:s', $item['last_handshake'])) . ' UTC'))?><?php if ($item['verified_endpoint'] !== null): ?><br>Verified public endpoint: <code><?=$escape(strpos($item['verified_endpoint']['address'], ':') === false ? $item['verified_endpoint']['address'] : '[' . $item['verified_endpoint']['address'] . ']')?>:<?=$escape($item['verified_endpoint']['port'])?></code><?php endif; ?><?php if (is_int($item['last_handshake']) && $item['last_handshake'] > 0 && !$integrationActive && $integration['state'] !== 'not-detected'): ?><br><span class="text-danger teliphones-handshake-blocked">Handshake succeeded, but FreePBX Firewall integration is not active: HTTP/HTTPS may be dropped by FreePBX Firewall.</span><?php endif; ?></td>
+<td><?=$workstations['session_supported'] ? ($item['session_active'] && $item['session_expires_at'] > time() ? 'Admitted until ' . $escape(gmdate('Y-m-d H:i:s', $item['session_expires_at'])) . ' UTC' : 'Not admitted') : 'Unavailable'?></td>
+<td>
+<?php if ($workstations['management_supported']): ?>
+<form method="post" class="teliphones-workstation-lock-form">
+<input type="hidden" name="token" value="<?=$escape($token ?? '')?>">
+<input type="hidden" name="workstation_id" value="<?=$escape($item['id'])?>">
+<input type="hidden" name="sources" value="current">
+<button class="btn btn-default btn-sm" type="submit" name="action" value="workstation-manage"<?=$manageOff . $currentSourceOff?> data-workstation-state="lock">Lock to Current IP</button>
+<input type="hidden" name="state" value="lock">
+</form>
+<?php if (!$item['current_source_verified']): ?><p class="help-block">Lock to Current IP becomes available after a recent verified WireGuard handshake.</p><?php endif; ?>
+<form method="post" class="teliphones-workstation-sources-form">
+<input type="hidden" name="token" value="<?=$escape($token ?? '')?>">
+<input type="hidden" name="workstation_id" value="<?=$escape($item['id'])?>">
+<input type="hidden" name="state" value="lock">
+<label class="sr-only" for="teliphones-sources-<?=$escape($item['id'])?>">Allowed IP addresses, CIDR ranges and DNS names for <?=$escape($item['name'])?></label>
+<input id="teliphones-sources-<?=$escape($item['id'])?>" class="form-control input-sm" name="sources" maxlength="2048" placeholder="IPv4, IPv6, CIDR or DNS names" value="<?=$escape(implode(', ', $item['sources']))?>" required<?=$manageOff?>>
+<button class="btn btn-default btn-sm" type="submit" name="action" value="workstation-manage"<?=$manageOff?>><?=$item['locked'] ? 'Update Allowed List' : 'Lock to Allowed List'?></button>
+</form>
+<?php if ($item['locked']): ?>
+<form method="post">
+<input type="hidden" name="token" value="<?=$escape($token ?? '')?>">
+<input type="hidden" name="workstation_id" value="<?=$escape($item['id'])?>">
+<input type="hidden" name="state" value="unlock">
+<input type="hidden" name="sources" value="">
+<button class="btn btn-warning btn-sm" type="submit" name="action" value="workstation-manage"<?=$manageOff?>>Unlock</button>
+</form>
+<?php endif; ?>
+<?php endif; ?>
+<?php if ($item['ssh_request_pending']): ?>
+<p class="text-warning"><strong>SSH elevation: Pending Approval</strong></p>
+<?php if ($workstations['ssh_accounts']): ?>
+<form method="post">
+<input type="hidden" name="token" value="<?=$escape($token ?? '')?>">
+<input type="hidden" name="workstation_id" value="<?=$escape($item['id'])?>">
+<label class="sr-only" for="teliphones-ssh-user-<?=$escape($item['id'])?>">Existing Linux account for <?=$escape($item['name'])?></label>
+<select id="teliphones-ssh-user-<?=$escape($item['id'])?>" class="form-control input-sm" name="ssh_user" required<?=$sshApprovalOff?>>
+<option value="">Select an existing Linux account</option>
+<?php foreach ($workstations['ssh_accounts'] as $account): ?><option value="<?=$escape($account)?>"><?=$escape($account)?></option><?php endforeach; ?>
+</select>
+<button class="btn btn-success btn-sm" type="submit" name="action" value="workstation-ssh-approve"<?=$sshApprovalOff?>>Approve SSH</button>
+</form>
+<?php else: ?><p class="help-block">No eligible existing Linux account is available for explicit SSH approval.</p><?php endif; ?>
+<form method="post">
+<input type="hidden" name="token" value="<?=$escape($token ?? '')?>">
+<input type="hidden" name="workstation_id" value="<?=$escape($item['id'])?>">
+<button class="btn btn-default btn-sm" type="submit" name="action" value="workstation-ssh-reject"<?=$sshApprovalOff?>>Reject SSH</button>
+</form>
+<?php endif; ?>
+<?php if ($item['unlock_request_pending']): ?>
+<p class="text-warning"><strong>Workstation unlock: Pending Approval</strong></p>
+<form method="post">
+<input type="hidden" name="token" value="<?=$escape($token ?? '')?>">
+<input type="hidden" name="workstation_id" value="<?=$escape($item['id'])?>">
+<button class="btn btn-warning btn-sm" type="submit" name="action" value="workstation-unlock-approve"<?=$manageOff?>>Approve Unlock</button>
+<button class="btn btn-default btn-sm" type="submit" name="action" value="workstation-unlock-reject"<?=$manageOff?>>Reject Unlock</button>
+</form>
+<?php endif; ?>
+<?php if ($item['sources_request_pending']): ?>
+<p class="text-warning"><strong>Allowed List change: Pending Approval</strong><br>Requested: <code><?=$escape(implode(', ', $item['requested_sources']))?></code></p>
+<form method="post">
+<input type="hidden" name="token" value="<?=$escape($token ?? '')?>">
+<input type="hidden" name="workstation_id" value="<?=$escape($item['id'])?>">
+<button class="btn btn-success btn-sm" type="submit" name="action" value="workstation-sources-approve"<?=$manageOff?>>Approve Allowed List</button>
+<button class="btn btn-default btn-sm" type="submit" name="action" value="workstation-sources-reject"<?=$manageOff?>>Reject Allowed List</button>
+</form>
+<?php endif; ?>
+<?php if ($item['ssh_managed']): ?>
+<form method="post">
+<input type="hidden" name="token" value="<?=$escape($token ?? '')?>">
+<input type="hidden" name="workstation_id" value="<?=$escape($item['id'])?>">
+<button class="btn btn-warning btn-sm" type="submit" name="action" value="workstation-ssh-revoke"<?=$sshApprovalOff?>>Revoke SSH</button>
+</form>
+<?php endif; ?>
+<form method="post"><input type="hidden" name="token" value="<?=$escape($token ?? '')?>"><input type="hidden" name="workstation_id" value="<?=$escape($item['id'])?>">
 <button class="btn btn-danger btn-sm" type="submit" name="action" value="unpair"<?=$unpairOff?>>Revoke</button></form></td></tr>
 <?php endforeach; ?>
 </tbody></table>
@@ -307,6 +441,79 @@ $notListening = array_values(array_filter($webEntries, static function ($entry) 
 <form method="post"><input type="hidden" name="token" value="<?=$escape($token ?? '')?>"><input type="hidden" name="workstation_id" value="all">
 <button class="btn btn-danger" type="submit" name="action" value="unpair"<?=$unpairOff?>>Revoke all workstations</button></form>
 <?php endif; ?>
+<details class="teliphones-banned-list" id="teliphones-banned-list">
+<summary><strong>Manually managed Banned list</strong></summary>
+<p>These IP/CIDR entries are dropped only on TELIPHONES WireGuard UDP listener ports. They do not change Fail2Ban, SIP/RTP or other FreePBX services. A ban can block this administrator or legitimate workstations sharing a public IP; verify the source and recovery route before applying it.</p>
+<?php if (!$workstations['ban_supported']): ?><p class="help-block">Manual bans require broker protocol 10 or later; upgrade the root broker before managing this list.</p><?php endif; ?>
+<?php if ($workstations['bans']): ?>
+<table class="table table-striped"><thead><tr><th>Source</th><th>Reason</th><th>Expiry</th><th>Status</th><th></th></tr></thead><tbody>
+<?php foreach ($workstations['bans'] as $ban): ?>
+<tr><td><code><?=$escape($ban['source'])?></code></td><td><?=$escape($ban['reason'])?></td>
+<td><?=$ban['expires_at'] === null ? 'No expiry' : $escape(gmdate('Y-m-d H:i:s', $ban['expires_at'])) . ' UTC'?></td>
+<td><?=$ban['active'] ? 'Active' : 'Expired'?></td><td>
+<form method="post"><input type="hidden" name="token" value="<?=$escape($token ?? '')?>"><input type="hidden" name="ban_id" value="<?=$escape($ban['id'])?>">
+<button class="btn btn-default btn-sm" type="submit" name="action" value="workstation-unban"<?=$banOff?>>Remove ban</button></form></td></tr>
+<?php endforeach; ?>
+</tbody></table>
+<?php else: ?><p>No manual TELIPHONES listener bans are configured.</p><?php endif; ?>
+<form method="post" autocomplete="off" id="teliphones-ban-form"
+ data-administrator-source="<?=$escape($administratorSource)?>"
+ data-workstation-sources="<?=$escape(json_encode($workstationSources, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?: '[]')?>">
+<input type="hidden" name="token" value="<?=$escape($token ?? '')?>">
+<fieldset<?=$banOff?>>
+<label for="teliphones-ban-source">IP address or CIDR</label>
+<input id="teliphones-ban-source" class="form-control" name="source" maxlength="64" required placeholder="198.51.100.24 or 2001:db8::/48">
+<label for="teliphones-ban-reason">Reason</label>
+<input id="teliphones-ban-reason" class="form-control" name="reason" maxlength="160" required>
+<label for="teliphones-ban-hours">Expiry</label>
+<select id="teliphones-ban-hours" class="form-control" name="hours"><option value="1">1 hour</option><option value="24">24 hours</option><option value="168">7 days</option><option value="720">30 days</option><option value="8760">1 year</option><option value="never">No expiry</option></select>
+<button class="btn btn-default" type="submit" name="action" value="workstation-ban"<?=$banOff?>>Add manual ban</button>
+</fieldset></form>
+<script>
+(function () {
+    var form = document.getElementById('teliphones-ban-form');
+    var field = document.getElementById('teliphones-ban-source');
+    if (!form || !field) return;
+    function bits(address) {
+        address = address.toLowerCase().split('%')[0];
+        if (address.indexOf(':') < 0) {
+            var octets = address.split('.');
+            if (octets.length !== 4 || octets.some(function (part) { return !/^\d{1,3}$/.test(part) || +part > 255; })) return null;
+            return octets.map(function (part) { return (+part).toString(2).padStart(8, '0'); }).join('');
+        }
+        var halves = address.split('::');
+        if (halves.length > 2) return null;
+        var left = halves[0] ? halves[0].split(':') : [];
+        var right = halves.length === 2 && halves[1] ? halves[1].split(':') : [];
+        var groups = left.concat(new Array(Math.max(0, 8 - left.length - right.length)).fill('0'), right);
+        if (groups.length !== 8 || groups.some(function (part) { return !/^[0-9a-f]{1,4}$/.test(part); })) return null;
+        return groups.map(function (part) { return parseInt(part, 16).toString(2).padStart(16, '0'); }).join('');
+    }
+    function contains(network, address) {
+        var parts = network.trim().split('/');
+        var base = bits(parts[0]), target = bits(address);
+        if (base === null || target === null || base.length !== target.length) return false;
+        var prefix = parts.length === 1 ? base.length : Number(parts[1]);
+        return Number.isInteger(prefix) && prefix >= 0 && prefix <= base.length && base.slice(0, prefix) === target.slice(0, prefix);
+    }
+    form.addEventListener('submit', function (event) {
+        var source = field.value.trim();
+        var warnings = [];
+        var admin = form.getAttribute('data-administrator-source');
+        if (admin && contains(source, admin)) warnings.push('the current FreePBX administrator source (' + admin + ')');
+        var workstations = [];
+        try { workstations = JSON.parse(form.getAttribute('data-workstation-sources') || '[]'); } catch (ignore) { workstations = []; }
+        workstations.forEach(function (item) {
+            if (contains(source, item.address)) warnings.push('workstation "' + item.name + '" (' + item.address + ')');
+        });
+        if (warnings.length && !window.confirm('This ban overlaps ' + warnings.join(' and ') +
+            '. It can interrupt this administrator or workstation, including others sharing the same public address. Continue only if you have an independent recovery route.')) {
+            event.preventDefault();
+        }
+    });
+})();
+</script>
+</details>
 <?php if ($workstations['web_supported']): ?>
 <details class="teliphones-web" id="teliphones-web">
 <summary><strong>Management web services</strong></summary>
@@ -361,15 +568,84 @@ $notListening = array_values(array_filter($webEntries, static function ($entry) 
 <select id="teliphones-pair-mode" class="form-control" name="mode"><option value="temporary">Temporary</option><option value="persistent">Persistent trusted workstation (until revoked)</option></select>
 <label for="teliphones-pair-minutes">Temporary pairing duration (minutes)</label>
 <select id="teliphones-pair-minutes" class="form-control" name="minutes"><?php foreach ([60, 240, 480, 1440] as $minutes): ?><option value="<?=$minutes?>"><?=$minutes?></option><?php endforeach; ?></select>
-<label for="teliphones-pair-ssh">SSH access through the tunnel</label>
-<select id="teliphones-pair-ssh" class="form-control" name="ssh"><option value="0">Not permitted</option><option value="1">Authorise SSH for this workstation</option></select>
-<label for="teliphones-pair-ssh-user">Authorised existing Linux account (required when SSH is authorised)</label>
-<input id="teliphones-pair-ssh-user" class="form-control" name="ssh_user" maxlength="32" pattern="[a-z_][a-z0-9_-]{0,31}" autocomplete="off">
-<p class="help-block">No account is selected automatically. Use a dedicated administrative account where possible. Enter root only when explicitly authorising root and existing SSH policy permits it. New Windows pairing requests enrol a workstation SSH key and pinned host identity; legacy pairings must be renewed to enable managed SSH. Re-pairing is also the administrator-controlled recovery procedure after an approved host-key change.</p>
+<label for="teliphones-pair-sources">Lock this workstation to approved IPs/domains (optional, comma-separated)</label>
+<input id="teliphones-pair-sources" class="form-control" name="sources" maxlength="2048" placeholder="198.51.100.24, office.example.net"<?=$sourceLockOff?>>
+<p class="help-block">A non-empty list uses a dedicated WireGuard listener port and tunnel interface; FreePBX Firewall service rules are managed automatically. If the PBX is behind router/NAT, forward the allocated UDP port to the PBX. DNS names are resolved and refreshed by the PBX; unresolved names do not add access. This initial lock is administrator-set during pairing.</p>
+<?php if ($sourceLockOff): ?><p class="help-block">Source-lock controls require broker protocol 8; update the root broker before using this option.</p><?php endif; ?>
+<div id="teliphones-pair-ssh-controls" hidden>
+<label for="teliphones-pair-ssh">SSH approval</label>
+<select id="teliphones-pair-ssh" class="form-control" name="ssh"><option value="0">FreePBX Web Access only</option><option value="1">FreePBX Web + SSH Access</option></select>
+<div id="teliphones-pair-ssh-account" hidden>
+<label for="teliphones-pair-ssh-user">Authorised existing Linux account (required when SSH is approved)</label>
+<input id="teliphones-pair-ssh-user" class="form-control" name="ssh_user" maxlength="32" pattern="[a-z_][a-z0-9_-]{0,31}" autocomplete="off" disabled>
+<p class="help-block">Select an existing account explicitly. No account is created or selected automatically; root is never the default. Managed SSH also requires the Windows OpenSSH request capability and broker readiness.</p>
+</div>
+</div>
+<p class="help-block" id="teliphones-pair-ssh-unavailable" aria-live="polite">SSH approval controls appear only for a valid Windows request that includes SSH capability.</p>
 <?php if (!$workstations['ssh_ready']): ?><p class="text-warning">Managed SSH is not ready. <?=$escape($workstations['ssh_error'] ?: 'Update the root broker and check OpenSSH/service prerequisites. Web-only pairing remains available.')?></p><?php endif; ?>
 <button class="btn btn-primary" type="submit" name="action" value="pair"<?=$pairOff?>>Pair workstation</button>
 </fieldset>
 </form></details>
+<script>
+(function () {
+    var request = document.getElementById('teliphones-pair-request');
+    var controls = document.getElementById('teliphones-pair-ssh-controls');
+    var unavailable = document.getElementById('teliphones-pair-ssh-unavailable');
+    var approval = document.getElementById('teliphones-pair-ssh');
+    var account = document.getElementById('teliphones-pair-ssh-account');
+    var username = document.getElementById('teliphones-pair-ssh-user');
+    var sources = document.getElementById('teliphones-pair-sources');
+    if (!request || !controls || !approval || !account || !username) return;
+    function updateAccount() {
+        var needed = approval.value === '1' && !approval.disabled;
+        account.hidden = !needed;
+        username.disabled = !needed;
+        username.required = needed;
+    }
+    function updateRequest() {
+        var supported = false;
+        var parts = request.value.trim().split(':');
+        if (parts.length === 2 && parts[0] === 'TELIPHONES-PAIR-REQUEST-2' && /^[A-Za-z0-9_-]+$/.test(parts[1])) {
+            try {
+                var encoded = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+                while (encoded.length % 4) encoded += '=';
+                var payload = JSON.parse(window.atob(encoded));
+                supported = payload.schema === 'teliphones-pair-request/2' &&
+                    typeof payload.ssh_public_key === 'string' && payload.ssh_public_key.length > 0;
+            } catch (ignore) {
+                supported = false;
+            }
+        }
+        controls.hidden = !supported;
+        var lockedSshUnavailable = sources && sources.value.trim() !== '' &&
+            !<?=$workstations['supported'] && WebSupport::supportsLockedSsh($support) ? 'true' : 'false'?>;
+        approval.disabled = !supported || lockedSshUnavailable;
+        if (!supported) approval.value = '0';
+        if (lockedSshUnavailable) approval.value = '0';
+        unavailable.hidden = supported && !lockedSshUnavailable;
+        unavailable.textContent = lockedSshUnavailable
+            ? 'Locked SSH approval requires the updated root broker; update it before pairing.'
+            : supported
+            ? 'This request includes SSH capability. SSH still requires explicit administrator approval and an existing Linux account.'
+            : 'This request is web-only, invalid or not yet supplied; SSH controls are unavailable.';
+        updateAccount();
+    }
+    request.addEventListener('input', updateRequest);
+    if (sources) sources.addEventListener('input', updateRequest);
+    approval.addEventListener('change', updateAccount);
+    var stateForm = document.getElementById('teliphones-connection-state-form');
+    if (stateForm) {
+        stateForm.addEventListener('submit', function (event) {
+            var selected = document.getElementById('teliphones-connection-state');
+            if (selected && selected.value === 'closed' && selected.value !== stateForm.getAttribute('data-current-state') &&
+                    !window.confirm('Close the TELIPHONES listener and terminate active workstation tunnels? Existing pairings will be retained. Use your independent PBX recovery route if this is your current connection.')) {
+                event.preventDefault();
+            }
+        });
+    }
+    updateRequest();
+})();
+</script>
 <script type="application/json" id="teliphones-initial-status"><?=json_encode($initial, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_UNICODE | JSON_PARTIAL_OUTPUT_ON_ERROR)?></script>
 <script src="modules/teliphones/assets/js/teliphones.js"></script>
 <?php require __DIR__ . '/disclaimer.php'; ?>

@@ -1,4 +1,5 @@
 #include "AppSettingsDlg.h"
+#include "ConnectPasswordDlg.h"
 
 #include <commdlg.h>
 
@@ -26,6 +27,8 @@ bool Contains(const std::vector<std::string>& ids, const std::string& id) { retu
 
 BEGIN_MESSAGE_MAP(CAppSettingsDlg, CAppearanceDialog)
     ON_BN_CLICKED(IDC_APPS_ABOUT, &CAppSettingsDlg::OnAbout)
+    ON_BN_CLICKED(IDC_CONNECT_PASSWORD, &CAppSettingsDlg::OnConnectPassword)
+    ON_BN_CLICKED(IDC_PASSWORD_LOCK_NOW, &CAppSettingsDlg::OnLockNow)
     ON_BN_CLICKED(IDC_APPS_SKIP, &CAppSettingsDlg::OnSkip)
     ON_BN_CLICKED(IDC_APPS_LOCATE_BROWSER, &CAppSettingsDlg::OnLocateBrowser)
     ON_BN_CLICKED(IDC_APPS_LOCATE_TERMINAL, &CAppSettingsDlg::OnLocateTerminal)
@@ -56,6 +59,9 @@ void CAppSettingsDlg::DoDataExchange(CDataExchange* exchange) {
 
 BOOL CAppSettingsDlg::OnInitDialog() {
     CAppearanceDialog::OnInitDialog();
+    GetDlgItem(IDC_CONNECT_PASSWORD)->EnableWindow(connectProfile.has_value()
+        && connectProfile->kind == tlp::ProfileKind::Administrator && !connectionActive);
+    GetDlgItem(IDC_PASSWORD_LOCK_NOW)->EnableWindow(connectionActive);
     CComboBox* appearance = static_cast<CComboBox*>(GetDlgItem(IDC_APPEARANCE));
     appearance->AddString(L"System (follow Windows)");
     appearance->AddString(L"Light");
@@ -64,13 +70,13 @@ BOOL CAppSettingsDlg::OnInitDialog() {
     if (mode_ == Mode::Welcome) {
         SetWindowText(L"Welcome to TELIPHONES");
         SetDlgItemText(IDC_APPS_HEADING, L"Step 1: Applications");
-        SetDlgItemText(IDC_APPS_INTRO, L"Choose the applications TELIPHONES uses to open FreePBX and SSH sessions through your secure connection. "
+        SetDlgItemText(IDC_APPS_INTRO, L"Choose the browser used to open FreePBX and the terminal used for Remote Support. Managed My PBXs SSH opens in the built-in TELIPHONES console. "
                                        L"Only applications found on this computer are listed. You can change these at any time in Settings.");
     } else {
         SetWindowText(L"TELIPHONES Settings");
         SetDlgItemText(IDC_APPS_HEADING, L"Applications");
-        SetDlgItemText(IDC_APPS_INTRO, L"These preferences apply to every saved PBX connection. They are stored only on this computer, for your "
-                                       L"Windows account, and are never sent to a PBX.");
+        SetDlgItemText(IDC_APPS_INTRO, L"The browser opens FreePBX; the selected terminal applies to Remote Support. Managed My PBXs SSH uses the built-in TELIPHONES console. "
+                                       L"Preferences are stored locally for your Windows account and are never sent to a PBX.");
         GetDlgItem(IDC_APPS_SKIP)->ShowWindow(SW_HIDE);
     }
     try {
@@ -137,6 +143,18 @@ void CAppSettingsDlg::UpdateStatus() {
 }
 
 void CAppSettingsDlg::OnSelectionChanged() { UpdateStatus(); }
+
+void CAppSettingsDlg::OnConnectPassword() {
+    if (!installing_ && !connectionActive && connectProfile
+        && connectProfile->kind == tlp::ProfileKind::Administrator)
+        ManageConnectPassword(*connectProfile, this);
+}
+
+void CAppSettingsDlg::OnLockNow() {
+    if (installing_ || !connectionActive) return;
+    lockNow = true;
+    EndDialog(IDOK);
+}
 
 void CAppSettingsDlg::OnAbout() {
     tlp::ui::ShowMessage(Widen(
@@ -263,6 +281,9 @@ void CAppSettingsDlg::ShowStep() {
     }
     for (int id : {IDC_CONNECT_GROUP, IDC_CONNECT_STATUS, IDC_CONNECT_CHECK}) {
         GetDlgItem(id)->ShowWindow(!welcome || step_ == 2 ? SW_SHOW : SW_HIDE);
+    }
+    for (int id : {IDC_PASSWORD_SECURITY_GROUP, IDC_CONNECT_PASSWORD, IDC_PASSWORD_LOCK_NOW}) {
+        GetDlgItem(id)->ShowWindow(!welcome ? SW_SHOW : SW_HIDE);
     }
     GetDlgItem(IDC_CONNECT_INSTALL)->ShowWindow((!welcome || step_ == 2) && !wireguard_.installed ? SW_SHOW : SW_HIDE);
     GetDlgItem(IDC_CONNECT_NOT_NOW)->ShowWindow((!welcome || step_ == 2) && !wireguard_.installed ? SW_SHOW : SW_HIDE);

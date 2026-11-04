@@ -73,14 +73,14 @@ class EnforcementTests(unittest.TestCase):
         self.net.table["nftables"][0]["table"]["comment"] = "somebody else"
         original, saved = copy.deepcopy(self.net.table), self.saved()
         self.net.calls = []
-        for operation in (lambda: self.pair(), self.broker.teardown_workstations,
-                          self.broker.uninstall_workstations):
+        for index, operation in enumerate((lambda: self.pair(), self.broker.teardown_workstations,
+                                           self.broker.uninstall_workstations)):
             with self.assertRaisesRegex(broker.BrokerError, "Unfamiliar|ownership|Unexpected"):
                 operation()
             self.assertEqual(self.net.table, original)
             self.assertEqual(self.saved(), saved)
             self.assertEqual(self.mutations(), [])
-            self.assertFalse(self.net.up)
+            self.assertEqual(self.net.up, index == 0)
 
     def test_hookless_owner_chain_is_visible_without_table_comments(self):
         self.pair()
@@ -165,7 +165,7 @@ class EnforcementTests(unittest.TestCase):
         self.pair()
         original = copy.deepcopy(self.net.table)
         for mutate in (
-            lambda chain: chain.update({"type": "filter", "hook": "input", "prio": -10, "policy": "accept"}),
+            lambda chain: chain.update({"type": "filter", "hook": "input", "prio": 10, "policy": "accept"}),
             lambda chain: chain.update({"comment": "untrusted"}),
         ):
             actual = copy.deepcopy(original)
@@ -185,7 +185,7 @@ class EnforcementTests(unittest.TestCase):
         with self.assertRaisesRegex(broker.BrokerError, "ownership chain"):
             self.broker.owned_table()
 
-    def test_restart_revalidates_owner_chain_and_revocation_removes_owned_policy(self):
+    def test_restart_revalidates_owner_chain_and_revocation_retains_open_listener(self):
         _, response = self.pair(mode="persistent", ssh="1")
         restarted = broker.Broker()
         self.addCleanup(lambda: restarted.monitor.close() if restarted.monitor is not None else None)
@@ -193,6 +193,7 @@ class EnforcementTests(unittest.TestCase):
         restarted.run = self.net.run
         restarted.tool = lambda name: name
         restarted.iptables_tool = self.broker.iptables_tool
+        restarted.ssh.reconcile = lambda *args: None
         restarted.restore_workstations()
         self.assertTrue(self.net.up)
         self.assertTrue(broker.policy_equal(self.net.table, restarted.expected_policy(
@@ -200,18 +201,19 @@ class EnforcementTests(unittest.TestCase):
         self.assertEqual(self.net.table["nftables"][1]["chain"]["name"], broker.WORKSTATION_OWNER_CHAIN)
         with patch.object(broker, "STATE", self.state), patch.object(broker, "ENROLLMENT", self.enrollment):
             restarted.dispatch({"action": "unpair", "workstation_id": response["workstation_id"]}, 1000)
-        self.assertIsNone(self.net.table)
-        self.assertFalse(self.net.link)
+        state = json.loads(self.saved())
+        self.assertEqual(self.net.peers, {})
+        self.assertTrue(self.net.up)
+        self.assertTrue(broker.policy_equal(self.net.table, restarted.expected_policy(state)))
 
-    def test_update_disables_and_verifies_before_firewall_or_peer_changes(self):
-        self.pair()
+    def test_pairing_addition_preserves_existing_listener_and_firewall_policy(self):
+        _, first = self.pair()
         self.net.calls = []
         self.pair(public_key="B" * 42 + "E=", ssh="1")
-        down = self.net.calls.index(("ip", ("link", "set", "down", "dev", broker.WORKSTATION_IFACE)))
-        verify = self.net.calls.index(("ip", ("-j", "link", "show")), down)
-        mutation = self.net.calls.index(("nft", ("-j", "-f", "-")))
-        self.assertLess(down, verify)
-        self.assertLess(verify, mutation)
+        self.assertTrue(self.net.up)
+        self.assertIn(first["workstation_id"], {item["id"] for item in json.loads(self.saved())["workstations"]})
+        self.assertFalse(any(name == "ip" and rest[:3] == ("link", "set", "down")
+                             for name, rest in self.net.calls))
 
     def test_failed_down_and_delete_preserve_all_recovery_information(self):
         self.pair()
@@ -245,6 +247,24 @@ class EnforcementTests(unittest.TestCase):
         self.assertFalse((self.state / "workstations.json").exists())
         self.assertFalse((self.enrollment / "workstation-wg.key").exists())
 
+    def test_expiry_worker_restores_missing_locked_interface(self):
+        _, response = self.pair(sources="198.51.100.24")
+        state = json.loads((self.state / "workstations.json").read_text())
+        item = state["workstations"][0]
+        interface = self.broker.locked_interface(item)
+        del self.net.devices[interface]
+        self.net.calls = []
+        self.broker.expire_workstations()
+        self.assertTrue(self.net.devices[interface]["up"])
+        self.assertEqual(self.net.devices[interface]["peers"], {item["public_key"]: item["address"]})
+        self.assertIn((broker.FWCONSOLE, ("teliphones", "listener",
+                                          "--listen-port=51821," + str(item["listener_port"]))), self.net.calls)
+
+    def test_teardown_removes_orphaned_dedicated_listener_interfaces(self):
+        self.net.devices["tlpw" + "a" * 11] = {"up": False, "peers": {}}
+        self.broker.teardown_workstations()
+        self.assertNotIn("tlpw" + "a" * 11, self.net.devices)
+
     def test_uninstall_nft_failure_preserves_key_and_state(self):
         self.pair()
         saved = self.saved()
@@ -260,8 +280,7 @@ class EnforcementTests(unittest.TestCase):
         for tool, rest in (("ip", ["-j", "link", "show"]), ("nft", ["-j", "list", "tables"])):
             with self.subTest(tool=tool):
                 self.net.fail = None
-                if not (self.state / "workstations.json").exists():
-                    self.pair()
+                self.pair()
                 saved = self.saved()
                 self.net.fail = lambda name, args: name == tool and args == rest
                 with self.assertRaises(broker.BrokerError):
@@ -476,9 +495,9 @@ class EnforcementTests(unittest.TestCase):
         with self.assertRaises(broker.BrokerError):
             self.pair(public_key="B" * 42 + "E=")
         self.assertEqual(self.saved(), saved)
-        attempted = json.loads((self.state / "workstation-recovery.json").read_text())
-        self.assertEqual(len(attempted["workstations"]), 2)
-        self.assertFalse(self.net.up)
+        self.assertFalse((self.state / "workstation-recovery.json").exists())
+        self.assertTrue(self.net.up)
+        self.assertEqual(len(self.net.devices[broker.WORKSTATION_IFACE]["peers"]), 1)
         self.assertIsNotNone(self.net.table)
         self.assertTrue((self.enrollment / "workstation-wg.key").exists())
 

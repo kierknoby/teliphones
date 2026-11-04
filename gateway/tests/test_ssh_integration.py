@@ -178,7 +178,7 @@ def isolated():
         notification.bind(notify_path)
         notification.settimeout(10)
         listener = subprocess.Popen(["/usr/bin/python3", "-B", "-I", str(MODULE), "--listen", str(config),
-                                     "100.70.1.1", str(ssh.port(item)), "100.70.1.2"],
+                                     "100.70.1.1", str(ssh.port(item)), "100.70.1.2", "tlp-admin"],
                                     env={**os.environ, "NOTIFY_SOCKET": notify_path}, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         held = None
         unrelated = None

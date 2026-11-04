@@ -14,21 +14,23 @@ workflow for bounded support windows.
 
 | Component | Current version | Start here |
 |---|---|---|
-| FreePBX module and root broker | **0.5.0** (local test package) | [Install](teliphones/README.md#installing-the-module) · [Upgrade](teliphones/README.md#updating-teliphones) |
-| Windows application | **0.7.0** (file version 0.7.0.0) | [Download and requirements](desktop/windows/README.md#requirements-and-download) · [Pair a PBX](desktop/windows/README.md#pair-an-administrator-workstation) |
+| FreePBX module and root broker | **0.6.0** (local experimental package) | [Install](teliphones/README.md#installing-the-module) · [Upgrade](teliphones/README.md#updating-teliphones) |
+| Windows application | **0.8.0** (file version 0.8.0.0; unreleased development target) | [Download and requirements](desktop/windows/README.md#requirements-and-download) · [Pair a PBX](desktop/windows/README.md#pair-an-administrator-workstation) |
 | Reference gateway and Checker probe | Optional laboratory infrastructure | [Integration guide](teliphones/docs/INTEGRATION.md) · [Gateway](gateway/README.md) |
 
-FreePBX **0.5.0** and Windows **0.7.0** are independently versioned.
+FreePBX **0.6.0** and Windows **0.8.0** are independently versioned.
+Windows **0.8.0** adds password protection, PBX policy requests, secure
+listener migration and post-pair SSH elevation in source; it has not received a
+native Windows build verification in this environment.
 The Windows application is not included in the Module Admin package.
 
 > [!WARNING]
-> **Experimental; not currently suitable for production PBXs.** The operator
-> reports successful Windows Actions builds, all ten native OpenSSH integration
-> tests passing, an authenticated Windows-to-FreePBX 17 SSH connection and
-> automatic closure of the owned terminal on disconnect. These are meaningful
-> milestones, not proof of complete server-side revocation, expiry, failure
-> recovery or production reliability. The 0.4.1 firewall correction still needs
-> real-PBX validation. See [verification evidence](docs/SECURITY.md#verification-evidence).
+> **Experimental; not currently suitable for production PBXs.** Gateway,
+> FreePBX and portable Windows-core regressions pass locally. Native Windows
+> compilation, MFC/service lifecycle and live FreePBX session, migration,
+> firewall, password-protection and SSH acceptance have not been performed
+> here. Historical operator reports do not validate the current source.
+> See [verification evidence](docs/SECURITY.md#verification-evidence).
 
 > [!IMPORTANT]
 > **Upgrading from 0.4.0?** Version 0.4.1 corrects the TELIPHONES firewall rule
@@ -38,11 +40,12 @@ The Windows application is not included in the Module Admin package.
 > [Follow the upgrade procedure](teliphones/README.md#updating-teliphones).
 > Do not disable FreePBX Firewall or enable Custom Rules as a workaround.
 
-The local 0.5.0 test package additionally manages the public WireGuard listener
-through a persistent FreePBX Custom Service and supports configured management
-ports. Its [investigation and validation limits](teliphones/docs/CONNECTIVITY-REGRESSION.md)
-remain explicit: no real-PBX roaming/watchdog or native Windows validation is
-claimed. Use an updated Windows 0.7.0 build for custom-port launch and health checks.
+The historical 0.5.0 test package manages the public WireGuard listener through
+a persistent FreePBX Custom Service and supports configured management ports.
+The local 0.6.0 package adds Open/Closed/Frozen state, atomic session leases,
+authenticated policy requests and identity-preserving listener migration. Its
+archive is locally matched to source; no live-PBX or native Windows validation
+is claimed. See the [investigation and validation limits](teliphones/docs/CONNECTIVITY-REGRESSION.md).
 
 ## Find your route
 
@@ -79,8 +82,10 @@ claimed. Use an updated Windows 0.7.0 build for custom-port launch and health ch
 3. **Pair:** paste the bound response back into the waiting Windows dialog and
    save the connection. Private keys stay on their originating device.
 4. **Connect:** approve Windows tunnel setup, open FreePBX and sign in normally.
-   **Open SSH** uses the approved account, pinned host/CA keys and a fresh
-   session certificate through an OpenSSH-backed terminal.
+   The unreleased Windows source includes an experimental built-in VT console
+   on the approved managed SSH path, using the approved account, pinned host/CA
+   keys and a fresh session certificate. Portable VT tests pass; the native
+   MFC/ConPTY integration and real SSH behavior remain unverified.
 5. **Disconnect or revoke:** disconnecting closes the local connection, not its
    authorisation. To remove authority, **Revoke** on the PBX. Deleting a Windows
    profile is not PBX-side revocation.
@@ -151,7 +156,8 @@ repository. The optional gateway is unnecessary for My PBXs.
   closes owned processes; PBX revocation and pairing expiry must separately
   stop the owned server sessions. Full real systemd/cgroup validation is pending.
 - **TELIPHONES complements FreePBX Firewall.** Version 0.4.1 uses one marked,
-  interface-scoped jump inside `fpbxfirewall`, preserving unrelated policy.
+  marked jump inside `fpbxfirewall`; its exact per-peer ACCEPT rules remain
+  interface-scoped and preserve unrelated policy.
   Custom Rules need not be enabled. Real watchdog/rebuild compatibility is not
   yet established.
 
@@ -175,7 +181,7 @@ or zero-exposure claim. Read the [security limitations](docs/SECURITY.md#known-l
 | Revocation, expiry and recovery | Automated failure/SSH tests exist; complete live PBX server-side session termination, cgroups, reboot and recovery remain outstanding |
 | GUI, appearance, onboarding and connection health | Implemented; initial use does not certify every terminal, display scale, installer or reconnection case |
 | Remote Support | Contracts and lab implementation; complete deployed workflow remains unverified |
-| Integrated TELIPHONES SSH terminal | **Planned**, inspired by my-console usability; external terminal choice remains an objective |
+| Integrated TELIPHONES SSH console | Experimental libvterm/ConPTY implementation in source; portable VT tests pass; native Windows build and real SSH validation remain outstanding |
 | PuTTY for managed My PBXs SSH | Not supported; a development objective only if certificate authentication, key isolation and termination guarantees can be preserved |
 
 The operator-reported results supplied with this documentation review are not

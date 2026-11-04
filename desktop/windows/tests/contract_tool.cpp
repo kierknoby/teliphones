@@ -23,6 +23,8 @@ int main(int argc, char** argv) {
         std::string mode = argc > 1 ? argv[1] : "";
         if (mode == "request" && argc == 5) {
             std::cout << tlp::BuildPairRequest(argv[2], argv[3], argv[4]) << "\n";
+        } else if (mode == "request2" && argc == 6) {
+            std::cout << tlp::BuildSshPairRequest(argv[2], argv[3], argv[4], argv[5]) << "\n";
         } else if (mode == "certificate" && argc == 10) {
             tlp::PairResponse pairing = tlp::ParsePairResponse(argv[2], argv[3], argv[4], argv[5]);
             tlp::Profile profile;
@@ -35,22 +37,22 @@ int main(int argc, char** argv) {
             std::string certificate((std::istreambuf_iterator<char>(std::cin)), std::istreambuf_iterator<char>());
             tlp::ValidateSshCertificateBindings(certificate, saved.at(0).pairing, {argv[6], argv[7]}, std::stoll(argv[8]), std::stoll(argv[9]));
             std::cout << "validated\n";
-        } else if (mode == "response" && argc == 5) {
-            tlp::PairResponse r = tlp::ParsePairResponse(argv[2], argv[3], argv[4]);
+        } else if (mode == "response" && (argc == 5 || argc == 6)) {
+            tlp::PairResponse r = tlp::ParsePairResponse(argv[2], argv[3], argv[4], argc == 6 ? argv[5] : "");
             std::cout << r.workstationId << " " << r.address << " " << r.pbxAddress << " " << r.endpoint << " " << r.mode << " " << r.expiresAt << " "
                       << (r.ssh ? "ssh" : "nossh") << "\n";
         } else if (mode == "fingerprint" && argc == 3) {
             std::cout << tlp::KeyFingerprint(argv[2]) << "\n";
-        } else if (mode == "administrator" && argc == 6) {
+        } else if (mode == "administrator" && (argc == 6 || argc == 7)) {
             tlp::Profile profile;
             profile.id = "0011223344556677";
             profile.kind = tlp::ProfileKind::Administrator;
             profile.name = "PBX";
             profile.workstationName = "ADMIN-PC";
-            profile.pairing = tlp::ParsePairResponse(argv[2], argv[3], argv[4]);
-            profile.sshUser = profile.pairing.ssh ? "administrator" : "";
+            profile.pairing = tlp::ParsePairResponse(argv[2], argv[3], argv[4], argc == 7 ? argv[5] : "");
+            profile.sshUser = profile.pairing.sshUser;
             auto saved = tlp::ParseProfiles(tlp::SerializeProfiles({profile}));
-            std::cout << tlp::RenderTunnel(tlp::AdministratorTunnel(saved.at(0), argv[5]));
+            std::cout << tlp::RenderTunnel(tlp::AdministratorTunnel(saved.at(0), argv[argc == 7 ? 6 : 5]));
         } else if (mode == "support" && argc == 5) {
             std::string grant((std::istreambuf_iterator<char>(std::cin)), std::istreambuf_iterator<char>());
             tlp::Profile profile;

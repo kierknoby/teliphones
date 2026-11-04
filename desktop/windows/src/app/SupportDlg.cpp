@@ -74,6 +74,7 @@ BEGIN_MESSAGE_MAP(CSupportDlg, CAppearanceDialog)
     ON_BN_CLICKED(IDC_SUP_GENERATE, &CSupportDlg::OnGenerate)
     ON_BN_CLICKED(IDC_SUP_COPY, &CSupportDlg::OnCopy)
     ON_BN_CLICKED(IDC_SUP_BROWSE, &CSupportDlg::OnBrowse)
+    ON_WM_TIMER()
 END_MESSAGE_MAP()
 
 CSupportDlg::CSupportDlg(const tlp::win::WireGuardInstallation& wireguard, const tlp::Profile* existing, CWnd* parent)
@@ -131,10 +132,19 @@ void CSupportDlg::OnCopy() {
     }
     try {
         CopyText(m_hWnd, profile.engineerPublicKey);
-        tlp::ui::ShowMessage(L"Engineer public key copied. Only the public key may be shared.", MB_ICONINFORMATION);
+        SetDlgItemText(IDC_SUP_COPY, L"Copied");
+        SetTimer(1, 1800, nullptr);
     } catch (const std::exception& e) {
         tlp::ui::ShowMessage(tlp::win::Widen(e.what()).c_str(), MB_ICONERROR);
     }
+}
+
+void CSupportDlg::OnTimer(UINT_PTR timerId) {
+    if (timerId == 1) {
+        KillTimer(timerId);
+        SetDlgItemText(IDC_SUP_COPY, L"Copy public key");
+    }
+    CAppearanceDialog::OnTimer(timerId);
 }
 
 void CSupportDlg::OnBrowse() {

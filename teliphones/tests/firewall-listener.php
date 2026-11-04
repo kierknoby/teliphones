@@ -10,9 +10,10 @@ $fw = new class {
     public function getAllCustomServices() { return $this->services; }
     public function addCustomService($name, $proto, $ports) {
         ++$this->writes;
-        $this->services['owned'] = ['name' => $name, 'defzones' => ['internal'], 'descr' => 'Custom Service',
-            'custfw' => ['protocol' => $proto, 'port' => $ports], 'custid' => 'owned', 'noreject' => true];
-        $this->zones['owned'] = ['internal'];
+        $id = 'service-' . substr(hash('sha256', $name), 0, 12);
+        $this->services[$id] = ['name' => $name, 'defzones' => ['internal'], 'descr' => 'Custom Service',
+            'custfw' => ['protocol' => $proto, 'port' => $ports], 'custid' => $id, 'noreject' => true];
+        $this->zones[$id] = ['internal'];
         if ($this->fail === 'create') throw new RuntimeException('Interrupted after creation');
     }
     public function editCustomService($id, $name, $proto, $port) {
@@ -32,6 +33,12 @@ $fw = new class {
     }
 };
 $assert = static function ($value) { if (!$value) throw new RuntimeException('Firewall service regression.'); };
+$serviceForPort = static function ($fw, $port) {
+    foreach ($fw->services as $id => $service) {
+        if (($service['custfw']['port'] ?? null) === (string)$port) return [$id, $service];
+    }
+    return [null, null];
+};
 $state = tempnam(sys_get_temp_dir(), 'tlp-listener-');
 unlink($state);
 try {
@@ -48,48 +55,50 @@ try {
     };
     $fw->fail = 'create';
     $fails(static function () use ($reconcile) { $reconcile(51821); });
-    $assert(is_file($state) && isset($fw->services['owned']));
+    $assert(is_file($state) && count($fw->services) === 2);
     $fw->fail = '';
     $reconcile(51821);
-    $assert($fw->services['owned']['custfw'] === ['protocol' => 'udp', 'port' => '51821']);
-    $assert($fw->zones['owned'] === ['external', 'internal', 'other']);
+    [$serviceId, $service] = $serviceForPort($fw, 51821);
+    $assert($service['custfw'] === ['protocol' => 'udp', 'port' => '51821']);
+    $assert($fw->zones[$serviceId] === ['external', 'internal', 'other']);
     $writes = $fw->writes;
     $reconcile(51821);
     $assert($fw->writes === $writes);
-    $fw->fail = 'edit';
-    $fails(static function () use ($reconcile) { $reconcile(51899); });
-    $fw->fail = '';
     $reconcile(51899);
-    $assert(count($fw->services) === 2 && $fw->services['owned']['custfw']['port'] === '51899');
-    $fw->fail = 'edit';
-    $fails(static function () use ($reconcile) { $reconcile(51898); });
+    [$serviceId, $service] = $serviceForPort($fw, 51899);
+    $assert(count($fw->services) === 2 && $service['custfw']['port'] === '51899');
+    $fw->fail = 'create';
+    $fails(static function () use ($reconcile) { $reconcile([51899, 51898]); });
     $fw->fail = '';
+    $reconcile([51899, 51898]);
+    $assert(count($fw->services) === 3);
     $reconcile(51899);
-    $assert($fw->services['owned']['custfw']['port'] === '51899');
-    unset($fw->services['owned']);
+    [$serviceId] = $serviceForPort($fw, 51899);
+    unset($fw->services[$serviceId], $fw->zones[$serviceId]);
     $fw->fail = 'create';
     $fails(static function () use ($reconcile) { $reconcile(51899); });
-    $assert(json_decode(file_get_contents($state), true)['id'] === null);
+    $assert(is_file($state));
     $fw->fail = '';
     $reconcile(51899);
-    $name = $fw->services['owned']['name'];
-    $fw->services['owned']['name'] = 'Administrator changed this';
+    [$serviceId, $service] = $serviceForPort($fw, 51899);
+    $name = $service['name'];
+    $fw->services[$serviceId]['name'] = 'Administrator changed this';
     try {
         $reconcile(0);
         throw new LogicException('Conflicting ownership was accepted.');
     } catch (RuntimeException $error) {
-        $assert(isset($fw->services['owned']) && is_file($state));
+        $assert(isset($fw->services[$serviceId]) && is_file($state));
     }
-    $fw->services['owned']['name'] = $name;
+    $fw->services[$serviceId]['name'] = $name;
     $fw->fail = 'delete';
-    $fails(static function () use ($reconcile) { $reconcile(0); });
+    $fails(static function () use ($reconcile) { $reconcile([]); });
     $assert(is_file($state));
     $fw->fail = '';
     $kernelFailure = true;
-    $fails(static function () use ($reconcile) { $reconcile(0); });
-    $assert(is_file($state) && !isset($fw->services['owned']));
+    $fails(static function () use ($reconcile) { $reconcile([]); });
+    $assert(is_file($state) && count($fw->services) === 1);
     $kernelFailure = false;
-    $reconcile(0);
+    $reconcile([]);
     $assert($fw->services === ['unrelated' => ['name' => 'Unrelated service']] && !is_file($state));
     $fw->fail = 'zones';
     $fails(static function () use ($reconcile) { $reconcile(51821); });
@@ -99,7 +108,7 @@ try {
     $fails(static function () use ($reconcile) { $reconcile(51821); });
     $kernelFailure = false;
     $reconcile(51821);
-    $reconcile(0);
+    $reconcile([]);
     $rules = ['-A fpbxsvc-owned -p udp -m udp --dport 51821 -j ACCEPT'];
     foreach (['external', 'internal', 'other'] as $zone) $rules[] = '-A zone-' . $zone . ' -j fpbxsvc-owned';
     $assert(FirewallListener::rulesConverged($rules, 'fpbxsvc-owned', 51821));
@@ -108,7 +117,7 @@ try {
     $assert(!FirewallListener::rulesConverged(array_merge($rules, [$rules[0]]), 'fpbxsvc-owned', 51821));
     $assert(!FirewallListener::rulesConverged($rules, 'fpbxsvc-owned', 0));
     $assert(FirewallListener::rulesConverged([], 'fpbxsvc-owned', 0));
-    echo "Firewall listener tests: PASS (API model, interrupted creation/edit recovery, zone failure, removal verification, kernel convergence fixtures, idempotence and unrelated preservation)\n";
+    echo "Firewall listener tests: PASS (API model, interrupted creation recovery, multi-port reconciliation, zone failure, removal verification, kernel convergence fixtures, idempotence and unrelated preservation)\n";
 } finally {
     if (is_file($state)) unlink($state);
     if (is_file($state . '.lock')) unlink($state . '.lock');

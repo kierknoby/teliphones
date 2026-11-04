@@ -27,6 +27,7 @@ if (os.geteuid() != 0 or len(sys.argv) != 3 or not sys.argv[1].startswith("net:[
 spec = importlib.util.spec_from_file_location("broker", ROOT / "teliphones/support_broker.py")
 broker = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(broker)
+broker.SESSION_LEASE_SECONDS = 3600
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_support_broker import FREEPBX17_FAIL2BAN as BANS, fail2ban_hook  # noqa: E402
 
@@ -40,13 +41,17 @@ broker.IPTABLES = [IPTABLES]
 broker.ENV = {**broker.ENV, "XTABLES_LOCKFILE": LOCK}
 ENV = {**os.environ, "XTABLES_LOCKFILE": LOCK}
 PBX, SSH_PEER, WEB_PEER, STRANGER = "100.70.1.1", "100.70.1.2", "100.70.1.4", "100.70.1.3"
-PORTS = (22, 80, 443, 3306, 5038, 5060, broker.ssh.API_PORT, 8443, 22002, 22004)
+PORTS = (22, 80, 443, 3306, 5038, 5060, broker.ssh.API_PORT, broker.SESSION_CONTROL_PORT, 8443, 22002, 22004)
 # Public-side networks: FreePBX drops everything from these by default (external-zone shape).
 WAN = (("198.51.100.50", "198.51.100.1"), ("203.0.113.9", "203.0.113.1"))
 
 
 def run(*arguments, check=True):
-    return subprocess.run(list(arguments), capture_output=True, text=True, check=check, env=ENV).stdout
+    result = subprocess.run(list(arguments), capture_output=True, text=True, check=False, env=ENV)
+    if check and result.returncode:
+        raise RuntimeError("%s failed: %s%s" % (
+            shlex.join(arguments), result.stdout, result.stderr))
+    return result.stdout
 
 
 def ipt(*arguments):
@@ -224,9 +229,10 @@ listener_port = 0
 
 def listener_service(port):
     global listener_port
+    ports = [] if port == 0 else (port if isinstance(port, (list, tuple)) else [port])
     run("php", str(Path(__file__).with_name("firewall_listener_model.php")),
-        str(broker.STATE), str(port), IPTABLES, sys.argv[1])
-    listener_port = port
+        str(broker.STATE), ",".join(str(item) for item in ports) if ports else "0", IPTABLES, sys.argv[1])
+    listener_port = ports[0] if ports else 0
 
 
 workstation = subprocess.Popen(["unshare", "--net", "sleep", "180"])
@@ -271,10 +277,13 @@ with tempfile.TemporaryDirectory(prefix=".firewall-lab-", dir=ROOT) as directory
             udp_echo(port)
         udp_echo(51821)
 
-        state = {"subnet": "100.70.1.0/24", "listen_port": 51821, "workstations": [
+        state = {"subnet": "100.70.1.0/24", "listen_port": 51821, "connection_state": "open",
+                 "max_sessions": 2, "workstations": [
             {"id": "a" * 16, "name": "ssh", "public_key": "A" * 42 + "A=", "address": SSH_PEER + "/32", "mode": "persistent", "ssh": True},
             {"id": "b" * 16, "name": "web", "public_key": "B" * 42 + "A=", "address": WEB_PEER + "/32", "mode": "persistent", "ssh": False}]}
         instance.save_workstations(state)
+        lease = int(broker.time.time()) + broker.SESSION_LEASE_SECONDS
+        instance.save_active_sessions({"a" * 16: {"expires_at": lease}, "b" * 16: {"expires_at": lease}})
         run("nft", "add", "table", "inet", "teliphones_lab_foreign")
         foreign = run("nft", "-j", "list", "table", "inet", "teliphones_lab_foreign")
         ip6_before = run(IP6TABLES, "-w", "5", "-S")
@@ -283,7 +292,9 @@ with tempfile.TemporaryDirectory(prefix=".firewall-lab-", dir=ROOT) as directory
 
         # The nft table alone restricts web access by interface/destination; WireGuard AllowedIPs normally binds the
         # source. This veth has no cryptokey routing, so the unauthorised source is visible here.
-        check(open_set(workstation) == {(source, port) for source in (SSH_PEER, WEB_PEER, STRANGER) for port in (80, 443)} | {(SSH_PEER, 22)},
+        check(open_set(workstation) == {(source, broker.SESSION_CONTROL_PORT) for source in (SSH_PEER, WEB_PEER)}
+              | {(source, port) for source in (SSH_PEER, WEB_PEER) for port in (80, 443)}
+              | {(SSH_PEER, 22)},
               "baseline without FreePBX simulation should follow the nft policy only")
         freepbx()
         check(open_set(workstation) == set(), "reproduction: nft ACCEPT must not override the simulated FreePBX DROP")
@@ -292,7 +303,7 @@ with tempfile.TemporaryDirectory(prefix=".firewall-lab-", dir=ROOT) as directory
         check_unrelated(workstation)
 
         instance.firewall_integration(state)
-        listener_service(51821)
+        listener_service([51821, 52022])
         before = freepbx_snapshot()
         output = run(*enter, sys.executable, "-c", r"""
 import socket
@@ -310,7 +321,8 @@ print("ok")
 """)
         check(output.strip() == "ok", "workstation SIP/RTP restriction changed")
 
-        expected_open = {(SSH_PEER, 80), (SSH_PEER, 443), (SSH_PEER, 22), (WEB_PEER, 80), (WEB_PEER, 443)}
+        expected_open = {(SSH_PEER, 80), (SSH_PEER, 443), (SSH_PEER, 22), (WEB_PEER, 80), (WEB_PEER, 443),
+                         (SSH_PEER, broker.SESSION_CONTROL_PORT), (WEB_PEER, broker.SESSION_CONTROL_PORT)}
         check(instance.integration["state"] == "active", instance.integration)
         check(open_set(workstation) == expected_open, "integration must open exactly authorised web/SSH flows")
         # The WireGuard listener accepts handshakes from any public address, including a previously
@@ -318,6 +330,61 @@ print("ok")
         for source, gateway in WAN:
             check(udp_probe(workstation, source, gateway, 51821),
                   "WireGuard handshake UDP must reach the listener from previously unknown source %s" % source)
+        monitor = instance.monitor
+        monitor.close()
+        instance.monitor = None
+        listener_service([51821, 52022])
+        udp_echo(52022)
+        locked_policy = broker.workstation_policy(
+            PBX, [SSH_PEER], web_ports=tuple(entry["port"] for entry in broker.DEFAULT_WEB),
+            listener_sources=[{"port": 52022, "sources": [WAN[0][0] + "/32"]}],
+            admitted_sources=[SSH_PEER, WEB_PEER], control_sources=[SSH_PEER, WEB_PEER])
+        instance.mutate_policy(locked_policy, instance.owned_table())
+        check(udp_probe(workstation, WAN[0][0], WAN[0][1], 52022),
+              "a source explicitly allowed on a locked listener must reach UDP")
+        check(not udp_probe(workstation, WAN[1][0], WAN[1][1], 52022),
+              "an unapproved public source must be dropped on a locked listener")
+        locked_id, locked_peer = "c" * 16, "100.71.1.2"
+        locked_interface = instance.locked_interface({"id": locked_id})
+        run("ip", "link", "add", locked_interface, "type", "veth", "peer", "name", "locked-ws0")
+        run("ip", "link", "set", "locked-ws0", "netns", str(workstation.pid))
+        run("ip", "address", "add", "100.71.1.1/24", "dev", locked_interface)
+        run("ip", "link", "set", locked_interface, "up")
+        run(*enter, "ip", "address", "add", locked_peer + "/24", "dev", "locked-ws0")
+        run(*enter, "ip", "address", "add", "100.71.1.3/24", "dev", "locked-ws0")
+        run(*enter, "ip", "link", "set", "locked-ws0", "up")
+        dedicated_policy = broker.workstation_policy(
+            PBX, [SSH_PEER], web_ports=tuple(entry["port"] for entry in broker.DEFAULT_WEB),
+            listener_sources=[{"port": 52022, "sources": [WAN[0][0] + "/32"]}],
+            peer_interfaces=[{"interface": locked_interface, "pbx_address": "100.71.1.1",
+                              "source": locked_peer, "ssh_port": 22002}],
+            admitted_sources=[SSH_PEER, WEB_PEER, locked_peer],
+            control_sources=[SSH_PEER, WEB_PEER, locked_peer])
+        instance.mutate_policy(dedicated_policy, instance.owned_table())
+        locked_state = dict(state)
+        locked_state["workstations"] = state["workstations"] + [{
+            "id": locked_id, "name": "locked", "public_key": "C" * 42 + "A=",
+            "address": locked_peer + "/32", "mode": "persistent", "ssh": True,
+            "ssh_public_key": "fixture", "ssh_user": "fixture", "locked": True,
+            "subnet": "100.71.1.0/24", "pbx_address": "100.71.1.1", "listener_port": 52022,
+        }]
+        instance.firewall_integration(locked_state)
+        dedicated_access = reachable(workstation, [
+            (locked_peer, "100.71.1.1", port) for port in (22, 80, 443, 5038, broker.ssh.API_PORT,
+                                                            broker.SESSION_CONTROL_PORT, 22002)])
+        check({port for (_, _, port), allowed in dedicated_access.items() if allowed}
+              == {80, 443, broker.ssh.API_PORT, broker.SESSION_CONTROL_PORT, 22002},
+              "dedicated peer interface must permit web and explicitly authorised managed SSH only: %r; "
+              "integration=%r rules=%r" % (dedicated_access, instance.integration,
+                                           ipt("-S", broker.INTEGRATION_CHAIN)))
+        wrong_peer = reachable(workstation, [
+            ("100.71.1.3", "100.71.1.1", port) for port in (80, 443, broker.ssh.API_PORT,
+                                                              broker.SESSION_CONTROL_PORT, 22002)])
+        check(not any(wrong_peer.values()),
+              "dedicated managed SSH and web permits must reject another source on the same interface")
+        instance.firewall_integration(state)
+        instance.mutate_policy(instance.expected_policy(state), instance.owned_table())
+        instance.start_monitor()
         check(not udp_probe(workstation, WAN[0][0], WAN[0][1], 51822), "only the WireGuard listener port may be opened")
         wan_tcp = reachable(workstation, [(WAN[0][0], WAN[0][1], port) for port in PORTS])
         check(not any(wan_tcp.values()), "no TCP service may become reachable from the public side")
@@ -341,7 +408,7 @@ print("ok")
 
         # Migrate the exact old intrusive rule without installing any new INPUT rule.
         ipt("-D", "fpbxfirewall", *broker.iptables_arguments(broker.INTEGRATION_JUMP))
-        ipt("-I", "INPUT", str(len(BANS) + 1), *broker.iptables_arguments(broker.INTEGRATION_JUMP))
+        ipt("-I", "INPUT", str(len(BANS) + 1), *broker.iptables_arguments(broker.LEGACY_INTEGRATION_JUMP))
         instance.firewall_integration(state)
         check(valid_order() and freepbx_snapshot() == before, "legacy INPUT migration failed")
 
@@ -399,7 +466,8 @@ print("ok")
             if BACKEND == "nft":
                 check(instance.wake.wait(3), "FreePBX iptables-nft reload did not wake the enforcement worker")
             instance.expire_workstations()
-            check(instance.integration["state"] == "active" and len(jumps()) == 1, instance.integration)
+            check(instance.integration["state"] == "active" and len(jumps()) == 1,
+                  (instance.integration, instance.workstation_error))
             check(valid_order(), input_targets())
             check(open_set(workstation) == expected_open, "reconciliation did not restore exact access")
             check(udp_probe(workstation, WAN[0][0], WAN[0][1], 51821), "reload must restore WireGuard reachability")
@@ -423,7 +491,10 @@ print("ok")
         ipt("-I", "fail2ban-apache-auth", "1", "-s", WEB_PEER, "-j", "REJECT")
         instance.expire_workstations()
         check(valid_order(), input_targets())
-        check(open_set(workstation, (WEB_PEER,)) == set(), "Fail2Ban ban bypassed after hook reordering")
+        fail2ban_open = open_set(workstation, (WEB_PEER,))
+        check(fail2ban_open == {(WEB_PEER, broker.SESSION_CONTROL_PORT)},
+              "Fail2Ban must block management services while leaving only the non-management lease-control API: %r" %
+              (fail2ban_open,))
         ipt("-D", "fail2ban-apache-auth", "-s", WEB_PEER, "-j", "REJECT")
         freepbx()
         instance.expire_workstations()
@@ -448,7 +519,8 @@ print("ok")
         check(open_set(workstation) == expected_open - {(SSH_PEER, 22)}, "SSH was not removed")
         state["workstations"] = state["workstations"][1:]
         instance.firewall_integration(state)
-        check(open_set(workstation) == {(WEB_PEER, 80), (WEB_PEER, 443)}, "revoked peer retained access")
+        check(open_set(workstation) == {(WEB_PEER, 80), (WEB_PEER, 443),
+                                        (WEB_PEER, broker.SESSION_CONTROL_PORT)}, "revoked peer retained access")
         check(udp_probe(workstation, WAN[1][0], WAN[1][1], 51821), "revoking one peer must not close the listener")
 
         # Management web ports follow configuration on both firewall layers, with no stale permits.
@@ -456,11 +528,15 @@ print("ok")
         web_state["web"] = [{"scheme": "https", "port": 8443}]
         instance.mutate_policy(instance.expected_policy(web_state), instance.owned_table())
         instance.firewall_integration(web_state)
-        check(open_set(workstation, (WEB_PEER,)) == {(WEB_PEER, 8443)}, "custom management port not applied or stale ports kept")
+        check(open_set(workstation, (WEB_PEER,)) == {(WEB_PEER, 8443),
+                                                     (WEB_PEER, broker.SESSION_CONTROL_PORT)},
+              "custom management port not applied or stale ports kept")
         check(udp_probe(workstation, WAN[0][0], WAN[0][1], 51821), "management port change must not affect the listener")
         instance.mutate_policy(instance.expected_policy(state), instance.owned_table())
         instance.firewall_integration(state)
-        check(open_set(workstation, (WEB_PEER,)) == {(WEB_PEER, 80), (WEB_PEER, 443)}, "management port restore failed")
+        check(open_set(workstation, (WEB_PEER,)) == {(WEB_PEER, 80), (WEB_PEER, 443),
+                                                     (WEB_PEER, broker.SESSION_CONTROL_PORT)},
+              "management port restore failed")
 
         # Unknown hook ordering and missing hooks never produce integration rules.
         move_hook("fail2ban-sshd")

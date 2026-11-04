@@ -9,6 +9,7 @@
 #define IDD_HEALTH_LIMITS           106
 #define IDD_SESSION_LOG             107
 #define IDD_APP_MESSAGE             108
+#define IDD_SSH_TERMINAL             109
 
 #define IDC_WG_STATUS               1000
 #define IDC_PROFILES                1001
@@ -32,10 +33,14 @@
 #define IDC_HEALTH_INLINE_HISTORY   1021
 #define IDC_PBX_HEADING              1022
 #define IDC_CONNECTION_HEADING       1023
+#define IDC_LOCK_WORKSTATION         1024
 #define IDC_SESSION_LABEL            1024
 #define IDC_HEALTH_PLOT              1025
 #define IDC_CONTENT_VIEWPORT         1026
 #define IDC_HEALTH_POP_PLOT          1027
+#define IDC_ALLOWED_SOURCES          1028
+#define IDC_REQUEST_SOURCES           1029
+#define IDC_ALLOWED_SOURCES_LABEL     1030
 
 #define IDC_PAIR_NAME               1100
 #define IDC_PAIR_WORKSTATION        1101
@@ -45,7 +50,8 @@
 #define IDC_PAIR_COPY               1105
 #define IDC_PAIR_RESPONSE           1106
 #define IDC_PAIR_FINGERPRINT        1107
-#define IDC_PAIR_SSH_CAPABILITY     1108
+#define IDC_PAIR_ACCESS             1108
+#define IDC_PAIR_STATUS             1109
 
 #define IDC_SUP_NAME                1200
 #define IDC_SUP_GENERATE            1201
@@ -99,12 +105,34 @@
 #define IDC_MESSAGE_FIRST           1417
 #define IDC_MESSAGE_SECOND          1418
 #define IDC_MESSAGE_THIRD           1419
+#define IDD_CONNECT_PASSWORD        129
+#define IDC_PASSWORD_VALUE          1420
+#define IDC_PASSWORD_CONFIRM        1421
+#define IDC_PASSWORD_CONFIRM_LABEL  1422
+#define IDC_SSH_TERMINAL_STATUS     1430
+#define IDC_SSH_TERMINAL_OUTPUT     1431
+#define IDC_SSH_TERMINAL_INPUT      1432
+#define IDC_SSH_TERMINAL_SEND       1433
+#define IDC_SSH_TERMINAL_COPY       1434
+#define IDC_SSH_TERMINAL_CLEAR      1435
+#define IDC_SSH_TERMINAL_PASTE      1436
+#define IDC_SSH_TERMINAL_RECONNECT  1437
+#define IDC_SSH_TERMINAL_DISCONNECT 1438
+#define IDC_PASSWORD_NOTICE         1423
+#define IDC_CONNECT_PASSWORD        1424
+#define IDD_CONNECT_PASSWORD_CHOICE 130
+#define IDC_PASSWORD_CHOICE_NOTICE  1425
+#define IDC_PASSWORD_SET            1426
+#define IDC_PASSWORD_SKIP_ONCE      1427
+#define IDC_PASSWORD_SKIP_ALWAYS    1428
+#define IDC_PASSWORD_LOCK_NOW       1429
+#define IDC_PASSWORD_SECURITY_GROUP 1430
 
 #ifdef APSTUDIO_INVOKED
 #ifndef APSTUDIO_READONLY_SYMBOLS
-#define _APS_NEXT_RESOURCE_VALUE    129
+#define _APS_NEXT_RESOURCE_VALUE    131
 #define _APS_NEXT_COMMAND_VALUE     32771
-#define _APS_NEXT_CONTROL_VALUE     1420
+#define _APS_NEXT_CONTROL_VALUE     1431
 #define _APS_NEXT_SYMED_VALUE       101
 #endif
 #endif

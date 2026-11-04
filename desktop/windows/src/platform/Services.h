@@ -1,8 +1,9 @@
-// Credential Manager (DPAPI-protected) storage for WireGuard private keys, the per-user profile store,
+// Credential Manager (DPAPI-protected, optionally Argon2id/AES-GCM inside DPAPI) storage for WireGuard keys, the per-user profile store,
 // and tunnel reachability probes. The FreePBX GUI and SSH launchers are in Applications.h.
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -14,7 +15,10 @@ namespace win {
 
 void SavePrivateKey(const std::string& target, const std::string& privateKey);
 // Empty when no key is stored for the target.
-std::string LoadPrivateKey(const std::string& target);
+std::string LoadPrivateKey(const std::string& target, const std::string& password = "");
+bool PrivateKeyNeedsPassword(const std::string& target);
+// Replaces the credential only after validating the old password; an empty new password restores DPAPI-only mode.
+void SetConnectPassword(const std::string& target, const std::string& oldPassword, const std::string& newPassword);
 void DeletePrivateKey(const std::string& target);
 void DeleteSshPrivateKey(const Profile& profile);
 
@@ -37,6 +41,26 @@ struct TcpProbeMeasurement {
     std::string error;
 };
 TcpProbeMeasurement MeasureTcpProbe(const std::string& ipv4, unsigned short port, unsigned timeoutMs);
+struct WorkstationSessionStatus {
+    int connectedWorkstations = 0;
+    int maximumWorkstations = 0;
+    bool policyLocked = false;
+    std::int64_t expiresAt = 0;
+    std::string policySummary;
+    std::string allowedSources;
+    std::optional<PairResponse> migration;
+    std::optional<PairResponse> pairingUpdate;
+    std::string sshRequestStatus;
+    bool unlockRequestPending = false;
+    bool sourcesRequestPending = false;
+    bool sshRevoked = false;
+    bool sshRequestRejected = false;
+};
+WorkstationSessionStatus MaintainWorkstationSession(const std::string& pbxAddress, bool release,
+                                                    const PairResponse* pairing = nullptr,
+                                                    const std::string& action = "",
+                                                    const std::string& sshPublicKey = "",
+                                                    const std::string& allowedSources = "");
 WireGuardCounters ReadWireGuardCounters(const std::wstring& wgExecutable, const std::string& tunnelName, const std::string& peerPublicKey);
 // IP-layer interface octets, not encrypted per-peer counters; handshake remains unknown.
 WireGuardCounters ReadTunnelInterfaceCounters(const std::string& tunnelName);

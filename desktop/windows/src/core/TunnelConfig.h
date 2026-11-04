@@ -19,6 +19,11 @@ struct TunnelConfig {
 void ValidateTunnel(const TunnelConfig& config);
 // Renders the same shape as gateway/engineer_config.py: no DNS, no scripts, no ListenPort, host routes only.
 std::string RenderTunnel(const TunnelConfig& config);
+// Public placeholder identity only. The enrolled private key must be supplied in memory after service startup.
+std::string RenderBootstrapTunnel(const TunnelConfig& config);
+bool IsBootstrapTunnel(const TunnelConfig& config);
+// Elevated-helper policy: reject legacy/stored configurations containing an enrolled private key.
+void ValidateBootstrapTunnel(const TunnelConfig& config);
 // Accepts only text that RenderTunnel could have produced; anything else (PostUp, DNS, Table, broad routes...) is rejected.
 TunnelConfig ParseTunnelStrict(const std::string& text);
 

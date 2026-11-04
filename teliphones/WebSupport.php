@@ -3,14 +3,13 @@ namespace FreePBX\modules\Teliphones;
 
 class WebSupport
 {
-    public const VERSION = '0.5.0';
+    public const VERSION = '0.6.0';
     public const DIAGNOSTIC_ID_PATTERN = '/^ws-[a-f0-9]{16}$/';
 
     public static function authorised($sessionUser, $frameworkUser = null): bool
     {
         return self::accessError($sessionUser, $frameworkUser) === null;
     }
-
     public static function accessError($sessionUser, $frameworkUser = null): ?string
     {
         if (!(is_object($sessionUser) && is_callable([$sessionUser, 'checkSection']))
@@ -35,7 +34,11 @@ class WebSupport
         return null;
     }
 
-    public const BROKER_ACTIONS = ['authorise', 'revoke', 'dependencies', 'evidence', 'configure', 'pair', 'unpair', 'web'];
+    public const BROKER_ACTIONS = ['authorise', 'revoke', 'dependencies', 'evidence', 'configure', 'pair', 'unpair', 'web',
+        'workstation-policy', 'workstation-manage', 'workstation-ban', 'workstation-unban', 'workstation-limit',
+        'workstation-ssh-approve', 'workstation-ssh-reject', 'workstation-ssh-revoke',
+        'workstation-unlock-approve', 'workstation-unlock-reject',
+        'workstation-sources-approve', 'workstation-sources-reject'];
     public const ACTION_LABELS = [
         'authorise' => 'Authorise Remote Support',
         'revoke' => 'Revoke Remote Support',
@@ -45,12 +48,36 @@ class WebSupport
         'pair' => 'Pair Windows workstation',
         'unpair' => 'Revoke workstation access',
         'web' => 'Update management web services',
+        'workstation-policy' => 'Change workstation connection state',
+        'workstation-manage' => 'Change paired workstation source restrictions',
+        'workstation-ban' => 'Add TELIPHONES listener ban',
+        'workstation-unban' => 'Remove TELIPHONES listener ban',
+        'workstation-limit' => 'Change maximum simultaneous workstation connections',
+        'workstation-ssh-approve' => 'Approve post-pair SSH elevation',
+        'workstation-ssh-reject' => 'Reject post-pair SSH elevation',
+        'workstation-ssh-revoke' => 'Revoke managed workstation SSH access',
+        'workstation-unlock-approve' => 'Approve workstation unlock request',
+        'workstation-unlock-reject' => 'Reject workstation unlock request',
+        'workstation-sources-approve' => 'Approve workstation Allowed List request',
+        'workstation-sources-reject' => 'Reject workstation Allowed List request',
     ];
     /** Exact fields forwarded for workstation pairing actions; other actions keep their existing forwarding. */
     public const PAIRING_FIELDS = [
-        'pair' => ['request', 'endpoint_host', 'listen_port', 'mode', 'minutes', 'ssh', 'ssh_user', 'web'],
+        'pair' => ['request', 'endpoint_host', 'listen_port', 'mode', 'minutes', 'ssh', 'ssh_user', 'web', 'sources'],
         'unpair' => ['workstation_id'],
         'web' => ['web'],
+        'workstation-policy' => ['state'],
+        'workstation-manage' => ['workstation_id', 'state', 'sources'],
+        'workstation-ban' => ['source', 'reason', 'hours'],
+        'workstation-unban' => ['ban_id'],
+        'workstation-limit' => ['maximum'],
+        'workstation-ssh-approve' => ['workstation_id', 'ssh_user'],
+        'workstation-ssh-reject' => ['workstation_id'],
+        'workstation-ssh-revoke' => ['workstation_id'],
+        'workstation-unlock-approve' => ['workstation_id'],
+        'workstation-unlock-reject' => ['workstation_id'],
+        'workstation-sources-approve' => ['workstation_id'],
+        'workstation-sources-reject' => ['workstation_id'],
     ];
 
     private string $socket;
@@ -72,6 +99,12 @@ class WebSupport
     public const SSH_PROTOCOL = 5;
     /** Protocol 6 adds the WireGuard listener firewall permit and configurable management web services. */
     public const WEB_PROTOCOL = 6;
+    public const POLICY_PROTOCOL = 8;
+    public const SOURCE_LOCK_PROTOCOL = 8;
+    public const LOCKED_SSH_PROTOCOL = 9;
+    public const BAN_PROTOCOL = 10;
+    public const SESSION_PROTOCOL = 11;
+    public const WORKSTATION_MANAGEMENT_PROTOCOL = 12;
 
     public static function brokerOperational(array $response): bool
     {
@@ -116,6 +149,15 @@ class WebSupport
             return ['code' => 409, 'dispatched' => false, 'notice' => ['ok' => false, 'action_failed' => true,
                 'error' => 'Update the root broker before pairing with configured management web services.']];
         }
+        if ($request['action'] === 'pair' && !empty($request['sources']) && !self::supportsSourceLocks($support)) {
+            return ['code' => 409, 'dispatched' => false, 'notice' => ['ok' => false, 'action_failed' => true,
+                'error' => 'Source-locked pairing requires the updated root broker. Complete the documented root broker update, then retry.']];
+        }
+        if ($request['action'] === 'pair' && !empty($request['sources']) && ($request['ssh'] ?? '') === '1'
+            && !self::supportsLockedSsh($support)) {
+            return ['code' => 409, 'dispatched' => false, 'notice' => ['ok' => false, 'action_failed' => true,
+                'error' => 'Locked SSH pairing requires the updated root broker. Complete the documented root broker update, then retry.']];
+        }
         // An empty value preserves the saved configuration.
         if ($request['action'] === 'pair' && isset($request['web'])
             && trim($request['web']) === '') {
@@ -124,6 +166,18 @@ class WebSupport
         if ($request['action'] === 'web' && !self::supportsWeb($support)) {
             return ['code' => 200, 'dispatched' => false, 'notice' => ['ok' => false, 'action_failed' => true, 'action' => 'web', 'operation' => $operation,
                 'error' => 'Management web services require the updated root broker. Follow the root broker update procedure, then refresh this page.']];
+        }
+        if ($request['action'] === 'workstation-policy' && !self::supportsWorkstationPolicy($support)) {
+            return ['code' => 409, 'dispatched' => false, 'notice' => ['ok' => false, 'action_failed' => true,
+                'error' => 'Connection states require the updated root broker. Follow the root broker update procedure, then refresh this page.']];
+        }
+        if ($request['action'] === 'workstation-limit' && !self::supportsWorkstationSessions($support)) {
+            return ['code' => 409, 'dispatched' => false, 'notice' => ['ok' => false, 'action_failed' => true,
+                'error' => 'Enforced workstation session limits require the updated root broker. Complete the documented root broker update, then retry.']];
+        }
+        if ($request['action'] === 'workstation-manage' && !self::supportsWorkstationManagement($support)) {
+            return ['code' => 409, 'dispatched' => false, 'notice' => ['ok' => false, 'action_failed' => true,
+                'error' => 'Post-pair workstation policy requires the updated root broker. Complete the documented root broker update, then retry.']];
         }
         if ($request['action'] === 'web' && strtolower((string)($server['HTTPS'] ?? '')) !== 'on'
             && (string)($server['SERVER_PORT'] ?? '') !== '443') {
@@ -136,13 +190,31 @@ class WebSupport
                     ? 'Revocation was NOT performed: the privileged TELIPHONES broker is unavailable (see the system warning above). Use the emergency root revocation below if a session may be active, then follow the recovery steps above and refresh.'
                     : 'The operation was not attempted: the privileged TELIPHONES broker is unavailable (see the system warning above). Follow the installation or recovery steps above, then refresh this page and retry.']];
         }
-        if (in_array($request['action'], ['pair', 'unpair'], true)) {
+        if (in_array($request['action'], ['pair', 'unpair', 'workstation-manage', 'workstation-ban', 'workstation-unban',
+            'workstation-unlock-approve', 'workstation-unlock-reject',
+            'workstation-sources-approve', 'workstation-sources-reject'], true)) {
             $workstations = self::workstations($support);
-            if (!$workstations['supported'] || ($request['action'] === 'pair' && !$workstations['ready'])) {
+            if (!$workstations['supported'] || ($request['action'] === 'pair' && !$workstations['ready'])
+                || ($request['action'] === 'workstation-manage' && !$workstations['management_supported'])
+                || (in_array($request['action'], ['workstation-unlock-approve', 'workstation-unlock-reject'], true)
+                    && !$workstations['management_supported'])
+                || (in_array($request['action'], ['workstation-sources-approve', 'workstation-sources-reject'], true)
+                    && !$workstations['management_supported'])
+                || (in_array($request['action'], ['workstation-ssh-approve', 'workstation-ssh-reject', 'workstation-ssh-revoke'], true)
+                    && (!$workstations['management_supported'] || !$workstations['ssh_ready']))
+                || (in_array($request['action'], ['workstation-ban', 'workstation-unban'], true) && !$workstations['ban_supported'])) {
                 return ['code' => 200, 'dispatched' => false, 'notice' => ['ok' => false, 'action_failed' => true, 'action' => $request['action'], 'operation' => $operation,
                     'error' => !$workstations['supported']
                         ? 'Workstation operation was not attempted: the root broker does not report compatible pairing capabilities. Rerun Complete Installation from a root shell after upgrading, with no active support session.'
-                        : 'Workstation pairing was not attempted: WireGuard tools, iproute2 and nftables must be available and TELIPHONES must be enabled.']];
+                        : (($request['action'] === 'pair')
+                            ? 'Workstation pairing was not attempted: WireGuard tools, iproute2 and nftables must be available and TELIPHONES must be enabled.'
+                            : (in_array($request['action'], ['workstation-ssh-approve', 'workstation-ssh-reject', 'workstation-ssh-revoke'], true)
+                                ? 'Post-pair SSH elevation was not attempted: update the root broker and verify the managed SSH authority.'
+                                : (in_array($request['action'], ['workstation-manage', 'workstation-unlock-approve',
+                                    'workstation-unlock-reject', 'workstation-sources-approve',
+                                    'workstation-sources-reject'], true)
+                                ? 'Post-pair workstation policy was not attempted: update the root broker to protocol 12.'
+                                : 'Manual listener bans require the updated root broker and protocol 12.')))]];
             }
         }
         if ($request['action'] === 'configure' && strtolower((string)($server['HTTPS'] ?? '')) !== 'on' && (string)($server['SERVER_PORT'] ?? '') !== '443') {
@@ -153,7 +225,12 @@ class WebSupport
             return ['code' => 200, 'dispatched' => false, 'notice' => ['ok' => false, 'action_failed' => true, 'action' => 'pair', 'operation' => $operation, 'error' => 'Workstations may only be paired over HTTPS. Open the FreePBX administration interface using https:// and try again.']];
         }
         if ($request['action'] === 'pair' && ($request['ssh'] ?? '') === '1'
-            && strpos($request['request'] ?? '', 'TELIPHONES-PAIR-REQUEST-2:') === 0) {
+            && !self::pairingRequestSupportsSsh($request['request'] ?? '')) {
+            return ['code' => 400, 'dispatched' => false, 'notice' => ['ok' => false, 'action_failed' => true,
+                'action' => 'pair', 'operation' => $operation,
+                'error' => 'This pairing request did not include SSH capability. Request SSH in the Windows application before approving it.']];
+        }
+        if ($request['action'] === 'pair' && ($request['ssh'] ?? '') === '1') {
             $account = $request['ssh_user'] ?? '';
             if (preg_match('/^[a-z_][a-z0-9_-]{0,31}$/D', $account) !== 1) {
                 return ['code' => 400, 'dispatched' => false, 'notice' => ['ok' => false, 'action_failed' => true,
@@ -174,6 +251,68 @@ class WebSupport
             $notice['operation'] = $operation;
         }
         return ['code' => 200, 'dispatched' => true, 'notice' => $notice];
+    }
+
+    public static function supportsWorkstationPolicy(array $support): bool
+    {
+        return self::brokerOperational($support)
+            && is_int($support['status']['protocol'] ?? null)
+            && $support['status']['protocol'] >= self::POLICY_PROTOCOL
+            && is_string($support['status']['workstations']['connection_state'] ?? null)
+            && in_array($support['status']['workstations']['connection_state'], ['open', 'closed', 'frozen'], true);
+    }
+
+    public static function supportsSourceLocks(array $support): bool
+    {
+        return self::brokerOperational($support)
+            && is_int($support['status']['protocol'] ?? null)
+            && $support['status']['protocol'] >= self::SOURCE_LOCK_PROTOCOL;
+    }
+
+    public static function supportsLockedSsh(array $support): bool
+    {
+        return self::brokerOperational($support)
+            && is_int($support['status']['protocol'] ?? null)
+            && $support['status']['protocol'] >= self::LOCKED_SSH_PROTOCOL;
+    }
+
+    public static function supportsWorkstationSessions(array $support): bool
+    {
+        return self::brokerOperational($support)
+            && is_int($support['status']['protocol'] ?? null)
+            && $support['status']['protocol'] >= self::SESSION_PROTOCOL
+            && is_array($support['status']['workstations'] ?? null)
+            && is_int($support['status']['workstations']['max_sessions'] ?? null)
+            && $support['status']['workstations']['max_sessions'] >= 1
+            && $support['status']['workstations']['max_sessions'] <= 128
+            && is_int($support['status']['workstations']['connected_workstations'] ?? null)
+            && $support['status']['workstations']['connected_workstations'] >= 0
+            && $support['status']['workstations']['connected_workstations'] <= 128;
+    }
+
+    public static function supportsWorkstationManagement(array $support): bool
+    {
+        return self::brokerOperational($support)
+            && is_int($support['status']['protocol'] ?? null)
+            && $support['status']['protocol'] >= self::WORKSTATION_MANAGEMENT_PROTOCOL
+            && self::supportsWorkstations($support);
+    }
+
+    public static function pairingRequestSupportsSsh($request): bool
+    {
+        if (!is_string($request) || strlen($request) > 4096
+            || preg_match('/^TELIPHONES-PAIR-REQUEST-2:([A-Za-z0-9_-]+)$/D', trim($request), $matches) !== 1) {
+            return false;
+        }
+        $encoded = strtr($matches[1], '-_', '+/');
+        $encoded .= str_repeat('=', (4 - strlen($encoded) % 4) % 4);
+        $decoded = base64_decode($encoded, true);
+        if ($decoded === false) return false;
+        $payload = json_decode($decoded, true);
+        return is_array($payload)
+            && ($payload['schema'] ?? null) === 'teliphones-pair-request/2'
+            && is_string($payload['ssh_public_key'] ?? null)
+            && $payload['ssh_public_key'] !== '';
     }
 
     /**
@@ -420,20 +559,66 @@ class WebSupport
         $raw = is_array($status['workstations'] ?? null) ? $status['workstations'] : null;
         $supported = self::supportsWorkstations($support);
         $items = [];
+        $bans = [];
         foreach ($supported && is_array($raw['items'] ?? null) ? $raw['items'] : [] as $item) {
             if (!is_array($item) || !is_string($item['id'] ?? null) || !preg_match('/^[a-f0-9]{16}$/', $item['id'])) continue;
+            $sources = is_array($item['sources'] ?? null) ? array_slice(array_filter($item['sources'], 'is_string'), 0, 32) : [];
+            $effectiveSources = is_array($item['effective_sources'] ?? null)
+                ? array_slice(array_filter($item['effective_sources'], 'is_string'), 0, 64) : [];
+            $sourceFailures = is_array($item['source_resolution_failures'] ?? null)
+                ? array_slice(array_filter($item['source_resolution_failures'], 'is_string'), 0, 32) : [];
+            $endpoint = null;
+            if (is_array($item['verified_endpoint'] ?? null) && is_string($item['verified_endpoint']['address'] ?? null)
+                && filter_var($item['verified_endpoint']['address'], FILTER_VALIDATE_IP) !== false
+                && is_int($item['verified_endpoint']['port'] ?? null)
+                && $item['verified_endpoint']['port'] >= 1 && $item['verified_endpoint']['port'] <= 65535) {
+                $endpoint = ['address' => $item['verified_endpoint']['address'], 'port' => $item['verified_endpoint']['port']];
+            }
+            $lastHandshake = is_int($item['last_handshake'] ?? null) && $item['last_handshake'] >= 0
+                ? $item['last_handshake'] : null;
             $items[] = ['id' => $item['id'], 'name' => substr((string)($item['name'] ?? ''), 0, 64), 'address' => substr((string)($item['address'] ?? ''), 0, 18),
                 'mode' => ($item['mode'] ?? '') === 'persistent' ? 'persistent' : 'temporary', 'ssh' => ($item['ssh'] ?? false) === true,
+                'locked' => ($item['locked'] ?? false) === true, 'sources' => $sources,
+                'effective_sources' => $effectiveSources, 'source_resolution_failures' => $sourceFailures,
+                'listener_port' => is_int($item['listener_port'] ?? null) && $item['listener_port'] >= 1024 && $item['listener_port'] <= 65535
+                    ? $item['listener_port'] : (is_int($raw['listen_port'] ?? null) ? $raw['listen_port'] : null),
                 'ssh_managed' => ($item['ssh_managed'] ?? false) === true,
+                    'ssh_request_pending' => ($item['ssh_request_pending'] ?? false) === true,
+                'unlock_request_pending' => ($item['unlock_request_pending'] ?? false) === true,
+                'sources_request_pending' => ($item['sources_request_pending'] ?? false) === true,
+                'requested_sources' => is_array($item['requested_sources'] ?? null)
+                    ? array_slice(array_filter($item['requested_sources'], 'is_string'), 0, 32) : [],
                 'ssh_user' => is_string($item['ssh_user'] ?? null) && preg_match('/^[a-z_][a-z0-9_-]{0,31}$/D', $item['ssh_user']) === 1 ? $item['ssh_user'] : '',
                 'ssh_port' => is_int($item['ssh_port'] ?? null) && $item['ssh_port'] >= 1 && $item['ssh_port'] <= 65535 ? $item['ssh_port'] : null,
                 'expires_at' => is_int($item['expires_at'] ?? null) ? $item['expires_at'] : null,
-                'last_handshake' => is_int($item['last_handshake'] ?? null) && $item['last_handshake'] >= 0 ? $item['last_handshake'] : null,
+                'last_handshake' => $lastHandshake,
+                'current_source_verified' => $lastHandshake !== null && $lastHandshake > 0 && $lastHandshake >= time() - 180 && $endpoint !== null,
+                'session_active' => ($item['session_active'] ?? false) === true,
+                'session_expires_at' => is_int($item['session_expires_at'] ?? null) ? $item['session_expires_at'] : null,
+                'verified_endpoint' => $endpoint,
                 'fingerprint' => substr((string)($item['fingerprint'] ?? ''), 0, 40)];
+        }
+        foreach ($supported && is_array($raw['bans'] ?? null) ? $raw['bans'] : [] as $ban) {
+            if (!is_array($ban) || !is_string($ban['id'] ?? null) || preg_match('/^[a-f0-9]{16}$/D', $ban['id']) !== 1
+                || !is_string($ban['source'] ?? null) || !is_string($ban['reason'] ?? null)) continue;
+            $parts = explode('/', $ban['source']);
+            if (count($parts) > 2 || filter_var($parts[0], FILTER_VALIDATE_IP) === false
+                || (isset($parts[1]) && (!ctype_digit($parts[1])
+                    || (strpos($parts[0], ':') === false ? (int)$parts[1] > 32 : (int)$parts[1] > 128)))) continue;
+            $bans[] = ['id' => $ban['id'], 'source' => substr($ban['source'], 0, 64),
+                'reason' => substr($ban['reason'], 0, 160),
+                'expires_at' => is_int($ban['expires_at'] ?? null) ? $ban['expires_at'] : null,
+                'active' => ($ban['active'] ?? false) === true];
         }
         $requirements = [];
         foreach ($supported && is_array($raw['requirements'] ?? null) ? $raw['requirements'] : [] as $name => $value) {
             if (is_string($name)) $requirements[substr($name, 0, 20)] = $value === true;
+        }
+        $sshAccounts = [];
+        foreach ($supported && is_array($raw['ssh_accounts'] ?? null) ? $raw['ssh_accounts'] : [] as $account) {
+            if (is_string($account) && preg_match('/^[a-z_][a-z0-9_-]{0,31}$/D', $account) === 1) {
+                $sshAccounts[] = $account;
+            }
         }
         // Brokers before the FreePBX Firewall integration do not report it ("unknown"): rerun the root bootstrap.
         $integration = $supported && is_array($raw['firewall_integration'] ?? null) ? $raw['firewall_integration'] : [];
@@ -450,14 +635,23 @@ class WebSupport
             }
         }
         return ['supported' => $supported, 'ready' => $supported && $raw['ready'] === true && !in_array(false, $requirements, true) && ($status['enabled'] ?? true) === true, 'requirements' => $requirements,
+            'connection_state' => in_array($raw['connection_state'] ?? null, ['open', 'closed', 'frozen'], true) ? $raw['connection_state'] : null,
+            'policy_supported' => self::supportsWorkstationPolicy($support),
+            'ban_supported' => $supported && ($status['protocol'] ?? 0) >= self::BAN_PROTOCOL,
+            'session_supported' => self::supportsWorkstationSessions($support),
+            'management_supported' => self::supportsWorkstationManagement($support),
+            'max_sessions' => self::supportsWorkstationSessions($support) ? $raw['max_sessions'] : null,
+            'connected_workstations' => self::supportsWorkstationSessions($support) ? $raw['connected_workstations'] : null,
             'ssh_ready' => $supported && ($status['protocol'] ?? 0) >= self::SSH_PROTOCOL && ($raw['ssh_ready'] ?? false) === true,
+            'ssh_accounts' => array_values(array_unique($sshAccounts)),
             'ssh_error' => $supported && is_string($raw['ssh_error'] ?? null) ? substr($raw['ssh_error'], 0, 500) : '',
             'error' => $supported && is_string($raw['error'] ?? null) ? substr($raw['error'], 0, 500) : '',
             'firewall_integration' => $firewallIntegration,
             'web' => $web, 'web_supported' => $supported && ($status['protocol'] ?? 0) >= self::WEB_PROTOCOL,
             'gui_url' => $supported && is_string($raw['gui_url'] ?? null)
                 && preg_match('#^https?://[0-9.]{7,15}(:[0-9]{1,5})?/admin/$#D', $raw['gui_url']) === 1 ? $raw['gui_url'] : null,
-            'listen_port' => $supported && is_int($raw['listen_port'] ?? null) ? $raw['listen_port'] : null, 'items' => $items];
+            'listen_port' => $supported && is_int($raw['listen_port'] ?? null) ? $raw['listen_port'] : null,
+            'bans' => $bans, 'items' => $items];
     }
 
     public static function validPairingResponse($value): bool

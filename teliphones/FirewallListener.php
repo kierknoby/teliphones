@@ -7,96 +7,147 @@ final class FirewallListener
     public const NAME = 'TELIPHONES WireGuard listener (managed)';
     private const ZONES = ['external', 'internal', 'other'];
 
-    public static function reconcile($firewall, int $port, string $stateFile, ?callable $verify = null): void
+    public static function reconcile($firewall, $ports, string $stateFile, ?callable $verify = null): void
     {
-        if ($port !== 0 && ($port < 1024 || $port > 65535)) {
-            throw new \RuntimeException('Invalid TELIPHONES WireGuard listener port.');
+        if ($ports === 0) $ports = [];
+        $ports = is_array($ports) ? $ports : [$ports];
+        foreach ($ports as $port) {
+            if (!is_int($port) || $port < 1024 || $port > 65535) {
+                throw new \RuntimeException('Invalid TELIPHONES WireGuard listener port.');
+            }
         }
+        $ports = array_values(array_unique($ports));
+        sort($ports, SORT_NUMERIC);
         $lock = fopen($stateFile . '.lock', 'c');
         if ($lock === false || !flock($lock, LOCK_EX)) {
             throw new \RuntimeException('Cannot lock TELIPHONES listener ownership state.');
         }
         try {
             $saved = is_file($stateFile) ? json_decode(file_get_contents($stateFile), true, 16, JSON_THROW_ON_ERROR) : null;
-            if ($saved !== null && (!is_array($saved) || !is_int($saved['port'] ?? null)
-                || !is_string($saved['name'] ?? self::NAME)
-                || !array_key_exists('id', $saved)
-                || ($saved['id'] !== null && !is_string($saved['id']))
-                || (isset($saved['next_port']) && !is_int($saved['next_port'])))) {
+            if ($saved !== null && !is_array($saved)) {
+                throw new \RuntimeException('Invalid TELIPHONES listener ownership state.');
+            }
+            if ($saved !== null && isset($saved['port'])) {
+                if (!is_int($saved['port']) || !array_key_exists('id', $saved)
+                    || ($saved['id'] !== null && !is_string($saved['id']))
+                    || !is_string($saved['name'] ?? self::NAME)) {
+                    throw new \RuntimeException('Invalid TELIPHONES listener ownership state.');
+                }
+                $saved = ['services' => [(string)$saved['port'] => [
+                    'id' => $saved['id'], 'name' => $saved['name'] ?? self::NAME,
+                ]]];
+            }
+            if ($saved !== null && (!isset($saved['services']) || !is_array($saved['services']))) {
                 throw new \RuntimeException('Invalid TELIPHONES listener ownership state.');
             }
             $services = $firewall->getAllCustomServices();
             if (!is_array($services)) throw new \RuntimeException('Cannot inventory FreePBX custom services.');
-            $owned = null;
-            foreach ($services as $id => $service) {
-                if (!is_array($service)) continue;
-                $name = $saved['name'] ?? self::NAME;
-                if (($service['name'] ?? '') !== $name && ($saved['id'] ?? null) !== $id) continue;
-                if ($saved === null || (($saved['id'] ?? null) !== $id
-                    && ($saved['id'] ?? null) !== null)
-                    || ($service !== self::service($id, $saved['port'], $name)
-                        && $service !== self::service($id, $saved['next_port'] ?? $saved['port'], $name))) {
-                    throw new \RuntimeException('Conflicting TELIPHONES listener service; refusing to change it.');
+            $saved = $saved ?? ['services' => []];
+            foreach ($saved['services'] as $port => $record) {
+                if (!ctype_digit((string)$port) || !is_array($record)
+                    || !array_key_exists('id', $record)
+                    || ($record['id'] !== null && !is_string($record['id']))
+                    || !is_string($record['name'] ?? null)) {
+                    throw new \RuntimeException('Invalid TELIPHONES listener ownership record.');
                 }
-                if ($owned !== null) throw new \RuntimeException('Duplicate TELIPHONES listener services.');
-                $owned = $id;
             }
-            if ($port === 0) {
-                if ($owned !== null) {
-                    $saved['id'] = $owned;
-                    self::save($stateFile, $saved);
-                    $firewall->deleteCustomService($owned);
+            $ownedIds = [];
+            $ownedNames = [];
+            foreach ($saved['services'] as $record) {
+                if (isset($record['id'])) {
+                    if (isset($ownedIds[$record['id']])) {
+                        throw new \RuntimeException('Duplicate TELIPHONES listener ownership identifiers.');
+                    }
+                    $ownedIds[$record['id']] = true;
                 }
-                $remaining = $firewall->getAllCustomServices();
-                if (!is_array($remaining) || ($owned !== null && !empty($remaining[$owned]))) {
-                    throw new \RuntimeException('FreePBX listener service removal could not be verified.');
+                if (isset($ownedNames[$record['name']])) {
+                    throw new \RuntimeException('Duplicate TELIPHONES listener ownership names.');
                 }
-                if ($owned !== null || !empty($saved['id'])) {
-                    ($verify ?? [self::class, 'verifyRules'])($owned ?? $saved['id'], 0);
-                }
-                if (is_file($stateFile) && !unlink($stateFile)) {
-                    throw new \RuntimeException('Cannot remove TELIPHONES listener ownership state.');
-                }
-                return;
+                $ownedNames[$record['name']] = true;
             }
-            if ($saved === null) {
-                $saved = ['id' => null, 'port' => $port, 'name' => self::NAME . ' ' . bin2hex(random_bytes(8))];
-                self::save($stateFile, $saved);
-            }
-            $name = $saved['name'] ?? self::NAME;
-            if ($owned === null) {
-                // Persist intent before the API call: a crash after creation is safely adoptable.
-                $saved['id'] = null;
-                $saved['port'] = $port;
-                unset($saved['next_port']);
-                self::save($stateFile, $saved);
-                $firewall->addCustomService($name, 'udp', (string)$port);
-                $services = $firewall->getAllCustomServices();
+            foreach ($saved['services'] as $port => $record) {
+                $matches = 0;
                 foreach ($services as $id => $service) {
-                    if ($service === self::service($id, $port, $name)) {
+                    if (!is_array($service)) continue;
+                    if (($service['name'] ?? null) !== $record['name'] && ($record['id'] ?? null) !== $id) continue;
+                    if (($record['id'] !== null && $record['id'] !== $id)
+                        || $service !== self::service($id, (int)$port, $record['name'])) {
+                        throw new \RuntimeException('Conflicting TELIPHONES listener service; refusing to change it.');
+                    }
+                    ++$matches;
+                    if ($record['id'] === null) $saved['services'][$port]['id'] = $id;
+                }
+                if ($matches > 1) throw new \RuntimeException('Duplicate TELIPHONES listener services.');
+                if ($record['id'] !== null && !isset($services[$record['id']])
+                    && in_array((int)$port, $ports, true)) {
+                    $saved['services'][$port]['id'] = null;
+                }
+            }
+            self::save($stateFile, $saved);
+
+            foreach ($ports as $port) {
+                $key = (string)$port;
+                if (!isset($saved['services'][$key])) {
+                    $saved['services'][$key] = ['id' => null, 'name' => self::NAME . ' ' . bin2hex(random_bytes(8))];
+                    self::save($stateFile, $saved);
+                }
+                $record = $saved['services'][$key];
+                $owned = $record['id'];
+                if ($owned === null) {
+                    foreach ($services as $id => $service) {
+                        if (!is_array($service)) continue;
+                        if (($service['name'] ?? null) !== $record['name']) continue;
+                        if ($service !== self::service($id, $port, $record['name'])) {
+                            throw new \RuntimeException('Conflicting TELIPHONES listener service; refusing to change it.');
+                        }
                         if ($owned !== null) throw new \RuntimeException('Duplicate TELIPHONES listener services.');
                         $owned = $id;
                     }
                 }
-                if ($owned === null) throw new \RuntimeException('FreePBX did not save the listener service.');
-            } elseif ($services[$owned] !== self::service($owned, $port, $name)) {
-                $saved['id'] = $owned;
-                $saved['next_port'] = $port;
+                if ($owned === null) {
+                    $firewall->addCustomService($record['name'], 'udp', (string)$port);
+                    $services = $firewall->getAllCustomServices();
+                    foreach ($services as $id => $service) {
+                        if ($service === self::service($id, $port, $record['name'])) {
+                            if ($owned !== null) throw new \RuntimeException('Duplicate TELIPHONES listener services.');
+                            $owned = $id;
+                        }
+                    }
+                    if ($owned === null) throw new \RuntimeException('FreePBX did not save a TELIPHONES listener service.');
+                    $saved['services'][$key]['id'] = $owned;
+                    self::save($stateFile, $saved);
+                }
+                $zones = array_values($firewall->getCustomServiceZones($owned));
+                sort($zones);
+                if ($zones !== self::ZONES) $firewall->setCustomServiceZones($owned, self::ZONES);
+                $services = $firewall->getAllCustomServices();
+                $zones = array_values($firewall->getCustomServiceZones($owned));
+                sort($zones);
+                if (($services[$owned] ?? null) !== self::service($owned, $port, $record['name']) || $zones !== self::ZONES) {
+                    throw new \RuntimeException('FreePBX listener service configuration could not be verified.');
+                }
+                ($verify ?? [self::class, 'verifyRules'])($owned, $port);
+            }
+
+            foreach (array_diff(array_keys($saved['services']), array_map('strval', $ports)) as $stalePort) {
+                $record = $saved['services'][$stalePort];
+                $id = $record['id'];
+                if ($id !== null) {
+                    $services = $firewall->getAllCustomServices();
+                    if (!is_array($services)) throw new \RuntimeException('Cannot inventory FreePBX custom services.');
+                    if (isset($services[$id])) $firewall->deleteCustomService($id);
+                    $services = $firewall->getAllCustomServices();
+                    if (!is_array($services) || !empty($services[$id])) {
+                        throw new \RuntimeException('FreePBX listener service removal could not be verified.');
+                    }
+                    ($verify ?? [self::class, 'verifyRules'])($id, 0);
+                }
+                unset($saved['services'][$stalePort]);
                 self::save($stateFile, $saved);
-                $firewall->editCustomService($owned, false, 'udp', (string)$port);
             }
-            $committed = ['id' => $owned, 'port' => $port, 'name' => $name];
-            if ($saved !== $committed) self::save($stateFile, $committed);
-            $zones = array_values($firewall->getCustomServiceZones($owned));
-            sort($zones);
-            if ($zones !== self::ZONES) $firewall->setCustomServiceZones($owned, self::ZONES);
-            $services = $firewall->getAllCustomServices();
-            $zones = array_values($firewall->getCustomServiceZones($owned));
-            sort($zones);
-            if (($services[$owned] ?? null) !== self::service($owned, $port, $name) || $zones !== self::ZONES) {
-                throw new \RuntimeException('FreePBX listener service configuration could not be verified.');
+            if (!$saved['services'] && is_file($stateFile) && !unlink($stateFile)) {
+                throw new \RuntimeException('Cannot remove TELIPHONES listener ownership state.');
             }
-            ($verify ?? [self::class, 'verifyRules'])($owned, $port);
         } finally {
             flock($lock, LOCK_UN);
             fclose($lock);

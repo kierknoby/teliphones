@@ -1,11 +1,38 @@
 # Windows developer builds, testing and readiness
 
-Targets: TELIPHONES for Windows **0.7.0**, TELIPHONES for FreePBX **0.4.1**.
-The module-only firewall correction increments the installed/tested 0.4.0 build
-to 0.4.1 without Windows application changes. References below to keeping the
-module at 0.4.0 describe earlier Windows-only work, not the current module target.
+Targets: TELIPHONES for Windows **0.8.0**, TELIPHONES for FreePBX **0.6.0**.
+The FreePBX connection-state policy and Windows pairing/clipboard UX are
+independently versioned; neither entry declares a published release.
 
 ## Current evidence
+
+Connect Password Protection's portable positive path has been verified in this
+Codespace using the locally available OpenSSL 3.5.8 Argon2id provider: the
+independent interoperability vector, authenticated encryption/decryption,
+wrong-password rejection, envelope tampering checks and bootstrap-config
+checks passed. A separate system-OpenSSL 3.0.13 run verified fail-closed
+behavior when Argon2id is absent. No dependency was fetched or installed.
+First-use Set Password / Skip This Time / Skip Permanently, Settings > Security
+controls, existing-password checks and the credential-removal/re-pair recovery
+flow are implemented in source. This does **not** validate the native MFC,
+Credential Manager, DPAPI, UAC, named-pipe or WireGuard UAPI path. Before
+release, test enable/change/remove/cancel/wrong password, first Connect,
+tampered credential envelopes, cleanup refusal, UAC cancellation (including
+another administrator account), key-pipe PID/remote-client rejection, UAPI
+failure and helper crash. Inspect staging/installed configs for absence of the
+enrolled key; restart the stored service and verify it cannot handshake as the
+enrolled workstation until another successful password-authenticated Connect.
+Verify DPAPI-only profiles still connect and protected keys cannot unlock on a
+no-Argon2 build.
+
+Broker-managed session leases, authenticated listener migration,
+identity-preserving Windows profile updates, Allowed List/unlock approval
+requests and post-pair SSH elevation are covered by portable gateway and core
+regressions. The Linux CTest suite passed 9/9; the gateway suite passed 184
+tests and the FreePBX suite passed. These checks do not compile the MFC
+application or validate Windows Credential Manager, DPAPI, UAC, the WireGuard
+service lifecycle, or actual migration/reconnect. Native Windows and live
+FreePBX Firewall/session/SSH acceptance remain outstanding.
 
 The operator reports successful Windows Actions builds, **all ten native
 OpenSSH integration tests passing**, authenticated Windows-to-FreePBX 17 SSH
@@ -18,6 +45,11 @@ expiry, systemd/cgroup, reboot or recovery evidence. Real module 0.4.1 firewall
 watchdog validation, the full terminal/display matrix and production readiness
 remain outstanding. See the [evidence register](../../../docs/SECURITY.md#verification-evidence).
 
+The current source registers eight Windows CTests (nine on Linux) and eleven
+native SSH integration methods. The operator report above predates the latest
+native console test; the current-source Windows build and test suite have not
+been run in this workspace.
+
 ## Developer builds and testing
 
 This section preserves the detailed build and test reference formerly in the Windows README. Commands below run from `desktop/windows/`. Test registration describes coverage, not execution evidence; see [verification evidence](../../../docs/SECURITY.md#verification-evidence) for the current results and remaining gates.
@@ -27,7 +59,7 @@ This section preserves the detailed build and test reference formerly in the Win
 - Visual Studio 2022 with the **Desktop development with C++** workload, Windows 10/11 SDK, and the optional **C++ MFC for latest v143 build tools (x86 & x64)** component.
 - Static OpenSSL 3 Crypto, declared in `vcpkg.json`, for maintained Ed25519 generation/signing/verification. Set `VCPKG_INSTALLATION_ROOT` to an existing vcpkg installation; `build.ps1` restores the manifest's `x64-windows-static` dependency. For direct MSBuild, restore it first from this directory or supply `OpenSslRoot`. No dependencies were downloaded during local implementation.
 - WireGuard for Windows is required for pairing and connections. TELIPHONES can retrieve and verify the official installer after you choose **Install WireGuard**, then ask for administrator approval through UAC. Existing verified installations are reused unchanged. WireGuard is not bundled.
-- GUI-only My PBXs pairing requires no OpenSSH. **Request SSH in next generated request** is unchecked by default and creates only the separate persistent workstation identity, encrypted with user DPAPI. Open SSH requires the Windows system OpenSSH Client and PowerShell, PowerShell 7, Windows Terminal or Command Prompt; PuTTY is not supported for managed certificates. Remote Support keeps its separate workflow.
+- GUI-only My PBXs pairing requires no OpenSSH. **FreePBX Web Access** is selected by default; **FreePBX Web + SSH Access** enrols the separate persistent workstation identity, encrypted with user DPAPI. Open SSH requires the Windows system OpenSSH Client and PowerShell, PowerShell 7, Windows Terminal or Command Prompt; PuTTY is not supported for managed certificates. Remote Support keeps its separate workflow.
 
 Open `TELIPHONES.sln` in Visual Studio, select **x64**, then build. Or run `build.ps1` in a Visual Studio 2022 Developer PowerShell:
 
@@ -38,10 +70,78 @@ Open `TELIPHONES.sln` in Visual Studio, select **x64**, then build. Or run `buil
 The application and portable tests are written to `build\Release\`. Run `build\Release\TeliphonesCoreTests.exe` and `build\Release\SessionDiagnosticsTests.exe` for the core and diagnostic-storage regressions. The portable tests and broker contracts can also be run on Linux with CMake:
 
 ```sh
-cmake -S . -B /tmp/teliphones-windows-core
-cmake --build /tmp/teliphones-windows-core
-ctest --test-dir /tmp/teliphones-windows-core --output-on-failure
+cmake -S . -B build/core
+cmake --build build/core
+ctest --test-dir build/core --output-on-failure
 ```
+
+### Reproducible native Windows build and validation
+
+Run from the repository root in an x64 Visual Studio 2022 Developer PowerShell.
+The machine needs the v143 toolset, Windows SDK, static MFC, Python, CMake,
+OpenSSH Client/Server and the repository's declared static OpenSSL dependency.
+If the OpenSSL manifest is not already restored, the `vcpkg install` command
+below can access external package sources; obtain approval before running it
+when that would fetch dependencies.
+
+```powershell
+$env:VCPKG_INSTALLATION_ROOT = 'C:\path\to\existing\vcpkg'
+Push-Location desktop/windows
+try {
+    & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install --triplet x64-windows-static --disable-metrics
+    if ($LASTEXITCODE -ne 0) { throw 'OpenSSL restore failed.' }
+} finally {
+    Pop-Location
+}
+
+msbuild desktop/windows/TELIPHONES.sln /m /t:Rebuild /p:Configuration=Release /p:Platform=x64 /verbosity:minimal
+if ($LASTEXITCODE -ne 0) { throw 'Visual Studio solution build failed.' }
+
+& desktop/windows/build/Release/TeliphonesCoreTests.exe
+if ($LASTEXITCODE -ne 0) { throw 'Core tests failed.' }
+& desktop/windows/build/Release/SessionDiagnosticsTests.exe
+if ($LASTEXITCODE -ne 0) { throw 'Session diagnostics tests failed.' }
+& desktop/windows/build/Release/HealthWindowTests.exe
+if ($LASTEXITCODE -ne 0) { throw 'MFC window tests failed.' }
+```
+
+For native SSH/ConPTY process and PTY tests, use an elevated disposable
+Windows 10/11 machine. The OpenSSH provisioning script uses Windows capability
+servicing and may change installed system capabilities. The fixture creates a
+temporary SYSTEM task and loopback-only SSH server; it does not use a production
+PBX or change the global sshd service.
+
+```powershell
+.\desktop\windows\tests\provision_openssh.ps1
+$toolchain = Join-Path $env:VCPKG_INSTALLATION_ROOT 'scripts\buildsystems\vcpkg.cmake'
+$installed = Join-Path (Get-Location) 'desktop\windows\vcpkg_installed'
+cmake -S desktop/windows -B desktop/windows/build/ssh-native -A x64 `
+  "-DCMAKE_TOOLCHAIN_FILE=$toolchain" "-DVCPKG_INSTALLED_DIR=$installed" `
+  -DVCPKG_TARGET_TRIPLET=x64-windows-static -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+if ($LASTEXITCODE -ne 0) { throw 'Native SSH CMake configuration failed.' }
+cmake --build desktop/windows/build/ssh-native --config Release
+if ($LASTEXITCODE -ne 0) { throw 'Native SSH host build failed.' }
+& desktop/windows/build/ssh-native/Release/ssh_native_host.exe --preflight
+if ($LASTEXITCODE -ne 0) { throw 'Native security preflight failed.' }
+ctest --test-dir desktop/windows/build/ssh-native -C Release --verbose --output-on-failure --no-tests=error
+if ($LASTEXITCODE -ne 0) { throw 'Native CTest suite failed.' }
+python -u desktop/windows/tests/ssh_native_check.py desktop/windows/build/ssh-native/Release/ssh_native_host.exe --fixture-preflight
+if ($LASTEXITCODE -ne 0) { throw 'Native SSH fixture preflight failed.' }
+python -u desktop/windows/tests/ssh_native_check.py desktop/windows/build/ssh-native/Release/ssh_native_host.exe -v
+if ($LASTEXITCODE -ne 0) { throw 'Native SSH integration tests failed.' }
+```
+
+After a fixture interruption, run its exact recorded cleanup command before
+reusing the test host:
+
+```powershell
+python desktop/windows/tests/ssh_native_check.py desktop/windows/build/ssh-native/Release/ssh_native_host.exe --cleanup-only
+```
+
+The automated PTY test does not replace manual GUI validation. On Windows,
+connect only to a disposable authorised PBX and exercise cursor/colour
+rendering, `top`, `nano`/`vim`, UTF-8 input/output, window resize, clipboard,
+Alt+F4, reconnect, disconnect, password protection and revocation.
 
 ### GitHub Actions build and download
 
@@ -53,8 +153,9 @@ The workflow runs standard-library Python project/resource layout checks, explic
 
 It also builds the production cryptographic/agent/session code with CMake, performs native DPAPI/locked-memory/pipe/Job preflight and runs real OpenSSH tests. The loopback-only server uses a unique temporary SYSTEM scheduled task and kill-on-close Job for Windows logon-token support, not the global sshd service. Generated test keys/configuration and all owned processes are cleaned up, including an always-run interrupted-fixture recovery step. A separate test-only core permits exactly the loopback fixture source; the application and production core tests retain their non-loopback policy. Successful native credential-provider/OpenSSH validation is still required; portable success alone is insufficient. Existing core, diagnostics, PE/manifest and malformed tunnel-helper checks remain. This is not an interactive GUI or WireGuard integration test. See the [complete execution-order and sixteen-test readiness audit](#historical-investigations) for dependencies, cleanup and remaining native/systemd validation.
 
-Windows CTest runs `core_tests`, `session_diagnostics`, `build_layout`,
-`contract_check`, `managed_ssh_check` and `ssh_crypto_check`. The portable
+Windows CTest runs `connect_protection`, `terminal_emulator`, `core_tests`,
+`session_diagnostics`, `build_layout`, `contract_check`, `managed_ssh_check`
+and `ssh_crypto_check`. The portable
 `contract_check` verifies client pairing schemas, response/key/nonce binding,
 profile/tunnel rendering, route rejection, fingerprints and parity with the
 gateway's portable Remote Support renderer without importing the root broker.
@@ -64,7 +165,7 @@ operations doubled. The broker imports Linux-only `fcntl` and `pwd`; it is not
 loaded in Windows tests. Python is required by CMake so these checks cannot
 silently disappear.
 
-After CTest, Windows runs all ten tests in `ssh_native_check.py`: actual
+After CTest, Windows runs all eleven tests in `ssh_native_check.py`: actual
 OpenSSH login/key destruction/public-only runtime files, unrelated-process agent
 denial, process-memory/handle restrictions, concurrent-session isolation and wrong
 certificates, expiry/wrong host/tampering, controller crash, SSH crash, production

@@ -39,6 +39,8 @@ def main():
     key = base64.b64encode(hashlib.sha256(b"workstation").digest()).decode()
     pbx_key = base64.b64encode(hashlib.sha256(b"pbx").digest()).decode()
     private = base64.b64encode(hashlib.sha256(b"private").digest()).decode()
+    ssh_key = "ssh-ed25519 " + base64.b64encode(
+        b"\0\0\0\x0bssh-ed25519\0\0\0\x20" + bytes(range(32))).decode()
     nonce = broker.b64url_encode(os.urandom(16))
     failures = []
 
@@ -57,32 +59,53 @@ def main():
             instance = broker.Broker()
             instance.run, instance.tool = network.run, lambda name: name
             instance.audit = lambda *args: None
+            instance.save_workstations({"subnet": None, "listen_port": None, "web": broker.DEFAULT_WEB,
+                                        "connection_state": "open", "workstations": []})
+            instance.ssh.reconcile = lambda *args: None
             for mode, ssh in (("temporary", "1"), ("persistent", "0")):
-                reply = instance.dispatch({"action": "pair", "request": request, "endpoint_host": "PBX.Example.NET",
-                                           "listen_port": "51821", "mode": mode, "minutes": "60", "ssh": ssh}, 1000)
+                pairing_request = request
+                if ssh == "1":
+                    status, pairing_request = tool("request2", "ADMIN-PC (Office)", key, nonce, ssh_key)
+                    if status != 0:
+                        failures.append("C++ core could not create an SSH-capable pairing request: %s" % pairing_request)
+                        continue
+                    instance.ssh.initialise = lambda: ssh_key
+                    instance.ssh.host_key = lambda: ssh_key
+                    instance.ssh.account_policy = lambda *args: {}
+                approval = {"action": "pair", "request": pairing_request, "endpoint_host": "PBX.Example.NET",
+                            "listen_port": "51821", "mode": mode, "minutes": "60", "ssh": ssh}
+                if ssh == "1":
+                    approval["ssh_user"] = "root"
+                reply = instance.dispatch(approval, 1000)
                 code = reply["pairing_response"]
                 response = broker_tests.decode_response(code)
                 expected = "%s %s %s pbx.example.net:51821 %s %s %s" % (
                     response["workstation_id"], response["address"], response["pbx_address"], mode,
                     response["expires_at"] or 0, "ssh" if ssh == "1" else "nossh")
-                status, output = tool("response", code, nonce, key)
+                status, output = tool("response", code, nonce, key, *([ssh_key] if ssh == "1" else []))
                 if status != 0 or output != expected:
-                    failures.append("C++ core rejected real %s broker response: %s" % (mode, output))
-                status, rendered = tool("administrator", code, nonce, key, private)
+                    failures.append("C++ core rejected real %s broker response: %s (response %s)" %
+                                    (mode, output, json.dumps(response, sort_keys=True)))
+                status, rendered = tool("administrator", code, nonce, key,
+                                        *([ssh_key] if ssh == "1" else []), private)
                 expected_config = ("[Interface]\nPrivateKey = %s\nAddress = %s\n\n[Peer]\nPublicKey = %s\nEndpoint = %s\n"
                                    "AllowedIPs = %s/32\nPersistentKeepalive = 25" %
                                    (private, response["address"], response["pbx_public_key"], response["endpoint"], response["pbx_address"]))
                 if status != 0 or rendered.replace("\r\n", "\n") != expected_config:
                     failures.append("C++ saved profile/tunnel differs from actual broker admission: %s" % rendered)
-                if network.peers.get(key) != response["address"] or (("tcp dport 22 accept" in network.ruleset) != (ssh == "1")):
+                state_now, _ = instance.workstation_state()
+                if network.peers.get(key) != response["address"] or not broker.policy_equal(
+                        network.table, instance.expected_policy(state_now)):
                     failures.append("Broker peer/firewall differs from the returned pairing permissions")
                 if tool("response", code, broker.b64url_encode(os.urandom(16)), key)[0] == 0:
                     failures.append("C++ core accepted a response bound to another nonce")
                 if tool("response", code, nonce, pbx_key)[0] == 0:
                     failures.append("C++ core accepted a response bound to another workstation key")
                 instance.dispatch({"action": "unpair", "workstation_id": response["workstation_id"]}, 1000)
-                if network.peers or network.link or network.ruleset is not None:
-                    failures.append("Broker revocation left workstation network authority")
+                state_now, _ = instance.workstation_state()
+                if network.peers or not network.link or not broker.policy_equal(
+                        network.table, instance.expected_policy(state_now)):
+                    failures.append("Open-mode revocation did not retain an empty listener with the expected policy")
 
     for public in (key, pbx_key):
         if tool("fingerprint", public)[1] != broker.key_fingerprint(public):

@@ -7,6 +7,7 @@
 
 #include <wincred.h>
 #include <wincrypt.h>
+#include <winhttp.h>
 #include <iphlpapi.h>
 #include <netioapi.h>
 
@@ -15,6 +16,7 @@
 #include <sstream>
 
 #include "../core/ConnectionHealth.h"
+#include "../core/ConnectProtection.h"
 #include "../core/Json.h"
 #include "../core/SessionDiagnostics.h"
 #include "../core/Validation.h"
@@ -61,13 +63,12 @@ ProcessResult readWgStage(const std::wstring& executable, const std::string& tun
     }
     return result;
 }
-
 }  // namespace
 
-void SavePrivateKey(const std::string& target, const std::string& privateKey) {
-    if (!IsWireGuardKey(privateKey)) throw Error("Refusing to store an invalid WireGuard key.");
+namespace {
+void writeKeyCredential(const std::string& target, const std::string& stored) {
     std::wstring name = Widen(target);
-    std::string blob = privateKey;
+    std::string blob = stored;
     CREDENTIALW credential{};
     credential.Type = CRED_TYPE_GENERIC;
     credential.TargetName = &name[0];
@@ -83,20 +84,64 @@ void SavePrivateKey(const std::string& target, const std::string& privateKey) {
     if (!ok) ThrowLastError("Unable to store the WireGuard key in Windows Credential Manager", error);
 }
 
-std::string LoadPrivateKey(const std::string& target) {
+std::string readKeyCredential(const std::string& target) {
     PCREDENTIALW credential = nullptr;
     if (!CredReadW(Widen(target).c_str(), CRED_TYPE_GENERIC, 0, &credential)) {
         if (GetLastError() == ERROR_NOT_FOUND) return std::string();
         ThrowLastError("Unable to read the WireGuard key from Windows Credential Manager");
     }
-    std::string key(reinterpret_cast<const char*>(credential->CredentialBlob), credential->CredentialBlobSize);
-    SecureZeroMemory(credential->CredentialBlob, credential->CredentialBlobSize);
-    CredFree(credential);
-    if (!IsWireGuardKey(key)) {
-        SecureWipe(key);
-        throw Error("The stored WireGuard key is damaged. Remove this PBX and pair the workstation again.");
+    const auto release = [](CREDENTIALW* value) {
+        SecureZeroMemory(value->CredentialBlob, value->CredentialBlobSize);
+        CredFree(value);
+    };
+    std::unique_ptr<CREDENTIALW, decltype(release)> owned(credential, release);
+    return std::string(reinterpret_cast<const char*>(credential->CredentialBlob), credential->CredentialBlobSize);
+}
+}  // namespace
+
+void SavePrivateKey(const std::string& target, const std::string& privateKey) {
+    if (!IsWireGuardKey(privateKey)) throw Error("Refusing to store an invalid WireGuard key.");
+    std::string previous = readKeyCredential(target);
+    const bool exists = !previous.empty();
+    SecureWipe(previous);
+    if (exists) throw Error("A key already exists for this profile. It cannot be overwritten by pairing.");
+    writeKeyCredential(target, privateKey);
+}
+
+bool PrivateKeyNeedsPassword(const std::string& target) {
+    std::string stored = readKeyCredential(target);
+    const bool protectedKey = !stored.empty() && IsProtectedConnectKey(stored);
+    SecureWipe(stored);
+    return protectedKey;
+}
+
+std::string LoadPrivateKey(const std::string& target, const std::string& password) {
+    std::string stored = readKeyCredential(target);
+    if (stored.empty()) return {};
+    try {
+        std::string result = OpenConnectKey(target, stored, password);
+        SecureWipe(stored);
+        return result;
+    } catch (...) {
+        SecureWipe(stored);
+        throw;
     }
-    return key;
+}
+
+void SetConnectPassword(const std::string& target, const std::string& oldPassword, const std::string& newPassword) {
+    std::string key = LoadPrivateKey(target, oldPassword);
+    std::string stored;
+    try {
+        if (key.empty()) throw Error("The saved WireGuard key is missing. Pair this connection again.");
+        stored = newPassword.empty() ? key : ProtectConnectKey(target, key, newPassword);
+        writeKeyCredential(target, stored);
+    } catch (...) {
+        SecureWipe(key);
+        SecureWipe(stored);
+        throw;
+    }
+    SecureWipe(key);
+    SecureWipe(stored);
 }
 
 void DeletePrivateKey(const std::string& target) {
@@ -197,6 +242,212 @@ TcpProbeMeasurement MeasureTcpProbe(const std::string& ipv4, unsigned short port
     closesocket(s);
     WSACleanup();
     return measurement;
+}
+
+WorkstationSessionStatus MaintainWorkstationSession(const std::string& pbxAddress, bool release,
+                                                    const PairResponse* pairing, const std::string& action,
+                                                    const std::string& sshPublicKey,
+                                                    const std::string& allowedSources) {
+    std::uint32_t parsed = 0;
+    if (!ParseIPv4(pbxAddress, parsed)) throw Error("The PBX session-control address is invalid.");
+    struct HttpHandle {
+        HINTERNET value = nullptr;
+        explicit HttpHandle(HINTERNET handle) : value(handle) {
+            if (!value) ThrowLastError("Unable to open the PBX workstation session-control connection");
+        }
+        ~HttpHandle() { if (value) WinHttpCloseHandle(value); }
+        HttpHandle(const HttpHandle&) = delete;
+        HttpHandle& operator=(const HttpHandle&) = delete;
+    };
+    HttpHandle session(WinHttpOpen(L"TELIPHONES workstation lease", WINHTTP_ACCESS_TYPE_NO_PROXY,
+                                   WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0));
+    if (!WinHttpSetTimeouts(session.value, 3000, 3000, 5000, 5000))
+        ThrowLastError("Unable to bound workstation lease HTTP timeouts");
+    HttpHandle connection(WinHttpConnect(session.value, Widen(pbxAddress).c_str(), 8766, 0));
+    HttpHandle request(WinHttpOpenRequest(connection.value, L"POST", L"/workstation/session", nullptr,
+                                          WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, 0));
+    DWORD disable = WINHTTP_DISABLE_REDIRECTS;
+    if (!WinHttpSetOption(request.value, WINHTTP_OPTION_DISABLE_FEATURE, &disable, sizeof(disable)))
+        ThrowLastError("Unable to disable workstation lease redirects");
+    json::Value::Object requestBody{{"action", release ? "release" : action.empty() ? "heartbeat" : action}};
+    if (!sshPublicKey.empty()) requestBody["ssh_public_key"] = sshPublicKey;
+    if (!allowedSources.empty()) requestBody["sources"] = allowedSources;
+    const std::string body = json::Serialize(json::Value(requestBody));
+    if (!WinHttpSendRequest(request.value, L"Content-Type: application/json\r\n", static_cast<DWORD>(-1L),
+                            const_cast<char*>(body.data()), static_cast<DWORD>(body.size()),
+                            static_cast<DWORD>(body.size()), 0) ||
+        !WinHttpReceiveResponse(request.value, nullptr))
+        ThrowLastError("The PBX workstation session controller did not respond through WireGuard");
+    DWORD status = 0, size = sizeof(status);
+    if (!WinHttpQueryHeaders(request.value, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                             WINHTTP_HEADER_NAME_BY_INDEX, &status, &size, WINHTTP_NO_HEADER_INDEX))
+        ThrowLastError("Unable to read the PBX workstation session response status");
+    std::string response;
+    for (;;) {
+        char buffer[1024];
+        DWORD count = 0;
+        if (!WinHttpReadData(request.value, buffer, sizeof(buffer), &count))
+            ThrowLastError("Unable to read the PBX workstation session response");
+        if (!count) break;
+        if (response.size() + count > 16384) throw Error("The PBX workstation session response is oversized.");
+        response.append(buffer, count);
+    }
+    const json::Value value = json::Parse(response, 16384);
+    if (status != 200 || !value.at("ok").asBool()) {
+        const std::string error = value.has("error") ? value.at("error").asString()
+                                                     : "The PBX refused the workstation session.";
+        throw Error(error);
+    }
+    if (action == "ssh-request" && !release) {
+        const std::string state = value.at("ssh_request_status").asString();
+        if (state != "pending" && state != "applied")
+            throw Error("The PBX returned an invalid SSH request state.");
+        WorkstationSessionStatus result;
+        result.sshRequestStatus = state;
+        return result;
+    }
+    if (action == "lock-current" && !release) {
+        if (value.at("workstation_change_status").asString() != "applied")
+            throw Error("The PBX did not confirm the workstation restriction change.");
+        WorkstationSessionStatus result;
+        result.policyLocked = true;
+        result.policySummary = value.at("migration_pending").asBool()
+            ? "Lock to Current IP applied; secure tunnel migration is pending."
+            : "Lock to Current IP applied.";
+        return result;
+    }
+    if (action == "unlock-request" && !release) {
+        const std::string state = value.at("unlock_request_status").asString();
+        if (state != "pending" && state != "applied")
+            throw Error("The PBX returned an invalid workstation unlock request state.");
+        WorkstationSessionStatus result;
+        result.unlockRequestPending = state == "pending";
+        result.policySummary = state == "pending"
+            ? "Unlock request: Pending Approval by a FreePBX administrator."
+            : "Workstation is already unlocked.";
+        return result;
+    }
+    if (action == "sources-request" && !release) {
+        if (value.at("sources_request_status").asString() != "pending")
+            throw Error("The PBX did not confirm the Allowed List request.");
+        WorkstationSessionStatus result;
+        result.sourcesRequestPending = true;
+        result.policySummary = "Allowed List change: Pending Approval by a FreePBX administrator.";
+        return result;
+    }
+    const auto connected = value.at("connected_workstations").asInteger();
+    const auto maximum = value.at("max_sessions").asInteger();
+    if (connected < 0 || connected > 128 || maximum < 1 || maximum > 128)
+        throw Error("The PBX returned invalid workstation session capacity.");
+    WorkstationSessionStatus result;
+    result.connectedWorkstations = static_cast<int>(connected);
+    result.maximumWorkstations = static_cast<int>(maximum);
+    if (!release && value.has("migration")) {
+        if (pairing == nullptr || !value.at("migration").isObject())
+            throw Error("The PBX offered a configuration migration that cannot be bound to this saved workstation.");
+        const auto& migration = value.at("migration");
+        result.migration = ApplyWorkstationMigration(*pairing, json::Serialize(migration));
+        result.policySummary = "PBX configuration migration pending; management access remains blocked until the new tunnel is acknowledged.";
+        return result;
+    }
+    if (!release) {
+        if (!value.at("active").asBool() ||
+            (result.expiresAt = value.at("expires_at").asInteger()) <= UnixNow())
+            throw Error("The PBX did not grant a valid workstation session lease.");
+        if (!value.has("policy") || !value.at("policy").isObject())
+            throw Error("The PBX did not return the effective workstation policy.");
+        const auto& policy = value.at("policy");
+        const auto& connectionState = policy.at("connection_state").asString();
+        if (connectionState != "open" && connectionState != "closed" && connectionState != "frozen")
+            throw Error("The PBX returned an invalid workstation connection policy.");
+        const bool locked = policy.at("locked").asBool();
+        result.policyLocked = locked;
+        result.unlockRequestPending = policy.at("unlock_request_pending").asBool();
+        result.sourcesRequestPending = policy.at("sources_request_pending").asBool();
+        const auto& sources = policy.at("sources").asArray();
+        const auto effectiveCount = policy.at("effective_source_count").asInteger();
+        const auto& failures = policy.at("source_resolution_failures").asArray();
+        if (effectiveCount < 0 || effectiveCount > 1000000)
+            throw Error("The PBX returned an invalid effective source count.");
+        result.policySummary = "Applied PBX policy: " + connectionState + ". " +
+            (locked ? "Locked. Allowed entries: " : "Unlocked (shared listener).");
+        for (std::size_t i = 0; i < sources.size(); ++i) {
+            if (!sources[i].isString()) throw Error("The PBX returned an invalid allowed-source policy.");
+            if (i) result.allowedSources += ", ";
+            result.allowedSources += sources[i].asString();
+        }
+        if (locked) {
+            if (sources.empty()) throw Error("The PBX returned a locked policy without any allowed entries.");
+            for (std::size_t i = 0; i < sources.size(); ++i) {
+                if (!sources[i].isString()) throw Error("The PBX returned an invalid allowed-source policy.");
+                if (i) result.policySummary += ", ";
+                result.policySummary += sources[i].asString();
+            }
+            result.policySummary += ". Resolved sources: " + std::to_string(effectiveCount) + ".";
+            if (!failures.empty()) {
+                result.policySummary += " DNS/source resolution unavailable for " + std::to_string(failures.size()) +
+                    " entr" + (failures.size() == 1 ? "y" : "ies") + "; access remains restricted.";
+            }
+        }
+        result.policySummary += policy.at("ssh_approved").asBool()
+            ? " SSH access: approved." : " SSH access: not approved.";
+        if (result.unlockRequestPending)
+            result.policySummary += " Unlock request: Pending Approval.";
+        if (result.sourcesRequestPending) {
+            result.policySummary += " Allowed List change: Pending Approval";
+            if (policy.has("requested_sources")) {
+                const auto& requested = policy.at("requested_sources").asArray();
+                if (!requested.empty()) {
+                    result.policySummary += " (";
+                    for (std::size_t i = 0; i < requested.size(); ++i) {
+                        if (!requested[i].isString())
+                            throw Error("The PBX returned an invalid requested Allowed List.");
+                        if (i) result.policySummary += ", ";
+                        result.policySummary += requested[i].asString();
+                    }
+                    result.policySummary += ")";
+                }
+            }
+            result.policySummary += ".";
+        }
+        if (policy.has("current_source") && !policy.at("current_source").isNull()) {
+            if (!policy.at("current_source").isString())
+                throw Error("The PBX returned an invalid verified public source.");
+            const auto& currentSource = policy.at("current_source").asString();
+            if (currentSource.empty() || currentSource.size() > 64 ||
+                currentSource.find_first_not_of("0123456789abcdefABCDEF:./") != std::string::npos)
+                throw Error("The PBX returned an invalid verified public source.");
+            result.policySummary += " Verified public source: " + currentSource + ".";
+        } else {
+            result.policySummary += " Verified public source: unavailable.";
+        }
+        result.sshRevoked = pairing != nullptr && pairing->sshPort != 0 && !policy.at("ssh_approved").asBool();
+        result.sshRequestRejected = pairing != nullptr && pairing->sshPort == 0 &&
+            !pairing->sshRequestPublicKey.empty() && !policy.at("ssh_approved").asBool() &&
+            !policy.at("ssh_request_pending").asBool();
+        if (pairing != nullptr && pairing->sshPort == 0 &&
+            pairing->sshRequestPublicKey.size() > 0 && policy.at("ssh_approved").asBool() &&
+            policy.has("ssh_configuration")) {
+            const auto& configuration = policy.at("ssh_configuration");
+            json::RequireExactKeys(configuration, {"ssh_user", "ssh_public_key", "ssh_host_key", "ssh_ca_key",
+                                                    "ssh_port", "ssh_api_port"},
+                                   "The PBX managed SSH approval");
+            if (configuration.at("ssh_public_key").asString() != pairing->sshRequestPublicKey)
+                throw Error("The PBX SSH approval does not match the pending workstation key.");
+            PairResponse updated = *pairing;
+            updated.ssh = true;
+            updated.sshPublicKey = configuration.at("ssh_public_key").asString();
+            updated.sshUser = configuration.at("ssh_user").asString();
+            updated.sshHostKey = configuration.at("ssh_host_key").asString();
+            updated.sshCaKey = configuration.at("ssh_ca_key").asString();
+            updated.sshPort = static_cast<int>(configuration.at("ssh_port").asInteger());
+            updated.sshApiPort = static_cast<int>(configuration.at("ssh_api_port").asInteger());
+            updated.sshRequestPublicKey.clear();
+            ValidateManagedPairing(updated);
+            result.pairingUpdate = std::move(updated);
+        }
+    }
+    return result;
 }
 
 bool ProbeTcp(const std::string& ipv4, unsigned short port, unsigned timeoutMs) {

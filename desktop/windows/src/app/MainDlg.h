@@ -41,6 +41,8 @@ protected:
     afx_msg void OnDisconnect();
     afx_msg void OnOpenGui();
     afx_msg void OnOpenSsh();
+    afx_msg void OnLockWorkstation();
+    afx_msg void OnRequestSources();
     afx_msg void OnSettings();
     afx_msg void OnConnectionHealth();
     afx_msg void OnSessionLog();
@@ -118,6 +120,10 @@ private:
     tlp::SetupResult installation_;
     bool busy_ = false;
     bool probing_ = false;
+    bool migrationReconnectPending_ = false;
+    bool activePolicyLocked_ = false;
+    bool unlockRequestPending_ = false;
+    bool sourcesRequestPending_ = false;
     UINT_PTR generation_ = 0;
     std::uint64_t lastTelemetryTickMs_ = 0;
 };

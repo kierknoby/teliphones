@@ -818,7 +818,10 @@ class WindowsSshTests(unittest.TestCase):
     def test_production_local_authorisation_expiry_ends_owned_session(self):
         self.production(expiring=True)
 
-    def production(self, denied=False, expiring=False):
+    def test_production_embedded_console_pty_input_resize_and_disconnect(self):
+        self.production(console=True)
+
+    def production(self, denied=False, expiring=False, console=False):
         log_offset = (self.root / "sshd-test.log").stat().st_size
         profile = secrets.token_hex(8)
         identity_path = Path(os.environ["LOCALAPPDATA"]) / "TELIPHONES/SSH" / (profile + ".dpapi")
@@ -830,7 +833,8 @@ class WindowsSshTests(unittest.TestCase):
         client_log = self.root / ("production-" + profile + "-client.log")
         environment = os.environ.copy()
         environment["TELIPHONES_SSH_TEST_LOG"] = str(client_log)
-        host = subprocess.Popen([str(HOST), "--production", profile], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        mode = "--production-console" if console else "--production"
+        host = subprocess.Popen([str(HOST), mode, profile], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, text=True, bufsize=1, env=environment)
         self.addCleanup(lambda: self.stop(host))
         identity = line(host)
@@ -913,6 +917,8 @@ class WindowsSshTests(unittest.TestCase):
                 self.assertFalse(errors, errors)
                 return
             self.assertEqual(line(host), "PRODUCTION_STARTED")
+            if console:
+                self.assertEqual(line(host), "CONSOLE_INTERACTIVE=1")
             for _ in range(100):
                 tail = (self.root / "sshd-test.log").read_bytes()[log_offset:].decode(errors="replace")
                 if "Accepted publickey" in tail and "ws-" + profile + "/" in tail:
@@ -936,6 +942,8 @@ class WindowsSshTests(unittest.TestCase):
             self.assertEqual(host.returncode, 0, output + error + "\n".join(errors))
             self.assertIn("PRODUCTION_CLOSED", output)
             self.assertIn("IDENTITY_RETAINED", output)
+            if console:
+                self.assertIn("CONSOLE_INTERACTIVE=1", output)
             if expiring:
                 self.assertIn("PRODUCTION_EXPIRED", output)
             self.assertFalse(identity_path.exists())

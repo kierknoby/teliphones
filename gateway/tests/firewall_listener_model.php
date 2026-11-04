@@ -31,7 +31,7 @@ $fw = new class($argv[1], $argv[3]) {
     public function getAllCustomServices() { return $this->services; }
     public function getCustomServiceZones($id) { return $this->zones[$id] ?? []; }
     public function addCustomService($name, $protocol, $port): void {
-        $id = '12345678-1234-1234-1234-123456789012';
+        $id = substr(hash('sha256', $name), 0, 8) . '-1234-1234-1234-123456789012';
         $this->services[$id] = ['name' => $name, 'defzones' => ['internal'], 'descr' => 'Custom Service',
             'custfw' => ['protocol' => $protocol, 'port' => $port], 'custid' => $id, 'noreject' => true];
         $this->zones[$id] = ['internal'];
@@ -74,5 +74,6 @@ $fw = new class($argv[1], $argv[3]) {
 };
 // Simulate daemon regeneration after a FreePBX rule rebuild, separately from the helper.
 foreach (array_keys($fw->services) as $id) $fw->generate($id);
-FirewallListener::reconcile($fw, (int)$argv[2], $argv[1] . '/listener.json',
+$ports = $argv[2] === '0' ? [] : array_map('intval', explode(',', $argv[2]));
+FirewallListener::reconcile($fw, $ports, $argv[1] . '/listener.json',
     static function ($id, $port) use ($argv) { FirewallListener::verifyRules($id, $port, $argv[3]); });

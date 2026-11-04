@@ -56,6 +56,19 @@ def port(item):
     return SSH_PORT_BASE + int(ipaddress.IPv4Interface(item["address"]).ip) % 256
 
 
+def existing_accounts():
+    accounts = []
+    for account in pwd.getpwall():
+        if (re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", account.pw_name) is None
+                or (account.pw_uid == 0 and account.pw_name != "root")
+                or not account.pw_shell.startswith("/")
+                or Path(account.pw_shell).name in ("nologin", "false")
+                or not os.access(account.pw_shell, os.X_OK)):
+            continue
+        accounts.append(account.pw_name)
+    return sorted(set(accounts))
+
+
 def run(arguments, data=None):
     result = subprocess.run(arguments, input=data, text=True, capture_output=True,
                             timeout=15, env=ENV, check=False)
@@ -89,9 +102,23 @@ class Authority:
         self.interface = interface
         self.challenges = {}
         self.sessions = {}
+        self.servers = {}
         self.server = None
         self.server_address = None
         self.active = set()
+
+    def item_interface(self, item):
+        interface = self.interface
+        if item.get("locked") is True:
+            identifier = item.get("id")
+            if not isinstance(identifier, str) or re.fullmatch(r"[a-f0-9]{16}", identifier) is None:
+                raise SshError("Invalid Locked workstation identity.")
+            interface = "tlpw" + hashlib.sha256(identifier.encode()).hexdigest()[:11]
+        if item.get("interface") is not None and item["interface"] != interface:
+            raise SshError("Managed SSH interface does not match the workstation's authenticated pairing.")
+        if not isinstance(interface, str) or (interface != "tlp-admin" and re.fullmatch(r"tlpw[a-f0-9]{11}", interface) is None):
+            raise SshError("Invalid managed SSH tunnel interface.")
+        return interface
 
     def prerequisites(self):
         for binary in ("/usr/bin/ssh-keygen", "/usr/sbin/sshd", "/usr/bin/systemd-run", "/usr/bin/systemctl"):
@@ -240,7 +267,7 @@ class Authority:
             "PermitTTY yes\nForceCommand none\n"
             "LogLevel VERBOSE\nLoginGraceTime 20\nMaxAuthTries 2\nMaxSessions 1\n"
             "ClientAliveInterval 15\nClientAliveCountMax 2\n"
-        ) % (port(item), pbx, directory / "sshd.pid", item["ssh_user"], ca_file, principal_file,
+        ) % (port(item), item.get("pbx_address", pbx), directory / "sshd.pid", item["ssh_user"], ca_file, principal_file,
              policy.get("permitrootlogin", "no"), policy.get("usepam", "yes"))
         for directive in ("pubkeyacceptedalgorithms", "casignaturealgorithms", "revokedkeys"):
             value = policy.get(directive)
@@ -290,7 +317,9 @@ class Authority:
         self.diagnostic("ws-" + identifier, "ssh.terminated", reason=reason)
 
     def start(self, item, pbx):
-        config = self.configuration(item, pbx)
+        endpoint = item.get("pbx_address", pbx)
+        interface = self.item_interface(item)
+        config = self.configuration(item, endpoint)
         unit = self.unit(item["id"])
         # These units are uniquely owned by the broker and never share system SSH processes.
         state = subprocess.run(["/usr/bin/systemctl", "show", unit, "--property=ActiveState", "--value"],
@@ -310,7 +339,7 @@ class Authority:
                 raise SshError("SSH authorisation has expired.")
             args.append("--property=RuntimeMaxSec=" + str(remaining))
         run(args + ["/usr/bin/python3", "-I", str(Path(__file__).resolve()), "--listen",
-                    str(config), pbx, str(port(item)), str(ipaddress.IPv4Interface(item["address"]).ip)])
+                    str(config), endpoint, str(port(item)), str(ipaddress.IPv4Interface(item["address"]).ip), interface])
         status = run(["/usr/bin/systemctl", "show", unit, "--property=ActiveState", "--value"]).strip()
         if status != "active":
             raise SshError("Managed SSH listener failed to start.")
@@ -332,19 +361,26 @@ class Authority:
         for identifier in sorted(self.active - items.keys()):
             self.stop(identifier, "revoked")
         if not items:
-            if self.server:
-                self.server.shutdown()
-                self.server.server_close()
-                self.server = None
-                self.server_address = None
+            for server in self.servers.values():
+                server.shutdown()
+                server.server_close()
+            self.servers.clear()
+            self.server = None
+            self.server_address = None
             return
         pbx = str(ipaddress.IPv4Network(state["subnet"])[1])
         for item in items.values():
             self.start(item, pbx)
-        if self.server is None:
-            self.start_api(pbx)
-        elif self.server_address != pbx:
-            raise SshError("SSH endpoint address changed; revoke managed pairings before changing the subnet.")
+        endpoints = {(self.item_interface(item), item.get("pbx_address", pbx)) for item in items.values()}
+        for binding in set(self.servers) - endpoints:
+            server = self.servers.pop(binding)
+            server.shutdown()
+            server.server_close()
+        for interface, address in sorted(endpoints):
+            if (interface, address) not in self.servers:
+                self.servers[(interface, address)] = self.start_api(address, interface)
+        self.server = next(iter(self.servers.values()), None)
+        self.server_address = next(iter(self.servers), (None, None))[1]
 
     def authorised(self, identifier, peer):
         state, _ = self.state()
@@ -465,7 +501,10 @@ class Authority:
                     "certificate": certificate, "expires_at": expiry, "ssh_user": item["ssh_user"],
                     "ssh_host_key": self.host_key(), "ssh_ca_key": self.initialise(), "ssh_port": port(item)}
 
-    def start_api(self, address):
+    def start_api(self, address, interface=None):
+        interface = interface or self.interface
+        if interface != "tlp-admin" and re.fullmatch(r"tlpw[a-f0-9]{11}", interface) is None:
+            raise SshError("Invalid managed SSH API interface.")
         authority = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -514,7 +553,7 @@ class Authority:
             slots = threading.BoundedSemaphore(32)
 
             def server_bind(self):
-                self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, authority.interface.encode() + b"\0")
+                self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, interface.encode() + b"\0")
                 socketserver.TCPServer.server_bind(self)
                 self.server_name = address
                 self.server_port = API_PORT
@@ -540,12 +579,14 @@ class Authority:
                 finally:
                     self.slots.release()
 
-        self.server = Server((address, API_PORT), Handler)
+        server = Server((address, API_PORT), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.server = server
         self.server_address = address
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        return server
 
 
-def listener(config, address, listen_port, peer):
+def listener(config, address, listen_port, peer, interface):
     """systemd-owned inetd-style sshd children; the listener itself is device-bound."""
     if os.geteuid() != 0:
         raise SshError("The managed SSH listener must run as root.")
@@ -562,9 +603,11 @@ def listener(config, address, listen_port, peer):
     if not SSH_PORT_BASE <= listen_port <= SSH_PORT_BASE + 255:
         raise SshError("Invalid managed SSH listen port.")
     children = []
+    if interface != "tlp-admin" and re.fullmatch(r"tlpw[a-f0-9]{11}", interface) is None:
+        raise SshError("Invalid managed SSH tunnel interface.")
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
         server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        server.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, b"tlp-admin\0")
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, interface.encode() + b"\0")
         server.bind((address, listen_port))
         server.listen(8)
         server.settimeout(1)
@@ -590,6 +633,6 @@ def listener(config, address, listen_port, peer):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 6 or sys.argv[1] != "--listen":
+    if len(sys.argv) != 7 or sys.argv[1] != "--listen":
         raise SystemExit("Only the root-owned managed SSH service may invoke this helper.")
-    listener(sys.argv[2], sys.argv[3], int(sys.argv[4]), sys.argv[5])
+    listener(sys.argv[2], sys.argv[3], int(sys.argv[4]), sys.argv[5], sys.argv[6])

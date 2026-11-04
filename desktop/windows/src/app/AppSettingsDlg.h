@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "../core/Launchers.h"
+#include "../core/Profiles.h"
 #include "../core/WireGuardSetup.h"
 #include "../platform/WireGuard.h"
 
@@ -26,6 +27,9 @@ public:
     tlp::FirstRunOutcome outcome = tlp::FirstRunOutcome::Cancelled;
     // Optional explanation shown when Settings is opened because a selected application is missing.
     std::string notice;
+    std::optional<tlp::Profile> connectProfile;
+    bool connectionActive = false;
+    bool lockNow = false;
 
 protected:
     void DoDataExchange(CDataExchange* exchange) override;
@@ -34,6 +38,8 @@ protected:
     void OnCancel() override;
     afx_msg void OnSkip();
     afx_msg void OnAbout();
+    afx_msg void OnConnectPassword();
+    afx_msg void OnLockNow();
     afx_msg void OnLocateBrowser();
     afx_msg void OnLocateTerminal();
     afx_msg void OnSelectionChanged();

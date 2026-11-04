@@ -24,8 +24,9 @@ std::string DerivePublicKey(const WireGuardInstallation& wireguard, const std::s
 enum class TunnelState { Absent, Stopped, Starting, Running, Stopping, Unknown };
 TunnelState QueryTunnel(const std::string& tunnelName);
 
-// Stages the validated configuration and asks Windows for administrative approval (UAC) to install the tunnel
-// service. Returns false if the user declined the UAC prompt.
+// Only a public bootstrap identity goes to disk. The enrolled private key passes over a PID-bound pipe
+// to the UAC helper, then into WireGuard's administrator-only control pipe. A restarted stored config
+// cannot authenticate as this workstation. Returns false if the user declined the UAC prompt.
 bool InstallTunnel(const std::string& tunnelName, const std::string& configText);
 // Stops and removes the tunnel service. Uses the rights granted at installation; falls back to an elevated helper.
 void RemoveTunnel(const std::string& tunnelName);

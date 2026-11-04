@@ -38,6 +38,12 @@ class AuthorityTests(unittest.TestCase):
         self.assertNotEqual(self.authority.principal(self.item),
                             self.authority.principal({**self.item, "ssh_public_key": PUBLIC[:-4] + "AQEB"}))
 
+    def test_locked_ssh_interface_is_derived_from_pairing_identity(self):
+        interface = self.authority.item_interface({**self.item, "locked": True})
+        self.assertEqual(interface, "tlpw" + ssh.hashlib.sha256(self.item["id"].encode()).hexdigest()[:11])
+        with self.assertRaisesRegex(ssh.SshError, "does not match"):
+            self.authority.item_interface({**self.item, "locked": True, "interface": "tlp-admin"})
+
     def test_authorisation_requires_ssh_identity_source_and_deadline(self):
         for identity, source in ((self.item["id"], "10.0.0.2"), ("f" * 16, "100.70.1.2")):
             with self.assertRaises(ssh.SshError):

@@ -18,7 +18,8 @@ import test_support_broker as helpers
 broker = helpers.broker_module
 MARK = broker.INTEGRATION_MARK
 CHAIN = broker.INTEGRATION_CHAIN
-JUMP = ["-i", broker.WORKSTATION_IFACE, "-m", "comment", "--comment", MARK, "-j", CHAIN]
+JUMP = broker.iptables_arguments(broker.INTEGRATION_JUMP)
+LEGACY_JUMP = broker.iptables_arguments(broker.LEGACY_INTEGRATION_JUMP)
 DEFAULT_WEB = [dict(entry) for entry in broker.DEFAULT_WEB]
 BANS = helpers.FREEPBX17_FAIL2BAN
 EXPECTED = BANS + ["fpbxfirewall"]
@@ -29,6 +30,7 @@ class IntegrationTests(unittest.TestCase):
     setUp_base = helpers.WorkstationPairingTests.setUp
     tearDown = helpers.WorkstationPairingTests.tearDown
     pair = helpers.WorkstationPairingTests.pair
+    open_session = helpers.WorkstationPairingTests.open_session
 
     def setUp(self):
         self.setUp_base()
@@ -60,7 +62,7 @@ class IntegrationTests(unittest.TestCase):
         # Model only the reported above-hook check, not FreePBX's full implementation.
         inputs = self.net.filter["INPUT"]
         hook = inputs.index(["-j", "fpbxfirewall"])
-        if JUMP in inputs[:hook]:
+        if any(jump in inputs[:hook] for jump in (JUMP, LEGACY_JUMP)):
             self.net.freepbx()
             return True
         return False
@@ -85,6 +87,7 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(self.rules(), [
             {"s": response["address"], "d": pbx, "i": broker.WORKSTATION_IFACE, "p": "tcp", "dport": "80", "comment": MARK, "j": "ACCEPT"},
             {"s": response["address"], "d": pbx, "i": broker.WORKSTATION_IFACE, "p": "tcp", "dport": "443", "comment": MARK, "j": "ACCEPT"},
+            {"s": response["address"], "d": pbx, "i": broker.WORKSTATION_IFACE, "p": "tcp", "dport": "8766", "comment": MARK, "j": "ACCEPT"},
             {"comment": MARK, "j": "RETURN"}])
         status = self.broker.status()["workstations"]["firewall_integration"]
         self.assertEqual((status["state"], status["backend"], status["hook"], status["chain"]), ("active", "nf_tables", "fpbxfirewall", CHAIN))
@@ -105,11 +108,15 @@ class IntegrationTests(unittest.TestCase):
     def test_ssh_only_for_explicitly_authorised_peer(self):
         _, web = self.pair()
         _, ssh = self.pair(public_key="B" * 42 + "E=", nonce="m" * 22, ssh="1")
+        managed_port = str(22000 + int(ssh["address"].split(".")[-1].split("/")[0]))
         self.assertEqual(self.accepted(), {(web["address"], "80"), (web["address"], "443"),
-                                           (ssh["address"], "80"), (ssh["address"], "443"), (ssh["address"], "22")})
+                                           (web["address"], "8766"),
+                                           (ssh["address"], "80"), (ssh["address"], "443"),
+                                           (ssh["address"], "8766"),
+                                           (ssh["address"], "8765"), (ssh["address"], managed_port)})
         for rule in self.rules()[:-1]:
             self.assertTrue(rule["s"].endswith("/32") and rule["d"] == web["pbx_address"] + "/32" and rule["i"] == broker.WORKSTATION_IFACE)
-            self.assertIn(rule["dport"], {"80", "443", "22"})
+            self.assertIn(rule["dport"], {"80", "443", "8765", "8766", managed_port})
 
     def test_reconnection_and_repairing_do_not_duplicate_rules(self):
         self.pair(mode="temporary")
@@ -147,23 +154,24 @@ class IntegrationTests(unittest.TestCase):
             targets = self.input_targets()
             self.assert_placement()
             self.assertTrue(all(targets.index(name) < targets.index("fpbxfirewall") for name in BANS), reload)
-            self.assertEqual(len(self.rules()), 3)
+            self.assertEqual(len(self.rules()), 4)
             self.assertTrue(self.net.up)
             self.assertNotIn(("ip", ("link", "set", "down", "dev", broker.WORKSTATION_IFACE)), self.net.calls)
             self.assertEqual(self.broker.integration["state"], "active")
 
-    def test_revocation_and_expiry_remove_peer_rules(self):
+    def test_revocation_and_expiry_remove_peer_rules_but_keep_open_listener(self):
         _, first = self.pair(mode="temporary")
         _, second = self.pair(public_key="B" * 42 + "E=", nonce="m" * 22, ssh="1")
         self.unpair(second["workstation_id"])
-        self.assertEqual(self.accepted(), {(first["address"], "80"), (first["address"], "443")})
+        self.assertEqual(self.accepted(), {(first["address"], "80"), (first["address"], "443"),
+                                           (first["address"], "8766")})
         state = json.loads((self.state / "workstations.json").read_text())
         state["workstations"][0]["expires_at"] = int(time.time()) - 1
         (self.state / "workstations.json").write_text(json.dumps(state))
         self.broker.expire_workstations()
-        self.assertNotIn(CHAIN, self.net.filter)
-        self.assertNotIn(CHAIN, self.input_targets())
-        self.assertFalse(self.net.link)
+        self.assertEqual(self.accepted(), set())
+        self.assertIn(CHAIN, self.net.filter)
+        self.assertTrue(self.net.up)
 
     def test_complete_chain_deletion_is_repaired_without_monitor_event(self):
         self.pair()
@@ -175,7 +183,7 @@ class IntegrationTests(unittest.TestCase):
         self.net.calls = []
         self.broker.expire_workstations()
         self.assertEqual(self.input_targets(), EXPECTED)
-        self.assertEqual(len(self.rules()), 3)
+        self.assertEqual(len(self.rules()), 4)
         self.assertEqual(self.broker.integration["state"], "active")
         self.assertNotIn(("ip", ("link", "set", "down", "dev", broker.WORKSTATION_IFACE)), self.net.calls)
 
@@ -189,13 +197,16 @@ class IntegrationTests(unittest.TestCase):
         self.net.filter["INPUT"].append(["-j", "fpbxfirewall"])
         self.broker.expire_workstations()
         self.assertEqual(self.input_targets(), EXPECTED)
-        self.assertEqual(self.accepted(), {(response["address"], "80"), (response["address"], "443")})
+        self.assertEqual(self.accepted(), {(response["address"], "80"), (response["address"], "443"),
+                                           (response["address"], "8766")})
         self.assertEqual(self.broker.integration["state"], "active")
 
-    def test_last_revocation_shutdown_and_uninstall_remove_integration(self):
+    def test_last_revocation_keeps_open_listener_and_shutdown_removes_integration(self):
         self.pair()
         self.unpair("all")
-        self.assertNotIn(CHAIN, self.net.filter)
+        self.assertTrue(self.net.up)
+        self.assertEqual(self.accepted(), set())
+        self.assertIn(CHAIN, self.net.filter)
         self.pair(nonce="m" * 22)
         self.broker.teardown_workstations()
         self.assertNotIn(CHAIN, self.net.filter)
@@ -262,7 +273,7 @@ class IntegrationTests(unittest.TestCase):
     def test_watchdog_model_reproduces_legacy_reset_but_not_corrected_placement(self):
         self.pair()
         self.net.filter["fpbxfirewall"].remove(JUMP)
-        self.net.filter["INPUT"].insert(len(BANS), JUMP[:])
+        self.net.filter["INPUT"].insert(len(BANS), LEGACY_JUMP[:])
         self.assertTrue(self.watchdog_reset())
         self.broker.expire_workstations()
         self.assertFalse(self.watchdog_reset())
@@ -271,7 +282,7 @@ class IntegrationTests(unittest.TestCase):
     def test_legacy_input_jumps_migrate_and_never_return_after_rebuild(self):
         self.pair()
         self.net.filter["fpbxfirewall"].remove(JUMP)
-        self.net.filter["INPUT"][len(BANS):len(BANS)] = [JUMP, JUMP]
+        self.net.filter["INPUT"][len(BANS):len(BANS)] = [LEGACY_JUMP, LEGACY_JUMP]
         self.broker.expire_workstations()
         self.assert_placement()
         self.assertEqual(self.input_targets(), BASELINE)
@@ -286,7 +297,7 @@ class IntegrationTests(unittest.TestCase):
 
     def test_cleanup_removes_both_legacy_and_current_duplicate_jumps(self):
         self.pair()
-        self.net.filter["INPUT"].insert(len(BANS), JUMP[:])
+        self.net.filter["INPUT"].insert(len(BANS), LEGACY_JUMP[:])
         self.net.filter["fpbxfirewall"].append(JUMP[:])
         self.broker.teardown_workstations()
         self.assertEqual(self.input_targets(), BASELINE)
@@ -452,23 +463,25 @@ class IntegrationTests(unittest.TestCase):
         self.broker.expire_workstations()
         self.assertIn((broker.FWCONSOLE, ("teliphones", "listener", "--listen-port=51899")), self.net.calls)
         self.assertEqual(self.broker.integration["state"], "active")
-        # Revoking every workstation removes the listener permit entirely.
+        # Open mode keeps the listener available for a future pairing, with no peer permits.
         self.unpair("all")
-        self.assertIn((broker.FWCONSOLE, ("teliphones", "listener", "--listen-port=0")), self.net.calls)
-        self.assertNotIn(CHAIN, self.net.filter)
-        self.assertEqual(self.input_targets(), BASELINE)
-        self.assertNotIn("51899", json.dumps(self.net.filter))
+        self.assertIn((broker.FWCONSOLE, ("teliphones", "listener", "--listen-port=51899")), self.net.calls)
+        self.assertIn(CHAIN, self.net.filter)
+        self.assertEqual(self.accepted(), set())
+        self.assertTrue(self.net.up)
 
     def test_management_web_services_follow_configuration_without_stale_rules(self):
         _, response = self.pair(web="https:8443")
+        self.open_session(response)
         self.assertEqual(response["gui_url"], "https://" + response["pbx_address"] + ":8443/admin/")
-        self.assertEqual(self.accepted(), {(response["address"], "8443")})
+        self.assertEqual(self.accepted(), {(response["address"], "8443"), (response["address"], "8766")})
         self.assertIn("tcp dport { 8443 } accept", self.net.ruleset)
         # Changing the management ports while the workstation stays paired reconciles both
         # firewall layers and leaves no stale permits.
         result = self.broker.dispatch({"action": "web", "web": "http:80, https:443"}, 1000)
         self.assertTrue(result["ok"])
-        self.assertEqual(self.accepted(), {(response["address"], "80"), (response["address"], "443")})
+        self.assertEqual(self.accepted(), {(response["address"], "80"), (response["address"], "443"),
+                                           (response["address"], "8766")})
         self.assertNotIn("8443", json.dumps(self.net.filter))
         self.assertIn("tcp dport { 80, 443 } accept", self.net.ruleset)
         self.assertNotIn("8443", self.net.ruleset)
@@ -485,7 +498,8 @@ class IntegrationTests(unittest.TestCase):
         try:
             replacement.restore_workstations()
             self.assertEqual(replacement.integration["state"], "active")
-            self.assertEqual(self.accepted(), {(response["address"], "80"), (response["address"], "443")})
+            self.assertEqual(self.accepted(), {(response["address"], "80"), (response["address"], "443"),
+                                               (response["address"], "8766")})
         finally:
             if replacement.monitor:
                 replacement.monitor.close()
@@ -531,14 +545,15 @@ class IntegrationTests(unittest.TestCase):
                 self.broker.configure_web({"web": "https:8443"}, 1000)
         after, _ = self.broker.workstation_state()
         self.assertEqual(after, before)
-        self.assertEqual({port for _, port in self.accepted()}, {"80", "443"})
+        self.assertEqual({port for _, port in self.accepted()}, {"80", "443", "8766"})
         self.assertNotIn("8443", self.net.ruleset)
         self.assertTrue(self.net.up)
 
     def test_both_custom_web_ports_and_actual_listener_binding(self):
         _, response = self.pair(web="http:8080, https:8443")
+        self.open_session(response)
         self.assertEqual(response["gui_url"], "http://" + response["pbx_address"] + ":8080/admin/")
-        self.assertEqual({port for _, port in self.accepted()}, {"8080", "8443"})
+        self.assertEqual({port for _, port in self.accepted()}, {"8080", "8443", "8766"})
         self.assertIn("tcp dport { 8080, 8443 } accept", self.net.ruleset)
         address = response["pbx_address"]
         exact = broker.socket.inet_aton(address)[::-1].hex().upper()

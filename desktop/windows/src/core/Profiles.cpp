@@ -65,6 +65,7 @@ Value pairingToJson(const PairResponse& p) {
         result.insert({{"ssh_user", p.sshUser}, {"ssh_public_key", p.sshPublicKey}, {"ssh_host_key", p.sshHostKey},
                        {"ssh_ca_key", p.sshCaKey}, {"ssh_port", p.sshPort}, {"ssh_api_port", p.sshApiPort}});
     }
+    if (!p.sshRequestPublicKey.empty()) result["ssh_request_public_key"] = p.sshRequestPublicKey;
     return Value(result);
 }
 
@@ -73,6 +74,7 @@ PairResponse pairingFromJson(const Value& value) {
                                    "mode", "expires_at", "ssh", "gui_url"};
     if (value.has("ssh_port")) for (const char* key : {"ssh_user", "ssh_public_key", "ssh_host_key", "ssh_ca_key", "ssh_port", "ssh_api_port"})
         keys.emplace_back(key);
+    if (value.has("ssh_request_public_key")) keys.emplace_back("ssh_request_public_key");
     json::RequireExactKeys(value, keys, "A saved pairing");
     PairResponse p;
     p.workstationId = requireString(value, "workstation_id");
@@ -93,6 +95,11 @@ PairResponse pairingFromJson(const Value& value) {
     }
     p.ssh = value.at("ssh").asBool();
     p.guiUrl = requireString(value, "gui_url");
+    if (value.has("ssh_request_public_key")) {
+        p.sshRequestPublicKey = requireString(value, "ssh_request_public_key");
+        if (!p.sshRequestPublicKey.empty() && !IsSshPublicKey(p.sshRequestPublicKey))
+            throw Error("A saved pending SSH request has an invalid public key.");
+    }
     if (value.has("ssh_port")) {
         p.sshUser = requireString(value, "ssh_user");
         p.sshPublicKey = requireString(value, "ssh_public_key");
@@ -135,6 +142,7 @@ std::string SerializeProfiles(const std::vector<Profile>& profiles) {
             item["kind"] = "administrator";
             item["workstation_name"] = profile.workstationName;
             item["ssh_user"] = profile.sshUser;
+            item["connect_password_skipped_permanently"] = profile.connectPasswordSkippedPermanently;
             item["pairing"] = pairingToJson(profile.pairing);
         } else {
             item["kind"] = "support";
@@ -162,10 +170,18 @@ std::vector<Profile> ParseProfiles(const std::string& text) {
             throw Error("The profile store contains an invalid profile.");
         }
         if (kind == "administrator") {
-            json::RequireExactKeys(item, {"id", "name", "created_at", "kind", "workstation_name", "ssh_user", "pairing"}, "An administrator profile");
+            if (item.has("connect_password_skipped_permanently")) {
+                json::RequireExactKeys(item, {"id", "name", "created_at", "kind", "workstation_name", "ssh_user", "pairing",
+                                              "connect_password_skipped_permanently"}, "An administrator profile");
+            } else {
+                json::RequireExactKeys(item, {"id", "name", "created_at", "kind", "workstation_name", "ssh_user", "pairing"},
+                                       "An administrator profile");
+            }
             profile.kind = ProfileKind::Administrator;
             profile.workstationName = requireString(item, "workstation_name");
             profile.sshUser = requireString(item, "ssh_user");
+            if (item.has("connect_password_skipped_permanently"))
+                profile.connectPasswordSkippedPermanently = item.at("connect_password_skipped_permanently").asBool();
             profile.pairing = pairingFromJson(item.at("pairing"));
             if (!IsWorkstationName(profile.workstationName) ||
                 (profile.pairing.ssh ? !IsLinuxUser(profile.sshUser) : !profile.sshUser.empty()) ||

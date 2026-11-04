@@ -34,6 +34,27 @@ std::string RenderTunnel(const TunnelConfig& config) {
            config.peerPublicKey + "\r\nEndpoint = " + config.endpoint + "\r\nAllowedIPs = " + allowed + "\r\nPersistentKeepalive = 25\r\n";
 }
 
+bool IsBootstrapTunnel(const TunnelConfig& config) {
+    return config.privateKey == "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=";
+}
+
+void ValidateBootstrapTunnel(const TunnelConfig& config) {
+    ValidateTunnel(config);
+    if (!IsBootstrapTunnel(config)) throw Error("A tunnel helper may only install a public bootstrap identity.");
+}
+
+std::string RenderBootstrapTunnel(const TunnelConfig& config) {
+    ValidateTunnel(config);
+    TunnelConfig bootstrap;
+    bootstrap.privateKey = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=";
+    bootstrap.address = config.address;
+    bootstrap.peerPublicKey = config.peerPublicKey;
+    bootstrap.endpoint = config.endpoint;
+    bootstrap.allowedIps = config.allowedIps;
+    bootstrap.persistentKeepalive = config.persistentKeepalive;
+    return RenderTunnel(bootstrap);
+}
+
 TunnelConfig ParseTunnelStrict(const std::string& text) {
     if (text.size() > 8192) throw Error("Tunnel configuration is too large.");
     TunnelConfig config;

@@ -1,7 +1,9 @@
 import importlib.util
+import http.client
 import json
 import os
 import shlex
+import socket
 import threading
 import base64
 from pathlib import Path
@@ -257,7 +259,11 @@ class SupportBrokerTests(unittest.TestCase):
         web_support = (Path(broker_module.__file__).parent / "WebSupport.php").read_text()
         self.assertIn("public const DIAGNOSTICS_PROTOCOL = 4;", web_support)
         self.assertIn("public const SSH_PROTOCOL = 5;", web_support)
-        self.assertIn("public const WEB_PROTOCOL = %d;" % broker_module.PROTOCOL, web_support)
+        self.assertIn("public const POLICY_PROTOCOL = 8;", web_support)
+        self.assertIn("public const LOCKED_SSH_PROTOCOL = 9;", web_support)
+        self.assertIn("public const BAN_PROTOCOL = 10;", web_support)
+        self.assertIn("public const SESSION_PROTOCOL = 11;", web_support)
+        self.assertIn("public const WORKSTATION_MANAGEMENT_PROTOCOL = %d;" % broker_module.PROTOCOL, web_support)
 
     def test_status_never_starts_an_operation(self):
         self.broker.command = lambda arguments, **kwargs: self.calls.append(arguments)
@@ -317,8 +323,9 @@ def pair_request(public_key="A" * 42 + "E=", name="ADMIN-PC (alice)", nonce="n" 
 
 
 def decode_response(code):
-    assert code.startswith(broker_module.PAIR_RESPONSE_PREFIX)
-    return json.loads(broker_module.b64url_decode(code[len(broker_module.PAIR_RESPONSE_PREFIX):]))
+    prefix = broker_module.PAIR_RESPONSE_V2 if code.startswith(broker_module.PAIR_RESPONSE_V2) else broker_module.PAIR_RESPONSE_PREFIX
+    assert code.startswith(prefix)
+    return json.loads(broker_module.b64url_decode(code[len(prefix):]))
 
 
 # Fail2Ban INPUT chains observed on the FreePBX 17 test installation.
@@ -340,18 +347,41 @@ class FakeNetwork:
 
     def __init__(self):
         self.calls = []
-        self.link = False
-        self.up = False
-        self.peers = {}
+        self.devices = {}
         self.ruleset = None
         self.fail = None
         self.handshakes = {}
+        self.endpoints = {}
         self.table = None
         self.process = None
         self.silent = False
         self.next_handle = 1
         # Simulated iptables filter table (None: no iptables). Rule token lists use iptables -S syntax.
         self.filter = None
+
+    @property
+    def link(self):
+        return broker_module.WORKSTATION_IFACE in self.devices
+
+    @link.setter
+    def link(self, value):
+        if value:
+            self.devices.setdefault(broker_module.WORKSTATION_IFACE, {"up": False, "peers": {}})
+        else:
+            self.devices.pop(broker_module.WORKSTATION_IFACE, None)
+
+    @property
+    def up(self):
+        return self.devices.get(broker_module.WORKSTATION_IFACE, {}).get("up", False)
+
+    @up.setter
+    def up(self, value):
+        if self.link:
+            self.devices[broker_module.WORKSTATION_IFACE]["up"] = value
+
+    @property
+    def peers(self):
+        return self.devices.get(broker_module.WORKSTATION_IFACE, {}).get("peers", {})
 
     def freepbx(self, fail2ban=None):
         """FreePBX Firewall-shaped hooks only; not the FreePBX implementation. Default Fail2Ban hooks are the
@@ -410,15 +440,21 @@ class FakeNetwork:
         if name == "iptables":
             return self.iptables(list(rest))
         if name == "ip" and rest == ["-j", "link", "show"]:
-            return json.dumps([{"ifname": broker_module.WORKSTATION_IFACE, "flags": ["UP"] if self.up else []}] if self.link else [])
+            return json.dumps([{"ifname": interface, "flags": ["UP"] if device["up"] else []}
+                               for interface, device in self.devices.items()])
         if name == "ip" and rest[:2] == ["link", "show"]:
-            return "" if self.link else None
+            interface = rest[-1]
+            return "" if interface in self.devices else None
         if name == "ip" and rest[:2] == ["link", "add"]:
-            self.link = True
+            interface = rest[rest.index("dev") + 1]
+            self.devices[interface] = {"up": False, "peers": {}}
         if name == "ip" and rest[:2] == ["link", "del"]:
-            self.link, self.up, self.peers = False, False, {}
+            interface = rest[rest.index("dev") + 1]
+            self.devices.pop(interface, None)
         if name == "ip" and rest[:2] == ["link", "set"]:
-            self.up = "up" in rest
+            interface = rest[rest.index("dev") + 1]
+            if interface in self.devices:
+                self.devices[interface]["up"] = "up" in rest
         if name == "ip" and rest[:2] == ["-4", "-o"]:
             return "2: eth0    inet 192.168.1.10/24 brd 192.168.1.255 scope global eth0\n"
         if name == "ip" and rest[:2] == ["-4", "route"]:
@@ -427,18 +463,25 @@ class FakeNetwork:
             return "k" * 43 + "=\n"
         if name == "wg" and rest == ["pubkey"]:
             return "P" * 42 + "A=\n"
-        if name == "wg" and rest[:3] == ["show", broker_module.WORKSTATION_IFACE, "peers"]:
-            return "\n".join(self.peers)
-        if name == "wg" and rest == ["show", broker_module.WORKSTATION_IFACE, "latest-handshakes"]:
-            return "\n".join("%s\t%d" % (key, self.handshakes.get(key, 0)) for key in self.peers)
-        if name == "wg" and rest == ["show", broker_module.WORKSTATION_IFACE, "transfer"]:
-            return "\n".join("%s\t0\t0" % key for key in self.peers)
+        if name == "wg" and rest[0] == "show":
+            interface = rest[1]
+            peers = self.devices.get(interface, {}).get("peers", {})
+            if rest[2] == "peers":
+                return "\n".join(peers)
+            if rest[2] == "latest-handshakes":
+                return "\n".join("%s\t%d" % (key, self.handshakes.get(key, 0)) for key in peers)
+            if rest[2] == "endpoints":
+                return "\n".join("%s\t%s" % (key, self.endpoints.get(key, "(none)")) for key in peers)
+            if rest[2] == "transfer":
+                return "\n".join("%s\t0\t0" % key for key in peers)
         if name == "wg" and rest[:1] == ["set"] and "peer" in rest:
+            interface = rest[1]
+            peers = self.devices.setdefault(interface, {"up": False, "peers": {}})["peers"]
             key = rest[rest.index("peer") + 1]
             if "remove" in rest:
-                self.peers.pop(key, None)
+                peers.pop(key, None)
             else:
-                self.peers[key] = rest[rest.index("allowed-ips") + 1]
+                peers[key] = rest[rest.index("allowed-ips") + 1]
         if name == "nft" and rest == ["-j", "-f", "-"]:
             commands = json.loads(stdin)["nftables"]
             notifications = []
@@ -458,7 +501,15 @@ class FakeNetwork:
                     notifications.append({"add": {kind: value}})
             if self.table:
                 rules = [entry["rule"] for entry in self.table["nftables"] if "rule" in entry]
-                pbx = rules[0]["expr"][1]["match"]["right"]
+                shared_rule = next((entry for entry in rules if entry["chain"] == "input"
+                                    and any(expr.get("match", {}).get("right") == broker_module.WORKSTATION_IFACE
+                                            for expr in entry["expr"])), None)
+                if shared_rule is None:
+                    shared_rule = next(entry for entry in rules if entry["chain"] == "input"
+                                       and any(expr.get("match", {}).get("left") == {"payload": {"protocol": "ip", "field": "daddr"}}
+                                               for expr in entry["expr"]))
+                pbx = next(expr["match"]["right"] for expr in shared_rule["expr"]
+                           if expr.get("match", {}).get("left") == {"payload": {"protocol": "ip", "field": "daddr"}})
                 sources = [entry["expr"][1]["match"]["right"] for entry in rules
                            if any(expr.get("match", {}).get("right") == 22 for expr in entry["expr"])]
 
@@ -467,8 +518,11 @@ class FakeNetwork:
                             and expr["match"].get("left") == {"payload": {"protocol": protocol, "field": field}}]
                 web_ports = [matched(rule, "tcp", "dport")[0] for rule in rules
                              if rule["chain"] == "input" and {"accept": None} in rule["expr"]
-                             and matched(rule, "tcp", "dport") and not matched(rule, "ip", "saddr")]
-                self.ruleset = broker_module.workstation_ruleset(pbx, sources, web_ports or (80, 443))
+                             and matched(rule, "tcp", "dport") and matched(rule, "ip", "saddr")
+                             and matched(rule, "tcp", "dport")[0] not in (
+                                 22, broker_module.SESSION_CONTROL_PORT, broker_module.ssh.API_PORT)
+                             and not 22000 <= matched(rule, "tcp", "dport")[0] <= 22999]
+                self.ruleset = broker_module.workstation_ruleset(pbx, sources, sorted(set(web_ports)))
             self.emit(notifications)
         if name == "nft" and rest == ["-j", "list", "tables"]:
             return json.dumps({"nftables": [entry for entry in self.table["nftables"] if "table" in entry] if self.table else []})
@@ -511,21 +565,57 @@ class WorkstationPairingTests(unittest.TestCase):
         self.broker.run = self.net.run
         self.broker.tool = lambda name: name
         self.broker.iptables_tool = lambda: "iptables" if self.net.filter is not None else None
+        self.ssh_reconcile = patch.object(self.broker.ssh, "reconcile")
+        self.ssh_reconcile.start()
+        self.broker.save_workstations({"subnet": None, "listen_port": None, "web": broker_module.DEFAULT_WEB,
+                                       "connection_state": "open", "workstations": []})
 
     def tearDown(self):
         if self.broker.monitor:
             self.broker.monitor.close()
         for item in self.patches:
             item.stop()
+        self.ssh_reconcile.stop()
         self.directory.cleanup()
 
-    def pair(self, mode="persistent", ssh="0", minutes="60", port="51821", web=None, **request_options):
-        request = {"action": "pair", "request": pair_request(**request_options), "endpoint_host": "pbx.example.net",
+    def pair(self, mode="persistent", ssh="0", minutes="60", port="51821", web=None, sources=None, **request_options):
+        if not (self.state / "workstations.json").exists():
+            self.broker.save_workstations({"subnet": None, "listen_port": None, "web": broker_module.DEFAULT_WEB,
+                                           "connection_state": "open", "workstations": []})
+        pairing_request = pair_request(**request_options)
+        if ssh == "1":
+            pairing = broker_module.parse_pair_request(pairing_request)
+            pairing.update(schema="teliphones-pair-request/2",
+                           ssh_public_key="ssh-ed25519 " + base64.b64encode(
+                               b"\0\0\0\x0bssh-ed25519\0\0\0\x20" + bytes(range(32))).decode())
+            pairing_request = broker_module.PAIR_REQUEST_V2 + broker_module.b64url_encode(json.dumps(pairing).encode())
+        request = {"action": "pair", "request": pairing_request, "endpoint_host": "pbx.example.net",
                    "listen_port": port, "mode": mode, "minutes": minutes, "ssh": ssh}
         if web is not None:
             request["web"] = web
-        result = self.broker.dispatch(request, 1000)
+        if sources is not None:
+            request["sources"] = sources
+        if ssh == "1":
+            request["ssh_user"] = "root"
+            ssh_public = "ssh-ed25519 " + base64.b64encode(
+                b"\0\0\0\x0bssh-ed25519\0\0\0\x20" + bytes(range(32))).decode()
+            with patch.object(self.broker.ssh, "initialise", return_value=ssh_public), \
+                    patch.object(self.broker.ssh, "host_key", return_value=ssh_public), \
+                    patch.object(self.broker.ssh, "account_policy", return_value={}), \
+                    patch.object(self.broker.ssh, "reconcile"):
+                result = self.broker.dispatch(request, 1000)
+        else:
+            result = self.broker.dispatch(request, 1000)
         return result, decode_response(result["pairing_response"])
+
+    def open_session(self, response):
+        state, _ = self.broker.workstation_state()
+        item = next(entry for entry in state["workstations"] if entry["id"] == response["workstation_id"])
+        ssh_key = "ssh-ed25519 " + base64.b64encode(
+            b"\0\0\0\x0bssh-ed25519\0\0\0\x20" + bytes(range(32))).decode()
+        with patch.object(self.broker.ssh, "host_key", return_value=ssh_key), \
+                patch.object(self.broker.ssh, "initialise", return_value=ssh_key):
+            return self.broker.workstation_session("heartbeat", item["address"].split("/")[0])
 
     def test_pairing_inputs_are_strictly_validated(self):
         good = {"action": "pair", "request": pair_request(), "endpoint_host": "pbx.example.net", "listen_port": "51821",
@@ -545,6 +635,585 @@ class WorkstationPairingTests(unittest.TestCase):
         for workstation_id in ("ALL", "0123", "../x", 1):
             with self.assertRaises(broker_module.BrokerError):
                 broker_module.validate({"action": "unpair", "workstation_id": workstation_id})
+
+    def test_locked_source_validation_and_dns_failure_fail_closed(self):
+        self.assertEqual(broker_module.parse_source_restrictions("198.51.100.7, 2001:db8::1/128, PBX.Example.NET."),
+                         ["198.51.100.7/32", "2001:db8::1/128", "pbx.example.net"])
+        self.assertEqual(broker_module.parse_wireguard_endpoint("198.51.100.24:51821"),
+                         {"address": "198.51.100.24", "port": 51821})
+        self.assertEqual(broker_module.parse_wireguard_endpoint("[2001:db8::24]:51821"),
+                         {"address": "2001:db8::24", "port": 51821})
+        for value in ("(none)", "example.net:51821", "2001:db8::24:51821", "198.51.100.24:0", "[::1]:65536"):
+            self.assertIsNone(broker_module.parse_wireguard_endpoint(value))
+
+        def resolver(host, *args):
+            if host == "good.example.net":
+                return [(socket.AF_INET, socket.SOCK_DGRAM, 0, "", ("203.0.113.12", 0))]
+            raise OSError("DNS unavailable")
+
+        resolved, failed = broker_module.resolve_source_restrictions(
+            ["203.0.113.0/24", "good.example.net", "lost.example.net"], resolver)
+        self.assertEqual(resolved, ["203.0.113.0/24", "203.0.113.12/32"])
+        self.assertEqual(failed, ["lost.example.net"])
+        with self.assertRaises(broker_module.BrokerError):
+            broker_module.parse_source_restrictions("0.0.0.0/0")
+
+    def test_locked_domain_refresh_replaces_expired_addresses_and_fails_closed(self):
+        cache, calls = {}, []
+        current = ["203.0.113.12"]
+        def resolver(host, *args):
+            calls.append(host)
+            if not current:
+                raise OSError("DNS unavailable")
+            return [(socket.AF_INET, socket.SOCK_DGRAM, 0, "", (address, 0)) for address in current]
+
+        first, _ = broker_module.resolve_source_restrictions(
+            ["pbx.example.net"], resolver, cache, now=100)
+        cached, _ = broker_module.resolve_source_restrictions(
+            ["pbx.example.net"], resolver, cache, now=399)
+        self.assertEqual(first, ["203.0.113.12/32"])
+        self.assertEqual(cached, first)
+        self.assertEqual(calls, ["pbx.example.net"])
+
+        current[:] = ["198.51.100.23"]
+        refreshed, _ = broker_module.resolve_source_restrictions(
+            ["pbx.example.net"], resolver, cache, now=401)
+        self.assertEqual(refreshed, ["198.51.100.23/32"])
+        current.clear()
+        failed, unresolved = broker_module.resolve_source_restrictions(
+            ["pbx.example.net"], resolver, cache, now=702)
+        self.assertEqual((failed, unresolved), ([], ["pbx.example.net"]))
+
+    def test_locked_pair_uses_dedicated_interface_port_and_authenticated_peer(self):
+        _, response = self.pair(sources="198.51.100.24")
+        state = broker_module.read_json(self.state / "workstations.json")
+        item = state["workstations"][0]
+        interface = self.broker.locked_interface(item)
+        self.assertTrue(item["locked"])
+        self.assertNotEqual(response["endpoint"].rsplit(":", 1)[1], "51821")
+        self.assertEqual(response["endpoint"].rsplit(":", 1)[1], str(item["listener_port"]))
+        self.assertEqual(response["address"], item["address"])
+        self.assertEqual(response["pbx_address"], item["pbx_address"])
+        self.assertNotIn(item["public_key"], self.net.devices[broker_module.WORKSTATION_IFACE]["peers"])
+        self.assertEqual(self.net.devices[interface]["peers"], {item["public_key"]: item["address"]})
+        rules = [entry["rule"] for entry in self.net.table["nftables"] if "rule" in entry]
+        source_rule = next(rule for rule in rules if rule["chain"] == "input"
+                           and any(expr.get("match", {}).get("right") == "198.51.100.24"
+                                   for expr in rule["expr"]))
+        blocked_rule = next(rule for rule in rules if rule["chain"] == "input"
+                            and {"drop": None} in rule["expr"]
+                            and any(expr.get("match", {}).get("right") == item["listener_port"]
+                                    for expr in rule["expr"]))
+        self.assertEqual(source_rule["expr"][-1], {"accept": None})
+        self.assertEqual(blocked_rule["expr"][-1], {"drop": None})
+
+    def test_pairing_another_workstation_does_not_take_existing_listener_down(self):
+        _, first = self.pair()
+        first_id = first["workstation_id"]
+        first_key = next(item["public_key"] for item in self.broker.workstation_state()[0]["workstations"]
+                         if item["id"] == first_id)
+        self.net.calls = []
+        self.pair(public_key="B" * 42 + "E=", nonce="m" * 22)
+        self.assertTrue(self.net.devices[broker_module.WORKSTATION_IFACE]["up"])
+        self.assertIn(first_key, self.net.devices[broker_module.WORKSTATION_IFACE]["peers"])
+        self.assertFalse(any(name == "ip" and rest[:3] == ("link", "set", "down")
+                             for name, rest in self.net.calls))
+
+    def test_post_pair_lock_to_current_uses_recent_authenticated_endpoint(self):
+        _, response = self.pair()
+        state, _ = self.broker.workstation_state()
+        item = state["workstations"][0]
+        self.net.handshakes[item["public_key"]] = int(broker_module.time.time())
+        self.net.endpoints[item["public_key"]] = "[2001:db8::24]:51821"
+        result = self.broker.dispatch({"action": "workstation-manage", "workstation_id": item["id"],
+                                       "state": "lock", "sources": "current"}, 1000)
+        managed, _ = self.broker.workstation_state()
+        locked = managed["workstations"][0]
+        self.assertEqual(result["workstation"]["id"], item["id"])
+        self.assertTrue(locked["locked"])
+        self.assertEqual(locked["sources"], ["2001:db8::24/128"])
+        self.assertEqual(locked["public_key"], item["public_key"])
+        self.assertIn(item["public_key"], self.net.devices[broker_module.WORKSTATION_IFACE]["peers"])
+        self.assertTrue(locked["migration"]["locked"] is False)
+        migration = self.broker.workstation_session(
+            "heartbeat", response["address"].split("/")[0], response["pbx_address"])
+        self.assertFalse(migration["active"])
+        self.broker.workstation_session(
+            "heartbeat", locked["address"].split("/")[0], locked["pbx_address"])
+        self.assertNotIn(item["public_key"], self.net.devices[broker_module.WORKSTATION_IFACE]["peers"])
+        self.assertTrue(self.net.devices[self.broker.locked_interface(locked)]["up"])
+        self.assertTrue(self.net.devices[broker_module.WORKSTATION_IFACE]["up"])
+
+    def test_authenticated_workstation_can_self_restrict_to_its_verified_public_source(self):
+        _, response = self.pair()
+        state, _ = self.broker.workstation_state()
+        item = state["workstations"][0]
+        self.net.handshakes[item["public_key"]] = int(broker_module.time.time())
+        self.net.endpoints[item["public_key"]] = "198.51.100.24:53123"
+        result = self.broker.workstation_session(
+            "lock-current", item["address"].split("/")[0],
+            str(broker_module.ipaddress.IPv4Network(state["subnet"])[1]))
+        state, _ = self.broker.workstation_state()
+        item = state["workstations"][0]
+        self.assertEqual(result["workstation_change_status"], "applied")
+        self.assertTrue(item["locked"])
+        self.assertEqual(item["sources"], ["198.51.100.24/32"])
+        self.assertEqual(self.broker.active_sessions(), {})
+
+    def test_post_pair_source_update_and_unlock_preserve_identity(self):
+        _, response = self.pair(sources="198.51.100.24")
+        original_key = response["workstation_public_key"]
+        workstation_id = response["workstation_id"]
+        updated = self.broker.dispatch({"action": "workstation-manage", "workstation_id": workstation_id,
+                                        "state": "lock", "sources": "2001:db8::24/64, office.example.net"}, 1000)
+        state, _ = self.broker.workstation_state()
+        item = state["workstations"][0]
+        self.assertEqual(item["public_key"], original_key)
+        self.assertEqual(updated["workstation"]["sources"], ["2001:db8::/64", "office.example.net"])
+        with patch.object(self.broker, "apply_workstations", wraps=self.broker.apply_workstations) as apply:
+            result = self.broker.dispatch({"action": "workstation-manage", "workstation_id": workstation_id,
+                                           "state": "unlock", "sources": ""}, 1000)
+            self.assertTrue(apply.call_args.kwargs["preserve_unrelated"])
+        state, _ = self.broker.workstation_state()
+        item = state["workstations"][0]
+        self.assertFalse(item["locked"])
+        self.assertEqual(item["public_key"], original_key)
+        self.assertNotIn("sources", item)
+        self.assertNotIn("listener_port", item)
+        self.assertEqual(result["workstation"]["id"], workstation_id)
+        self.assertTrue(self.net.devices[broker_module.WORKSTATION_IFACE]["up"])
+
+    def test_listener_migration_is_control_only_until_same_identity_acknowledges(self):
+        self.broker.configure_workstation_limit({"maximum": "2"}, 1000)
+        _, first = self.pair(public_key="A" * 42 + "E=", nonce="a" * 22)
+        _, unrelated = self.pair(public_key="B" * 42 + "E=", nonce="b" * 22)
+        state, _ = self.broker.workstation_state()
+        first_item = next(item for item in state["workstations"] if item["id"] == first["workstation_id"])
+        unrelated_item = next(item for item in state["workstations"] if item["id"] == unrelated["workstation_id"])
+        original_source = first_item["address"].split("/")[0]
+        original_pbx = str(broker_module.ipaddress.IPv4Network(state["subnet"])[1])
+        self.open_session(first)
+        self.open_session(unrelated)
+        original_key = first_item["public_key"]
+
+        self.broker.dispatch({"action": "workstation-manage", "workstation_id": first_item["id"],
+                              "state": "lock", "sources": "198.51.100.24"}, 1000)
+        self.broker.restore_workstations()
+        state, _ = self.broker.workstation_state()
+        first_item = next(item for item in state["workstations"] if item["id"] == first["workstation_id"])
+        offer = self.broker.workstation_session("heartbeat", original_source, original_pbx)
+        self.assertFalse(offer["active"])
+        self.assertEqual(offer["migration"]["workstation_id"], first_item["id"])
+        self.assertEqual(offer["migration"]["workstation_public_key"], original_key)
+        self.assertEqual(set(self.broker.active_sessions()), {unrelated_item["id"]})
+        rules = [entry["rule"] for entry in self.broker.expected_policy(state)["nftables"] if "rule" in entry]
+        self.assertFalse(any(rule["expr"][-1] == {"accept": None}
+                             and any(expr.get("match", {}).get("right") in (80, 443) for expr in rule["expr"])
+                             and any(expr.get("match", {}).get("right") == original_source for expr in rule["expr"])
+                             for rule in rules))
+        control_rules = broker_module.integration_rules(
+            original_pbx, state["workstations"], migration_controls=[{
+                "address": original_source + "/32",
+                "pbx_address": original_pbx,
+                "interface": broker_module.WORKSTATION_IFACE,
+            }])
+        self.assertTrue(any(rule.get("dport") == str(broker_module.SESSION_CONTROL_PORT)
+                            and rule.get("s") == original_source + "/32" for rule in control_rules))
+        locked_source = first_item["address"].split("/")[0]
+        self.broker.workstation_session("heartbeat", locked_source, first_item["pbx_address"])
+        state, _ = self.broker.workstation_state()
+        first_item = next(item for item in state["workstations"] if item["id"] == first["workstation_id"])
+        self.assertNotIn("migration", first_item)
+        self.assertEqual(first_item["public_key"], original_key)
+        self.assertIn(unrelated_item["public_key"], self.net.devices[broker_module.WORKSTATION_IFACE]["peers"])
+        self.assertEqual(set(self.broker.active_sessions()), {first_item["id"], unrelated_item["id"]})
+
+        old_locked_address = first_item["address"].split("/")[0]
+        old_locked_pbx = first_item["pbx_address"]
+        self.broker.dispatch({"action": "workstation-manage", "workstation_id": first_item["id"],
+                              "state": "unlock", "sources": ""}, 1000)
+        state, _ = self.broker.workstation_state()
+        first_item = next(item for item in state["workstations"] if item["id"] == first["workstation_id"])
+        offer = self.broker.workstation_session("heartbeat", old_locked_address, old_locked_pbx)
+        self.assertFalse(offer["active"])
+        self.assertEqual(offer["migration"]["workstation_public_key"], original_key)
+        self.broker.workstation_session("heartbeat", first_item["address"].split("/")[0], first_item["pbx_address"])
+        state, _ = self.broker.workstation_state()
+        first_item = next(item for item in state["workstations"] if item["id"] == first["workstation_id"])
+        self.assertNotIn("migration", first_item)
+        self.assertNotIn(self.broker.locked_interface(first_item), self.net.devices)
+        self.assertIn(unrelated_item["public_key"], self.net.devices[broker_module.WORKSTATION_IFACE]["peers"])
+
+    def test_post_pair_ssh_elevation_requires_admission_and_explicit_admin_decision(self):
+        _, response = self.pair()
+        state, _ = self.broker.workstation_state()
+        item = state["workstations"][0]
+        request_key = "ssh-ed25519 " + base64.b64encode(
+            b"\0\0\0\x0bssh-ed25519\0\0\0\x20" + bytes(range(32))).decode()
+        with self.assertRaisesRegex(broker_module.BrokerError, "admitted administrative session"):
+            self.broker.workstation_session("ssh-request", item["address"].split("/")[0],
+                                            str(broker_module.ipaddress.IPv4Network(state["subnet"])[1]), request_key)
+        self.open_session(response)
+        pending = self.broker.workstation_session("ssh-request", item["address"].split("/")[0],
+                                                  str(broker_module.ipaddress.IPv4Network(state["subnet"])[1]), request_key)
+        self.assertEqual(pending["ssh_request_status"], "pending")
+        status = self.broker.workstation_status()
+        self.assertTrue(status["items"][0]["ssh_request_pending"])
+        self.assertFalse(status["items"][0]["ssh"])
+        self.assertTrue(status["ssh_accounts"])
+        with patch.object(self.broker.ssh, "account_policy", return_value={}), \
+                patch.object(self.broker.ssh, "reconcile"):
+            approved = self.broker.dispatch({"action": "workstation-ssh-approve",
+                                             "workstation_id": item["id"], "ssh_user": "root"}, 1000)
+        state, _ = self.broker.workstation_state()
+        item = state["workstations"][0]
+        self.assertTrue(approved["ok"])
+        self.assertTrue(item["ssh"])
+        self.assertEqual(item["ssh_user"], "root")
+        self.assertEqual(item["ssh_public_key"], request_key)
+        self.assertNotIn("ssh_request", item)
+        with patch.object(self.broker.ssh, "reconcile"):
+            revoked = self.broker.dispatch({"action": "workstation-ssh-revoke",
+                                            "workstation_id": item["id"]}, 1000)
+        state, _ = self.broker.workstation_state()
+        item = state["workstations"][0]
+        self.assertTrue(revoked["ok"])
+        self.assertFalse(item["ssh"])
+        self.assertNotIn("ssh_public_key", item)
+        self.assertIn(item["public_key"], self.net.devices[broker_module.WORKSTATION_IFACE]["peers"])
+
+    def test_windows_unlock_request_requires_admin_approval_and_rejection_preserves_restrictions(self):
+        _, response = self.pair(sources="198.51.100.24")
+        self.open_session(response)
+        state, _ = self.broker.workstation_state()
+        item = state["workstations"][0]
+        source = item["address"].split("/")[0]
+        pending = self.broker.workstation_session("unlock-request", source, item["pbx_address"])
+        self.assertEqual(pending["unlock_request_status"], "pending")
+        state, _ = self.broker.workstation_state()
+        item = state["workstations"][0]
+        self.assertTrue(item["locked"])
+        self.assertTrue(item["unlock_request"])
+        self.assertIn(item["id"], self.broker.active_sessions())
+        rejected = self.broker.dispatch({"action": "workstation-unlock-reject",
+                                         "workstation_id": item["id"]}, 1000)
+        state, _ = self.broker.workstation_state()
+        self.assertTrue(rejected["ok"])
+        self.assertTrue(state["workstations"][0]["locked"])
+        self.assertNotIn("unlock_request", state["workstations"][0])
+
+    def test_admin_approved_windows_unlock_starts_identity_preserving_migration(self):
+        _, response = self.pair(sources="198.51.100.24")
+        self.open_session(response)
+        state, _ = self.broker.workstation_state()
+        item = state["workstations"][0]
+        source = item["address"].split("/")[0]
+        self.broker.workstation_session("unlock-request", source, item["pbx_address"])
+        approved = self.broker.dispatch({"action": "workstation-unlock-approve",
+                                         "workstation_id": item["id"]}, 1000)
+        state, _ = self.broker.workstation_state()
+        item = state["workstations"][0]
+        self.assertTrue(approved["ok"])
+        self.assertFalse(item["locked"])
+        self.assertTrue(item.get("migration"))
+        self.assertTrue(item["migration"]["locked"])
+        self.assertNotIn("unlock_request", item)
+        self.assertNotIn(item["id"], self.broker.active_sessions())
+
+    def test_windows_allowed_list_change_requires_admin_approval_before_policy_migration(self):
+        _, response = self.pair()
+        self.open_session(response)
+        state, _ = self.broker.workstation_state()
+        item = state["workstations"][0]
+        source = item["address"].split("/")[0]
+        pending = self.broker.workstation_session("sources-request", source, response["pbx_address"],
+                                                  "198.51.100.24, 2001:db8::24/128, example.org")
+        self.assertEqual(pending["sources_request_status"], "pending")
+        state, _ = self.broker.workstation_state()
+        item = state["workstations"][0]
+        self.assertFalse(item["locked"])
+        self.assertNotIn("migration", item)
+        self.assertEqual(item["sources_request"]["sources"],
+                         ["198.51.100.24/32", "2001:db8::24/128", "example.org"])
+        approved = self.broker.dispatch({"action": "workstation-sources-approve",
+                                         "workstation_id": item["id"]}, 1000)
+        state, _ = self.broker.workstation_state()
+        item = state["workstations"][0]
+        self.assertTrue(approved["ok"])
+        self.assertTrue(item["locked"])
+        self.assertEqual(item["sources"], ["198.51.100.24/32", "2001:db8::24/128", "example.org"])
+        self.assertTrue(item.get("migration"))
+        self.assertNotIn("sources_request", item)
+        self.assertNotIn(item["id"], self.broker.active_sessions())
+
+    def test_locked_workstation_managed_ssh_is_scoped_to_its_dedicated_interface(self):
+        _, response = self.pair(sources="198.51.100.24", ssh="1")
+        state, _ = self.broker.workstation_state()
+        item = state["workstations"][0]
+        interface = self.broker.locked_interface(item)
+        rules = [entry["rule"] for entry in self.broker.expected_policy(state)["nftables"] if "rule" in entry]
+        self.assertFalse(any(rule["expr"][-1] == {"accept": None}
+                             and any(expression.get("match", {}).get("right") in (80, 443, 8765, 22002)
+                                     for expression in rule["expr"]) for rule in rules))
+        self.open_session(response)
+        rules = [entry["rule"] for entry in self.broker.expected_policy(state)["nftables"] if "rule" in entry]
+        allowed = [rule for rule in rules if rule["chain"] == "input" and rule["expr"][-1] == {"accept": None}
+                   and any(expression == {"match": {"op": "==", "left": {"meta": {"key": "iifname"}},
+                                                       "right": interface}} for expression in rule["expr"])]
+        allowed_ports = {expression["match"]["right"] for rule in allowed for expression in rule["expr"]
+                         if expression.get("match", {}).get("left") == {"payload": {"protocol": "tcp", "field": "dport"}}}
+        self.assertEqual(allowed_ports, {80, 443, broker_module.SESSION_CONTROL_PORT,
+                                         broker_module.ssh.API_PORT, broker_module.ssh.port(item)})
+        self.assertTrue(response["ssh"])
+        self.assertEqual(response["ssh_port"], broker_module.ssh.port(item))
+        self.assertTrue(item["locked"])
+        self.assertTrue(item["ssh"])
+
+    def test_manual_ban_blocks_listener_source_without_disrupting_tunnels(self):
+        self.pair(sources="198.51.100.24")
+        state, _ = self.broker.workstation_state()
+        item = state["workstations"][0]
+        interface = self.broker.locked_interface(item)
+        self.net.calls = []
+        updated = self.broker.configure_ban({"action": "workstation-ban", "source": "198.51.100.24",
+                                             "reason": "temporary incident", "hours": "1"}, 1000)
+        self.assertEqual(len(updated["bans"]), 1)
+        self.assertTrue(self.net.devices[interface]["up"])
+        self.assertFalse(any(name == "ip" and "down" in rest for name, rest in self.net.calls))
+        rules = [entry["rule"] for entry in self.net.table["nftables"] if "rule" in entry and entry["rule"]["chain"] == "input"]
+        banned = next(index for index, rule in enumerate(rules)
+                      if rule["expr"][-1] == {"drop": None}
+                      and {"match": {"op": "==", "left": {"payload": {"protocol": "ip", "field": "saddr"}},
+                                     "right": "198.51.100.24"}} in rule["expr"])
+        allowed = next(index for index, rule in enumerate(rules)
+                       if rule["expr"][-1] == {"accept": None}
+                       and {"match": {"op": "==", "left": {"payload": {"protocol": "ip", "field": "saddr"}},
+                                      "right": "198.51.100.24"}} in rule["expr"])
+        self.assertLess(banned, allowed, "an explicit ban must precede the Locked listener allow rule")
+        self.assertEqual(self.broker.workstation_status()["bans"][0]["active"], True)
+        self.broker.configure_ban({"action": "workstation-unban", "ban_id": updated["bans"][0]["id"]}, 1000)
+        self.assertTrue(self.net.devices[interface]["up"])
+        self.assertFalse(any(entry["rule"]["expr"][-1] == {"drop": None}
+                             and any(expr.get("match", {}).get("right") == "198.51.100.24"
+                                      for expr in entry["rule"]["expr"])
+                             for entry in self.net.table["nftables"] if "rule" in entry))
+
+    def test_workstation_session_admission_is_atomic_and_peer_bound(self):
+        _, first = self.pair()
+        _, second = self.pair(public_key="B" * 42 + "E=", nonce="m" * 22)
+        first_state, _ = self.broker.workstation_state()
+        first_item = next(item for item in first_state["workstations"] if item["id"] == first["workstation_id"])
+        second_item = next(item for item in first_state["workstations"] if item["id"] == second["workstation_id"])
+        barrier = broker_module.threading.Barrier(3)
+        outcomes = []
+        outcome_lock = broker_module.threading.Lock()
+
+        def acquire(source):
+            barrier.wait()
+            try:
+                self.broker.workstation_session("heartbeat", source)
+                result = "admitted"
+            except broker_module.BrokerError as error:
+                result = str(error)
+            with outcome_lock:
+                outcomes.append(result)
+
+        workers = [broker_module.threading.Thread(target=acquire, args=(item["address"].split("/")[0],))
+                   for item in (first_item, second_item)]
+        for worker in workers:
+            worker.start()
+        barrier.wait()
+        for worker in workers:
+            worker.join(timeout=5)
+
+        self.assertEqual(outcomes.count("admitted"), 1)
+        self.assertTrue(any("Session limit reached: 1 of 1" in result for result in outcomes))
+        sessions = self.broker.active_sessions()
+        self.assertEqual(len(sessions), 1)
+        state, _ = self.broker.workstation_state()
+        active_id = next(iter(sessions))
+        active_source = next(item["address"].split("/")[0] for item in state["workstations"] if item["id"] == active_id)
+        inactive_source = next(item["address"].split("/")[0] for item in state["workstations"] if item["id"] != active_id)
+        rules = [entry["rule"] for entry in self.broker.expected_policy(state)["nftables"] if "rule" in entry]
+        admitted_sources = {expression["match"]["right"] for rule in rules if rule["expr"][-1] == {"accept": None}
+                            for expression in rule["expr"]
+                            if expression.get("match", {}).get("left") == {"payload": {"protocol": "ip", "field": "saddr"}}
+                            and any(part.get("match", {}).get("right") in (80, 443) for part in rule["expr"])}
+        self.assertIn(active_source, admitted_sources)
+        self.assertNotIn(inactive_source, admitted_sources)
+
+    def test_release_expiry_and_restart_recover_capacity(self):
+        _, first = self.pair()
+        _, second = self.pair(public_key="B" * 42 + "E=", nonce="m" * 22)
+        state, _ = self.broker.workstation_state()
+        first_item = next(item for item in state["workstations"] if item["id"] == first["workstation_id"])
+        second_item = next(item for item in state["workstations"] if item["id"] == second["workstation_id"])
+        first_source = first_item["address"].split("/")[0]
+        second_source = second_item["address"].split("/")[0]
+        admitted = self.broker.workstation_session("heartbeat", first_source)
+        self.assertEqual(admitted["active"], True)
+        self.assertEqual(admitted["policy"]["locked"], False)
+        self.assertEqual(admitted["policy"]["sources"], [])
+        self.assertFalse(admitted["policy"]["ssh_approved"])
+        with self.assertRaisesRegex(broker_module.BrokerError, "Session limit reached"):
+            self.broker.workstation_session("heartbeat", second_source)
+        self.broker.workstation_session("release", first_source)
+        self.broker.workstation_session("heartbeat", second_source)
+        self.assertEqual(list(self.broker.active_sessions()), [second["workstation_id"]])
+
+        leases = self.broker.active_sessions()
+        leases[second["workstation_id"]]["expires_at"] = int(broker_module.time.time()) - 1
+        self.broker.save_active_sessions(leases)
+        self.broker.expire_sessions()
+        self.assertEqual(self.broker.active_sessions(), {})
+        self.broker.workstation_session("heartbeat", first_source)
+        self.broker.save_active_sessions({})
+        state, _ = self.broker.workstation_state()
+        rules = [entry["rule"] for entry in self.broker.expected_policy(state)["nftables"] if "rule" in entry]
+        self.assertFalse(any(rule["expr"][-1] == {"accept": None}
+                             and any(expression.get("match", {}).get("right") in (80, 443)
+                                     for expression in rule["expr"]) for rule in rules))
+
+    def test_locked_session_reports_effective_policy_and_dns_failure(self):
+        _, response = self.pair(sources="198.51.100.24, office.example.net")
+        state, _ = self.broker.workstation_state()
+        item = next(entry for entry in state["workstations"] if entry["id"] == response["workstation_id"])
+        self.broker.source_cache["office.example.net"] = (broker_module.time.monotonic() + 60, [])
+        status = self.broker.workstation_session("heartbeat", item["address"].split("/")[0])
+        self.assertTrue(status["policy"]["locked"])
+        self.assertEqual(status["policy"]["sources"], ["198.51.100.24/32", "office.example.net"])
+        self.assertEqual(status["policy"]["effective_source_count"], 1)
+        self.assertEqual(status["policy"]["source_resolution_failures"], ["office.example.net"])
+        self.assertEqual(status["policy"]["listener_port"], item["listener_port"])
+
+    def test_session_limit_setting_is_validated_and_persisted(self):
+        for maximum in ("0", "129", "1.5", 1, "001"):
+            with self.assertRaises(broker_module.BrokerError):
+                broker_module.validate({"action": "workstation-limit", "maximum": maximum})
+        _, response = self.pair()
+        self.assertEqual(self.broker.dispatch({"action": "workstation-limit", "maximum": "2"}, 1000)["ok"], True)
+        self.open_session(response)
+        _, second = self.pair(public_key="B" * 42 + "E=", nonce="m" * 22)
+        self.open_session(second)
+        status = self.broker.workstation_status()
+        self.assertEqual(status["max_sessions"], 2)
+        self.assertEqual(status["connected_workstations"], 2)
+        with self.assertRaisesRegex(broker_module.BrokerError, "cannot be lower"):
+            self.broker.configure_workstation_limit({"maximum": "1"}, 1000)
+
+    def test_session_admission_fails_when_firewall_order_is_unsafe(self):
+        _, response = self.pair()
+        state, _ = self.broker.workstation_state()
+        item = next(entry for entry in state["workstations"] if entry["id"] == response["workstation_id"])
+        self.broker.integration["state"] = "error"
+        with self.assertRaisesRegex(broker_module.BrokerError, "integration is unsafe"):
+            self.broker.workstation_session("heartbeat", item["address"].split("/")[0])
+        self.assertEqual(self.broker.active_sessions(), {})
+
+    def test_http_session_controller_authenticates_kernel_source_and_enforces_capacity(self):
+        state = {"connection_state": "open", "subnet": "127.0.0.0/24", "max_sessions": 1,
+                 "workstations": [{"id": "a" * 16, "address": "127.0.0.2/32"},
+                                  {"id": "b" * 16, "address": "127.0.0.3/32"}]}
+        self.broker.workstation_state = lambda: (state, False)
+        self.broker.reconcile_policy_only = lambda current: None
+        self.broker.integration["state"] = "active"
+        with broker_module.socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        with patch.object(broker_module, "SESSION_CONTROL_PORT", port):
+            self.broker.session_server_enabled = True
+            self.broker.reconcile_session_servers(state)
+
+            def post(source, action="heartbeat", extra=None):
+                connection = http.client.HTTPConnection(
+                    "127.0.0.1", port, timeout=3, source_address=(source, 0))
+                try:
+                    body = json.dumps({"action": action, **(extra or {})})
+                    connection.request("POST", "/workstation/session", body,
+                                       {"Content-Type": "application/json"})
+                    response = connection.getresponse()
+                    return response.status, json.loads(response.read())
+                finally:
+                    connection.close()
+
+            try:
+                status, admitted = post("127.0.0.2")
+                self.assertEqual(status, 200)
+                self.assertEqual(admitted["connected_workstations"], 1)
+                status, refused = post("127.0.0.3")
+                self.assertEqual(status, 409)
+                self.assertIn("Session limit reached: 1 of 1", refused["error"])
+                status, renewed = post("127.0.0.2")
+                self.assertEqual(status, 200)
+                self.assertEqual(renewed["connected_workstations"], 1)
+                status, request = post("127.0.0.2", "sources-request",
+                                       {"sources": "198.51.100.24, example.org"})
+                self.assertEqual(status, 200)
+                self.assertEqual(request["sources_request_status"], "pending")
+                status, released = post("127.0.0.2", "release")
+                self.assertEqual(status, 200)
+                self.assertEqual(released["connected_workstations"], 0)
+            finally:
+                self.broker.stop_session_servers()
+
+    def test_expired_manual_ban_is_removed_without_restarting_workstation_interfaces(self):
+        self.pair(sources="198.51.100.24")
+        state = self.broker.configure_ban({"action": "workstation-ban", "source": "198.51.100.24",
+                                           "reason": "temporary", "hours": "1"}, 1000)
+        state["bans"][0]["expires_at"] = int(broker_module.time.time()) - 1
+        self.broker.save_workstations(state)
+        self.net.calls = []
+
+        self.broker.expire_workstations()
+
+        self.assertTrue(self.net.devices[broker_module.WORKSTATION_IFACE]["up"])
+        self.assertFalse(any(name == "ip" and "down" in rest for name, rest in self.net.calls))
+        self.assertFalse(any(entry["rule"]["expr"][-1] == {"drop": None}
+                             and any(expr.get("match", {}).get("right") == "198.51.100.24"
+                                      for expr in entry["rule"]["expr"])
+                             for entry in self.net.table["nftables"] if "rule" in entry))
+
+    def test_connection_state_defaults_and_migrates_existing_roster(self):
+        (self.state / "workstations.json").unlink()
+        state, changed = self.broker.workstation_state()
+        self.assertEqual(state["connection_state"], "closed")
+        self.assertTrue(changed)
+        self.pair()
+        saved = broker_module.read_json(self.state / "workstations.json")
+        saved.pop("connection_state")
+        broker_module.atomic(self.state / "workstations.json", json.dumps(saved))
+        migrated, changed = self.broker.workstation_state()
+        self.assertEqual(migrated["connection_state"], "open")
+        self.assertTrue(changed)
+
+    def test_closed_retains_pairings_and_open_restores_them(self):
+        _, response = self.pair()
+        before, _ = self.broker.workstation_state()
+        self.broker.configure_workstation_policy({"state": "closed"}, 1000)
+        closed, _ = self.broker.workstation_state()
+        self.assertEqual(closed["connection_state"], "closed")
+        self.assertEqual([item["id"] for item in closed["workstations"]], [response["workstation_id"]])
+        self.assertIsNone(self.broker.link_state())
+        self.broker.configure_workstation_policy({"state": "open"}, 1000)
+        opened, _ = self.broker.workstation_state()
+        self.assertEqual(opened["connection_state"], "open")
+        self.assertEqual(opened["workstations"], before["workstations"])
+        self.assertIn("UP", self.broker.link_state()["flags"])
+
+    def test_frozen_preserves_existing_pairings_and_rejects_new_ones(self):
+        self.pair()
+        self.broker.configure_workstation_policy({"state": "frozen"}, 1000)
+        state, _ = self.broker.workstation_state()
+        self.assertEqual(state["connection_state"], "frozen")
+        with self.assertRaises(broker_module.BrokerError):
+            self.broker.dispatch({"action": "pair", "request": pair_request(public_key="C" * 42 + "E=", nonce="n" * 22),
+                                  "endpoint_host": "pbx.example.net", "listen_port": "51821", "mode": "persistent",
+                                  "minutes": "60", "ssh": "0"}, 1000)
+
+    def test_web_only_pairing_cannot_be_granted_ssh(self):
+        with self.assertRaisesRegex(broker_module.BrokerError, "did not include SSH capability"):
+            self.broker.dispatch({"action": "pair", "request": pair_request(), "endpoint_host": "pbx.example.net",
+                                  "listen_port": "51821", "mode": "persistent", "minutes": "60", "ssh": "1"}, 1000)
 
     def test_managed_ssh_has_explicit_account_and_no_system_ssh_permission(self):
         blob = b"\0\0\0\x0bssh-ed25519\0\0\0\x20" + bytes(range(32))
@@ -570,6 +1239,7 @@ class WorkstationPairingTests(unittest.TestCase):
             self.assertEqual(paired["ssh_api_port"], 8765)
             self.assertEqual(paired["ssh_ca_key"], key)
             self.assertEqual(reconcile.call_args[0][0]["workstations"][0]["ssh_public_key"], key)
+            self.open_session(decode_response(response["pairing_response"]))
             ports = [match["match"]["right"] for entry in self.net.table["nftables"] if "rule" in entry
                      for match in entry["rule"]["expr"]
                      if match.get("match", {}).get("left") == {"payload": {"protocol": "tcp", "field": "dport"}}]
@@ -600,8 +1270,18 @@ class WorkstationPairingTests(unittest.TestCase):
         admitted = next(index for index, call in enumerate(self.net.calls) if call[0] == "wg" and "allowed-ips" in call[1])
         self.assertLess(policy, admitted)
         self.assertEqual(self.net.peers, {"A" * 42 + "E=": response["address"]})
-        self.assertIn("tcp dport 22 accept", self.net.ruleset)
-        self.assertIn(str(network[2]), self.net.ruleset)
+        state, _ = self.broker.workstation_state()
+        tcp_ports = [match["match"]["right"] for entry in self.broker.expected_policy(state)["nftables"] if "rule" in entry
+                     for match in entry["rule"]["expr"]
+                     if match.get("match", {}).get("left") == {"payload": {"protocol": "tcp", "field": "dport"}}]
+        self.assertNotIn(80, tcp_ports)
+        self.open_session(response)
+        tcp_ports = [match["match"]["right"] for entry in self.broker.expected_policy(state)["nftables"] if "rule" in entry
+                     for match in entry["rule"]["expr"]
+                     if match.get("match", {}).get("left") == {"payload": {"protocol": "tcp", "field": "dport"}}]
+        self.assertIn(22000 + int(response["address"].split(".")[-1].split("/")[0]), tcp_ports)
+        self.assertNotIn(22, tcp_ports)
+        self.assertIn(str(network[2]), json.dumps(self.broker.expected_policy(state)))
         self.assertNotIn("PrivateKey", (self.state / "workstations.json").read_text())
         self.assertNotIn("k" * 43, (self.state / "workstations.json").read_text())
         self.assertEqual((self.enrollment / "workstation-wg.key").stat().st_mode & 0o077, 0)
@@ -625,7 +1305,7 @@ class WorkstationPairingTests(unittest.TestCase):
         self.assertIn("ip saddr { 100.70.1.2, 100.70.1.3 } ip daddr 100.70.1.1 tcp dport 22 accept", ruleset)
         self.assertLess(ruleset.index("dport 22 accept"), ruleset.index('iifname "tlp-admin" drop'))
 
-    def test_temporary_pairing_expires_and_last_expiry_removes_interface(self):
+    def test_temporary_pairing_expires_and_open_listener_remains(self):
         _, response = self.pair(mode="temporary", minutes="15")
         self.assertGreater(response["expires_at"], broker_module.time.time() + 14 * 60)
         self.assertTrue(self.net.link)
@@ -633,8 +1313,9 @@ class WorkstationPairingTests(unittest.TestCase):
         state["workstations"][0]["expires_at"] = 1
         (self.state / "workstations.json").write_text(json.dumps(state))
         self.broker.expire_workstations()
-        self.assertFalse(self.net.link)
-        self.assertIsNone(self.net.ruleset)
+        self.assertTrue(self.net.link)
+        self.assertTrue(self.net.up)
+        self.assertIsNotNone(self.net.ruleset)
         self.assertEqual(self.broker.status()["workstations"]["items"], [])
         expired = self.broker.diagnostics.read("ws-" + response["workstation_id"])
         self.assertIn("pairing.expired", [item["event"] for item in expired])
@@ -650,7 +1331,7 @@ class WorkstationPairingTests(unittest.TestCase):
         _, other = self.pair(public_key="B" * 42 + "E=", nonce="m" * 22)
         self.assertNotEqual(other["address"], first["address"])
 
-    def test_revocation_removes_peer_and_last_revocation_removes_interface(self):
+    def test_revocation_removes_peer_and_keeps_open_listener(self):
         _, first = self.pair()
         _, second = self.pair(public_key="B" * 42 + "E=", ssh="1")
         result = self.broker.dispatch({"action": "unpair", "workstation_id": first["workstation_id"]}, 1000)
@@ -659,9 +1340,12 @@ class WorkstationPairingTests(unittest.TestCase):
         with self.assertRaises(broker_module.BrokerError):
             self.broker.dispatch({"action": "unpair", "workstation_id": first["workstation_id"]}, 1000)
         self.broker.dispatch({"action": "unpair", "workstation_id": "all"}, 1000)
-        self.assertFalse(self.net.link)
+        self.assertTrue(self.net.link)
+        self.assertTrue(self.net.up)
         self.assertEqual(self.net.peers, {})
-        self.assertIsNone(self.net.ruleset)
+        self.assertIsNotNone(self.net.ruleset)
+        self.broker.configure_workstation_policy({"state": "closed"}, 1000)
+        self.assertFalse(self.net.link)
 
     def test_revocation_holds_even_when_network_update_fails(self):
         _, first = self.pair()
@@ -669,20 +1353,22 @@ class WorkstationPairingTests(unittest.TestCase):
         self.net.fail = lambda name, rest: name == "nft" and rest == ["-j", "-f", "-"]
         with self.assertRaises(broker_module.BrokerError):
             self.broker.dispatch({"action": "unpair", "workstation_id": first["workstation_id"]}, 1000)
-        self.assertFalse(self.net.link)
+        self.assertTrue(self.net.link)
+        self.assertTrue(self.net.up)
+        self.assertNotIn("A" * 42 + "E=", self.net.peers)
         self.assertIn(first["workstation_id"], [item["id"] for item in json.loads((self.state / "workstations.json").read_text())["workstations"]])
 
     def test_failed_interface_deletion_disables_traffic_and_preserves_firewall(self):
         self.pair()
         self.net.fail = lambda name, rest: name == "ip" and rest[:2] == ["link", "del"]
         with self.assertRaisesRegex(broker_module.BrokerError, "disabled"):
-            self.broker.dispatch({"action": "unpair", "workstation_id": "all"}, 1000)
+            self.broker.configure_workstation_policy({"state": "closed"}, 1000)
         self.assertTrue(self.net.link)
-        self.assertFalse(self.net.up)
+        self.assertTrue(self.net.up)
         self.assertIsNotNone(self.net.ruleset)
-        self.assertIn("could not be confirmed", self.broker.workstation_error)
+        self.assertEqual(self.broker.workstation_state()[0]["connection_state"], "open")
         self.net.fail = None
-        self.assertTrue(self.broker.dispatch({"action": "unpair", "workstation_id": "all"}, 1000)["ok"])
+        self.broker.configure_workstation_policy({"state": "closed"}, 1000)
         self.assertFalse(self.net.link)
 
     def test_failed_firewall_cleanup_is_not_reported_as_success(self):
@@ -690,15 +1376,18 @@ class WorkstationPairingTests(unittest.TestCase):
         self.net.fail = lambda name, rest: name == "nft" and rest == ["-j", "-f", "-"]
         with self.assertRaisesRegex(broker_module.BrokerError, "cleanup"):
             self.broker.dispatch({"action": "unpair", "workstation_id": "all"}, 1000)
-        self.assertFalse(self.net.link)
+        self.assertTrue(self.net.link)
+        self.assertTrue(self.net.up)
+        self.assertEqual(self.net.peers, {})
         self.assertIsNotNone(self.net.ruleset)
 
     def test_failed_pairing_fails_closed_and_restores_previous_state(self):
         self.net.fail = lambda name, rest: name == "wg" and "allowed-ips" in rest
         with self.assertRaisesRegex(broker_module.BrokerError, "removed"):
             self.pair()
-        self.assertFalse(self.net.link)
-        self.assertIsNone(self.net.ruleset)
+        self.assertTrue(self.net.link)
+        self.assertTrue(self.net.up)
+        self.assertIsNotNone(self.net.ruleset)
         self.assertEqual(self.broker.status()["workstations"]["items"], [])
 
     def test_failed_new_pairing_restores_existing_workstations(self):
@@ -712,26 +1401,36 @@ class WorkstationPairingTests(unittest.TestCase):
     def test_status_reports_workstations_without_keys(self):
         self.pair(mode="temporary", ssh="1")
         status = self.broker.status()["workstations"]
-        self.assertEqual(set(status), {"ready", "requirements", "error", "listen_port", "web", "gui_url",
-                                       "firewall_integration", "pbx_address", "items", "ssh_ready", "ssh_error"})
+        self.assertEqual(set(status), {"ready", "requirements", "error", "listen_port", "web", "gui_url", "connection_state",
+                                       "firewall_integration", "pbx_address", "items", "ssh_ready", "ssh_error", "bans",
+                                       "max_sessions", "connected_workstations", "ssh_accounts", "session_control_port"})
         self.assertEqual(status["firewall_integration"]["state"], "not-detected")
         self.assertEqual([(entry["scheme"], entry["port"]) for entry in status["web"]], [("http", 80), ("https", 443)])
         self.assertEqual(status["gui_url"], "http://" + status["pbx_address"] + "/admin/")
         item = status["items"][0]
         self.assertEqual(set(item), {"id", "name", "address", "mode", "ssh", "created_at", "expires_at", "fingerprint", "last_handshake",
-                                     "ssh_user", "ssh_port", "ssh_managed"})
+                                     "ssh_user", "ssh_port", "ssh_managed", "locked", "sources", "effective_sources",
+                                     "source_resolution_failures", "listener_port", "verified_endpoint",
+                                     "migration_pending", "migration_generation", "ssh_request_pending",
+                                     "unlock_request_pending", "sources_request_pending", "requested_sources",
+                                     "session_active", "session_expires_at"})
         self.assertTrue(item["fingerprint"].startswith("SHA256:"))
         self.assertEqual(item["last_handshake"], 0)
+        self.assertIsNone(item["verified_endpoint"])
         self.assertNotIn("A" * 42, json.dumps(status))
 
     def test_handshake_status_is_read_only_and_does_not_claim_reachability(self):
         self.pair()
         self.net.handshakes["A" * 42 + "E="] = 1790000000
+        self.net.endpoints["A" * 42 + "E="] = "[2001:db8::24]:51821"
         self.net.calls = []
         status = self.broker.status()
-        self.assertEqual(status["protocol"], 6)
+        self.assertEqual(status["protocol"], broker_module.PROTOCOL)
         self.assertEqual(status["workstations"]["items"][0]["last_handshake"], 1790000000)
+        self.assertEqual(status["workstations"]["items"][0]["verified_endpoint"],
+                         {"address": "2001:db8::24", "port": 51821})
         self.assertEqual(self.net.calls, [("wg", ("show", broker_module.WORKSTATION_IFACE, "latest-handshakes")),
+                                          ("wg", ("show", broker_module.WORKSTATION_IFACE, "endpoints")),
                                           ("wg", ("show", broker_module.WORKSTATION_IFACE, "transfer"))])
         self.assertNotIn("A" * 42, json.dumps(status))
         diagnostic_id = "ws-" + status["workstations"]["items"][0]["id"]
@@ -742,7 +1441,7 @@ class WorkstationPairingTests(unittest.TestCase):
         self.assertNotIn("disconnected", json.dumps(events).lower())
         self.assertEqual({item["diagnostic_id"] for item in events}, {diagnostic_id})
         exported = self.broker.dispatch({"action": "diagnostics", "diagnostic_id": diagnostic_id}, 1000)
-        self.assertEqual(exported["component_version"], "0.5.0")
+        self.assertEqual(exported["component_version"], "0.6.0")
         self.assertEqual(exported["diagnostic_id"], diagnostic_id)
         self.assertFalse(any("public_key" in item or "token" in json.dumps(item).lower() for item in exported["events"]))
 
@@ -756,7 +1455,7 @@ class WorkstationPairingTests(unittest.TestCase):
         self.assertIn("interface.established", names)
         self.assertIn("peer.admitted", names)
         self.assertIn("peer.observation", names)
-        self.assertTrue(all(event["source"] == "pbx" and event["component_version"] == "0.5.0" for event in events))
+        self.assertTrue(all(event["source"] == "pbx" and event["component_version"] == "0.6.0" for event in events))
         self.broker.dispatch({"action": "unpair", "workstation_id": response["workstation_id"]}, 1000)
         events = self.broker.diagnostics.read(diagnostic_id)
         self.assertEqual(events[-1]["event"], "pairing.revoked")
@@ -828,7 +1527,7 @@ class WorkstationPairingTests(unittest.TestCase):
         with patch.object(broker_module.LOGGER, "warning") as warning:
             result = self.broker.dispatch({"action": "unpair", "workstation_id": response["workstation_id"]}, 1000)
         self.assertTrue(result["ok"])
-        self.assertFalse(self.net.link)
+        self.assertTrue(self.net.link)
         self.assertTrue(warning.called)
 
     def test_diagnostic_storage_failure_does_not_block_expiry_cleanup(self):
@@ -839,7 +1538,7 @@ class WorkstationPairingTests(unittest.TestCase):
         self.broker.diagnostics.record = lambda *args, **kwargs: (_ for _ in ()).throw(OSError("disk unavailable"))
         with patch.object(broker_module.LOGGER, "warning") as warning:
             self.broker.expire_workstations()
-        self.assertFalse(self.net.link)
+        self.assertTrue(self.net.link)
         self.assertEqual(self.broker.status()["workstations"]["items"], [])
         self.assertTrue(warning.called)
 

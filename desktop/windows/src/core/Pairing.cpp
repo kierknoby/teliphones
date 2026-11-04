@@ -240,6 +240,50 @@ PairResponse ParsePairResponse(const std::string& input, const std::string& expe
     return result;
 }
 
+PairResponse ApplyWorkstationMigration(const PairResponse& current, const std::string& migrationJson) {
+    const json::Value migration = json::Parse(migrationJson, 4096);
+    json::RequireExactKeys(migration, {"workstation_id", "workstation_public_key", "pbx_public_key", "address",
+                                       "pbx_address", "listener_port", "gui_url", "generation",
+                                       "ssh_port", "ssh_api_port"},
+                           "The PBX workstation migration");
+    if (migration.at("workstation_id").asString() != current.workstationId ||
+        migration.at("workstation_public_key").asString() != current.workstationPublicKey ||
+        migration.at("pbx_public_key").asString() != current.pbxPublicKey)
+        throw Error("The PBX migration identity does not match this saved workstation.");
+    const std::string generation = migration.at("generation").asString();
+    if (generation.size() != 32 || generation.find_first_not_of("0123456789abcdef") != std::string::npos)
+        throw Error("The PBX migration generation is invalid.");
+    const auto listenerPort = migration.at("listener_port").asInteger();
+    const auto sshPort = migration.at("ssh_port").asInteger();
+    const auto sshApiPort = migration.at("ssh_api_port").asInteger();
+    if (listenerPort < 1024 || listenerPort > 65535 ||
+        sshPort < 0 || sshPort > 65535 || sshApiPort < 0 || sshApiPort > 65535)
+        throw Error("The PBX migration returned an invalid listener port.");
+    PairResponse updated = current;
+    updated.address = migration.at("address").asString();
+    updated.pbxAddress = migration.at("pbx_address").asString();
+    const std::size_t oldPort = current.endpoint.rfind(':');
+    if (oldPort == std::string::npos) throw Error("The saved endpoint cannot be migrated safely.");
+    updated.endpoint = current.endpoint.substr(0, oldPort + 1) + std::to_string(listenerPort);
+    updated.guiUrl = migration.at("gui_url").asString();
+    std::uint32_t address = 0, pbx = 0;
+    if (!ParseHostRoute(updated.address, address) || !ParseIPv4(updated.pbxAddress, pbx) ||
+        (address & 0xFFC00000u) != 0x64400000u ||
+        (address & 0xFFFFFF00u) != (pbx & 0xFFFFFF00u) || (pbx & 255) != 1 ||
+        address == pbx || !IsEndpoint(updated.endpoint) || !IsManagementUrl(updated.guiUrl, updated.pbxAddress))
+        throw Error("The PBX migration contains invalid or inconsistent tunnel configuration.");
+    if (current.sshPort != 0) {
+        if (sshPort != 22000 + static_cast<int>(address & 255) || sshApiPort != 8765)
+            throw Error("The PBX migration contains an invalid managed SSH endpoint.");
+        updated.sshPort = static_cast<int>(sshPort);
+        updated.sshApiPort = static_cast<int>(sshApiPort);
+        ValidateManagedPairing(updated);
+    } else if (sshPort != 0 || sshApiPort != 0) {
+        throw Error("The PBX migration attempted to add unapproved SSH access.");
+    }
+    return updated;
+}
+
 std::string KeyFingerprint(const std::string& publicKey) {
     auto digest = Sha256(Base64Decode(publicKey));
     std::string encoded = Base64Encode(Bytes(digest.begin(), digest.end()));

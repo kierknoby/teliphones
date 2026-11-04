@@ -4,6 +4,7 @@ import base64
 import datetime
 import fcntl
 import hashlib
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import ipaddress
 import json
 import logging
@@ -33,11 +34,19 @@ _ssh_spec.loader.exec_module(ssh)
 STATE = Path("/var/lib/teliphones")
 ENROLLMENT = Path("/etc/teliphones")
 SOCKET = "/run/teliphones/control.sock"
-# Version 5 adds paired-key certificate issuance and isolated managed SSH.
-PROTOCOL = 6
-VERSION = "0.5.0"
+# Protocol 11 adds PBX-enforced workstation session leases and management gating.
+# Protocol 12 adds post-pair workstation policy management.
+PROTOCOL = 12
+VERSION = "0.6.0"
+SESSION_CONTROL_PORT = 8766
+SESSION_LEASE_SECONDS = 30
 FWCONSOLE = "/usr/sbin/fwconsole"
-ACTIONS = {"status", "authorise", "revoke", "dependencies", "evidence", "configure", "pair", "unpair", "web", "diagnostics"}
+ACTIONS = {"status", "authorise", "revoke", "dependencies", "evidence", "configure", "pair", "unpair", "web",
+           "workstation-policy", "workstation-manage", "workstation-ban", "workstation-unban", "workstation-limit",
+           "workstation-ssh-approve", "workstation-ssh-reject",
+           "workstation-ssh-revoke", "workstation-unlock-approve", "workstation-unlock-reject",
+           "workstation-sources-approve", "workstation-sources-reject",
+           "diagnostics"}
 ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C", "HOME": "/root", "DEBIAN_FRONTEND": "noninteractive"}
 # Administrator-owned workstation pairing (TELIPHONES Windows application). Separate from the support interface.
 WORKSTATION_IFACE = "tlp-admin"
@@ -53,10 +62,12 @@ PAIR_RESPONSE_V2 = "TELIPHONES-PAIR-RESPONSE-2:"
 WG_PUBLIC_KEY = re.compile(r"[A-Za-z0-9+/]{42}[AEIMQUYcgkosw480]=")
 WORKSTATION_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._()-]{0,63}")
 HOSTNAME = re.compile(r"(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*")
+LISTENER_PORT_RANGE = range(52000, 61000)
 TOOLS = {"wg": ["/usr/bin/wg", "/usr/sbin/wg"], "ip": ["/usr/sbin/ip", "/sbin/ip"], "nft": ["/usr/sbin/nft", "/sbin/nft"]}
 # FreePBX Firewall integration. An nft ACCEPT in TELIPHONES' own table is not final: FreePBX Firewall's
 # separate iptables INPUT processing can still drop the packet. FreePBX polices rules above its INPUT hook.
-# Put only our marked, interface-scoped jump inside fpbxfirewall, after INPUT's Fail2Ban hooks.
+# Put only our marked jump inside fpbxfirewall, after INPUT's Fail2Ban hooks. Every ACCEPT rule in
+# the owned chain is scoped to an exact TELIPHONES interface, peer address, PBX address and port.
 # The public UDP listener is a persistent FreePBX Custom Service, not a second raw ACCEPT.
 # Everything not explicitly authorised returns to the existing FreePBX rules.
 IPTABLES = ["/usr/sbin/iptables", "/sbin/iptables"]
@@ -66,7 +77,8 @@ FREEPBX_HOOK = "fpbxfirewall"
 FAIL2BAN_PREFIXES = ("fail2ban-", "f2b-")
 INTEGRATION_CHAIN = "teliphones-ws"
 INTEGRATION_MARK = "TELIPHONES workstation integration v1"
-INTEGRATION_JUMP = {"i": WORKSTATION_IFACE, "comment": INTEGRATION_MARK, "j": INTEGRATION_CHAIN}
+INTEGRATION_JUMP = {"comment": INTEGRATION_MARK, "j": INTEGRATION_CHAIN}
+LEGACY_INTEGRATION_JUMP = {"i": WORKSTATION_IFACE, **INTEGRATION_JUMP}
 # Management web services reachable by authorised peers; the first entry forms the workstation GUI URL.
 # The default preserves standard FreePBX HTTP/HTTPS installations.
 DEFAULT_WEB = ({"scheme": "http", "port": 80}, {"scheme": "https", "port": 443})
@@ -327,8 +339,18 @@ def validate(request):
         "status": set(), "revoke": set(), "dependencies": set(),
         "authorise": {"minutes"}, "evidence": {"evidence"},
         "configure": {"url", "certificate", "private_key", "ca", "checker_key"},
-        "pair": {"request", "endpoint_host", "listen_port", "mode", "minutes", "ssh", "ssh_user", "web"}, "unpair": {"workstation_id"},
-        "web": {"web"},
+        "pair": {"request", "endpoint_host", "listen_port", "mode", "minutes", "ssh", "ssh_user", "web", "sources"}, "unpair": {"workstation_id"},
+        "web": {"web"}, "workstation-policy": {"state"},
+        "workstation-manage": {"workstation_id", "state", "sources"},
+        "workstation-ban": {"source", "reason", "hours"}, "workstation-unban": {"ban_id"},
+        "workstation-limit": {"maximum"},
+        "workstation-ssh-approve": {"workstation_id", "ssh_user"},
+        "workstation-ssh-reject": {"workstation_id"},
+        "workstation-ssh-revoke": {"workstation_id"},
+        "workstation-unlock-approve": {"workstation_id"},
+        "workstation-unlock-reject": {"workstation_id"},
+        "workstation-sources-approve": {"workstation_id"},
+        "workstation-sources-reject": {"workstation_id"},
         "diagnostics": {"diagnostic_id"},
     }[action]
     if set(request) - fields - {"action"}:
@@ -370,13 +392,57 @@ def validate(request):
                 raise BrokerError("Management web services must be supplied as text.")
             if request["web"].strip():
                 parse_web(request["web"])
+        if "sources" in request:
+            if not isinstance(request["sources"], str):
+                raise BrokerError("Approved workstation sources must be supplied as text.")
+            parse_source_restrictions(request["sources"])
     if action == "web":
         if not isinstance(request.get("web"), str):
             raise BrokerError("Complete management web service details are required.")
         parse_web(request["web"])
+    if action == "workstation-policy" and request.get("state") not in ("open", "closed", "frozen"):
+        raise BrokerError("Choose Open, Closed or Frozen workstation access.")
+    if action == "workstation-manage":
+        if (not isinstance(request.get("workstation_id"), str)
+                or re.fullmatch(r"[a-f0-9]{16}", request["workstation_id"]) is None
+                or request.get("state") not in ("lock", "unlock")
+                or not isinstance(request.get("sources"), str)):
+            raise BrokerError("Choose a paired workstation and a valid Lock or Unlock action.")
+        if request["state"] == "lock" and request["sources"] != "current":
+            parse_source_restrictions(request["sources"])
+        if request["state"] == "unlock" and request["sources"]:
+            raise BrokerError("Unlocking a workstation does not accept source restrictions.")
+    if action == "workstation-limit" and (
+            not isinstance(request.get("maximum"), str)
+            or not re.fullmatch(r"[1-9][0-9]{0,2}", request["maximum"])
+            or not 1 <= int(request["maximum"]) <= 128):
+        raise BrokerError("The simultaneous workstation limit must be between 1 and 128.")
+    if action == "workstation-ban":
+        if (not isinstance(request.get("source"), str) or not isinstance(request.get("reason"), str)
+                or not isinstance(request.get("hours"), str) or len(request["reason"]) > 160
+                or not request["reason"].strip()
+                or request["hours"] not in ("never", "1", "24", "168", "720", "8760")):
+            raise BrokerError("Enter a manual IP/CIDR ban, a reason of at most 160 characters, and a valid expiry.")
+        try:
+            network = ipaddress.ip_network(request["source"].strip(), strict=False)
+        except ValueError as error:
+            raise BrokerError("Bans must be numeric IPv4/IPv6 addresses or CIDR ranges.") from error
+        if network.is_unspecified or network.is_multicast:
+            raise BrokerError("An unspecified or multicast network cannot be banned.")
+    if action == "workstation-unban" and (
+            not isinstance(request.get("ban_id"), str) or re.fullmatch(r"[a-f0-9]{16}", request["ban_id"]) is None):
+        raise BrokerError("Unknown TELIPHONES ban.")
     if action == "unpair":
         if not isinstance(request.get("workstation_id"), str) or not re.fullmatch(r"[a-f0-9]{16}|all", request["workstation_id"]):
             raise BrokerError("Unknown workstation.")
+    if action in ("workstation-ssh-approve", "workstation-ssh-reject", "workstation-ssh-revoke") and (
+            not isinstance(request.get("workstation_id"), str)
+            or re.fullmatch(r"[a-f0-9]{16}", request["workstation_id"]) is None):
+        raise BrokerError("Choose a valid paired workstation SSH request.")
+    if action == "workstation-ssh-approve" and (
+            not isinstance(request.get("ssh_user"), str)
+            or re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", request["ssh_user"]) is None):
+        raise BrokerError("Explicitly select the existing Linux account authorised for this workstation.")
     if action == "diagnostics" and (not isinstance(request.get("diagnostic_id"), str)
                                     or DIAGNOSTIC_ID.fullmatch(request["diagnostic_id"]) is None):
         raise BrokerError("Invalid diagnostic session identifier.")
@@ -432,6 +498,28 @@ def endpoint_host(host):
     raise BrokerError("Enter the PBX public hostname or IP address that the workstation will use for WireGuard.")
 
 
+def parse_wireguard_endpoint(value):
+    """Parse only a numeric endpoint observed by WireGuard after peer authentication."""
+    if not isinstance(value, str) or value == "(none)":
+        return None
+    if value.startswith("["):
+        closing = value.find("]")
+        if closing < 0 or value[closing + 1:closing + 2] != ":":
+            return None
+        host, port = value[1:closing], value[closing + 2:]
+    else:
+        host, separator, port = value.rpartition(":")
+        if not separator or ":" in host:
+            return None
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return None
+    if not port.isdigit() or not 1 <= int(port) <= 65535:
+        return None
+    return {"address": address.compressed, "port": int(port)}
+
+
 def key_fingerprint(public_key):
     return "SHA256:" + base64.b64encode(hashlib.sha256(base64.b64decode(public_key)).digest()).decode().rstrip("=")[:16]
 
@@ -456,6 +544,72 @@ def parse_web(value):
     if len(entries) > MAX_WEB_SERVICES:
         raise BrokerError("At most %d management web services may be authorised." % MAX_WEB_SERVICES)
     return entries
+
+
+def parse_source_restrictions(value):
+    """Canonical IP/CIDR and hostname restrictions for one workstation listener."""
+    if not isinstance(value, str) or len(value) > 2048:
+        raise BrokerError("Approved workstation sources must be at most 2048 characters.")
+    if not value.strip():
+        return []
+    entries, seen = [], set()
+    for token in value.split(","):
+        token = token.strip()
+        if not token:
+            raise BrokerError("Remove empty entries from the approved-source list.")
+        try:
+            source = str(ipaddress.ip_network(token, strict=False))
+            parsed = ipaddress.ip_network(source)
+            if (parsed.prefixlen == 0 or parsed.network_address.is_unspecified
+                    or parsed.network_address.is_multicast or parsed.network_address.is_loopback):
+                raise BrokerError("Approved sources cannot be a default route or unspecified, multicast or loopback range.")
+        except ValueError:
+            hostname = token.rstrip(".").lower()
+            if not HOSTNAME.fullmatch(hostname) or re.fullmatch(r"[0-9.]+", hostname):
+                raise BrokerError("Approved sources must be IPv4/IPv6 addresses, CIDR ranges or DNS hostnames.")
+            source = hostname
+        if source not in seen:
+            entries.append(source)
+            seen.add(source)
+    if len(entries) > 32:
+        raise BrokerError("At most 32 approved source entries are supported per workstation.")
+    return entries
+
+
+def resolve_source_restrictions(entries, resolver=None, cache=None, now=None):
+    """Resolve domains without ever replacing a failed domain with a wildcard."""
+    resolver = resolver or socket.getaddrinfo
+    now = time.monotonic() if now is None else now
+    resolved, failed = set(), []
+    for entry in entries:
+        try:
+            network = ipaddress.ip_network(entry, strict=False)
+        except ValueError:
+            cached = cache.get(entry) if cache is not None else None
+            if cached is not None and cached[0] > now:
+                resolved.update(cached[1])
+                if not cached[1]:
+                    failed.append(entry)
+                continue
+            try:
+                answers = resolver(entry, None, socket.AF_UNSPEC, socket.SOCK_DGRAM)
+                addresses = {str(ipaddress.ip_address(answer[4][0].split("%", 1)[0])) for answer in answers}
+                if not addresses:
+                    raise OSError("no address records")
+                values = sorted(str(ipaddress.ip_network(address + ("/32" if ":" not in address else "/128"), strict=False))
+                                for address in addresses)
+                resolved.update(values)
+                if cache is not None:
+                    cache[entry] = (now + 300, values)
+            except (OSError, ValueError, IndexError):
+                failed.append(entry)
+                if cache is not None:
+                    cache[entry] = (now + 60, [])
+        else:
+            resolved.add(str(network))
+    return sorted(resolved, key=lambda source: (ipaddress.ip_network(source).version,
+                                                 int(ipaddress.ip_network(source).network_address),
+                                                 ipaddress.ip_network(source).prefixlen)), failed
 
 
 def normalise_web(value):
@@ -512,9 +666,10 @@ def workstation_ruleset(pbx_address, ssh_sources, web_ports=(80, 443)):
     """Human-readable policy illustration; enforcement uses workstation_policy JSON."""
     lines = ["table inet " + WORKSTATION_TABLE + " {",
              "    chain " + WORKSTATION_OWNER_CHAIN + " { }",
-             "    chain input {", "        type filter hook input priority -10; policy accept;",
-             '        iifname "%s" ip daddr %s tcp dport { %s } accept' % (WORKSTATION_IFACE, pbx_address,
-                                                                           ", ".join(str(port) for port in web_ports))]
+             "    chain input {", "        type filter hook input priority 10; policy accept;"]
+    if web_ports:
+        lines.append('        iifname "%s" ip daddr %s tcp dport { %s } accept' % (
+            WORKSTATION_IFACE, pbx_address, ", ".join(str(port) for port in web_ports)))
     if ssh_sources:
         lines.append('        iifname "%s" ip saddr { %s } ip daddr %s tcp dport 22 accept' % (WORKSTATION_IFACE, ", ".join(sorted(ssh_sources)), pbx_address))
     lines += ['        iifname "%s" ip daddr %s icmp type echo-request accept' % (WORKSTATION_IFACE, pbx_address),
@@ -524,7 +679,8 @@ def workstation_ruleset(pbx_address, ssh_sources, web_ports=(80, 443)):
     return "\n".join(lines) + "\n"
 
 
-def workstation_policy(pbx_address, ssh_sources, managed_sources=(), web_ports=(80, 443)):
+def workstation_policy(pbx_address, ssh_sources, managed_sources=(), web_ports=(80, 443), listener_sources=(),
+                       peer_interfaces=(), banned_sources=(), admitted_sources=(), control_sources=()):
     """Offline expected nft JSON, deliberately without sets, counters or implicit expressions."""
     family = {"family": "inet", "table": WORKSTATION_TABLE}
     # nftables 1.0.6 accepts table comments in JSON but drops them from kernel state.
@@ -546,22 +702,74 @@ def workstation_policy(pbx_address, ssh_sources, managed_sources=(), web_ports=(
 
     incoming = match(meta("iifname"), WORKSTATION_IFACE)
     destination = match(payload("ip", "daddr"), str(ipaddress.IPv4Address(pbx_address)))
-    objects.append({"chain": {**family, "name": "input", "type": "filter", "hook": "input", "prio": -10, "policy": "accept"}})
+    objects.append({"chain": {**family, "name": "input", "type": "filter", "hook": "input", "prio": 10, "policy": "accept"}})
+    objects.append({"chain": {**family, "name": "forward", "type": "filter", "hook": "forward", "prio": -10, "policy": "accept"}})
+    for ban in sorted(banned_sources, key=lambda item: (int(item["port"]), item["source"])):
+        port = ban["port"]
+        if type(port) is not int or not 1024 <= port <= 65535:
+            raise BrokerError("Invalid TELIPHONES banned-list listener port.")
+        network_source = ipaddress.ip_network(ban["source"], strict=False)
+        address_family = "ip" if network_source.version == 4 else "ip6"
+        source_match = (str(network_source.network_address) if network_source.prefixlen == network_source.max_prefixlen
+                        else {"prefix": {"addr": str(network_source.network_address), "len": network_source.prefixlen}})
+        rule("input", [match(meta("l4proto"), "udp"), match(payload("udp", "dport"), port),
+                       match(payload(address_family, "saddr"), source_match), {"drop": None}])
+    for listener in sorted(listener_sources, key=lambda item: int(item["port"])):
+        port = int(listener["port"])
+        if not 1024 <= port <= 65535:
+            raise BrokerError("Invalid locked workstation listener port.")
+        for source in listener["sources"]:
+            network_source = ipaddress.ip_network(source, strict=False)
+            address_family = "ip" if network_source.version == 4 else "ip6"
+            source_match = (str(network_source.network_address) if network_source.prefixlen == network_source.max_prefixlen
+                            else {"prefix": {"addr": str(network_source.network_address), "len": network_source.prefixlen}})
+            rule("input", [match(meta("l4proto"), "udp"), match(payload("udp", "dport"), port),
+                           match(payload(address_family, "saddr"), source_match), {"accept": None}])
+        rule("input", [match(meta("l4proto"), "udp"), match(payload("udp", "dport"), port), {"drop": None}])
+    for peer in sorted(peer_interfaces, key=lambda item: item["interface"]):
+        interface = peer["interface"]
+        peer_pbx = str(ipaddress.IPv4Address(peer["pbx_address"]))
+        peer_incoming = match(meta("iifname"), interface)
+        peer_destination = match(payload("ip", "daddr"), peer_pbx)
+        peer_source = str(ipaddress.IPv4Address(peer["source"]))
+        rule("input", [peer_incoming, match(payload("ip", "saddr"), peer_source), peer_destination,
+                       match(payload("tcp", "dport"), SESSION_CONTROL_PORT), {"accept": None}])
+        if peer_source in admitted_sources:
+            for port in web_ports:
+                rule("input", [peer_incoming, match(payload("ip", "saddr"), peer_source), peer_destination,
+                               match(payload("tcp", "dport"), port), {"accept": None}])
+        if type(peer.get("ssh_port")) is int:
+            for ssh_destination in (ssh.API_PORT, peer["ssh_port"]):
+                rule("input", [{"match": {"op": "!=", "left": meta("iifname"), "right": interface}},
+                               peer_destination, match(payload("tcp", "dport"), ssh_destination), {"drop": None}])
+                if peer_source in admitted_sources:
+                    rule("input", [peer_incoming, match(payload("ip", "saddr"), peer_source), peer_destination,
+                                   match(payload("tcp", "dport"), ssh_destination), {"accept": None}])
+        rule("input", [peer_incoming, peer_destination, match(payload("icmp", "type"), "echo-request"), {"accept": None}])
+        rule("input", [peer_incoming, {"drop": None}])
+        rule("forward", [peer_incoming, {"drop": None}])
+        rule("forward", [match(meta("oifname"), interface), {"drop": None}])
     for source, ssh_port in managed_sources:
+        if source not in admitted_sources:
+            continue
         for ssh_destination in (ssh.API_PORT, ssh_port):
             # A local address is not an interface boundary on Linux (weak host model).
             rule("input", [{"match": {"op": "!=", "left": meta("iifname"), "right": WORKSTATION_IFACE}},
                            destination, match(payload("tcp", "dport"), ssh_destination), {"drop": None}])
             rule("input", [incoming, match(payload("ip", "saddr"), str(ipaddress.IPv4Address(source))),
                            destination, match(payload("tcp", "dport"), ssh_destination), {"accept": None}])
-    for port in web_ports:
-        rule("input", [incoming, destination, match(payload("tcp", "dport"), port), {"accept": None}])
-    for source in sorted(set(ssh_sources)):
+    for source in sorted(set(control_sources)):
+        rule("input", [incoming, match(payload("ip", "saddr"), str(ipaddress.IPv4Address(source))),
+                       destination, match(payload("tcp", "dport"), SESSION_CONTROL_PORT), {"accept": None}])
+    for source in sorted(set(admitted_sources)):
+        for port in web_ports:
+            rule("input", [incoming, match(payload("ip", "saddr"), str(ipaddress.IPv4Address(source))),
+                           destination, match(payload("tcp", "dport"), port), {"accept": None}])
+    for source in sorted(set(ssh_sources) & set(admitted_sources)):
         rule("input", [incoming, match(payload("ip", "saddr"), str(ipaddress.IPv4Address(source))),
                        destination, match(payload("tcp", "dport"), 22), {"accept": None}])
     rule("input", [incoming, destination, match(payload("icmp", "type"), "echo-request"), {"accept": None}])
     rule("input", [incoming, {"drop": None}])
-    objects.append({"chain": {**family, "name": "forward", "type": "filter", "hook": "forward", "prio": -10, "policy": "accept"}})
     rule("forward", [incoming, {"drop": None}])
     rule("forward", [match(meta("oifname"), WORKSTATION_IFACE), {"drop": None}])
     return {"nftables": objects}
@@ -610,19 +818,29 @@ def iptables_arguments(rule):
     return arguments + ["-m", "comment", "--comment", rule["comment"], "-j", rule["j"]]
 
 
-def integration_rules(pbx_address, workstations, web=DEFAULT_WEB):
+def integration_rules(pbx_address, workstations, web=DEFAULT_WEB, migration_controls=()):
     """Per-peer management TCP and explicitly approved SSH; no public services."""
-    pbx = str(ipaddress.IPv4Address(pbx_address)) + "/32"
     web_ports = tuple(entry["port"] for entry in web)
     rules = []
     for item in sorted(workstations, key=lambda entry: ipaddress.IPv4Network(entry["address"])):
         source = ipaddress.IPv4Network(item["address"])
         if source.prefixlen != 32:
             raise BrokerError("Workstation integration requires a single-address peer.")
-        ports = (*web_ports, ssh.API_PORT, ssh.port(item)) if ssh.managed(item) else ((*web_ports, 22) if item.get("ssh") is True else web_ports)
-        for port in ports:
-            rules.append({"s": str(source), "d": pbx, "i": WORKSTATION_IFACE, "p": "tcp", "dport": str(port),
+        pbx = str(ipaddress.IPv4Address(item.get("pbx_address", pbx_address))) + "/32"
+        interface = item.get("interface", WORKSTATION_IFACE)
+        ports = (*web_ports, SESSION_CONTROL_PORT,
+                 *((ssh.API_PORT, ssh.port(item)) if ssh.managed(item) else ((22,) if item.get("ssh") is True else ())))
+        for protocol_port in ports:
+            rules.append({"s": str(source), "d": pbx, "i": interface, "p": "tcp", "dport": str(protocol_port),
                           "comment": INTEGRATION_MARK, "j": "ACCEPT"})
+    for item in migration_controls:
+        source = ipaddress.IPv4Network(item["address"])
+        if source.prefixlen != 32:
+            raise BrokerError("Workstation migration requires a single-address peer.")
+        pbx = str(ipaddress.IPv4Address(item["pbx_address"])) + "/32"
+        interface = item["interface"]
+        rules.append({"s": str(source), "d": pbx, "i": interface, "p": "tcp",
+                      "dport": str(SESSION_CONTROL_PORT), "comment": INTEGRATION_MARK, "j": "ACCEPT"})
     rules.append({"comment": INTEGRATION_MARK, "j": "RETURN"})
     return rules
 
@@ -772,9 +990,13 @@ class Broker:
         self.workstation_error = ""
         self.monitor = None
         self.enforcement_event = threading.Event()
+        self.lease_wake = threading.Event()
+        self.session_server_enabled = False
+        self.session_servers = {}
         # Wakes the enforcement worker; enforcement_event alone means the owned nft policy must be re-applied.
         self.wake = threading.Event()
         self.integration = {"state": "inactive", "message": "", "backend": None}
+        self.source_cache = {}
         self.workstation_cleanup_failed = False
         self.diagnostics = DiagnosticLog(STATE / "diagnostics")
         self.diagnostic_active_peers = set()
@@ -912,28 +1134,155 @@ class Broker:
         listener = arguments[:3] == [FWCONSOLE, "teliphones", "listener"]
         result = subprocess.run(arguments, input=stdin, capture_output=True, text=True, timeout=60 if listener else 20, env=ENV)
         if result.returncode and check:
-            detail = (" " + result.stdout.strip()[-500:]) if listener else ""
+            detail = (" " + (result.stdout or result.stderr).strip()[-500:]) if listener or os.path.basename(arguments[0]) == "nft" else ""
             raise BrokerError("Workstation network operation failed: " + os.path.basename(arguments[0]) + " " + arguments[1] + "." + detail)
         return result.stdout if result.returncode == 0 else None
 
     def workstation_state(self):
         """Load the pairing state and drop expired temporary pairings. Returns (state, changed)."""
-        state = read_json(STATE / "workstations.json")
-        items = state.get("workstations") if isinstance(state.get("workstations"), list) else []
+        stored = read_json(STATE / "workstations.json")
+        items = stored.get("workstations") if isinstance(stored.get("workstations"), list) else []
         now = int(time.time())
-        valid = [item for item in items if isinstance(item, dict) and WG_PUBLIC_KEY.fullmatch(str(item.get("public_key", "")))
-                 and (item.get("mode") == "persistent" or (isinstance(item.get("expires_at"), int) and item["expires_at"] > now))]
-        state = {"subnet": state.get("subnet") if isinstance(state.get("subnet"), str) else None,
-                 "listen_port": state.get("listen_port") if isinstance(state.get("listen_port"), int) else None,
-                 "web": normalise_web(state.get("web")),
-                 "workstations": valid}
-        return state, len(valid) != len(items)
+        valid = []
+        for item in items:
+            if (not isinstance(item, dict) or not WG_PUBLIC_KEY.fullmatch(str(item.get("public_key", "")))
+                    or (item.get("mode") != "persistent"
+                        and not (isinstance(item.get("expires_at"), int) and item["expires_at"] > now))):
+                continue
+            item = dict(item)
+            item.setdefault("locked", False)
+            if type(item["locked"]) is not bool:
+                raise BrokerError("Invalid saved workstation source-lock state.")
+            if item["locked"]:
+                sources = item.get("sources")
+                if not isinstance(sources, list) or not sources or parse_source_restrictions(", ".join(sources)) != sources:
+                    raise BrokerError("Invalid saved workstation source restrictions; access remains unavailable.")
+
+                for field in ("subnet", "pbx_address", "listener_port"):
+                    if field not in item:
+                        raise BrokerError("Incomplete saved dedicated workstation listener; access remains unavailable.")
+            migration = item.get("migration")
+            if migration is not None:
+                required = {"id", "locked", "address", "pbx_address"}
+                if (not isinstance(migration, dict) or not required.issubset(migration)
+                        or not isinstance(migration["id"], str)
+                        or re.fullmatch(r"[a-f0-9]{32}", migration["id"]) is None
+                        or type(migration["locked"]) is not bool
+                        or not isinstance(migration["address"], str)
+                        or not isinstance(migration["pbx_address"], str)):
+                    raise BrokerError("Invalid pending workstation configuration migration; access remains unavailable.")
+                old_address = migration["address"].split("/")[0]
+                try:
+                    if (ipaddress.ip_address(old_address).version != 4
+                            or ipaddress.ip_address(migration["pbx_address"]).version != 4):
+                        raise ValueError()
+                except ValueError as error:
+                    raise BrokerError("Invalid pending workstation migration address; access remains unavailable.")
+                if migration["locked"]:
+                    if (not isinstance(migration.get("sources"), list) or not migration["sources"]
+                            or type(migration.get("listener_port")) is not int
+                            or not isinstance(migration.get("subnet"), str)):
+                        raise BrokerError("Incomplete pending dedicated-listener migration; access remains unavailable.")
+            ssh_request = item.get("ssh_request")
+            if ssh_request is not None:
+                try:
+                    if (not isinstance(ssh_request, dict)
+                            or set(ssh_request) != {"public_key", "created_at"}
+                            or ssh.public_key(ssh_request["public_key"]) != ssh_request["public_key"]
+                            or type(ssh_request["created_at"]) is not int or ssh_request["created_at"] <= 0):
+                        raise ValueError()
+                except (KeyError, TypeError, ssh.SshError) as error:
+                    raise BrokerError("Invalid pending workstation SSH request; it cannot be approved.") from error
+            unlock_request = item.get("unlock_request")
+            if unlock_request is not None and (
+                    not isinstance(unlock_request, dict)
+                    or set(unlock_request) != {"created_at"}
+                    or type(unlock_request["created_at"]) is not int
+                    or unlock_request["created_at"] <= 0):
+                raise BrokerError("Invalid pending workstation unlock request.")
+            sources_request = item.get("sources_request")
+            if sources_request is not None:
+                try:
+                    if (not isinstance(sources_request, dict)
+                            or set(sources_request) != {"sources", "created_at"}
+                            or not isinstance(sources_request["sources"], list)
+                            or not sources_request["sources"]
+                            or parse_source_restrictions(", ".join(sources_request["sources"])) != sources_request["sources"]
+                            or type(sources_request["created_at"]) is not int
+                            or sources_request["created_at"] <= 0):
+                        raise ValueError()
+                except (KeyError, TypeError, ValueError, BrokerError) as error:
+                    raise BrokerError("Invalid pending workstation source-list request.") from error
+            valid.append(item)
+        bans = stored.get("bans", [])
+        if not isinstance(bans, list) or len(bans) > 256:
+            raise BrokerError("Invalid saved TELIPHONES banned list.")
+        safe_bans = []
+        seen_ban_ids = set()
+        for ban in bans:
+            if (not isinstance(ban, dict) or not isinstance(ban.get("id"), str)
+                    or re.fullmatch(r"[a-f0-9]{16}", ban["id"]) is None or ban["id"] in seen_ban_ids
+                    or not isinstance(ban.get("source"), str) or not isinstance(ban.get("reason"), str)
+                    or len(ban["reason"]) > 160
+                    or (ban.get("expires_at") is not None
+                        and (type(ban["expires_at"]) is not int or ban["expires_at"] <= 0))):
+                raise BrokerError("Invalid saved TELIPHONES ban; listener policy remains unavailable.")
+            try:
+                source = str(ipaddress.ip_network(ban["source"], strict=False))
+            except ValueError as error:
+                raise BrokerError("Invalid saved TELIPHONES ban; listener policy remains unavailable.") from error
+            if source != ban["source"]:
+                raise BrokerError("Non-canonical saved TELIPHONES ban; listener policy remains unavailable.")
+            seen_ban_ids.add(ban["id"])
+            safe_bans.append({"id": ban["id"], "source": source, "reason": ban["reason"],
+                              "expires_at": ban.get("expires_at")})
+        mode = stored.get("connection_state")
+        if mode is None:
+            mode = "open" if valid else "closed"
+        if mode not in ("open", "closed", "frozen"):
+            raise BrokerError("Invalid saved workstation connection state; access remains unavailable.")
+        state = {"subnet": stored.get("subnet") if isinstance(stored.get("subnet"), str) else None,
+                 "listen_port": stored.get("listen_port") if isinstance(stored.get("listen_port"), int) else None,
+                 "web": normalise_web(stored.get("web")),
+                 "connection_state": mode,
+                 "max_sessions": stored.get("max_sessions", 1),
+                 "workstations": valid,
+                 "bans": safe_bans}
+        if type(state["max_sessions"]) is not int or not 1 <= state["max_sessions"] <= 128:
+            raise BrokerError("Invalid maximum simultaneous workstation setting.")
+        changed = (len(valid) != len(items) or stored.get("connection_state") != mode
+                   or stored.get("max_sessions") != state["max_sessions"]
+                   or (mode != "closed" and (state["subnet"] is None or state["listen_port"] is None)))
+        return state, changed
 
     def save_workstations(self, state):
         atomic(STATE / "workstations.json", json.dumps(state, indent=2, sort_keys=True))
 
-    def choose_subnet(self):
+    def active_sessions(self):
+        stored = read_json(STATE / "active-sessions.json")
+        sessions = stored.get("sessions", {})
+        if not isinstance(sessions, dict) or len(sessions) > 1024:
+            raise BrokerError("Invalid active workstation session ledger; management access remains blocked.")
+        clean = {}
+        for workstation_id, lease in sessions.items():
+            if (not isinstance(workstation_id, str) or re.fullmatch(r"[a-f0-9]{16}", workstation_id) is None
+                    or not isinstance(lease, dict) or type(lease.get("expires_at")) is not int
+                    or lease["expires_at"] <= 0):
+                raise BrokerError("Invalid active workstation session lease; management access remains blocked.")
+            if lease["expires_at"] > int(time.time()):
+                clean[workstation_id] = {"expires_at": lease["expires_at"]}
+        return clean
+
+    def save_active_sessions(self, sessions):
+        atomic(STATE / "active-sessions.json", json.dumps({"sessions": sessions}, sort_keys=True))
+
+    def choose_subnet(self, reserved=()):
         used = []
+        for value in reserved:
+            try:
+                used.append(ipaddress.IPv4Network(value))
+            except (ipaddress.AddressValueError, ipaddress.NetmaskValueError, TypeError):
+                raise BrokerError("Invalid reserved workstation tunnel subnet.")
         for arguments in ([self.tool("ip"), "-4", "-o", "address", "show"], [self.tool("ip"), "-4", "route", "show", "table", "all"]):
             for token in (self.run(arguments) or "").split():
                 try:
@@ -947,6 +1296,36 @@ class Broker:
                 return str(candidate)
         raise BrokerError("No unused private address range is available for workstation pairing.")
 
+    @staticmethod
+    def locked_interface(item):
+        return "tlpw" + hashlib.sha256(item["id"].encode()).hexdigest()[:11]
+
+    def locked_listener_port(self, item, workstations, shared_port):
+        occupied = {shared_port}
+        occupied.update(entry.get("listener_port") for entry in workstations
+                        if isinstance(entry.get("listener_port"), int))
+        start = int(hashlib.sha256(item["id"].encode()).hexdigest()[:8], 16) % len(LISTENER_PORT_RANGE)
+        for offset in range(len(LISTENER_PORT_RANGE)):
+            candidate = LISTENER_PORT_RANGE[(start + offset) % len(LISTENER_PORT_RANGE)]
+            if candidate in occupied:
+                continue
+            sockets = []
+            try:
+                for family, address in ((socket.AF_INET, ("0.0.0.0", candidate)),
+                                        (socket.AF_INET6, ("::", candidate, 0, 0))):
+                    probe = socket.socket(family, socket.SOCK_DGRAM)
+                    sockets.append(probe)
+                    if family == socket.AF_INET6:
+                        probe.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+                    probe.bind(address)
+                return candidate
+            except OSError:
+                continue
+            finally:
+                for probe in sockets:
+                    probe.close()
+        raise BrokerError("No dedicated WireGuard listener UDP ports remain.")
+
     def server_public_key(self):
         path = ENROLLMENT / "workstation-wg.key"
         ENROLLMENT.mkdir(mode=0o700, exist_ok=True)
@@ -959,25 +1338,41 @@ class Broker:
             raise BrokerError("The PBX workstation WireGuard identity could not be derived.")
         return public
 
-    def link_state(self):
+    def link_state(self, interface=WORKSTATION_IFACE):
         links = json.loads(self.run([self.tool("ip"), "-j", "link", "show"]))
         if not isinstance(links, list) or any(not isinstance(link, dict) or not isinstance(link.get("ifname"), str)
                                               or not isinstance(link.get("flags"), list) for link in links):
             raise BrokerError("Workstation interface inventory could not be verified.")
-        matches = [link for link in links if link.get("ifname") == WORKSTATION_IFACE]
+        matches = [link for link in links if link.get("ifname") == interface]
         if len(matches) > 1:
             raise BrokerError("Ambiguous workstation interface.")
         return matches[0] if matches else None
 
     def disable_workstations(self):
-        if self.link_state() is not None:
-            self.run([self.tool("ip"), "link", "set", "down", "dev", WORKSTATION_IFACE], check=False)
-            link = self.link_state()
+        interfaces = [WORKSTATION_IFACE]
+        state_error = None
+        try:
+            state = read_json(STATE / "workstations.json")
+            interfaces.extend(self.locked_interface(item) for item in state.get("workstations", [])
+                              if isinstance(item, dict) and re.fullmatch(r"[a-f0-9]{16}", str(item.get("id", "")))
+                              and item.get("locked") is True)
+        except BrokerError as error:
+            state_error = error
+        links = json.loads(self.run([self.tool("ip"), "-j", "link", "show"]))
+        interfaces.extend(link["ifname"] for link in links if isinstance(link, dict)
+                          and re.fullmatch(r"tlpw[a-f0-9]{11}", str(link.get("ifname", ""))))
+        for interface in interfaces:
+            if self.link_state(interface) is None:
+                continue
+            self.run([self.tool("ip"), "link", "set", "down", "dev", interface], check=False)
+            link = self.link_state(interface)
             if link is not None and "UP" in link["flags"]:
                 # Deletion is a second way to stop traffic, never permission to remove policy on failure.
-                self.run([self.tool("ip"), "link", "del", "dev", WORKSTATION_IFACE], check=False)
-                if self.link_state() is not None:
+                self.run([self.tool("ip"), "link", "del", "dev", interface], check=False)
+                if self.link_state(interface) is not None:
                     raise BrokerError("Workstation interface could not be disabled or removed; retaining firewall and recovery state.")
+        if state_error is not None:
+            raise state_error
 
     def owned_table(self):
         nft = self.tool("nft")
@@ -1065,14 +1460,527 @@ class Broker:
             raise BrokerError("Legacy workstation table cannot be migrated while the tunnel is up; refusing modification.")
         return document
 
-    def expected_policy(self, state):
+    def expected_policy(self, state, include_expired_bans=False):
         network = ipaddress.IPv4Network(state["subnet"])
         if not network.subnet_of(WORKSTATION_POOL) or network.prefixlen != 24 or network.overlaps(WORKSTATION_EXCLUDED):
             raise BrokerError("Invalid workstation subnet.")
+        listener_sources = []
+        peer_interfaces = []
+        banned_sources = []
+        active_sessions = self.active_sessions()
+        active_ids = {item["id"] for item in state["workstations"]} & set(active_sessions)
+        admitted_sources = {item["address"].split("/")[0] for item in state["workstations"]
+                            if item["id"] in active_ids and not item.get("migration")}
+        control_sources = {item["address"].split("/")[0] for item in state["workstations"]}
+        reserved_subnets = [network]
+        shared_listener_port = state.get("listen_port")
+        listener_ports = {shared_listener_port} if type(shared_listener_port) is int else set()
+        for item in state["workstations"]:
+            migration = item.get("migration")
+            if migration:
+                old_source = migration["address"].split("/")[0]
+                control_sources.add(old_source)
+                if migration["locked"] and not item.get("locked"):
+                    old_subnet = ipaddress.IPv4Network(migration["subnet"])
+                    if (old_subnet.prefixlen != 24 or not old_subnet.subnet_of(WORKSTATION_POOL)
+                            or old_subnet.overlaps(WORKSTATION_EXCLUDED)
+                            or migration["pbx_address"] != str(old_subnet[1])
+                            or migration["address"] != str(old_subnet[2]) + "/32"
+                            or type(migration.get("listener_port")) is not int
+                            or not LISTENER_PORT_RANGE.start <= migration["listener_port"] < LISTENER_PORT_RANGE.stop
+                            or not migration.get("sources")):
+                        raise BrokerError("Invalid retired dedicated listener during workstation migration.")
+                    old_sources, _ = resolve_source_restrictions(migration["sources"], cache=self.source_cache)
+                    listener_sources.append({"port": migration["listener_port"], "sources": old_sources})
+                    peer_interfaces.append({"interface": "tlpw" + hashlib.sha256(item["id"].encode()).hexdigest()[:11],
+                                             "pbx_address": migration["pbx_address"], "source": old_source})
+            if not item.get("locked"):
+                continue
+            station_network = ipaddress.IPv4Network(item["subnet"])
+            if (station_network.prefixlen != 24 or not station_network.subnet_of(WORKSTATION_POOL)
+                    or station_network.overlaps(WORKSTATION_EXCLUDED)
+                    or any(station_network.overlaps(other) for other in reserved_subnets)
+                    or item["pbx_address"] != str(station_network[1])
+                    or item["address"] != str(station_network[2]) + "/32"
+                    or type(item["listener_port"]) is not int
+                    or not LISTENER_PORT_RANGE.start <= item["listener_port"] < LISTENER_PORT_RANGE.stop
+                    or item["listener_port"] in listener_ports
+                    or not item["sources"]):
+                raise BrokerError("Invalid dedicated listener assignment for a Locked workstation.")
+            reserved_subnets.append(station_network)
+            listener_ports.add(item["listener_port"])
+            sources, _ = resolve_source_restrictions(item["sources"], cache=self.source_cache)
+            listener_sources.append({"port": item["listener_port"], "sources": sources})
+            peer = {"interface": self.locked_interface(item), "pbx_address": item["pbx_address"],
+                    "source": item["address"].split("/")[0]}
+            if ssh.managed(item):
+                peer.update(source=item["address"].split("/")[0], ssh_port=ssh.port(item))
+            peer_interfaces.append(peer)
+        if state.get("connection_state") != "closed" and not (STATE / "disabled").exists():
+            active_ports = set()
+            if type(shared_listener_port) is int:
+                active_ports.add(shared_listener_port)
+            active_ports.update(item["listener_port"] for item in state["workstations"] if item.get("locked"))
+            now = int(time.time())
+            for ban in state.get("bans", []):
+                if include_expired_bans or ban.get("expires_at") is None or ban["expires_at"] > now:
+                    banned_sources.extend({"port": port, "source": ban["source"]}
+                                          for port in active_ports)
         return workstation_policy(str(network[1]),
                                   [item["address"].split("/")[0] for item in state["workstations"] if item.get("ssh") is True and not ssh.managed(item)],
-                                  [(item["address"].split("/")[0], ssh.port(item)) for item in state["workstations"] if ssh.managed(item)],
-                                  tuple(entry["port"] for entry in normalise_web(state.get("web"))))
+                                  [(item["address"].split("/")[0], ssh.port(item)) for item in state["workstations"]
+                                   if ssh.managed(item) and not item.get("locked")],
+                                  tuple(entry["port"] for entry in normalise_web(state.get("web"))),
+                                  listener_sources, peer_interfaces, banned_sources,
+                                  admitted_sources=admitted_sources, control_sources=control_sources)
+
+    def reconcile_policy_only(self, state):
+        if state["connection_state"] == "closed" or (STATE / "disabled").exists():
+            return
+        self.start_monitor()
+        expected = self.expected_policy(state)
+        self.mutate_policy(expected, self.owned_table())
+        if not policy_equal(self.owned_table(), expected):
+            raise BrokerError("TELIPHONES listener policy did not reconcile to the complete expected firewall state.")
+
+    def workstation_session(self, action, source, destination=None, ssh_public_key=None):
+        try:
+            address = str(ipaddress.ip_address(source))
+        except ValueError as error:
+            raise BrokerError("Workstation session request has an invalid tunnel source.") from error
+        with self.wslock:
+            state, _ = self.workstation_state()
+            item = next((entry for entry in state["workstations"] if entry["address"].split("/")[0] == address), None)
+            migration_item = next((entry for entry in state["workstations"]
+                                   if entry.get("migration", {}).get("address", "").split("/")[0] == address
+                                   and (destination is None or entry["migration"]["pbx_address"] == destination)), None)
+            migration_source = migration_item is not None and (
+                item is None or destination == migration_item["migration"]["pbx_address"])
+            if migration_source:
+                item = migration_item
+            if item is None:
+                item = migration_item
+                migration_source = item is not None
+            if item is None:
+                raise BrokerError("This authenticated WireGuard peer is not an approved workstation.")
+            if state["connection_state"] == "closed" or (STATE / "disabled").exists():
+                raise BrokerError("PBX Closed: workstation access is unavailable.")
+            if self.integration.get("state") == "error":
+                raise BrokerError("FreePBX Firewall integration is unsafe; a management session cannot be admitted.")
+            migration = item.get("migration")
+            if action == "lock-current":
+                if migration_source or migration:
+                    raise BrokerError("Lock to Current IP is unavailable while listener migration is pending.")
+                updated = self.manage_workstation({"workstation_id": item["id"],
+                                                   "state": "lock", "sources": "current"}, 0)
+                return {"workstation_change_status": "applied",
+                        "migration_pending": updated["migration_pending"]}
+            if action == "unlock-request":
+                if migration_source or migration:
+                    raise BrokerError("Unlock requests are unavailable while listener migration is pending.")
+                if item["id"] not in self.active_sessions():
+                    raise BrokerError("A PBX-admitted administrative session is required to request an unlock.")
+                if not item.get("locked"):
+                    return {"unlock_request_status": "applied"}
+                if not item.get("unlock_request"):
+                    item["unlock_request"] = {"created_at": int(time.time())}
+                    self.save_workstations(state)
+                return {"unlock_request_status": "pending"}
+            if action == "sources-request":
+                if migration_source or migration:
+                    raise BrokerError("Allowed List changes are unavailable while listener migration is pending.")
+                if item["id"] not in self.active_sessions():
+                    raise BrokerError("A PBX-admitted administrative session is required to request an Allowed List change.")
+                if not isinstance(ssh_public_key, str):
+                    raise BrokerError("The requested Allowed List must be supplied.")
+                requested_sources = parse_source_restrictions(ssh_public_key)
+                if not requested_sources:
+                    raise BrokerError("Enter at least one permitted IP address, CIDR range or DNS name.")
+                item["sources_request"] = {"sources": requested_sources, "created_at": int(time.time())}
+                self.save_workstations(state)
+                return {"sources_request_status": "pending"}
+            if action == "ssh-request":
+                if migration_source or migration:
+                    raise BrokerError("SSH elevation requests are unavailable while listener migration is pending.")
+                if item["id"] not in self.active_sessions():
+                    raise BrokerError("A PBX-admitted administrative session is required to request SSH access.")
+                if ssh.managed(item):
+                    return {"ssh_request_status": "applied"}
+                try:
+                    requested_key = ssh.public_key(ssh_public_key)
+                except (ssh.SshError, TypeError, AttributeError) as error:
+                    raise BrokerError("A valid workstation SSH public key is required.") from error
+                if item.get("ssh_request", {}).get("public_key") != requested_key:
+                    item["ssh_request"] = {"public_key": requested_key, "created_at": int(time.time())}
+                    self.save_workstations(state)
+                return {"ssh_request_status": "pending"}
+            if migration and migration_source and action == "heartbeat":
+                return {"active": False, "expires_at": None,
+                        "connected_workstations": len(self.active_sessions()),
+                        "max_sessions": state["max_sessions"],
+                        "migration": {"workstation_id": item["id"],
+                                      "workstation_public_key": item["public_key"],
+                                      "pbx_public_key": self.server_public_key(),
+                                      "address": item["address"],
+                                      "pbx_address": item["pbx_address"],
+                                      "listener_port": item.get("listener_port", state["listen_port"]),
+                                      "gui_url": gui_url(state["web"], item["pbx_address"]),
+                                      "ssh_port": ssh.port(item) if ssh.managed(item) else 0,
+                                      "ssh_api_port": ssh.API_PORT if ssh.managed(item) else 0,
+                                      "generation": migration["id"]}}
+            if migration and action == "heartbeat":
+                previous = json.loads(json.dumps(state))
+                item.pop("migration", None)
+                try:
+                    self.apply_workstations(state, preserve_unrelated=True)
+                    self.save_workstations(state)
+                except (BrokerError, OSError, subprocess.SubprocessError) as error:
+                    try:
+                        self.apply_workstations(previous, preserve_unrelated=True)
+                        self.save_workstations(previous)
+                    except (BrokerError, OSError, subprocess.SubprocessError) as rollback_error:
+                        self.workstation_error = "Workstation migration acknowledgement failed; both old and new management paths remain blocked: " + str(rollback_error)
+                    raise BrokerError("The new workstation listener could not be acknowledged safely; the migration remains pending.") from error
+            previous = self.active_sessions()
+            current = {key: value for key, value in previous.items()
+                       if any(entry["id"] == key for entry in state["workstations"])}
+            if action == "release":
+                current.pop(item["id"], None)
+            elif action == "heartbeat":
+                if item["id"] not in current and len(current) >= state["max_sessions"]:
+                    raise BrokerError("Session limit reached: %d of %d workstation connections are active." %
+                                      (len(current), state["max_sessions"]))
+                current[item["id"]] = {"expires_at": int(time.time()) + SESSION_LEASE_SECONDS}
+            else:
+                raise BrokerError("Unsupported workstation session operation.")
+            self.save_active_sessions(current)
+            try:
+                self.reconcile_policy_only(state)
+            except (BrokerError, OSError, subprocess.SubprocessError) as error:
+                self.save_active_sessions(previous)
+                try:
+                    self.disable_workstations()
+                except (BrokerError, OSError, subprocess.SubprocessError) as cleanup_error:
+                    self.workstation_error = "Session firewall update failed and workstation shutdown is unverified: " + str(cleanup_error)
+                raise BrokerError("Workstation session firewall could not be verified; access was disabled.") from error
+            self.lease_wake.set()
+            response = {"active": action == "heartbeat", "expires_at": current.get(item["id"], {}).get("expires_at"),
+                        "connected_workstations": len(current), "max_sessions": state["max_sessions"]}
+            if action == "heartbeat":
+                try:
+                    current_source = self.verified_workstation_source(item) \
+                        if isinstance(item.get("public_key"), str) else None
+                except (BrokerError, OSError, subprocess.SubprocessError):
+                    current_source = None
+                effective, failed = resolve_source_restrictions(item.get("sources", []), cache=self.source_cache) \
+                    if item.get("locked") else ([], [])
+                response["policy"] = {"locked": item.get("locked") is True,
+                                      "sources": item.get("sources", []),
+                                      "effective_source_count": len(effective),
+                                      "source_resolution_failures": failed,
+                                      "current_source": current_source,
+                                      "ssh_approved": item.get("ssh") is True,
+                                      "ssh_request_pending": bool(item.get("ssh_request")),
+                                      "unlock_request_pending": bool(item.get("unlock_request")),
+                                      "sources_request_pending": bool(item.get("sources_request")),
+                                      "requested_sources": item.get("sources_request", {}).get("sources", []),
+                                      "connection_state": state["connection_state"],
+                                      "listener_port": item.get("listener_port", state.get("listen_port", 51821))}
+                if ssh.managed(item):
+                    response["policy"]["ssh_configuration"] = {
+                        "ssh_user": item["ssh_user"], "ssh_public_key": item["ssh_public_key"],
+                        "ssh_host_key": self.ssh.host_key(), "ssh_ca_key": self.ssh.initialise(),
+                        "ssh_port": ssh.port(item), "ssh_api_port": ssh.API_PORT}
+            return response
+
+    def reconcile_session_servers(self, state=None):
+        if not self.session_server_enabled:
+            return
+        if state is None:
+            state, _ = self.workstation_state()
+        wanted = set()
+        if state["connection_state"] != "closed" and not (STATE / "disabled").exists():
+            for item in state["workstations"]:
+                wanted.add(item["pbx_address"] if item.get("locked")
+                           else str(ipaddress.IPv4Network(state["subnet"])[1]))
+                if item.get("migration"):
+                    wanted.add(item["migration"]["pbx_address"])
+        for address in set(self.session_servers) - wanted:
+            server, thread = self.session_servers.pop(address)
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+        for address in wanted - set(self.session_servers):
+            broker = self
+
+            class Handler(BaseHTTPRequestHandler):
+                def do_POST(self):
+                    if self.path != "/workstation/session":
+                        self.send_error(404)
+                        return
+                    try:
+                        length = int(self.headers.get("Content-Length", "0"))
+                        if not 1 <= length <= 4096:
+                            raise BrokerError("Invalid workstation session request.")
+                        request = json.loads(self.rfile.read(length))
+                        if (not isinstance(request, dict)
+                                or set(request) != ({"action", "ssh_public_key"} if request.get("action") == "ssh-request"
+                                                    else {"action", "sources"} if request.get("action") == "sources-request"
+                                                    else {"action"})):
+                            raise BrokerError("Invalid workstation session request.")
+                        result = broker.workstation_session(request["action"], self.client_address[0],
+                                                            self.server.server_address[0],
+                                                            request.get("ssh_public_key", request.get("sources")))
+                        response = {"ok": True, **result}
+                        status = 200
+                    except (BrokerError, ValueError, TypeError) as error:
+                        response = {"ok": False, "error": str(error) if isinstance(error, BrokerError)
+                                    else "Invalid workstation session request."}
+                        status = 409
+                    payload = json.dumps(response, separators=(",", ":")).encode("utf-8")
+                    self.send_response(status)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.send_header("Connection", "close")
+                    self.end_headers()
+                    self.wfile.write(payload)
+
+                def log_message(self, format, *args):
+                    return
+
+            server = ThreadingHTTPServer((address, SESSION_CONTROL_PORT), Handler)
+            server.daemon_threads = True
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            self.session_servers[address] = (server, thread)
+
+    def stop_session_servers(self):
+        self.session_server_enabled = False
+        for address, (server, thread) in list(self.session_servers.items()):
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+            self.session_servers.pop(address, None)
+
+    def configure_workstation_limit(self, request, uid):
+        state, _ = self.workstation_state()
+        previous = json.loads(json.dumps(state))
+        state["max_sessions"] = int(request["maximum"])
+        active = self.active_sessions()
+        if len(active) > state["max_sessions"]:
+            raise BrokerError("The maximum cannot be lower than the %d currently active workstation session(s)." % len(active))
+        try:
+            self.save_workstations(state)
+        except (BrokerError, OSError) as error:
+            try:
+                self.save_workstations(previous)
+            except (BrokerError, OSError) as rollback_error:
+                self.workstation_error = "Session limit could not be saved or rolled back: " + str(rollback_error)
+                raise BrokerError(self.workstation_error) from error
+            raise
+        self.audit("workstation-limit", uid, "completed")
+        return state["max_sessions"]
+
+    def expire_sessions(self):
+        with self.wslock:
+            state, _ = self.workstation_state()
+            previous = self.active_sessions()
+            workstation_ids = {item["id"] for item in state["workstations"]}
+            current = {key: value for key, value in previous.items()
+                       if key in workstation_ids and value["expires_at"] > int(time.time())}
+            if current == previous:
+                return
+            self.save_active_sessions(current)
+            try:
+                self.reconcile_policy_only(state)
+            except (BrokerError, OSError, subprocess.SubprocessError) as error:
+                try:
+                    self.disable_workstations()
+                except (BrokerError, OSError, subprocess.SubprocessError) as cleanup_error:
+                    self.workstation_error = "Expired session cleanup failed and workstation shutdown is unverified: " + str(cleanup_error)
+                raise BrokerError("Expired workstation sessions could not be removed from the firewall.") from error
+
+    def configure_ban(self, request, uid):
+        state, _ = self.workstation_state()
+        previous = json.loads(json.dumps(state))
+        if request["action"] == "workstation-ban":
+            network = str(ipaddress.ip_network(request["source"].strip(), strict=False))
+            if any(item["source"] == network and (item["expires_at"] is None or item["expires_at"] > int(time.time()))
+                   for item in state["bans"]):
+                raise BrokerError("That source already has an active TELIPHONES ban.")
+            hours = None if request["hours"] == "never" else int(request["hours"])
+            state["bans"].append({"id": secrets.token_hex(8), "source": network,
+                                  "reason": request["reason"].strip(),
+                                  "expires_at": int(time.time()) + hours * 3600 if hours is not None else None})
+        else:
+            state["bans"] = [item for item in state["bans"] if item["id"] != request["ban_id"]]
+            if len(state["bans"]) == len(previous["bans"]):
+                raise BrokerError("Unknown TELIPHONES ban; it may already have been removed.")
+        try:
+            self.reconcile_policy_only(state)
+            self.save_workstations(state)
+        except (BrokerError, OSError, subprocess.SubprocessError) as error:
+            try:
+                self.reconcile_policy_only(previous)
+            except (BrokerError, OSError, subprocess.SubprocessError) as rollback_error:
+                self.workstation_error = "Banned-list change failed and firewall rollback could not be verified: " + str(rollback_error)
+                raise BrokerError(self.workstation_error) from error
+            raise
+        self.audit(request["action"], uid, "completed")
+        return state
+
+    def verified_workstation_source(self, item):
+        interface = self.locked_interface(item) if item.get("locked") else WORKSTATION_IFACE
+        key = item["public_key"]
+        handshakes = (self.run([self.tool("wg"), "show", interface, "latest-handshakes"]) or "").splitlines()
+        endpoints = (self.run([self.tool("wg"), "show", interface, "endpoints"]) or "").splitlines()
+        handshake = next((line.split()[1] for line in handshakes
+                          if len(line.split()) == 2 and line.split()[0] == key), None)
+        endpoint = next((line.split(maxsplit=1)[1] for line in endpoints
+                         if len(line.split(maxsplit=1)) == 2 and line.split(maxsplit=1)[0] == key), None)
+        if handshake is None or not handshake.isdigit() or int(handshake) <= 0 or int(time.time()) - int(handshake) > 180:
+            raise BrokerError("Lock to Current IP requires a verified WireGuard handshake within the last three minutes.")
+        observed = parse_wireguard_endpoint(endpoint or "")
+        if observed is None:
+            raise BrokerError("The workstation's authenticated public source could not be verified.")
+        address = ipaddress.ip_address(observed["address"])
+        return str(address) + ("/32" if address.version == 4 else "/128")
+
+    def manage_workstation(self, request, uid):
+        state, _ = self.workstation_state()
+        previous = json.loads(json.dumps(state))
+        item = next((entry for entry in state["workstations"] if entry["id"] == request["workstation_id"]), None)
+        if item is None:
+            raise BrokerError("Unknown workstation; it may already have been revoked or expired.")
+        initial_locked = item.get("locked") is True
+        if item.get("migration") and request["state"] != ("lock" if initial_locked else "unlock"):
+            raise BrokerError("A listener migration is already pending; wait for the existing Windows profile to acknowledge it before changing listener mode.")
+        initial_config = {"locked": initial_locked, "address": item["address"],
+                          "pbx_address": item["pbx_address"] if initial_locked
+                          else str(ipaddress.IPv4Network(state["subnet"])[1])}
+        if initial_locked:
+            initial_config.update(sources=item["sources"], subnet=item["subnet"],
+                                  listener_port=item["listener_port"])
+
+        if request["state"] == "lock":
+            sources = [self.verified_workstation_source(item)] if request["sources"] == "current" else \
+                parse_source_restrictions(request["sources"])
+            if not sources:
+                raise BrokerError("Enter at least one permitted IP address, CIDR range or DNS name.")
+            if item.get("locked"):
+                item["sources"] = sources
+            else:
+                network = ipaddress.IPv4Network(state["subnet"])
+                reserved = [str(network)] + [entry["subnet"] for entry in state["workstations"]
+                                              if entry.get("locked")]
+                subnet = self.choose_subnet(reserved)
+                station_network = ipaddress.IPv4Network(subnet)
+                listener_port = self.locked_listener_port(item, state["workstations"], state["listen_port"])
+                item.update(locked=True, sources=sources, subnet=subnet,
+                            pbx_address=str(station_network[1]),
+                            address=str(station_network[2]) + "/32",
+                            listener_port=listener_port)
+        else:
+            if item.get("locked"):
+                network = ipaddress.IPv4Network(state["subnet"])
+                taken = {entry["address"] for entry in state["workstations"]
+                         if entry["id"] != item["id"] and not entry.get("locked")}
+                address = next((str(host) + "/32" for host in list(network.hosts())[1:]
+                                if str(host) + "/32" not in taken), None)
+                if address is None:
+                    raise BrokerError("No shared-listener workstation addresses remain; revoke unused pairings first.")
+                item["address"] = address
+                item["pbx_address"] = str(network[1])
+                for field in ("sources", "subnet", "listener_port"):
+                    item.pop(field, None)
+                item["locked"] = False
+
+        if initial_locked != (item.get("locked") is True):
+            migration = item.get("migration")
+            if migration is None:
+                item["migration"] = {"id": secrets.token_hex(16), **initial_config}
+        item.pop("unlock_request", None)
+        item.pop("sources_request", None)
+
+        if item.get("migration"):
+            # Persist the transition and revoke its old management lease before
+            # changing peers. A restart can therefore only restore a
+            # control-channel-only old path until the same key arrives at the
+            # new address.
+            self.save_workstations(state)
+            sessions = self.active_sessions()
+            sessions.pop(item["id"], None)
+            self.save_active_sessions(sessions)
+            try:
+                self.reconcile_policy_only(state)
+            except (BrokerError, OSError, subprocess.SubprocessError) as error:
+                old_interface = self.locked_interface(item) if initial_locked else WORKSTATION_IFACE
+                if self.link_state(old_interface) is not None:
+                    self.run([self.tool("wg"), "set", old_interface, "peer", item["public_key"], "remove"],
+                             check=False)
+                self.workstation_error = "Workstation migration could not install its restricted firewall; the affected peer was disconnected: " + str(error)
+                raise BrokerError(self.workstation_error) from error
+
+        try:
+            self.apply_workstations(state, preserve_unrelated=True)
+            self.save_workstations(state)
+        except (BrokerError, OSError, subprocess.SubprocessError) as error:
+            try:
+                if item.get("migration"):
+                    self.save_workstations(state)
+                else:
+                    self.apply_workstations(previous, preserve_unrelated=True)
+                    self.save_workstations(previous)
+            except (BrokerError, OSError, subprocess.SubprocessError) as rollback_error:
+                self.workstation_error = "Workstation policy update and rollback failed; affected access remains blocked: " + str(rollback_error)
+                raise BrokerError(self.workstation_error) from error
+            raise
+        self.audit("workstation-manage", uid, "completed")
+        return {"id": item["id"], "locked": item.get("locked") is True,
+                "sources": item.get("sources", []),
+                "migration_pending": bool(item.get("migration")),
+                "migration_generation": item.get("migration", {}).get("id"),
+                "listener_port": item.get("listener_port", state["listen_port"]),
+                "address": item["address"], "pbx_address": item["pbx_address"]}
+
+    def manage_workstation_ssh(self, request, uid, operation):
+        state, _ = self.workstation_state()
+        previous = json.loads(json.dumps(state))
+        item = next((entry for entry in state["workstations"] if entry["id"] == request["workstation_id"]), None)
+        if item is None:
+            raise BrokerError("Unknown workstation; SSH access was not changed.")
+        if operation == "revoke":
+            if not ssh.managed(item):
+                raise BrokerError("This workstation has no managed SSH authorisation to revoke.")
+            item["ssh"] = False
+            for field in ("ssh_public_key", "ssh_user"):
+                item.pop(field, None)
+            item.pop("ssh_request", None)
+        elif not item.get("ssh_request"):
+            raise BrokerError("There is no pending SSH elevation request for that workstation.")
+        elif operation == "approve":
+            pending = item["ssh_request"]
+            item.update(ssh=True, ssh_public_key=pending["public_key"], ssh_user=request["ssh_user"])
+            try:
+                self.ssh.account_policy(item, item.get("pbx_address", str(ipaddress.IPv4Network(state["subnet"])[1])))
+            except (ssh.SshError, OSError, subprocess.SubprocessError) as error:
+                raise BrokerError("The selected existing Linux account cannot receive managed SSH access: " + str(error)) from error
+            item.pop("ssh_request", None)
+        else:
+            item.pop("ssh_request", None)
+        try:
+            self.apply_workstations(state, preserve_unrelated=True)
+            self.save_workstations(state)
+        except (BrokerError, OSError, subprocess.SubprocessError) as error:
+            try:
+                self.apply_workstations(previous, preserve_unrelated=True)
+                self.save_workstations(previous)
+            except (BrokerError, OSError, subprocess.SubprocessError) as rollback_error:
+                self.workstation_error = "SSH elevation change and rollback failed; workstation recovery is required: " + str(rollback_error)
+                raise BrokerError(self.workstation_error) from error
+            raise
+        self.audit("workstation-ssh-" + operation, uid, "completed")
+        return item
 
     def start_monitor(self):
         if self.monitor is None:
@@ -1112,8 +2020,10 @@ class Broker:
                 rule = iptables_rule(tokens)
                 if rule is None or rule.get("comment") != INTEGRATION_MARK:
                     raise BrokerError("Unfamiliar iptables chain %s (rule without TELIPHONES marker); it will not be modified." % INTEGRATION_CHAIN)
-            elif iptables_target(tokens) == INTEGRATION_CHAIN and (chain not in ("INPUT", FREEPBX_HOOK)
-                                                                  or iptables_rule(tokens) != INTEGRATION_JUMP):
+            elif iptables_target(tokens) == INTEGRATION_CHAIN and (
+                    (chain == "INPUT" and iptables_rule(tokens) not in (INTEGRATION_JUMP, LEGACY_INTEGRATION_JUMP))
+                    or (chain == FREEPBX_HOOK and iptables_rule(tokens) != INTEGRATION_JUMP)
+                    or chain not in ("INPUT", FREEPBX_HOOK)):
                 raise BrokerError("Unexpected reference to iptables chain %s from %s; it will not be modified." % (INTEGRATION_CHAIN, chain))
         return chains, rules
 
@@ -1167,9 +2077,33 @@ class Broker:
             return
         network = ipaddress.IPv4Network(state["subnet"])
         web = normalise_web(state.get("web"))
-        expected = integration_rules(str(network[1]), state["workstations"], web)
+        integrated_workstations = []
         for item in state["workstations"]:
-            if not ipaddress.IPv4Network(item["address"]).subnet_of(network):
+            integrated = dict(item)
+            if item.get("locked"):
+                integrated["interface"] = self.locked_interface(item)
+                integrated["pbx_address"] = item["pbx_address"]
+            integrated_workstations.append(integrated)
+        migration_controls = []
+        for item in state["workstations"]:
+            migration = item.get("migration")
+            if not migration:
+                continue
+            migration_controls.append({
+                "address": migration["address"],
+                "pbx_address": migration["pbx_address"],
+                "interface": self.locked_interface(item) if migration.get("locked") else WORKSTATION_IFACE,
+            })
+        expected = integration_rules(str(network[1]), integrated_workstations, web, migration_controls)
+        for item in state["workstations"]:
+            if item.get("locked"):
+                station_network = ipaddress.IPv4Network(item["subnet"])
+                if (station_network.prefixlen != 24 or not station_network.subnet_of(WORKSTATION_POOL)
+                        or station_network.overlaps(network)
+                        or not ipaddress.IPv4Network(item["address"]).subnet_of(station_network)
+                        or item.get("pbx_address") != str(station_network[1])):
+                    raise BrokerError("Locked workstation address is outside its dedicated tunnel subnet.")
+            elif not ipaddress.IPv4Network(item["address"]).subnet_of(network):
                 raise BrokerError("Workstation address is outside the workstation subnet.")
         if INTEGRATION_CHAIN not in chains:
             self.ipt(iptables, "-N", INTEGRATION_CHAIN)
@@ -1193,14 +2127,22 @@ class Broker:
                 or any(chain == "INPUT" and iptables_target(tokens) == INTEGRATION_CHAIN for chain, tokens in rules)):
             raise BrokerError("FreePBX Firewall integration could not be verified after update.")
         web_ports = "/".join(str(entry["port"]) for entry in web)
-        self.integration_status("active", "Authorised workstation peers may reach TCP %s%s on the PBX tunnel address inside %s; "
-                                "all other traffic returns to FreePBX Firewall." % (
+        self.integration_status("active", "Paired peers may reach TCP %s (session control) and configured management services %s%s "
+                                "on their PBX tunnel address inside %s; nftables permits management only while a broker lease is active, "
+                                "and all other traffic returns to FreePBX Firewall." % (
+                                    SESSION_CONTROL_PORT,
                                     web_ports,
                                     " (and explicitly approved per-peer SSH services)" if any(item.get("ssh") is True for item in state["workstations"]) else "",
                                     FREEPBX_HOOK), backend)
 
-    def reconcile_listener(self, port):
-        self.run([FWCONSOLE, "teliphones", "listener", "--listen-port=" + str(port)])
+    def reconcile_listener(self, ports):
+        if isinstance(ports, int):
+            ports = [] if ports == 0 else [ports]
+        if not isinstance(ports, (list, tuple)) or any(type(port) is not int or not 1024 <= port <= 65535 for port in ports):
+            raise BrokerError("Invalid managed WireGuard listener port set.")
+        values = sorted(set(ports))
+        value = ",".join(str(port) for port in values) if values else "0"
+        self.run([FWCONSOLE, "teliphones", "listener", "--listen-port=" + value])
 
     def remove_integration(self):
         iptables = self.iptables_tool()
@@ -1276,9 +2218,23 @@ class Broker:
                     self.monitor.pending = []
                 self.mutate_policy(expected, self.owned_table(), registration_retry=False)
 
-    def teardown_workstations(self):
+    def teardown_workstations(self, state=None):
         """Shared by revoke, failure, shutdown and the trusted uninstall entry point."""
-        interface_present = self.link_state() is not None
+        if state is None:
+            try:
+                state, _ = self.workstation_state()
+            except BrokerError:
+                self.disable_workstations()
+                raise
+        interfaces = {WORKSTATION_IFACE: self.link_state() is not None}
+        interfaces.update({self.locked_interface(item): self.link_state(self.locked_interface(item)) is not None
+                           for item in state["workstations"]
+                           if item.get("locked") or item.get("migration", {}).get("locked")})
+        links = json.loads(self.run([self.tool("ip"), "-j", "link", "show"]))
+        for link in links:
+            interface = link.get("ifname", "") if isinstance(link, dict) else ""
+            if re.fullmatch(r"tlpw[a-f0-9]{11}", interface):
+                interfaces[interface] = True
         self.disable_workstations()
         listener_error = None
         try:
@@ -1289,10 +2245,11 @@ class Broker:
             self.ssh.reconcile({"workstations": []})
         except (ssh.SshError, OSError, subprocess.SubprocessError) as error:
             raise BrokerError("Managed SSH cleanup could not be verified; retaining recovery state: " + str(error)) from error
-        if interface_present:
-            self.run([self.tool("ip"), "link", "del", "dev", WORKSTATION_IFACE], check=False)
-            if self.link_state() is not None:
-                raise BrokerError("Workstation interface could not be removed and was disabled; retaining firewall and recovery state.")
+        for interface, present in interfaces.items():
+            if present:
+                self.run([self.tool("ip"), "link", "del", "dev", interface], check=False)
+                if self.link_state(interface) is not None:
+                    raise BrokerError("Workstation interface could not be removed and was disabled; retaining firewall and recovery state.")
         # With the interface gone the integration rules are inert; still remove them, but never let an
         # iptables failure skip owned nft cleanup. Either failure is reported and keeps recovery state.
         try:
@@ -1309,7 +2266,7 @@ class Broker:
                               + (str(integration_error) if isinstance(integration_error, BrokerError) else "iptables failed."))
         if listener_error is not None:
             raise BrokerError("Workstation access removed, but listener cleanup requires retry: " + str(listener_error))
-        if interface_present:
+        if any(interfaces.values()):
             for diagnostic_id in self.diagnostic_active_peers:
                 self.diagnostic(diagnostic_id, "interface.removed")
             self.diagnostic_active_peers.clear()
@@ -1326,18 +2283,31 @@ class Broker:
             for path in (STATE / "workstations.json", STATE / "workstation-recovery.json", ENROLLMENT / "workstation-wg.key"):
                 path.unlink(missing_ok=True)
 
-    def apply_workstations(self, state):
+    def apply_workstations(self, state, preserve_unrelated=False):
         """Disable before any change, verify the entire policy, then admit peers."""
+        has_pending_migration = any(item.get("migration") for item in state.get("workstations", []))
+        if (preserve_unrelated or has_pending_migration) and state["connection_state"] != "closed" and not (STATE / "disabled").exists():
+            saved = read_json(STATE / "workstations.json")
+            if saved.get("workstations"):
+                return self.apply_workstations_preserving(state)
         self.workstation_cleanup_failed = False
+        previous = read_json(STATE / "workstations.json")
         workstation_ids = {"ws-" + item["id"] for item in state.get("workstations", [])
                            if isinstance(item, dict) and re.fullmatch(r"[a-f0-9]{16}", str(item.get("id", "")))}
         try:
             self.disable_workstations()
-            if not state["workstations"] or (STATE / "disabled").exists():
-                self.teardown_workstations()
+            if state["connection_state"] == "closed" or (STATE / "disabled").exists():
+                self.teardown_workstations(state)
+                self.reconcile_session_servers(state)
                 self.workstation_error = ""
                 return
-            interface_present = self.link_state() is not None
+            if state["subnet"] is None:
+                state["subnet"] = self.choose_subnet()
+            if state["listen_port"] is None:
+                state["listen_port"] = 51821
+            interfaces = {WORKSTATION_IFACE: self.link_state() is not None}
+            interfaces.update({self.locked_interface(item): self.link_state(self.locked_interface(item)) is not None
+                               for item in state["workstations"] if item.get("locked")})
             self.start_monitor()
             network = ipaddress.IPv4Network(state["subnet"])
             pbx = str(network[1])
@@ -1354,24 +2324,57 @@ class Broker:
             self.server_public_key()
             self.run([wg, "set", WORKSTATION_IFACE, "listen-port", str(state["listen_port"]), "private-key", str(ENROLLMENT / "workstation-wg.key")])
             self.run([ip, "address", "replace", pbx + "/" + str(network.prefixlen), "dev", WORKSTATION_IFACE])
-            wanted = {item["public_key"]: item["address"] for item in state["workstations"]}
+            wanted = {item["public_key"]: item["address"] for item in state["workstations"] if not item.get("locked")}
             for peer in (self.run([wg, "show", WORKSTATION_IFACE, "peers"]) or "").split():
                 if peer not in wanted:
                     self.run([wg, "set", WORKSTATION_IFACE, "peer", peer, "remove"])
             for key, address in wanted.items():
                 self.run([wg, "set", WORKSTATION_IFACE, "peer", key, "allowed-ips", address])
+            listener_ports = [state["listen_port"]]
+            for item in state["workstations"]:
+                if not item.get("locked"):
+                    continue
+                interface = self.locked_interface(item)
+                station_network = ipaddress.IPv4Network(item["subnet"])
+                if self.link_state(interface) is None:
+                    self.run([ip, "link", "add", "dev", interface, "type", "wireguard"])
+                self.run([wg, "set", interface, "listen-port", str(item["listener_port"]),
+                          "private-key", str(ENROLLMENT / "workstation-wg.key")])
+                self.run([ip, "address", "replace", str(station_network[1]) + "/" + str(station_network.prefixlen),
+                          "dev", interface])
+                station_peers = (self.run([wg, "show", interface, "peers"]) or "").split()
+                for peer in station_peers:
+                    if peer != item["public_key"]:
+                        self.run([wg, "set", interface, "peer", peer, "remove"])
+                self.run([wg, "set", interface, "peer", item["public_key"], "allowed-ips", item["address"]])
+                listener_ports.append(item["listener_port"])
             if not self.monitor.alive() or not policy_equal(self.owned_table(), expected):
                 raise BrokerError("Workstation enforcement could not be verified before admission.")
             # Only after the nft restrictions are verified may the narrower FreePBX Firewall ACCEPTs be added.
             previous_integration = dict(self.integration)
             self.reconcile_integration(state)
-            self.reconcile_listener(state["listen_port"])
+            self.reconcile_listener(listener_ports)
+            active_interfaces = {self.locked_interface(item) for item in state["workstations"] if item.get("locked")}
+            for old_item in previous.get("workstations", []):
+                if not isinstance(old_item, dict):
+                    continue
+                old_locked = old_item.get("locked") or old_item.get("migration", {}).get("locked")
+                if old_locked:
+                    old_interface = self.locked_interface(old_item)
+                    if old_interface not in active_interfaces and self.link_state(old_interface) is not None:
+                        self.run([ip, "link", "del", "dev", old_interface], check=False)
+                        if self.link_state(old_interface) is not None:
+                            raise BrokerError("A retired dedicated workstation interface could not be removed.")
             self.ssh.reconcile(state)
             self.run([ip, "link", "set", "up", "dev", WORKSTATION_IFACE])
-            if not interface_present:
-                self.diagnostic_interface_up = True
-                for diagnostic_id in workstation_ids:
-                    self.diagnostic(diagnostic_id, "interface.established", listen_port=state["listen_port"])
+            for item in state["workstations"]:
+                if item.get("locked"):
+                    self.run([ip, "link", "set", "up", "dev", self.locked_interface(item)])
+            for interface, present in interfaces.items():
+                if not present:
+                    self.diagnostic_interface_up = True
+                    for diagnostic_id in workstation_ids:
+                        self.diagnostic(diagnostic_id, "interface.established", listen_port=state["listen_port"])
             if self.integration != previous_integration:
                 for diagnostic_id in workstation_ids:
                     self.diagnostic(diagnostic_id, "firewall.integration", state=self.integration["state"],
@@ -1383,18 +2386,147 @@ class Broker:
                 if diagnostic_id not in self.diagnostic_active_peers:
                     self.diagnostic(diagnostic_id, "peer.admitted", access="web+ssh" if item.get("ssh") is True else "web")
             self.diagnostic_active_peers = active_ids
+            self.reconcile_session_servers(state)
             self.workstation_error = ""
         except (BrokerError, ssh.SshError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
             category = "firewall-integration" if self.integration.get("state") == "error" else "workstation-enforcement"
             for diagnostic_id in workstation_ids:
                 self.diagnostic(diagnostic_id, "broker.error", category=category)
             try:
-                self.teardown_workstations()
+                self.teardown_workstations(state)
             except (BrokerError, OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as cleanup_error:
                 self.workstation_cleanup_failed = True
                 self.workstation_error = "Workstation cleanup could not be confirmed: " + (str(cleanup_error) if isinstance(cleanup_error, BrokerError) else "network operation failed.")
                 raise BrokerError(self.workstation_error) from error
             self.workstation_error = "Workstation access could not be applied and was removed: " + (str(error) if isinstance(error, BrokerError) else "network configuration failed.")
+            raise BrokerError(self.workstation_error) from error
+
+    def apply_workstations_preserving(self, state):
+        """Reconcile peer and policy changes without taking unrelated interfaces down."""
+        previous = read_json(STATE / "workstations.json")
+        previous_sessions = self.active_sessions()
+        previous_by_id = {item["id"]: item for item in previous.get("workstations", []) if isinstance(item, dict)}
+        current_by_id = {item["id"]: item for item in state.get("workstations", [])}
+        changed_ids = {
+            workstation_id for workstation_id in set(previous_by_id) | set(current_by_id)
+            if previous_by_id.get(workstation_id, {}).get("locked") != current_by_id.get(workstation_id, {}).get("locked")
+            or previous_by_id.get(workstation_id, {}).get("sources") != current_by_id.get(workstation_id, {}).get("sources")
+        }
+        sessions = {key: value for key, value in previous_sessions.items()
+                    if key in current_by_id and key not in changed_ids}
+        self.save_active_sessions(sessions)
+        established = set()
+        try:
+            if state["subnet"] is None:
+                state["subnet"] = self.choose_subnet()
+            if state["listen_port"] is None:
+                state["listen_port"] = 51821
+            self.start_monitor()
+            expected = self.expected_policy(state)
+            self.mutate_policy(expected, self.owned_table())
+            if not policy_equal(self.owned_table(), expected):
+                raise BrokerError("Workstation firewall differs from the complete expected policy.")
+
+            ip, wg = self.tool("ip"), self.tool("wg")
+            if self.link_state() is None:
+                self.run([ip, "link", "add", "dev", WORKSTATION_IFACE, "type", "wireguard"])
+                established.add(WORKSTATION_IFACE)
+            self.server_public_key()
+            self.run([wg, "set", WORKSTATION_IFACE, "listen-port", str(state["listen_port"]),
+                      "private-key", str(ENROLLMENT / "workstation-wg.key")])
+            shared_network = ipaddress.IPv4Network(state["subnet"])
+            self.run([ip, "address", "replace", str(shared_network[1]) + "/" + str(shared_network.prefixlen),
+                      "dev", WORKSTATION_IFACE])
+
+            shared_peers = {}
+            for item in state["workstations"]:
+                routes = []
+                if not item.get("locked"):
+                    routes.append(item["address"])
+                migration = item.get("migration")
+                if migration and not migration.get("locked"):
+                    routes.append(migration["address"])
+                if routes:
+                    shared_peers[item["public_key"]] = ",".join(sorted(set(routes)))
+            for peer in (self.run([wg, "show", WORKSTATION_IFACE, "peers"]) or "").split():
+                if peer not in shared_peers:
+                    self.run([wg, "set", WORKSTATION_IFACE, "peer", peer, "remove"])
+            for key, address in shared_peers.items():
+                self.run([wg, "set", WORKSTATION_IFACE, "peer", key, "allowed-ips", address])
+
+            desired_interfaces = set()
+            listener_ports = [state["listen_port"]]
+            for item in state["workstations"]:
+                configurations = []
+                if item.get("locked"):
+                    configurations.append(item)
+                migration = item.get("migration")
+                if migration and migration.get("locked") and (
+                        not item.get("locked") or migration["listener_port"] != item.get("listener_port")):
+                    configurations.append({"id": item["id"], "subnet": migration["subnet"],
+                                           "pbx_address": migration["pbx_address"],
+                                           "address": migration["address"],
+                                           "listener_port": migration["listener_port"]})
+                for configuration in configurations:
+                    interface = self.locked_interface(configuration)
+                    desired_interfaces.add(interface)
+                    subnet = ipaddress.IPv4Network(configuration["subnet"])
+                    if self.link_state(interface) is None:
+                        self.run([ip, "link", "add", "dev", interface, "type", "wireguard"])
+                        established.add(interface)
+                    self.run([wg, "set", interface, "listen-port", str(configuration["listener_port"]),
+                              "private-key", str(ENROLLMENT / "workstation-wg.key")])
+                    self.run([ip, "address", "replace", str(subnet[1]) + "/" + str(subnet.prefixlen), "dev", interface])
+                    peers = (self.run([wg, "show", interface, "peers"]) or "").split()
+                    for peer in peers:
+                        if peer != item["public_key"]:
+                            self.run([wg, "set", interface, "peer", peer, "remove"])
+                    self.run([wg, "set", interface, "peer", item["public_key"],
+                              "allowed-ips", configuration["address"]])
+                    listener_ports.append(configuration["listener_port"])
+
+            for old_item in previous.get("workstations", []):
+                if not isinstance(old_item, dict):
+                    continue
+                if old_item.get("locked") or old_item.get("migration", {}).get("locked"):
+                    interface = self.locked_interface(old_item)
+                    if interface not in desired_interfaces and self.link_state(interface) is not None:
+                        self.run([ip, "link", "del", "dev", interface])
+                        if self.link_state(interface) is not None:
+                            raise BrokerError("A retired dedicated workstation interface could not be removed.")
+
+            if not self.monitor.alive() or not policy_equal(self.owned_table(), expected):
+                raise BrokerError("Workstation enforcement could not be verified before admission.")
+            self.reconcile_integration(state)
+            self.reconcile_listener(listener_ports)
+            self.ssh.reconcile(state)
+            self.run([ip, "link", "set", "up", "dev", WORKSTATION_IFACE])
+            for interface in desired_interfaces:
+                self.run([ip, "link", "set", "up", "dev", interface])
+            self.reconcile_session_servers(state)
+            for interface in established:
+                self.diagnostic_interface_up = True
+                for item in state["workstations"]:
+                    self.diagnostic("ws-" + item["id"], "interface.established", listen_port=
+                                    item.get("listener_port", state["listen_port"]))
+            self.workstation_error = ""
+        except (BrokerError, ssh.SshError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+            # Revoke only identities whose policy changed; unrelated interfaces and
+            # leases remain untouched if an update cannot be verified.
+            affected = set(changed_ids) | (set(previous_by_id) - set(current_by_id))
+            for workstation_id in affected:
+                old_item = previous_by_id.get(workstation_id, {})
+                new_item = current_by_id.get(workstation_id, {})
+                for item in (old_item, new_item):
+                    key = item.get("public_key")
+                    if not isinstance(key, str):
+                        continue
+                    for interface in (WORKSTATION_IFACE,
+                                      self.locked_interface(item) if item.get("locked") else None):
+                        if interface is not None and self.link_state(interface) is not None:
+                            self.run([self.tool("wg"), "set", interface, "peer", key, "remove"], check=False)
+            self.workstation_error = "Workstation policy update could not be verified; affected access was removed and cleanup requires retry: " + (
+                str(error) if isinstance(error, BrokerError) else "network configuration failed.")
             raise BrokerError(self.workstation_error) from error
 
     def restore_workstations(self):
@@ -1414,6 +2546,7 @@ class Broker:
 
     def expire_workstations(self):
         with self.wslock:
+            self.expire_sessions()
             event = self.enforcement_event.is_set()
             if event:
                 self.enforcement_event.clear()
@@ -1425,19 +2558,29 @@ class Broker:
                            and item["expires_at"] <= now]
             try:
                 state, changed = self.workstation_state()
-                if state["workstations"]:
+                active = state["connection_state"] != "closed" and not (STATE / "disabled").exists()
+                if active:
                     if self.monitor is None or not self.monitor.alive():
                         raise BrokerError("Workstation nft monitor is unavailable; access disabled. Restart the broker.")
                     actual = self.owned_table()
                     try:
                         matches = actual is not None and policy_equal(actual, self.expected_policy(state))
+                        matches_with_expired_bans = actual is not None and policy_equal(
+                            actual, self.expected_policy(state, include_expired_bans=True))
                     except (BrokerError, KeyError, TypeError):
-                        matches = False
+                        matches = matches_with_expired_bans = False
                     if not matches:
-                        event = True
-                link = self.link_state() if state["workstations"] else None
+                        if matches_with_expired_bans:
+                            self.reconcile_policy_only(state)
+                        else:
+                            event = True
+                interfaces = [WORKSTATION_IFACE] + [self.locked_interface(item) for item in state["workstations"]
+                                                    if item.get("locked")]
+                links_ready = active and all(
+                    (link := self.link_state(interface)) is not None and "UP" in link["flags"]
+                    for interface in interfaces)
                 if changed or event or (STATE / "disabled").exists() or (
-                        state["workstations"] and (link is None or "UP" not in link["flags"])):
+                        active and not links_ready):
                     self.apply_workstations(state)
                     if changed:
                         self.save_workstations(state)
@@ -1445,14 +2588,13 @@ class Broker:
                         for diagnostic_id in expired_ids:
                             self.diagnostic_observations.pop(diagnostic_id, None)
                             self.diagnostic(diagnostic_id, "pairing.expired", reason="deadline")
-                elif state["workstations"]:
-                    link = self.link_state()
-                    if link is not None and "UP" in link["flags"]:
-                        # Repairs a FreePBX Firewall reload without re-admitting peers; a no-op when already exact.
-                        self.reconcile_integration(state)
-                        self.reconcile_listener(state["listen_port"])
-                        if any(ssh.managed(item) for item in state["workstations"]):
-                            self.ssh.reconcile(state)
+                elif active and links_ready:
+                    # Repairs a FreePBX Firewall reload without re-admitting peers; a no-op when already exact.
+                    self.reconcile_integration(state)
+                    self.reconcile_listener([state["listen_port"]] + [item["listener_port"] for item in state["workstations"]
+                                                                      if item.get("locked")])
+                    if any(ssh.managed(item) for item in state["workstations"]):
+                        self.ssh.reconcile(state)
             except (BrokerError, ssh.SshError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
                 self.workstation_error = str(error)
                 try:
@@ -1465,13 +2607,14 @@ class Broker:
         if (STATE / "disabled").exists():
             raise BrokerError("TELIPHONES is disabled; workstation pairing is unavailable.")
         pairing = parse_pair_request(request["request"])
-        if pairing["schema"] == "teliphones-pair-request/2" and request["ssh"] == "1":
-            try:
-                self.ssh.initialise()
-                self.ssh.host_key()
-            except (ssh.SshError, OSError, subprocess.SubprocessError) as error:
-                raise BrokerError("Managed SSH is unavailable: " + str(error)) from error
+        state, _ = self.workstation_state()
+        existing = next((item for item in state["workstations"] if item["public_key"] == pairing["public_key"]), None)
+        if state["connection_state"] == "frozen" and existing is None:
+            raise BrokerError("New workstation pairings are suspended while TELIPHONES is Frozen.")
+        if pairing["schema"] != "teliphones-pair-request/2" and request["ssh"] == "1":
+            raise BrokerError("This pairing request did not include SSH capability; request SSH from the Windows application first.")
         host, port = endpoint_host(request["endpoint_host"]), int(request["listen_port"])
+        requested_sources = parse_source_restrictions(request.get("sources", ""))
         for name in TOOLS:
             self.tool(name)
         stored = read_json(STATE / "workstations.json")
@@ -1480,7 +2623,6 @@ class Broker:
                        if isinstance(item, dict) and re.fullmatch(r"[a-f0-9]{16}", str(item.get("id", "")))
                        and item.get("mode") != "persistent" and isinstance(item.get("expires_at"), int)
                        and item["expires_at"] <= now]
-        state, _ = self.workstation_state()
         previous = json.loads(json.dumps(state))
         if state["workstations"] and state["listen_port"] != port:
             raise BrokerError("Paired workstations already use UDP port %d. Use the same port, or revoke all workstations first." % state["listen_port"])
@@ -1489,33 +2631,67 @@ class Broker:
         state["listen_port"] = port
         if isinstance(request.get("web"), str) and request["web"].strip():
             state["web"] = parse_web(request["web"])
-        network = ipaddress.IPv4Network(state["subnet"])
         existing = next((item for item in state["workstations"] if item["public_key"] == pairing["public_key"]), None)
+        if existing and existing.get("locked") and not requested_sources:
+            requested_sources = existing["sources"]
+        locked = bool(requested_sources)
+        if pairing["schema"] == "teliphones-pair-request/2" and request["ssh"] == "1":
+            try:
+                self.ssh.initialise()
+                self.ssh.host_key()
+            except (ssh.SshError, OSError, subprocess.SubprocessError) as error:
+                raise BrokerError("Managed SSH is unavailable: " + str(error)) from error
+        network = ipaddress.IPv4Network(state["subnet"])
         if existing:
             state["workstations"].remove(existing)
+        if locked:
+            if existing and existing.get("locked"):
+                station_subnet = existing["subnet"]
+                station_port = existing["listener_port"]
+            else:
+                reserved = [str(network)]
+                reserved.extend(item["subnet"] for item in state["workstations"] if item.get("locked"))
+                station_subnet = self.choose_subnet(reserved)
+                station_port = self.locked_listener_port({"id": existing["id"] if existing else secrets.token_hex(8)},
+                                                         state["workstations"], port)
+            station_network = ipaddress.IPv4Network(station_subnet)
+            address = str(station_network[2]) + "/32"
+            pbx_address = str(station_network[1])
+        elif existing and not existing.get("locked"):
             address = existing["address"]
+            station_subnet = None
+            station_port = None
+            pbx_address = str(network[1])
         else:
             taken = {item["address"] for item in state["workstations"]}
             free = [str(host_address) + "/32" for host_address in list(network.hosts())[1:] if str(host_address) + "/32" not in taken]
             if not free:
                 raise BrokerError("No workstation addresses remain; revoke unused workstations first.")
             address = free[0]
+            station_subnet = None
+            station_port = None
+            pbx_address = str(network[1])
         now = int(time.time())
-        entry = {"id": existing["id"] if existing and pairing["schema"] == "teliphones-pair-request/1" else secrets.token_hex(8),
+        workstation_id = existing["id"] if existing and pairing["schema"] == "teliphones-pair-request/1" else secrets.token_hex(8)
+        entry = {"id": workstation_id,
                  "name": pairing["workstation"], "public_key": pairing["public_key"],
                  "address": address, "mode": request["mode"], "ssh": request["ssh"] == "1", "created_at": now,
-                 "expires_at": now + int(request["minutes"]) * 60 if request["mode"] == "temporary" else None}
+                 "expires_at": now + int(request["minutes"]) * 60 if request["mode"] == "temporary" else None,
+                 "locked": locked}
+        if locked:
+            entry.update(sources=requested_sources, subnet=station_subnet, pbx_address=pbx_address,
+                         listener_port=station_port)
         if pairing["schema"] == "teliphones-pair-request/2" and entry["ssh"]:
             entry.update(ssh_public_key=pairing["ssh_public_key"], ssh_user=request["ssh_user"])
             try:
-                self.ssh.account_policy(entry, str(network[1]))
+                self.ssh.account_policy(entry, entry.get("pbx_address", str(network[1])))
                 if existing and existing["id"] in self.ssh.active:
                     self.ssh.stop(existing["id"], "rotation")
             except (ssh.SshError, OSError, subprocess.SubprocessError) as error:
                 raise BrokerError("Managed SSH account authorisation failed: " + str(error)) from error
         state["workstations"].append(entry)
         try:
-            self.apply_workstations(state)
+            self.apply_workstations(state, preserve_unrelated=True)
             pbx_public = self.server_public_key()
             self.save_workstations(state)
         except (BrokerError, OSError, subprocess.SubprocessError) as error:
@@ -1523,10 +2699,9 @@ class Broker:
                 atomic(STATE / "workstation-recovery.json", json.dumps(state, indent=2, sort_keys=True))
                 raise
             try:
-                self.apply_workstations(previous)
+                self.apply_workstations(previous, preserve_unrelated=bool(previous.get("workstations")))
             except (BrokerError, OSError, subprocess.SubprocessError) as rollback_error:
-                self.disable_workstations()
-                self.workstation_error = "Pairing rollback failed: " + str(rollback_error)
+                self.workstation_error = "Pairing rollback failed; affected access remains blocked and recovery requires retry: " + str(rollback_error)
                 raise BrokerError(self.workstation_error) from error
             raise
         for diagnostic_id in expired_ids:
@@ -1536,11 +2711,10 @@ class Broker:
         self.diagnostic(diagnostic_id, "pairing.approved", mode=entry["mode"], expires_at=entry["expires_at"],
                         renewed=existing is not None)
         self.audit("pair", uid, "completed")
-        pbx_address = str(network[1])
         response = {"schema": "teliphones-pair-response/1", "nonce": pairing["nonce"], "workstation_id": entry["id"],
                     "workstation_public_key": entry["public_key"], "address": address, "pbx_address": pbx_address,
                     "pbx_name": re.sub(r"[^A-Za-z0-9._-]", "", socket.gethostname())[:64] or "FreePBX",
-                    "pbx_public_key": pbx_public, "endpoint": host + ":" + str(port), "mode": entry["mode"],
+                    "pbx_public_key": pbx_public, "endpoint": host + ":" + str(entry["listener_port"] if locked else port), "mode": entry["mode"],
                     "expires_at": entry["expires_at"], "ssh": entry["ssh"], "gui_url": gui_url(state["web"], pbx_address)}
         prefix = PAIR_RESPONSE_PREFIX
         if pairing["schema"] == "teliphones-pair-request/2":
@@ -1560,8 +2734,13 @@ class Broker:
         state["workstations"] = [] if request["workstation_id"] == "all" else [item for item in state["workstations"] if item["id"] != request["workstation_id"]]
         if len(state["workstations"]) == before and request["workstation_id"] != "all":
             raise BrokerError("Unknown workstation; it may already have been revoked or expired.")
-        self.apply_workstations(state)
+        self.apply_workstations(state, preserve_unrelated=True)
         self.save_workstations(state)
+        sessions = self.active_sessions()
+        sessions = {key: value for key, value in sessions.items()
+                    if key not in {identifier[3:] for identifier in revoked_ids}}
+        self.save_active_sessions(sessions)
+        self.reconcile_session_servers(state)
         for diagnostic_id in revoked_ids:
             self.diagnostic_observations.pop(diagnostic_id, None)
             self.diagnostic(diagnostic_id, "pairing.revoked", reason="administrator")
@@ -1575,7 +2754,7 @@ class Broker:
         state["web"] = web
         if state["workstations"]:
             try:
-                self.apply_workstations(state)
+                self.apply_workstations(state, preserve_unrelated=True)
                 self.save_workstations(state)
             except (BrokerError, OSError, subprocess.SubprocessError) as error:
                 if self.workstation_cleanup_failed:
@@ -1592,6 +2771,38 @@ class Broker:
             self.save_workstations(state)
         self.audit("web", uid, "completed")
         return web
+
+    def configure_workstation_policy(self, request, uid):
+        state, _ = self.workstation_state()
+        previous = json.loads(json.dumps(state))
+        previous_sessions = self.active_sessions()
+        state["connection_state"] = request["state"]
+        if state["connection_state"] == "closed":
+            self.save_active_sessions({})
+        if state["connection_state"] != "closed":
+            if state["subnet"] is None:
+                state["subnet"] = self.choose_subnet()
+            if state["listen_port"] is None:
+                state["listen_port"] = 51821
+        try:
+            self.save_workstations(state)
+            self.apply_workstations(state, preserve_unrelated=True)
+        except (BrokerError, OSError, subprocess.SubprocessError) as error:
+            try:
+                self.save_active_sessions(previous_sessions)
+                self.apply_workstations(previous)
+                self.save_workstations(previous)
+            except (BrokerError, OSError, subprocess.SubprocessError) as rollback_error:
+                try:
+                    self.disable_workstations()
+                except (BrokerError, OSError, subprocess.SubprocessError) as cleanup_error:
+                    self.workstation_error = "Connection policy change and rollback failed; cleanup is unverified: " + str(cleanup_error)
+                    raise BrokerError(self.workstation_error) from error
+                self.workstation_error = "Connection policy change failed and was rolled back: " + str(rollback_error)
+                raise BrokerError(self.workstation_error) from error
+            raise
+        self.audit("workstation-policy", uid, "completed")
+        return state["connection_state"]
 
     def observe_workstations(self, state, handshakes, transfers):
         now = time.monotonic()
@@ -1611,26 +2822,45 @@ class Broker:
 
     def workstation_status(self):
         state, _ = self.workstation_state()
+        leases = self.active_sessions()
+        paired_ids = {item["id"] for item in state["workstations"]}
+        leases = {key: value for key, value in leases.items() if key in paired_ids}
+        if state["connection_state"] == "closed" or (STATE / "disabled").exists():
+            leases = {}
         requirements = {name: any(os.access(path, os.X_OK) for path in paths) for name, paths in TOOLS.items()}
         handshakes = {}
+        endpoints = {}
         error = self.workstation_error
-        if (self.monitor is not None and not self.monitor.alive()) or (state["workstations"] and self.monitor is None):
+        active = state["connection_state"] != "closed" and not (STATE / "disabled").exists()
+        if (self.monitor is not None and not self.monitor.alive()) or (active and self.monitor is None):
             error = error or "Workstation nft monitor unavailable; access is being disabled. Restart the broker after repair."
-        if state["workstations"] and not error:
+        if active and not error:
             try:
-                output = self.run([self.tool("wg"), "show", WORKSTATION_IFACE, "latest-handshakes"])
-                for line in output.splitlines():
-                    key, timestamp = line.split()
-                    if not WG_PUBLIC_KEY.fullmatch(key) or not timestamp.isdigit():
-                        raise ValueError("Invalid WireGuard handshake status.")
-                    handshakes[key] = int(timestamp)
+                for interface in [WORKSTATION_IFACE] + [self.locked_interface(item) for item in state["workstations"]
+                                                         if item.get("locked")]:
+                    output = self.run([self.tool("wg"), "show", interface, "latest-handshakes"])
+                    for line in output.splitlines():
+                        key, timestamp = line.split()
+                        if not WG_PUBLIC_KEY.fullmatch(key) or not timestamp.isdigit():
+                            raise ValueError("Invalid WireGuard handshake status.")
+                        handshakes[key] = int(timestamp)
+                    output = self.run([self.tool("wg"), "show", interface, "endpoints"])
+                    for line in output.splitlines():
+                        fields = line.split(maxsplit=1)
+                        if len(fields) != 2 or not WG_PUBLIC_KEY.fullmatch(fields[0]):
+                            raise ValueError("Invalid WireGuard endpoint status.")
+                        endpoint = parse_wireguard_endpoint(fields[1])
+                        if endpoint is not None:
+                            endpoints[fields[0]] = endpoint
                 transfers = {}
                 try:
-                    output = self.run([self.tool("wg"), "show", WORKSTATION_IFACE, "transfer"])
-                    for line in output.splitlines():
-                        key, rx_bytes, tx_bytes = line.split()
-                        if WG_PUBLIC_KEY.fullmatch(key) and rx_bytes.isdigit() and tx_bytes.isdigit():
-                            transfers[key] = (int(rx_bytes), int(tx_bytes))
+                    for interface in [WORKSTATION_IFACE] + [self.locked_interface(item) for item in state["workstations"]
+                                                             if item.get("locked")]:
+                        output = self.run([self.tool("wg"), "show", interface, "transfer"])
+                        for line in output.splitlines():
+                            key, rx_bytes, tx_bytes = line.split()
+                            if WG_PUBLIC_KEY.fullmatch(key) and rx_bytes.isdigit() and tx_bytes.isdigit():
+                                transfers[key] = (int(rx_bytes), int(tx_bytes))
                 except (BrokerError, OSError, ValueError, subprocess.SubprocessError):
                     transfers = {}
                 self.observe_workstations(state, handshakes, transfers)
@@ -1648,8 +2878,22 @@ class Broker:
         except (ssh.SshError, OSError, subprocess.SubprocessError) as failure:
             ssh_error = str(failure)
         pbx_address = str(ipaddress.IPv4Network(state["subnet"])[1]) if state["subnet"] and state["workstations"] else None
+        source_status = {}
+        for item in state["workstations"]:
+            if item.get("locked"):
+                effective, failed = resolve_source_restrictions(item["sources"], cache=self.source_cache)
+                source_status[item["id"]] = {"effective": effective, "failed": failed}
         return {"ready": all(requirements.values()) and not error and not (STATE / "disabled").exists(), "requirements": requirements, "error": error,
                 "ssh_ready": not ssh_error, "ssh_error": ssh_error,
+                "connection_state": state["connection_state"],
+                "max_sessions": state["max_sessions"],
+                "connected_workstations": len(leases),
+                "ssh_accounts": ssh.existing_accounts(),
+                "session_control_port": SESSION_CONTROL_PORT,
+                "bans": [{"id": ban["id"], "source": ban["source"], "reason": ban["reason"],
+                          "expires_at": ban["expires_at"],
+                          "active": ban["expires_at"] is None or ban["expires_at"] > int(time.time())}
+                         for ban in state["bans"]],
                 "listen_port": state["listen_port"],
                 "web": [{"scheme": entry["scheme"], "port": entry["port"],
                          "listening": web_listening(entry["port"], pbx_address)} for entry in state["web"]],
@@ -1662,7 +2906,21 @@ class Broker:
                            "ssh": item.get("ssh") is True, "ssh_managed": ssh.managed(item),
                            "ssh_user": item.get("ssh_user", ""), "ssh_port": ssh.port(item) if ssh.managed(item) else 0,
                            "created_at": item.get("created_at"), "expires_at": item.get("expires_at"),
+                           "locked": item.get("locked") is True,
+                           "ssh_request_pending": bool(item.get("ssh_request")),
+                           "unlock_request_pending": bool(item.get("unlock_request")),
+                           "sources_request_pending": bool(item.get("sources_request")),
+                           "requested_sources": item.get("sources_request", {}).get("sources", []),
+                           "sources": item.get("sources", []),
+                           "effective_sources": source_status.get(item["id"], {}).get("effective", []),
+                           "source_resolution_failures": source_status.get(item["id"], {}).get("failed", []),
+                           "listener_port": item.get("listener_port", state["listen_port"]),
+                           "migration_pending": bool(item.get("migration")),
+                           "migration_generation": item.get("migration", {}).get("id"),
+                           "verified_endpoint": endpoints.get(item["public_key"]) if handshakes.get(item["public_key"], 0) > 0 else None,
                            "last_handshake": handshakes.get(item["public_key"]),
+                           "session_active": item["id"] in leases,
+                           "session_expires_at": leases[item["id"]]["expires_at"] if item["id"] in leases else None,
                            "fingerprint": key_fingerprint(item["public_key"])} for item in state["workstations"]]}
 
     def configure(self, request):
@@ -1806,6 +3064,83 @@ class Broker:
                 web = self.configure_web(request, uid)
             return {"ok": True, "message": "Management web services set to %s. Workstation firewall permissions were "
                     "reconciled; already-paired workstations keep their saved GUI address until re-paired." % web_text(web)}
+        if action == "workstation-policy":
+            with self.wslock:
+                state = self.configure_workstation_policy(request, uid)
+            return {"ok": True, "message": "TELIPHONES workstation access is now %s." % state.capitalize()}
+        if action == "workstation-manage":
+            with self.wslock:
+                updated = self.manage_workstation(request, uid)
+            return {"ok": True, "workstation": updated,
+                    "message": "Workstation policy updated. The workstation keeps its identity; its tunnel must reconnect to the assigned listener."}
+        if action in ("workstation-ssh-approve", "workstation-ssh-reject", "workstation-ssh-revoke"):
+            ssh_operation = {"workstation-ssh-approve": "approve", "workstation-ssh-reject": "reject",
+                             "workstation-ssh-revoke": "revoke"}[action]
+            with self.wslock:
+                item = self.manage_workstation_ssh(request, uid, ssh_operation)
+            return {"ok": True, "workstation": {"id": item["id"], "ssh": item.get("ssh") is True},
+                    "message": {"approve": "Managed SSH elevation approved for the explicitly selected account.",
+                                "reject": "SSH elevation request rejected; existing web access is unchanged.",
+                                "revoke": "Managed SSH access revoked; existing web access is unchanged."}[ssh_operation]}
+        if action in ("workstation-unlock-approve", "workstation-unlock-reject"):
+            with self.wslock:
+                state, _ = self.workstation_state()
+                item = next((entry for entry in state["workstations"]
+                                        if entry["id"] == request["workstation_id"]), None)
+                if item is None or not item.get("unlock_request"):
+                                raise BrokerError("There is no pending unlock request for this workstation.")
+                if action == "workstation-unlock-approve":
+                                if item.get("migration"):
+                                    if item["migration"].get("locked"):
+                                        raise BrokerError("A different listener migration is pending; finish it before approving unlock.")
+                                    item.pop("unlock_request", None)
+                                    self.save_workstations(state)
+                                    updated = item
+                                else:
+                                    updated = self.manage_workstation(
+                                        {"workstation_id": item["id"], "state": "unlock", "sources": ""}, uid)
+                                    state, _ = self.workstation_state()
+                                    approved = next(entry for entry in state["workstations"] if entry["id"] == item["id"])
+                                    approved.pop("unlock_request", None)
+                                    self.save_workstations(state)
+                                message = "Workstation unlock approved; the existing identity will receive its updated tunnel configuration."
+                else:
+                                item.pop("unlock_request", None)
+                                self.save_workstations(state)
+                                updated = item
+                                message = "Workstation unlock request rejected; existing restrictions remain in force."
+            return {"ok": True, "workstation": {"id": updated["id"], "locked": updated.get("locked") is True},
+                                "message": message}
+        if action in ("workstation-sources-approve", "workstation-sources-reject"):
+            with self.wslock:
+                state, _ = self.workstation_state()
+                item = next((entry for entry in state["workstations"]
+                                        if entry["id"] == request["workstation_id"]), None)
+                if item is None or not item.get("sources_request"):
+                                raise BrokerError("There is no pending Allowed List request for this workstation.")
+                if action == "workstation-sources-approve":
+                                if item.get("migration"):
+                                    raise BrokerError("A listener migration is pending; finish it before approving Allowed List changes.")
+                                approved_sources = ", ".join(item["sources_request"]["sources"])
+                                updated = self.manage_workstation(
+                                    {"workstation_id": item["id"], "state": "lock", "sources": approved_sources}, uid)
+                                message = "Allowed List request approved and enforced for this workstation."
+                else:
+                                item.pop("sources_request", None)
+                                self.save_workstations(state)
+                                updated = item
+                                message = "Allowed List request rejected; existing restrictions remain in force."
+            return {"ok": True, "workstation": {"id": updated["id"], "locked": updated.get("locked") is True},
+                                "message": message}
+        if action == "workstation-limit":
+            with self.wslock:
+                maximum = self.configure_workstation_limit(request, uid)
+            return {"ok": True, "message": "Maximum simultaneous workstation connections set to %d." % maximum}
+        if action in ("workstation-ban", "workstation-unban"):
+            with self.wslock:
+                state = self.configure_ban(request, uid)
+            return {"ok": True, "message": "TELIPHONES ban list updated.",
+                    "bans": state["bans"]}
         if action == "revoke":
             self.cancel.set()
             self.revoking = True
@@ -1858,6 +3193,7 @@ def serve():
         raise SystemExit("TELIPHONES state directory must be root-owned and private.")
     broker = Broker()
     def stop(signum, frame):
+        broker.stop_session_servers()
         with broker.wslock:
             broker.teardown_workstations()
         if broker.monitor is not None:
@@ -1878,7 +3214,14 @@ def serve():
         broker.start_monitor()
     except (BrokerError, OSError):
         broker.workstation_error = "Workstation nft monitor unavailable; pairing cannot be admitted."
+    broker.save_active_sessions({})
     broker.restore_workstations()
+    broker.session_server_enabled = True
+    try:
+        broker.reconcile_session_servers()
+    except (OSError, BrokerError) as error:
+        broker.workstation_error = "Private workstation session-control listener could not start: " + str(error)
+        broker.disable_workstations()
 
     def expiry():
         while True:
@@ -1897,6 +3240,21 @@ def serve():
                 return
             # A dead stream sets the event once; do not spin indefinitely on failure.
     threading.Thread(target=expiry, daemon=True).start()
+
+    def lease_expiry():
+        while True:
+            broker.lease_wake.wait(1)
+            broker.lease_wake.clear()
+            try:
+                broker.expire_sessions()
+            except (BrokerError, OSError, subprocess.SubprocessError) as error:
+                broker.workstation_error = "Workstation session lease enforcement failed: " + str(error)
+                try:
+                    broker.disable_workstations()
+                except (BrokerError, OSError, subprocess.SubprocessError) as cleanup_error:
+                    broker.workstation_error += " Cleanup unverified: " + str(cleanup_error)
+                return
+    threading.Thread(target=lease_expiry, daemon=True).start()
     Path("/run/teliphones").mkdir(mode=0o750, exist_ok=True)
     if Path("/run/teliphones").is_symlink() or Path("/run/teliphones").stat().st_uid != 0:
         raise SystemExit("TELIPHONES socket directory must be root-owned.")

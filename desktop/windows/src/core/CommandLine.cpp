@@ -73,17 +73,20 @@ bool IsSid(const std::string& text) {
 }
 
 std::vector<std::string> HelperArguments(const HelperCommand& command) {
-    if (command.verb == HelperCommand::Verb::TunnelUp) return {"/tunnel-up", command.tunnelName, command.stagingPath, command.userSid};
+    if (command.verb == HelperCommand::Verb::TunnelUp) return {"/tunnel-up", command.tunnelName, command.stagingPath, command.userSid, command.keyPipe};
     return {"/tunnel-down", command.tunnelName};
 }
 
 HelperCommand ParseHelperArguments(const std::vector<std::string>& arguments) {
     HelperCommand command;
-    if (arguments.size() == 4 && arguments[0] == "/tunnel-up") {
+    if (arguments.size() == 5 && arguments[0] == "/tunnel-up") {
         command.verb = HelperCommand::Verb::TunnelUp;
         command.tunnelName = arguments[1];
         command.stagingPath = arguments[2];
         command.userSid = arguments[3];
+        command.keyPipe = arguments[4];
+        if (command.keyPipe.size() != 32 || command.keyPipe.find_first_not_of("0123456789abcdef") != std::string::npos)
+            throw Error("Invalid tunnel key pipe.");
         std::string expectedName = "\\" + command.tunnelName + ".conf";
         const std::string& path = command.stagingPath;
         bool absolute = path.size() > 3 && ((path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z')) && path[1] == ':' && path[2] == '\\';

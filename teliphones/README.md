@@ -1,31 +1,29 @@
 # TELIPHONES for FreePBX 17: module guide
 
 Approve private access to your PBX from the FreePBX interface. TELIPHONES
-**0.5.0** pairs Windows workstations over WireGuard, with web access and,
+**0.6.0** pairs Windows workstations over WireGuard, with web access and,
 when explicitly approved, temporary SSH certificates for an existing account.
 This is the authoritative guide to installing, upgrading and operating the
 FreePBX module and its separately installed root broker.
 
 **TELIPHONES is a UK registered trademark.**
 
-**TELIPHONES 0.5.0 for FreePBX is licensed under GPLv3.**
+**TELIPHONES 0.6.0 for FreePBX is licensed under GPLv3.**
 
 The software grant is GPL version 3 or later; the product footer uses the
 GPLv3 wording above. Software licensing does not grant trademark rights.
 See [Licence](#licence).
 
 > [!WARNING]
-> **Experimental; not currently suitable for production.** Initial live
-> Windows-to-FreePBX SSH and client-side disconnect behaviour are
-> operator-reported successes, alongside ten passing native SSH tests.
-> They do not establish complete server-side revocation, expiry, systemd/cgroup
-> teardown or recovery. The **0.4.1 firewall placement correction and the 0.5.0
-> WireGuard listener and management-port corrections remain unvalidated on
-> the real PBX**. Use a disposable system and retain an independent root/console
-> route. See [current verification status](#current-verification-status).
+> **Experimental; not currently suitable for production.** Local gateway,
+> FreePBX and portable Windows-core regressions pass. Native Windows compilation,
+> MFC/Windows service integration and live FreePBX session-admission, migration,
+> firewall, password-protection and SSH acceptance have not been performed in
+> this environment. Use a disposable system and retain an independent
+> root/console route. See [current verification status](#current-verification-status).
 
 > [!IMPORTANT]
-> **0.4.0 and 0.4.1 installations need the 0.5.0 upgrade and root broker refresh.**
+> **0.4.x and 0.5.0 installations need the 0.6.0 upgrade and root broker refresh.**
 > FreePBX reported TELIPHONES' 0.4.0 rule above its INPUT hook as intrusive and
 > repeatedly rebuilt iptables, approximately every 41 seconds in the observed
 > incident, coinciding with intermittent connectivity. Version 0.4.1 moved the
@@ -35,18 +33,21 @@ See [Licence](#licence).
 > blocked handshakes, but packet capture alone cannot identify the dropping rule.
 > Earlier successes could have depended on trusted networks, existing services,
 > reset windows or established UDP tracking; none is confirmed. Version 0.5.0
-> registers one persistent FreePBX Custom Service for the listener, leaving
-> generated UDP rules to FreePBX (WireGuard's cryptography authenticates
-> peers; workstation public IP addresses are never whitelisted) and configurable
-> management web services. Local regressions pass, but real watchdog validation
-> is outstanding. Uploading the new module alone does not prove that the
+> registers the shared and any dedicated listener ports as persistent FreePBX
+> Custom Services, leaving generated UDP rules to FreePBX. Unlocked workstations
+> may roam without public-IP allowlists; optional Locked pairings use dedicated
+> interfaces and source-specific IP/CIDR/domain rules. WireGuard cryptography
+> authenticates each peer. Version 0.6.0 adds persisted Open, Closed and Frozen
+> states, atomic session leases, post-pair policy requests and identity-preserving
+> listener migration. Local regressions pass, but live watchdog and native
+> Windows validation remain outstanding. Uploading the new module alone does not prove that the
 > installed root broker changed. [Repeat the root bootstrap and verify
-> its files/version](#updating-teliphones), even if protocol 5 is already shown.
+> its files/version](#updating-teliphones), even if protocol 6 is already shown.
 > **Do not disable FreePBX Firewall or enable Custom Rules as a workaround.**
 
 ## Secure Administration Without Exposing Your PBX
 
-With independently versioned **Windows 0.7.0**, administrators use **My PBXs**
+With independently versioned **Windows 0.8.0**, administrators use **My PBXs**
 to connect their own paired workstations. **Remote Support** is a separate,
 customer-authorised, time-limited workflow for enrolled MSP engineers.
 Neither replaces normal FreePBX sign-in or creates Linux accounts.
@@ -147,10 +148,10 @@ TELIPHONES is a community module and is not listed in the FreePBX online module 
 
 ### Install through Module Admin (recommended)
 
-1. Obtain `TELIPHONES-0.5.0.tgz` and its SHA-256 checksum from a trusted source, then verify the archive:
+1. Obtain `TELIPHONES-0.6.0.tgz` and its SHA-256 checksum from a trusted source, then verify the archive:
 
    ```bash
-   sha256sum -c TELIPHONES-0.5.0.tgz.sha256
+   sha256sum -c TELIPHONES-0.6.0.tgz.sha256
    ```
 
 2. In FreePBX, open **Admin > Module Admin**, choose **Upload modules**, and upload the archive.
@@ -257,7 +258,7 @@ Update TELIPHONES in place. Do not uninstall the module first: uninstalling remo
 
 ### After upgrading TELIPHONES
 
-A Module Admin upgrade updates the FreePBX module files but does not necessarily update the separately installed, root-owned broker. TELIPHONES 0.5.0 requires broker protocol 6 and both `/usr/local/lib/teliphones-broker/support_broker.py` and `/usr/local/lib/teliphones-broker/ssh_authority.py`; an older broker or a missing SSH helper cannot provide managed SSH. Confirm that no support session is active (as root: `fwconsole teliphones status`), disconnect Windows tunnels and expect existing TELIPHONES-managed SSH sessions to terminate, then rerun the root bootstrap from an existing root shell. The bootstrap retains the previous helper files and broker unit, validates the installed helpers, and enables and restarts `teliphones-broker.service`. Verify that service is active, `/run/teliphones/control.sock` exists, and the refreshed Connectivity > TELIPHONES page reports the current broker and managed SSH readiness. On failure, rollback attempts to restore prior files and the previous enabled/active state; an incomplete rollback is an error requiring recovery from the existing root shell. Do not restart, reconfigure or disable the normal system SSH service or change administrator accounts. Valid pairings retain their original deadlines; legacy SSH pairings need explicit re-pairing for managed SSH.
+A Module Admin upgrade updates the FreePBX module files but does not necessarily update the separately installed, root-owned broker. TELIPHONES 0.6.0 requires broker protocol 12 and both `/usr/local/lib/teliphones-broker/support_broker.py` and `/usr/local/lib/teliphones-broker/ssh_authority.py`; an older broker or a missing SSH helper cannot provide managed SSH, connection-state policy, source-locked pairing, post-pair workstation policy, identity-preserving listener migration, Windows policy requests, post-pair SSH elevation, manual listener bans or enforced workstation session limits. Confirm that no support session is active (as root: `fwconsole teliphones status`), disconnect Windows tunnels and expect existing TELIPHONES-managed SSH sessions to terminate, then rerun the root bootstrap from an existing root shell. The bootstrap retains the previous helper files and broker unit, validates the installed helpers, and enables and restarts `teliphones-broker.service`. Verify that service is active, `/run/teliphones/control.sock` exists, and the refreshed Connectivity > TELIPHONES page reports the current broker and managed SSH readiness. On failure, rollback attempts to restore prior files and the previous enabled/active state; an incomplete rollback is an error requiring recovery from the existing root shell. Do not restart, reconfigure or disable the normal system SSH service or change administrator accounts. Valid pairings retain their original deadlines and cryptographic identities during listener migration.
 
 Protocol 5 identifies the certificate endpoint and managed SSH contract shared
 by 0.4.0 and 0.4.1; it does not identify the firewall correction.
@@ -269,7 +270,7 @@ and repair the TELIPHONES installation from that shell rather than removing the
 module or changing the normal SSH service. Actual Debian 12 / FreePBX 17
 systemd upgrade, failure recovery and uninstall validation remains a release gate.
 
-For the 0.5.0 firewall corrections, rerun the bootstrap even if an older
+For current 0.6.0 corrections, rerun the bootstrap even if an older
 protocol was already reported. It copies all three current module helpers into the
 separately installed root-owned broker directory and restarts the service.
 Afterward, compare the installed files to the module files from a root shell:
@@ -282,10 +283,11 @@ grep '^VERSION = ' /usr/local/lib/teliphones-broker/support_broker.py
 systemctl show teliphones-broker.service -p ActiveState -p MainPID -p ExecMainStartTimestamp
 ```
 
-All three `cmp` commands must succeed and the installed broker must declare `0.5.0`.
+All three `cmp` commands must succeed and the installed broker must declare `0.6.0`.
 Confirm the process started after bootstrap, then verify no TELIPHONES jump
-remains in INPUT and exactly one interface-scoped marked jump
-exists inside `fpbxfirewall`. Verify the managed UDP Custom Service and its
+remains in INPUT and exactly one marked jump exists inside
+`fpbxfirewall`. Verify that every TELIPHONES ACCEPT rule in the owned chain
+is scoped to the expected interface, peer and PBX addresses. Verify the managed UDP Custom Service and its
 generated zone rule separately; FreePBX applies service changes asynchronously.
 Keep the independent root shell open throughout these checks.
 
@@ -315,7 +317,7 @@ It does not require the reference gateway, Checker or any external service.
 - The broker is operational and current: **Windows workstations** is visible, and **Root broker update required** is not shown.
 - `wg`, `ip` and `nft` are available. If any are missing, **Windows workstations** lists them. **Approve installation of WireGuard tools** installs `wg`; `iproute2` and `nftables` must be installed by a root administrator.
 - You are signed in to FreePBX as a full administrator **over HTTPS**.
-- The PBX's WireGuard UDP port (default `51821`) is reachable from the workstation. If the PBX is behind NAT, the external UDP port must forward to the same PBX listener port and the router must permit it; TELIPHONES does not configure routers. The broker itself permits the listener through the PBX host firewall (FreePBX Firewall integration) while workstations are paired. Workstations may connect from **any** public address: WireGuard key authentication admits only paired peers, and workstation public IP addresses are never whitelisted. Do **not** publish TCP 22, 80 or 443 for this purpose.
+- The PBX's WireGuard UDP port (default `51821`) is reachable from the workstation. If the PBX is behind NAT, the external UDP port must forward to the same PBX listener port and the router must permit it; TELIPHONES does not configure routers. The broker permits shared and dedicated listener ports through FreePBX Firewall. Unlocked workstations may connect from any public address; a Locked pairing is restricted to its administrator-approved IPv4/IPv6 addresses, CIDRs or domains on a dedicated listener. Do **not** publish TCP 22, 80 or 443 for this purpose.
 
 ### 1. Prepare the workstation
 
@@ -336,11 +338,11 @@ Keep the **Pair my PBX** dialog open. The response will be bound to this request
 
 1. In **Connectivity > TELIPHONES > Windows workstations**, expand **Pair a workstation**.
 2. Paste the request into **Pairing request from the Windows application**.
-3. Enter the **PBX public hostname or IP address** that the workstation uses to reach WireGuard, and the **WireGuard UDP port on the PBX**. All pairings on a PBX share one port. To change it, revoke all workstations first.
+3. Enter the **PBX public hostname or IP address** that the workstation uses to reach WireGuard, and the **shared WireGuard UDP port on the PBX**. Unlocked pairings use this port. If you enter one or more sources in **Lock this workstation to approved IPs/domains**, the broker allocates a dedicated port/interface for that workstation and includes the port in its pairing response. The administrator/router must permit and, where applicable, forward each dedicated UDP port as well as the shared listener.
 4. Choose the access period:
    - **Temporary**, with a **Temporary pairing duration** of 60, 240, 480 or 1440 minutes; or
    - **Persistent trusted workstation (until revoked)**.
-5. Choose **SSH access through the tunnel**. Leave **Not permitted** for GUI-only requests. An SSH-capable request requires explicitly selecting **Authorise SSH for this workstation** and an existing Linux account; there is no default account or implicit root. Windows 0.7.0 generates a separate DPAPI-protected workstation identity for SSH opt-in, not a reusable session private-key file.
+5. Choose **SSH access through the tunnel**. Leave **Not permitted** for GUI-only requests. An SSH-capable request requires explicitly selecting **Authorise SSH for this workstation** and an existing Linux account; there is no default account or implicit root. Windows 0.8.0 offers explicit **Web access** and **Web + SSH access** request choices; an SSH identity is generated only for the latter. For a Locked pairing, the managed SSH listener and certificate API are bound to that workstation's dedicated interface and tunnel address, with firewall permits scoped to its peer identity.
 6. Select **Pair workstation**. Compare the key fingerprint shown on the PBX with the one shown in the Windows dialog. They must match.
 
 ### 4. Complete pairing on Windows
@@ -824,7 +826,7 @@ Never include private keys, credentials, pairing requests or responses, gateway 
 
 TELIPHONES is a UK registered trademark.
 
-TELIPHONES 0.5.0 for FreePBX is licensed under GPLv3.
+TELIPHONES 0.6.0 for FreePBX is licensed under GPLv3.
 
 The software grant is **GPL version 3 or, at your option, any later version
 (GPL-3.0-or-later)**, expressed as `GPLv3+` in module metadata. The product
@@ -849,7 +851,7 @@ The human contributor remains solely responsible for the contribution. AI tools 
 
 ## Release History
 
-The complete [FreePBX module change history](docs/CHANGELOG.md) is bundled with the module. Proposed version 0.5.0 manages the WireGuard listener service and adds configurable management web services. Windows retains its unreleased 0.7.0 development target; use an updated build for custom HTTP/HTTPS ports. Neither product has been released from this working tree.
+The complete [FreePBX module change history](docs/CHANGELOG.md) is bundled with the module. Version 0.6.0 adds persisted Open/Closed/Frozen connection states and builds on 0.5.0's managed WireGuard listener and configurable management web services. Windows is independently versioned at 0.8.0; use an updated build for the pairing access selector and copy feedback. Neither product has been released from this working tree.
 
 ### Non-standard management ports
 
@@ -865,9 +867,11 @@ redirects from an authorised peer. A listening socket alone is not proof.
 The [historical root-cause report and read-only live-PBX verification procedure](docs/CONNECTIVITY-REGRESSION.md)
 describe confirmed evidence, hypotheses and outstanding release gates.
 Do not install an earlier review archive expecting these source changes.
-The root-level `TELIPHONES-0.5.0.tgz`
-and checksum are a locally validated test installation, not production certification.
-Use the checksum shipped with that exact archive.
+The historical root-level `TELIPHONES-0.5.0.tgz` and checksum are retained
+unchanged. The root-level `TELIPHONES-0.6.0.tgz` and checksum are rebuilt from
+the current module source and pass local package validation. This is an
+experimental local package, not a production release or verified public
+download.
 
 The root bootstrap also installs and retains `FirewallListener.php` alongside
 the Python helpers; the root-only listener action uses that protected copy.
@@ -881,6 +885,6 @@ Upgrade rollback restores the installed helper files and service unit; matching
 module/broker downgrade, asynchronous Firewall recovery and systemd behaviour
 still require disposable-PBX tests. Do not downgrade one component alone.
 
-Use an updated Windows 0.7.0 build from this source for custom management URLs
+Use an updated Windows 0.8.0 build from this source for custom management URLs
 and Connection Health. Health probes the approved URL's TCP port, including
 8080/8443; it does not validate HTTP contents, redirects or TLS certificates.

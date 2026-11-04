@@ -27,7 +27,7 @@
     <Link><SubSystem>Console</SubSystem><TargetMachine>MachineX64</TargetMachine><AdditionalDependencies>bcrypt.lib;crypt32.lib;advapi32.lib;ws2_32.lib;iphlpapi.lib;shell32.lib;ole32.lib;uuid.lib;winhttp.lib;%(AdditionalDependencies)</AdditionalDependencies></Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="src\core\*.cpp" />
+    <ClCompile Include="src\core\*.cpp" Exclude="src\core\TerminalEmulator.cpp" />
     <ClCompile Include="src\platform\SshConsoleMain.cpp" />
     <ClCompile Include="src\platform\SshSession.cpp" />
     <ClCompile Include="src\platform\SshAgent.cpp" />

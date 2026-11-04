@@ -441,6 +441,7 @@ jobs:
           Copy-Item -LiteralPath 'desktop/windows/build/Release/TELIPHONES.exe' -Destination 'desktop/windows/build/artifact/TELIPHONES.exe'
           Copy-Item -LiteralPath 'desktop/windows/build/Release/TELIPHONES-SSH.exe' -Destination 'desktop/windows/build/artifact/TELIPHONES-SSH.exe'
           Copy-Item -LiteralPath 'desktop/windows/vcpkg_installed/x64-windows-static/share/openssl/copyright' -Destination 'desktop/windows/build/artifact/OpenSSL-LICENSE.txt'
+          Copy-Item -LiteralPath 'desktop/windows/third_party/libvterm/LICENSE' -Destination 'desktop/windows/build/artifact/libvterm-LICENSE.txt'
           Copy-Item -LiteralPath 'desktop/windows/README.md' -Destination 'desktop/windows/build/artifact/README.md'
           Copy-Item -LiteralPath 'desktop/windows/CHANGELOG.md' -Destination 'desktop/windows/build/artifact/CHANGELOG.md'
           Copy-Item -LiteralPath 'LICENSE' -Destination 'desktop/windows/build/artifact/LICENSE'
@@ -464,6 +465,7 @@ jobs:
             desktop/windows/build/artifact/TELIPHONES.exe
             desktop/windows/build/artifact/TELIPHONES-SSH.exe
             desktop/windows/build/artifact/OpenSSL-LICENSE.txt
+            desktop/windows/build/artifact/libvterm-LICENSE.txt
             desktop/windows/build/artifact/README.md
             desktop/windows/build/artifact/CHANGELOG.md
             desktop/windows/build/artifact/LICENSE

@@ -9,8 +9,11 @@
 #include <wincrypt.h>
 #include <winhttp.h>
 #include <sddl.h>
+#include <cstddef>
+#include <cstdlib>
 #include <filesystem>
 #include <algorithm>
+#include <atomic>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -39,6 +42,19 @@ public:
     HINTERNET get() const { return value_; }
 private:
     HINTERNET value_;
+};
+class PseudoConsole {
+public:
+    explicit PseudoConsole(HPCON value = nullptr) : value_(value) {}
+    ~PseudoConsole() { if (value_) ClosePseudoConsole(value_); }
+    PseudoConsole(const PseudoConsole&) = delete;
+    PseudoConsole& operator=(const PseudoConsole&) = delete;
+    HPCON get() const { return value_; }
+    HPCON release() { const auto value = value_; value_ = nullptr; return value; }
+    void reset() { if (value_) ClosePseudoConsole(value_); value_ = nullptr; }
+    void reset(HPCON value) { reset(); value_ = value; }
+private:
+    HPCON value_;
 };
 struct WipeString { std::string& value; ~WipeString() { SecureWipe(value); } };
 struct WipeBytes { Bytes& value; ~WipeBytes() { if (!value.empty()) SecureZeroMemory(value.data(), value.size()); } };
@@ -205,20 +221,86 @@ std::string receive(HANDLE pipe) {
     transfer(pipe, body.data(), size, false);
     return body;
 }
-struct Session {
+struct Session final : ManagedSshConsole {
     std::string profile;
     std::string diagnosticId;
     Handle job{CreateJobObjectW(nullptr, nullptr)};
     Handle helper;
     Handle ssh;
+    Handle terminalInput;
+    Handle terminalOutput;
+    Handle terminalControl;
     Handle stop{CreateEventW(nullptr, TRUE, FALSE, nullptr)};
     Handle finished{CreateEventW(nullptr, TRUE, FALSE, nullptr)};
     std::unique_ptr<SshAgent> agent;
     std::wstring directory;
+    std::wstring sshLog;
+    std::mutex controlMutex;
     std::int64_t expiry = 0;
+    std::string ReadAvailable() override {
+        if (!terminalOutput.get()) return {};
+        DWORD available = 0;
+        if (!PeekNamedPipe(terminalOutput.get(), nullptr, 0, nullptr, &available, nullptr)) {
+            const DWORD error = GetLastError();
+            if (error == ERROR_BROKEN_PIPE || error == ERROR_NO_DATA) return {};
+            ThrowLastError("Unable to read the TELIPHONES SSH console", error);
+        }
+        if (!available) return {};
+        std::string output(std::min<DWORD>(available, 16384), '\0');
+        DWORD count = 0;
+        if (!ReadFile(terminalOutput.get(), output.data(), static_cast<DWORD>(output.size()), &count, nullptr)) {
+            const DWORD error = GetLastError();
+            if (error == ERROR_BROKEN_PIPE || error == ERROR_NO_DATA) return {};
+            ThrowLastError("Unable to read SSH console output", error);
+        }
+        output.resize(count);
+        return output;
+    }
+    void WriteInput(const std::string& text) override {
+        if (!terminalInput.get() || text.empty()) return;
+        DWORD count = 0;
+        if (!WriteFile(terminalInput.get(), text.data(), static_cast<DWORD>(text.size()), &count, nullptr) ||
+            count != static_cast<DWORD>(text.size())) ThrowLastError("Unable to send input to the SSH console");
+    }
+    void Resize(int columns, int rows) override {
+        if (!terminalControl.get()) return;
+        const auto request = json::Serialize(json::Value::Object{
+            {"action", "resize"}, {"columns", std::clamp(columns, 2, 500)}, {"rows", std::clamp(rows, 2, 300)}});
+        std::lock_guard<std::mutex> guard(controlMutex);
+        send(terminalControl.get(), request);
+    }
+    bool IsAuthenticated() override {
+        if (sshLog.empty()) return false;
+        Handle file(CreateFileW(sshLog.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
+        if (file.get() == INVALID_HANDLE_VALUE) {
+            const auto error = GetLastError();
+            if (error == ERROR_FILE_NOT_FOUND || error == ERROR_SHARING_VIOLATION) return false;
+            ThrowLastError("Unable to read SSH authentication status", error);
+        }
+        LARGE_INTEGER size{};
+        if (!GetFileSizeEx(file.get(), &size)) ThrowLastError("Unable to size SSH authentication log");
+        if (size.QuadPart <= 0 || size.QuadPart > 256 * 1024) return false;
+        std::string contents(static_cast<std::size_t>(size.QuadPart), '\0');
+        DWORD count = 0;
+        if (!ReadFile(file.get(), contents.data(), static_cast<DWORD>(contents.size()), &count, nullptr))
+            ThrowLastError("Unable to read SSH authentication log");
+        contents.resize(count);
+        return contents.find("Authenticated to ") != std::string::npos;
+    }
+    bool IsAlive() override {
+        return helper.get() && ssh.get() &&
+               WaitForSingleObject(helper.get(), 0) == WAIT_TIMEOUT &&
+               WaitForSingleObject(ssh.get(), 0) == WAIT_TIMEOUT;
+    }
+    void Disconnect() override {
+        if (stop.get()) SetEvent(stop.get());
+        if (job.get() && !TerminateJobObject(job.get(), 1) && GetLastError() != ERROR_ACCESS_DENIED)
+            ThrowLastError("Unable to stop the owned SSH console");
+    }
     void removePublicArtifacts() {
         if (directory.empty()) return;
-        for (const auto* name : {L"identity.pub", L"certificate.pub", L"config", L"known_hosts"}) {
+        for (const auto* name : {L"identity.pub", L"certificate.pub", L"config", L"known_hosts", L"ssh.log"}) {
             const auto path = directory + L"\\" + name;
             if (!DeleteFileW(path.c_str()) && GetLastError() != ERROR_FILE_NOT_FOUND)
                 ThrowLastError("Unable to remove a public SSH runtime file");
@@ -291,11 +373,15 @@ std::size_t ManagedSshSessionCount(const std::string& profile) {
 }
 #endif
 
-void StartManagedSsh(const Profile& profile, const Preferences& preferences) {
+namespace {
+std::shared_ptr<Session> startManagedSsh(const Profile& profile, const Preferences& preferences, bool embedded) {
     RequireManagedSsh(profile);
     ProtectSshProcess(GetCurrentProcess());
-    const auto terminal = ResolveApp(AppKind::Terminal, preferences.terminal, DetectApps(AppKind::Terminal, preferences));
-    if (preferences.terminal == "putty") throw Error("Managed SSH requires an OpenSSH-backed terminal, not PuTTY.");
+    std::string terminal;
+    if (!embedded) {
+        terminal = ResolveApp(AppKind::Terminal, preferences.terminal, DetectApps(AppKind::Terminal, preferences));
+        if (preferences.terminal == "putty") throw Error("Managed SSH requires an OpenSSH-backed terminal, not PuTTY.");
+    }
     const auto ssh = OpenSshClient();
     if (ssh.empty()) throw Error("Windows OpenSSH Client is required for managed SSH. Install the Windows optional feature.");
     auto state = std::make_shared<Session>();
@@ -319,6 +405,7 @@ void StartManagedSsh(const Profile& profile, const Preferences& preferences) {
     WriteNewFile(state->directory + L"\\certificate.pub", cert + "\n", ownerAcl().c_str());
     WriteNewFile(state->directory + L"\\known_hosts", alias + " " + profile.pairing.sshHostKey + "\n", ownerAcl().c_str());
     const auto configPath = state->directory + L"\\config";
+    state->sshLog = state->directory + L"\\ssh.log";
     const std::string config =
         "Host *\nHostName " + profile.pairing.pbxAddress + "\nUser " + profile.pairing.sshUser +
         "\nPort " + std::to_string(profile.pairing.sshPort) + "\nHostKeyAlias " + alias +
@@ -343,13 +430,46 @@ void StartManagedSsh(const Profile& profile, const Preferences& preferences) {
                                    PIPE_TYPE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS, 1, 16384, 16384, 0, &security));
     LocalFree(descriptor);
     if (control.get() == INVALID_HANDLE_VALUE) ThrowLastError("Unable to create SSH console channel");
-    const auto plan = ManagedTerminalLaunch(preferences.terminal, terminal, Narrow(consoleExecutable()), session.id);
+    LaunchPlan plan;
+    if (embedded) {
+        plan.program = Narrow(consoleExecutable());
+        plan.commandLine = JoinCommandLine({plan.program, "/ssh-console", session.id});
+    } else {
+        plan = ManagedTerminalLaunch(preferences.terminal, terminal, Narrow(consoleExecutable()), session.id);
+    }
     auto command = Widen(plan.commandLine);
     STARTUPINFOW startup{sizeof(startup)};
+    Handle childInput;
+    Handle childOutput;
+    if (embedded) {
+        SECURITY_ATTRIBUTES pipeSecurity{sizeof(pipeSecurity), nullptr, TRUE};
+        HANDLE parentInput = nullptr, inheritedInput = nullptr, inheritedOutput = nullptr, parentOutput = nullptr;
+        if (!CreatePipe(&inheritedInput, &parentInput, &pipeSecurity, 0) ||
+            !CreatePipe(&parentOutput, &inheritedOutput, &pipeSecurity, 0)) {
+            if (inheritedInput) CloseHandle(inheritedInput);
+            if (parentInput) CloseHandle(parentInput);
+            if (inheritedOutput) CloseHandle(inheritedOutput);
+            if (parentOutput) CloseHandle(parentOutput);
+            ThrowLastError("Unable to create secure terminal streams");
+        }
+        childInput.reset(inheritedInput);
+        childOutput.reset(inheritedOutput);
+        state->terminalInput.reset(parentInput);
+        state->terminalOutput.reset(parentOutput);
+        if (!SetHandleInformation(state->terminalInput.get(), HANDLE_FLAG_INHERIT, 0) ||
+            !SetHandleInformation(state->terminalOutput.get(), HANDLE_FLAG_INHERIT, 0))
+            ThrowLastError("Unable to protect terminal stream handles");
+        startup.dwFlags = STARTF_USESTDHANDLES;
+        startup.hStdInput = childInput.get();
+        startup.hStdOutput = childOutput.get();
+        startup.hStdError = childOutput.get();
+    }
     PROCESS_INFORMATION process{};
-    if (!CreateProcessW(Widen(plan.program).c_str(), command.data(), nullptr, nullptr, FALSE,
-                        plan.newConsole ? CREATE_NEW_CONSOLE : 0, nullptr, nullptr, &startup, &process))
+    if (!CreateProcessW(Widen(plan.program).c_str(), command.data(), nullptr, nullptr, embedded,
+                        embedded ? CREATE_NO_WINDOW : (plan.newConsole ? CREATE_NEW_CONSOLE : 0), nullptr, nullptr, &startup, &process))
         ThrowLastError("Unable to open the selected SSH terminal");
+    childInput.reset();
+    childOutput.reset();
     CloseHandle(process.hThread);
     CloseHandle(process.hProcess);
     Handle event(CreateEventW(nullptr, TRUE, FALSE, nullptr));
@@ -373,7 +493,8 @@ void StartManagedSsh(const Profile& profile, const Preferences& preferences) {
     if (!helper.get() || _wcsicmp(processImage(helper.get()).c_str(), consoleExecutable().c_str()) != 0 ||
         !AssignProcessToJobObject(state->job.get(), helper.get())) throw Error("The SSH console helper could not be securely owned.");
     state->helper.reset(helper.release());
-    send(control.get(), json::Serialize(json::Value::Object{{"ssh", ssh}, {"config", Narrow(configPath)}}));
+    send(control.get(), json::Serialize(json::Value::Object{
+        {"ssh", ssh}, {"config", Narrow(configPath)}, {"embedded", embedded}, {"log", embedded ? Narrow(state->sshLog) : ""}}));
     const auto child = json::Parse(receive(control.get()), 1024);
     json::RequireExactKeys(child, {"pid"}, "SSH child");
     const auto pid = child.at("pid").asInteger();
@@ -386,6 +507,7 @@ void StartManagedSsh(const Profile& profile, const Preferences& preferences) {
     ProtectSshProcess(client.get());
     state->ssh.reset(client.release());
     send(control.get(), "start");
+    state->terminalControl.reset(control.release());
     auto& registry = sessionRegistry();
     {
         std::lock_guard<std::mutex> guard(registry.mutex);
@@ -429,6 +551,18 @@ void StartManagedSsh(const Profile& profile, const Preferences& preferences) {
         registry.sessions.erase(std::remove(registry.sessions.begin(), registry.sessions.end(), state), registry.sessions.end());
         throw;
     }
+    return state;
+}
+}  // namespace
+
+void StartManagedSsh(const Profile& profile, const Preferences& preferences) {
+    (void)startManagedSsh(profile, preferences, false);
+}
+
+std::shared_ptr<ManagedSshConsole> StartManagedSshConsole(const Profile& profile) {
+    Preferences preferences;
+    if (const auto stored = LoadPreferences()) preferences = *stored;
+    return startManagedSsh(profile, preferences, true);
 }
 
 int RunSshConsole(const std::vector<std::string>& arguments) {
@@ -447,36 +581,248 @@ int RunSshConsole(const std::vector<std::string>& arguments) {
             throw Error("Unexpected SSH controller executable.");
         const auto value = json::Parse(receive(control.get()), 16384);
         ProtectSshProcess(GetCurrentProcess());
-        json::RequireExactKeys(value, {"ssh", "config"}, "SSH console launch");
+        json::RequireExactKeys(value, {"ssh", "config", "embedded", "log"}, "SSH console launch");
         const auto ssh = OpenSshClient();
         if (ssh.empty() || value.at("ssh").asString() != ssh) throw Error("Unexpected SSH executable.");
         const auto path = value.at("config").asString();
         if (!IsShellSafeFilePath(path)) throw Error("Unsafe SSH configuration path.");
+        const bool embedded = value.at("embedded").asBool();
+        const auto logPath = value.at("log").asString();
+        if (embedded && !IsShellSafeFilePath(logPath)) throw Error("Unsafe SSH diagnostic log path.");
+        if (embedded && _putenv_s("TERM", "xterm-256color") != 0)
+            throw Error("Unable to set the managed SSH terminal type.");
         std::vector<std::string> commandArgs{ssh, "-F", path};
+        if (embedded) commandArgs.insert(commandArgs.end(), {"-v", "-E", logPath});
 #ifdef TELIPHONES_SSH_TESTING
         wchar_t testLog[32768];
         const auto logSize = GetEnvironmentVariableW(L"TELIPHONES_SSH_TEST_LOG", testLog, 32768);
         if (!logSize || logSize >= 32768) throw Error("Native SSH test requires a bounded client diagnostic log path.");
-        const auto logPath = Narrow(std::wstring(testLog, logSize));
-        if (!IsShellSafeFilePath(logPath)) throw Error("Unsafe SSH test log path.");
-        commandArgs.insert(commandArgs.end(), {"-vvv", "-E", logPath});
+        const auto testLogPath = Narrow(std::wstring(testLog, logSize));
+        if (!IsShellSafeFilePath(testLogPath)) throw Error("Unsafe SSH test log path.");
+        if (embedded) commandArgs[3] = "-vvv";
+        else commandArgs.insert(commandArgs.end(), {"-vvv", "-E", testLogPath});
 #endif
         commandArgs.push_back("teliphones");
         auto command = Widen(JoinCommandLine(commandArgs));
-        STARTUPINFOW startup{sizeof(startup)};
+        PseudoConsole pseudoConsole;
+        Handle ptyInputRead;
+        Handle ptyInputWrite;
+        Handle ptyOutputRead;
+        Handle ptyOutputWrite;
         PROCESS_INFORMATION process{};
-        if (!CreateProcessW(Widen(ssh).c_str(), command.data(), nullptr, nullptr, FALSE, CREATE_SUSPENDED,
-                            nullptr, nullptr, &startup, &process)) ThrowLastError("Unable to start owned OpenSSH client");
+        STARTUPINFOEXW startup{};
+        startup.StartupInfo.cb = sizeof(startup);
+        std::vector<std::uint8_t> attributeStorage;
+        if (embedded) {
+            SECURITY_ATTRIBUTES pipeSecurity{sizeof(pipeSecurity), nullptr, FALSE};
+            HANDLE inputRead = nullptr, inputWrite = nullptr, outputRead = nullptr, outputWrite = nullptr;
+            if (!CreatePipe(&inputRead, &inputWrite, &pipeSecurity, 0) ||
+                !CreatePipe(&outputRead, &outputWrite, &pipeSecurity, 0)) {
+                if (inputRead) CloseHandle(inputRead);
+                if (inputWrite) CloseHandle(inputWrite);
+                if (outputRead) CloseHandle(outputRead);
+                if (outputWrite) CloseHandle(outputWrite);
+                ThrowLastError("Unable to create the OpenSSH pseudoconsole streams");
+            }
+            ptyInputRead.reset(inputRead);
+            ptyInputWrite.reset(inputWrite);
+            ptyOutputRead.reset(outputRead);
+            ptyOutputWrite.reset(outputWrite);
+            if (!SetHandleInformation(ptyInputWrite.get(), HANDLE_FLAG_INHERIT, 0) ||
+                !SetHandleInformation(ptyOutputRead.get(), HANDLE_FLAG_INHERIT, 0))
+                ThrowLastError("Unable to protect OpenSSH pseudoconsole streams");
+            HPCON rawConsole = nullptr;
+            const HRESULT created = CreatePseudoConsole(COORD{80, 24}, ptyInputRead.get(), ptyOutputWrite.get(), 0, &rawConsole);
+            if (FAILED(created)) throw Error("Unable to create the Windows pseudoconsole (HRESULT " +
+                                              std::to_string(static_cast<unsigned long>(created)) + ").");
+            pseudoConsole.reset(rawConsole);
+            ptyInputRead.reset();
+            ptyOutputWrite.reset();
+            SIZE_T attributeSize = 0;
+            InitializeProcThreadAttributeList(nullptr, 1, 0, &attributeSize);
+            if (!attributeSize) ThrowLastError("Unable to size the SSH pseudoconsole process attributes");
+            const auto alignedSize = (attributeSize + sizeof(std::max_align_t) - 1) / sizeof(std::max_align_t);
+            attributeStorage.resize(alignedSize * sizeof(std::max_align_t));
+            startup.lpAttributeList = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attributeStorage.data());
+            if (!InitializeProcThreadAttributeList(startup.lpAttributeList, 1, 0, &attributeSize))
+                ThrowLastError("Unable to initialize the SSH pseudoconsole process attributes");
+            if (!UpdateProcThreadAttribute(startup.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
+                                           pseudoConsole.get(), sizeof(HPCON), nullptr, nullptr)) {
+                DeleteProcThreadAttributeList(startup.lpAttributeList);
+                ThrowLastError("Unable to attach OpenSSH to the pseudoconsole");
+            }
+        } else {
+            startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+            startup.StartupInfo.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+            startup.StartupInfo.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
+            startup.StartupInfo.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+        }
+        const DWORD creationFlags = (embedded ? EXTENDED_STARTUPINFO_PRESENT : 0) | CREATE_SUSPENDED;
+        const BOOL created = CreateProcessW(Widen(ssh).c_str(), command.data(), nullptr, nullptr, !embedded,
+                                            creationFlags, nullptr, nullptr, &startup.StartupInfo, &process);
+        if (startup.lpAttributeList) DeleteProcThreadAttributeList(startup.lpAttributeList);
+        if (!created) ThrowLastError("Unable to start owned OpenSSH client");
         Handle child(process.hProcess), thread(process.hThread);
         try {
             send(control.get(), json::Serialize(json::Value::Object{{"pid", static_cast<std::int64_t>(process.dwProcessId)}}));
             if (receive(control.get()) != "start" || ResumeThread(thread.get()) == static_cast<DWORD>(-1))
                 throw Error("TELIPHONES did not approve the owned SSH client.");
         } catch (...) { TerminateProcess(child.get(), 1); throw; }
-        HANDLE waits[]{parent.get(), child.get()};
-        if (WaitForMultipleObjects(2, waits, FALSE, INFINITE) != WAIT_OBJECT_0 + 1) {
-            TerminateProcess(child.get(), 1);
-            throw Error("TELIPHONES ended; the SSH session was terminated.");
+
+        if (embedded) {
+            std::atomic<bool> stopInput{false};
+            std::atomic<bool> pumpFailed{false};
+            std::thread inputPump;
+            std::thread outputPump;
+            try {
+                inputPump = std::thread([&] {
+                    char buffer[4096];
+                    while (!stopInput.load()) {
+                        DWORD available = 0;
+                        if (!PeekNamedPipe(GetStdHandle(STD_INPUT_HANDLE), nullptr, 0, nullptr, &available, nullptr)) {
+                            const auto error = GetLastError();
+                            if (error == ERROR_BROKEN_PIPE || error == ERROR_NO_DATA) break;
+                            pumpFailed.store(true);
+                            break;
+                        }
+                        if (!available) { Sleep(5); continue; }
+                        DWORD count = 0;
+                        if (!ReadFile(GetStdHandle(STD_INPUT_HANDLE), buffer, std::min<DWORD>(available, sizeof(buffer)), &count, nullptr)) {
+                            const auto error = GetLastError();
+                            if (error == ERROR_BROKEN_PIPE || error == ERROR_NO_DATA ||
+                                (stopInput.load() && error == ERROR_OPERATION_ABORTED)) break;
+                            pumpFailed.store(true);
+                            break;
+                        }
+                        DWORD written = 0;
+                        if (!WriteFile(ptyInputWrite.get(), buffer, count, &written, nullptr) || written != count) {
+                            const auto error = GetLastError();
+                            if (error != ERROR_BROKEN_PIPE && error != ERROR_NO_DATA &&
+                                error != ERROR_OPERATION_ABORTED) pumpFailed.store(true);
+                            break;
+                        }
+                    }
+                });
+                outputPump = std::thread([&] {
+                    char buffer[8192];
+                    for (;;) {
+                        DWORD available = 0;
+                        if (!PeekNamedPipe(ptyOutputRead.get(), nullptr, 0, nullptr, &available, nullptr)) {
+                            const auto error = GetLastError();
+                            if (error == ERROR_BROKEN_PIPE || error == ERROR_NO_DATA) break;
+                            pumpFailed.store(true);
+                            break;
+                        }
+                        if (!available) {
+                            if (WaitForSingleObject(child.get(), 0) == WAIT_OBJECT_0) break;
+                            Sleep(5);
+                            continue;
+                        }
+                        DWORD count = 0;
+                        if (!ReadFile(ptyOutputRead.get(), buffer, std::min<DWORD>(available, sizeof(buffer)), &count, nullptr)) {
+                            const auto error = GetLastError();
+                            if (error == ERROR_BROKEN_PIPE || error == ERROR_NO_DATA) break;
+                            pumpFailed.store(true);
+                            break;
+                        }
+                        DWORD offset = 0;
+                        while (offset < count) {
+                            DWORD written = 0;
+                            if (!WriteFile(GetStdHandle(STD_OUTPUT_HANDLE), buffer + offset, count - offset, &written, nullptr) || !written) {
+                                if (GetLastError() != ERROR_OPERATION_ABORTED) pumpFailed.store(true);
+                                return;
+                            }
+                            offset += written;
+                        }
+                    }
+                });
+            } catch (...) {
+                stopInput.store(true);
+                pseudoConsole.reset();
+                if (inputPump.joinable()) {
+                    CancelSynchronousIo(inputPump.native_handle());
+                    inputPump.join();
+                }
+                if (outputPump.joinable()) {
+                    CancelSynchronousIo(outputPump.native_handle());
+                    outputPump.join();
+                }
+                throw;
+            }
+            const auto stopPumps = [&] {
+                stopInput.store(true);
+                pseudoConsole.reset();
+                if (inputPump.joinable()) {
+                    CancelSynchronousIo(inputPump.native_handle());
+                    inputPump.join();
+                }
+                if (outputPump.joinable()) {
+                    CancelSynchronousIo(outputPump.native_handle());
+                    outputPump.join();
+                }
+            };
+            std::string pumpError;
+            try {
+                for (;;) {
+                    HANDLE waits[]{parent.get(), child.get()};
+                    const auto outcome = WaitForMultipleObjects(2, waits, FALSE, 20);
+                    if (outcome == WAIT_OBJECT_0) {
+                        TerminateProcess(child.get(), 1);
+                        throw Error("TELIPHONES ended; the SSH session was terminated.");
+                    }
+                    if (outcome == WAIT_OBJECT_0 + 1) {
+                        stopInput.store(true);
+                        if (inputPump.joinable()) {
+                            CancelSynchronousIo(inputPump.native_handle());
+                            inputPump.join();
+                        }
+                        if (outputPump.joinable()) {
+                            const auto drained = WaitForSingleObject(outputPump.native_handle(), 5000);
+                            if (drained == WAIT_TIMEOUT) {
+                                CancelSynchronousIo(outputPump.native_handle());
+                                pumpError = "Timed out draining the SSH pseudoconsole output.";
+                            } else if (drained == WAIT_FAILED) {
+                                const auto error = GetLastError();
+                                CancelSynchronousIo(outputPump.native_handle());
+                                pumpError = "Unable to wait for SSH pseudoconsole output (Win32 " +
+                                            std::to_string(error) + ").";
+                            }
+                            outputPump.join();
+                        }
+                        pseudoConsole.reset();
+                        if (pumpFailed.load() && pumpError.empty())
+                            pumpError = "An SSH pseudoconsole stream failed.";
+                        break;
+                    }
+                    if (outcome != WAIT_TIMEOUT) ThrowLastError("Unable to monitor the SSH pseudoconsole");
+                    DWORD available = 0;
+                    if (PeekNamedPipe(control.get(), nullptr, 0, nullptr, &available, nullptr) && available >= sizeof(std::uint32_t)) {
+                        const auto resize = json::Parse(receive(control.get()), 1024);
+                        json::RequireExactKeys(resize, {"action", "columns", "rows"}, "SSH pseudoconsole resize");
+                        if (resize.at("action").asString() != "resize") throw Error("Unknown SSH pseudoconsole control action.");
+                        const auto columns = resize.at("columns").asInteger();
+                        const auto rows = resize.at("rows").asInteger();
+                        if (columns < 2 || columns > 500 || rows < 2 || rows > 300)
+                            throw Error("SSH pseudoconsole size is outside the supported bounds.");
+                        const HRESULT result = ResizePseudoConsole(pseudoConsole.get(),
+                            COORD{static_cast<SHORT>(columns), static_cast<SHORT>(rows)});
+                        if (FAILED(result)) throw Error("Unable to resize the OpenSSH pseudoconsole (HRESULT " +
+                                                       std::to_string(static_cast<unsigned long>(result)) + ").");
+                    }
+                    if (pumpFailed.load()) { pumpError = "An SSH pseudoconsole stream failed."; break; }
+                }
+            } catch (...) {
+                stopPumps();
+                throw;
+            }
+            stopPumps();
+            if (!pumpError.empty()) throw Error(pumpError);
+        } else {
+            HANDLE waits[]{parent.get(), child.get()};
+            if (WaitForMultipleObjects(2, waits, FALSE, INFINITE) != WAIT_OBJECT_0 + 1) {
+                TerminateProcess(child.get(), 1);
+                throw Error("TELIPHONES ended; the SSH session was terminated.");
+            }
         }
         DWORD result = 1;
         if (!GetExitCodeProcess(child.get(), &result)) ThrowLastError("Unable to read SSH client exit status");

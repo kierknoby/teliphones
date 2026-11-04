@@ -40,6 +40,7 @@ struct PairResponse {
     std::string guiUrl;
     std::string sshUser;
     std::string sshPublicKey;
+    std::string sshRequestPublicKey;
     std::string sshHostKey;
     std::string sshCaKey;
     int sshPort = 0;
@@ -49,6 +50,7 @@ struct PairResponse {
 // Verifies the response is bound to this workstation's request before any value is trusted.
 PairResponse ParsePairResponse(const std::string& code, const std::string& expectedNonce, const std::string& expectedPublicKey,
                                const std::string& sshPublicKey = "");
+PairResponse ApplyWorkstationMigration(const PairResponse& current, const std::string& migrationJson);
 void ValidateManagedPairing(const PairResponse& pairing);
 struct SshSessionPublicKey {
     std::string id;

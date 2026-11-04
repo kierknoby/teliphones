@@ -32,6 +32,7 @@ struct HelperCommand {
     std::string tunnelName;
     std::string stagingPath;  // TunnelUp only
     std::string userSid;      // TunnelUp only: the interactive user allowed to stop and remove this tunnel
+    std::string keyPipe;      // TunnelUp only: random 32-hex token, never the secret
 };
 
 std::vector<std::string> HelperArguments(const HelperCommand& command);

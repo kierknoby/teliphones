@@ -5,13 +5,59 @@ No Windows release is declared published by this document. Earlier development
 builds lacked embedded file/product versions and cannot be assigned reliable
 version numbers retrospectively.
 
-## 0.7.0 — Unreleased
+## 0.8.0 — Unreleased
+
+Windows file version: **0.8.0.0**. FreePBX module version: **0.6.0**.
+Windows 0.8.0 adds explicit pairing access selection, post-pair policy requests,
+identity-preserving migration, SSH elevation and an experimental built-in
+managed SSH console with a libvterm screen model and ConPTY resize path. Native
+Windows and live SSH validation remain outstanding.
+The FreePBX policy and Windows client changes are independently versioned.
+No Windows release or build is declared by this entry.
+
+- Replace the SSH opt-in checkbox with an explicit Web access / Web + SSH
+  access choice. Continue to omit SSH identity generation for web-only requests.
+- Display whether SSH was authorised in saved-profile details.
+- Replace successful clipboard-copy dialogs with short-lived inline feedback.
+- Display the PBX-applied policy, source list, DNS failures, verified public
+  source and actual/max admitted session count. Lock to the PBX-verified
+  current IP; request Allowed List changes or unlocking through the authenticated
+  session channel, with relaxing changes pending FreePBX approval.
+- Apply authenticated listener migration to the saved profile while preserving
+  its WireGuard identity. Keep management blocked until admission on the new
+  tunnel, and retire the old path only after the PBX acknowledges the migration.
+- Generate and persist a protected workstation SSH identity when requesting
+  post-pair SSH; apply the account and pinned SSH configuration only after the
+  PBX has explicitly approved the request.
+- Open managed My PBXs SSH in the built-in TELIPHONES window using the existing
+  certificate, pinned host key, isolated agent and owned process job. Add a
+  libvterm-backed VT screen, UTF-8 input/output, keyboard/clipboard handling,
+  scrollback and a ConPTY path that propagates terminal resizing. Portable
+  emulator tests pass; the native MFC/ConPTY and live SSH paths still require
+  Windows verification.
+- Use temporary confirmation before changing the PBX's listener to Closed.
+- Add optional per-connection Connect Password Protection using the existing
+  OpenSSL Argon2id provider and AES-256-GCM inside Credential Manager/DPAPI.
+  Settings enable/change/disable requires current-password authentication;
+  protected Connect always decrypts the credential, regardless of preferences.
+- Keep enrolled WireGuard keys off staging/installed configuration files:
+  use a public bootstrap identity and PID-bound, local-only UAC-helper IPC
+  followed by WireGuard's administrator-only control pipe. Stored configs
+  cannot restore the enrolled identity. Preserve DPAPI-only credential mode
+  when protection is disabled; no weaker KDF fallback.
+- Add portable authentication/tampering, independent-vector and bootstrap
+  regressions. New native password/UAC/WireGuard behavior remains unverified
+  until tested on Windows; no dependency was fetched or installed locally.
+- Local portable-core tests can validate shared code; native MFC/Win32 UI
+  validation requires Windows and has not been performed in this environment.
+
+## 0.7.0 — Previous unreleased development target
 
 Windows file version: **0.7.0.0**. FreePBX module version: **0.4.1**.
 The FreePBX-only firewall correction advances the installed/tested module from
 0.4.0 to 0.4.1. Windows remains 0.7.0 because no application code changes are
 made; this note does not declare a new Windows build or release.
-**Current operator-reported evidence:** successful Windows Actions builds,
+**Evidence reported at the 0.7.0 development stage:** successful Windows Actions builds,
 **all ten native OpenSSH integration tests passing**, authenticated Windows
 SSH into FreePBX 17 with module 0.4.0, and owned-terminal closure on disconnect.
 Run identifiers and raw logs were not supplied here. Complete PBX-side

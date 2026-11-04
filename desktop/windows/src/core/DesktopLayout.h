@@ -12,7 +12,8 @@ struct LayoutRect {
 
 enum class DesktopSlot {
     PbxHeading, Profiles, Add, Remove, Support, Grant, SessionLabel, Session,
-    Details, ConnectionHeading, State, Guidance, Summary, History, Plot, Graph,
+    Details, LockWorkstation, AllowedSourcesLabel, AllowedSources, RequestSources,
+    ConnectionHeading, State, Guidance, Summary, History, Plot, Graph,
     PopOut, Log, Count
 };
 
@@ -47,7 +48,6 @@ inline DesktopLayout ArrangeDesktop(int width, int height) {
     const int rightX = landscape ? margin + leftWidth + 16 : margin;
     const int rightWidth = landscape ? width - rightX - margin : actionWidth;
     const int leftHeight = landscape ? std::max(450, layout.viewport.height) : 450;
-    const int rightTop = landscape ? 0 : leftHeight + 16;
     const int rightHeight = landscape ? std::max(450, layout.viewport.height) : 450;
     auto place = [&](DesktopSlot slot, int x, int y, int w, int h) {
         layout.content[static_cast<int>(slot)] = {x, y, w, h};
@@ -56,6 +56,8 @@ inline DesktopLayout ArrangeDesktop(int width, int height) {
     place(DesktopSlot::PbxHeading, margin, 8, leftWidth, 24);
     place(DesktopSlot::Profiles, margin, 40, leftWidth, listHeight);
     const int management = 48 + listHeight;
+    const int leftContentBottom = management + 240;
+    const int rightTop = landscape ? 0 : std::max(leftHeight, leftContentBottom) + 16;
     const int half = (leftWidth - gap) / 2;
     place(DesktopSlot::Add, margin, management, half, 30);
     place(DesktopSlot::Remove, margin + half + gap, management, half, 30);
@@ -64,17 +66,23 @@ inline DesktopLayout ArrangeDesktop(int width, int height) {
     place(DesktopSlot::SessionLabel, margin, management + 80, leftWidth, 20);
     place(DesktopSlot::Session, margin, management + 104, leftWidth, 28);
     place(DesktopSlot::Details, margin, management + 140, leftWidth, 100);
+    const int policyButtonWidth = (rightWidth - gap) / 2;
     place(DesktopSlot::ConnectionHeading, rightX, rightTop + 8, rightWidth, 24);
     place(DesktopSlot::State, rightX, rightTop + 40, rightWidth, 28);
     place(DesktopSlot::Guidance, rightX, rightTop + 76, rightWidth, 48);
-    place(DesktopSlot::Summary, rightX, rightTop + 132, rightWidth, 104);
+    place(DesktopSlot::Summary, rightX, rightTop + 132, rightWidth, 64);
+    place(DesktopSlot::AllowedSourcesLabel, rightX, rightTop + 200, rightWidth, 18);
+    place(DesktopSlot::AllowedSources, rightX, rightTop + 220, rightWidth, 44);
+    place(DesktopSlot::LockWorkstation, rightX, rightTop + 272, policyButtonWidth, 30);
+    place(DesktopSlot::RequestSources, rightX + policyButtonWidth + gap, rightTop + 272,
+          rightWidth - policyButtonWidth - gap, 30);
     const int historyWidth = std::min(124, (rightWidth - gap) / 2);
-    place(DesktopSlot::History, rightX, rightTop + 244, historyWidth, 28);
-    place(DesktopSlot::Plot, rightX + historyWidth + gap, rightTop + 244, rightWidth - historyWidth - gap, 28);
-    place(DesktopSlot::Graph, rightX, rightTop + 280, rightWidth, rightHeight - 332);
+    place(DesktopSlot::History, rightX, rightTop + 310, historyWidth, 28);
+    place(DesktopSlot::Plot, rightX + historyWidth + gap, rightTop + 310, rightWidth - historyWidth - gap, 28);
+    place(DesktopSlot::Graph, rightX, rightTop + 346, rightWidth, rightHeight - 398);
     place(DesktopSlot::PopOut, rightX, rightTop + rightHeight - 42, (rightWidth - gap) / 2, 30);
     place(DesktopSlot::Log, rightX + (rightWidth - gap) / 2 + gap, rightTop + rightHeight - 42, (rightWidth - gap) / 2, 30);
-    layout.contentHeight = rightTop + rightHeight;
+    layout.contentHeight = std::max(rightTop + rightHeight, leftContentBottom);
     return layout;
 }
 

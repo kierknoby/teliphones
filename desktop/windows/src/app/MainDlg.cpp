@@ -12,15 +12,20 @@
 #include "../core/Json.h"
 #include "../core/Pairing.h"
 #include "../core/Rendezvous.h"
+#include "../core/SessionDiagnostics.h"
 #include "../core/TunnelConfig.h"
+#include "../core/WorkstationHeartbeat.h"
 #include "../platform/Applications.h"
 #include "../platform/Services.h"
 #include "../platform/Ssh.h"
 #include "../platform/Win.h"
 #include "AppSettingsDlg.h"
+#include "ConnectPasswordDlg.h"
+#include "../core/ConnectProtection.h"
 #include "PairDlg.h"
 #include "SupportDlg.h"
 #include "SessionLogDlg.h"
+#include "SshTerminalDlg.h"
 #include "resource.h"
 #include "Version.h"
 
@@ -34,19 +39,36 @@ namespace {
 constexpr UINT_PTR kMonitorTimer = 1;
 constexpr UINT kMonitorIntervalMs = 2000;
 
-enum class OperationKind { Connect, Disconnect, Cleanup, Ssh };
+enum class OperationKind { Connect, Disconnect, Cleanup, Ssh, Policy };
 
 struct OperationResult {
     OperationKind kind = OperationKind::Connect;
     bool declined = false;
     std::string error;
+    std::string warning;
     std::string reason;
+    bool policyLocked = false;
+    bool unlockRequestPending = false;
+    bool sourcesRequestPending = false;
+    std::shared_ptr<tlp::win::ManagedSshConsole> sshConsole;
+    std::optional<tlp::Profile> sshProfile;
 };
 
 struct ProbeResult {
     bool statusKnown = false;
     bool serviceRunning = false;
     bool probeSucceeded = false;
+    bool sessionAdmissionRequired = false;
+    std::string sessionAdmissionError;
+    int connectedWorkstations = 0;
+    int maximumWorkstations = 0;
+    bool policyLocked = false;
+    bool unlockRequestPending = false;
+    std::string policySummary;
+    std::optional<tlp::PairResponse> migration;
+    std::optional<tlp::PairResponse> pairingUpdate;
+    bool sshRevoked = false;
+    bool sshRequestRejected = false;
     tlp::HealthSample sample;
     std::string error;
 };
@@ -64,17 +86,18 @@ private:
 
 // Long operations (UAC approval, service installation, network probes) run off the UI thread and post
 // their result back. If the window has gone, the result is discarded.
-void RunInBackground(HWND window, OperationKind kind, std::string reason, std::function<bool()> work) {
+void RunInBackground(HWND window, OperationKind kind, std::string reason, std::function<bool(OperationResult&)> work) {
     std::thread([window, kind, reason, work]() {
         HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
         auto* result = new OperationResult;
         result->kind = kind;
         result->reason = reason;
         try {
-            result->declined = !work();
+            result->declined = !work(*result);
         } catch (const std::exception& e) {
             result->error = e.what();
         }
+
         if (SUCCEEDED(com)) CoUninitialize();
         if (!::PostMessageW(window, WM_APP_OPERATION_DONE, 0, reinterpret_cast<LPARAM>(result))) delete result;
     }).detach();
@@ -121,6 +144,8 @@ BEGIN_MESSAGE_MAP(CMainDlg, CAppearanceDialog)
     ON_BN_CLICKED(IDC_DISCONNECT, &CMainDlg::OnDisconnect)
     ON_BN_CLICKED(IDC_OPEN_GUI, &CMainDlg::OnOpenGui)
     ON_BN_CLICKED(IDC_OPEN_SSH, &CMainDlg::OnOpenSsh)
+    ON_BN_CLICKED(IDC_LOCK_WORKSTATION, &CMainDlg::OnLockWorkstation)
+    ON_BN_CLICKED(IDC_REQUEST_SOURCES, &CMainDlg::OnRequestSources)
     ON_BN_CLICKED(IDC_SETTINGS, &CMainDlg::OnSettings)
     ON_BN_CLICKED(IDC_CONNECTION_HEALTH, &CMainDlg::OnConnectionHealth)
     ON_BN_CLICKED(IDC_SESSION_LOG, &CMainDlg::OnSessionLog)
@@ -391,6 +416,13 @@ tlp::Preferences CMainDlg::CurrentPreferences() {
 bool CMainDlg::ShowAppSettings(bool welcome, const std::string& notice) {
     CAppSettingsDlg dialog(welcome ? CAppSettingsDlg::Mode::Welcome : CAppSettingsDlg::Mode::Settings, storedPreferences_, this);
     dialog.notice = notice;
+    dialog.connectionActive = active_ != nullptr;
+    if (!busy_ && active_) {
+        const auto* profile = FindProfile(active_->profileId);
+        if (profile && profile->kind == tlp::ProfileKind::Administrator) dialog.connectProfile = *profile;
+    } else if (!busy_ && Selected()) {
+        if (Selected()->kind == tlp::ProfileKind::Administrator) dialog.connectProfile = *Selected();
+    }
     dialog.installation = installation_;
     if (dialog.DoModal() == -1) {
         ShowError("TELIPHONES could not open Settings. Your preferences and profiles were left unchanged.");
@@ -401,6 +433,10 @@ bool CMainDlg::ShowAppSettings(bool welcome, const std::string& notice) {
     // Welcome saves Step 1 immediately, even when the user closes a later step.
     if (saved) storedPreferences_ = dialog.preferences;
     RefreshWireGuard();
+    if (dialog.lockNow && active_) {
+        StartDisconnect("Locked Now from Settings > Security.");
+        return saved;
+    }
     if (dialog.startAction == CAppSettingsDlg::StartAction::AddPbx) OnAddPbx();
     if (dialog.startAction == CAppSettingsDlg::StartAction::Support) OnAddSupport();
     return saved;
@@ -496,7 +532,9 @@ void CMainDlg::RefreshSessions() {
         details = "PBX: " + pairing.pbxName + "  (key " + tlp::KeyFingerprint(pairing.pbxPublicKey) + ")" + "\r\nEndpoint: " + pairing.endpoint +
                   "    Tunnel: " + pairing.address + " -> " + pairing.pbxAddress + "\r\nWorkstation: " + profile->workstationName + "  (id " +
                   pairing.workstationId + ")" + "\r\nExpires: " + (pairing.mode == "persistent" ? std::string("when revoked on the PBX") : FormatTime(pairing.expiresAt));
-        if (pairing.ssh) details += "    SSH user: " + (profile->sshUser.empty() ? std::string("(not set)") : profile->sshUser);
+        details += pairing.ssh
+            ? "    SSH authorised for: " + (profile->sshUser.empty() ? std::string("(account unavailable)") : profile->sshUser)
+            : "    SSH not authorised";
     }
     sessions_.EnableWindow(!sessionIds_.empty());
     SetDlgItemText(IDC_DETAILS, Widen(details).c_str());
@@ -512,7 +550,9 @@ void CMainDlg::UpdateButtons() {
                       (profile->kind == ProfileKind::Administrator || !SelectedSession().empty());
     const Profile* activeProfile = active_ ? FindProfile(active_->profileId) : nullptr;
     bool connected = active_ && active_->connected && !busy_ && selectedActive;
-    bool sshAllowed = activeProfile != nullptr && (activeProfile->kind == ProfileKind::Support || activeProfile->pairing.ssh);
+    bool sshAllowed = activeProfile != nullptr &&
+                      (activeProfile->kind == ProfileKind::Support || activeProfile->pairing.ssh ||
+                       (activeProfile->kind == ProfileKind::Administrator && connected && active_->verified));
     bool verified = connected && active_->verified;
 
     GetDlgItem(IDC_ADD_PBX)->EnableWindow(!busy_);
@@ -521,8 +561,30 @@ void CMainDlg::UpdateButtons() {
     GetDlgItem(IDC_REMOVE)->EnableWindow(profile != nullptr && !busy_ && !selectedActive);
     GetDlgItem(IDC_CONNECT)->EnableWindow(canConnect);
     GetDlgItem(IDC_DISCONNECT)->EnableWindow(active_ && !busy_);
-    GetDlgItem(IDC_OPEN_GUI)->EnableWindow(connected);
+    GetDlgItem(IDC_OPEN_GUI)->EnableWindow(verified);
     GetDlgItem(IDC_OPEN_SSH)->EnableWindow(verified && sshAllowed);
+    GetDlgItem(IDC_OPEN_SSH)->SetWindowTextW(activeProfile != nullptr && activeProfile->kind == ProfileKind::Administrator &&
+        !activeProfile->pairing.ssh ? L"Request SSH" :
+        activeProfile->kind == ProfileKind::Administrator ? L"SSH Console" : L"Open SSH");
+    const bool mayChangeWorkstationPolicy = connected && verified && activeProfile != nullptr &&
+        activeProfile->kind == ProfileKind::Administrator &&
+        (!activePolicyLocked_ || !unlockRequestPending_);
+    layout_.Find(IDC_LOCK_WORKSTATION)->EnableWindow(mayChangeWorkstationPolicy);
+    layout_.Find(IDC_LOCK_WORKSTATION)->SetWindowTextW(
+        !connected ? L"Unavailable While Disconnected" :
+        !verified ? L"Unavailable Until PBX Admission" :
+        activeProfile == nullptr || activeProfile->kind != ProfileKind::Administrator
+            ? L"Unavailable for this profile"
+            : (activePolicyLocked_ ? (unlockRequestPending_ ? L"Unlock Pending Approval" : L"Request Unlock")
+                                   : L"Lock to Current IP"));
+    layout_.Find(IDC_ALLOWED_SOURCES)->EnableWindow(mayChangeWorkstationPolicy && !sourcesRequestPending_);
+    layout_.Find(IDC_REQUEST_SOURCES)->EnableWindow(mayChangeWorkstationPolicy && !sourcesRequestPending_);
+    layout_.Find(IDC_REQUEST_SOURCES)->SetWindowTextW(
+        !connected ? L"Unavailable While Disconnected" :
+        !verified ? L"Unavailable Until PBX Admission" :
+        activeProfile == nullptr || activeProfile->kind != ProfileKind::Administrator
+            ? L"Unavailable for this profile" :
+        sourcesRequestPending_ ? L"Allowed List Pending Approval" : L"Request Allowed List Change");
     GetDlgItem(IDC_CONNECTION_HEALTH)->EnableWindow(profile != nullptr);
     GetDlgItem(IDC_CONNECTION_HEALTH)->SetWindowTextW(L"Pop Out");
     GetDlgItem(IDC_SETTINGS)->EnableWindow(!busy_);
@@ -590,7 +652,7 @@ void CMainDlg::RemoveStaleTunnels() {
     busy_ = true;
     UpdateButtons();
     SetState("Removing a TELIPHONES tunnel left from a previous session...", "");
-    RunInBackground(m_hWnd, OperationKind::Cleanup, "", [stale]() {
+    RunInBackground(m_hWnd, OperationKind::Cleanup, "", [stale](OperationResult&) {
         for (const std::string& name : stale) tlp::win::RemoveTunnel(name);
         return true;
     });
@@ -683,7 +745,27 @@ void CMainDlg::OnConnect() {
         if (profile->kind == ProfileKind::Administrator && profile->pairing.mode == "temporary" && profile->pairing.expiresAt <= now) {
             throw tlp::Error("This temporary pairing has expired. Remove it and pair this workstation again from the PBX.");
         }
-        std::string privateKey = tlp::win::LoadPrivateKey(tlp::CredentialTargetFor(*profile));
+        const auto credentialTarget = tlp::CredentialTargetFor(*profile);
+        if (profile->kind == ProfileKind::Administrator && !tlp::win::PrivateKeyNeedsPassword(credentialTarget)
+            && !profile->connectPasswordSkippedPermanently) {
+            CConnectPasswordChoiceDlg firstUse(tlp::ConnectProtectionAvailable(), this);
+            if (firstUse.DoModal() != IDOK) {
+                if (firstUse.choice == IDC_PASSWORD_SET) {
+                    if (!ManageConnectPassword(*profile, this)) return;
+                } else if (firstUse.choice == IDC_PASSWORD_SKIP_ALWAYS) {
+                    profile->connectPasswordSkippedPermanently = true;
+                    Persist();
+                } else if (firstUse.choice != IDC_PASSWORD_SKIP_ONCE) {
+                    return;
+                }
+            } else {
+                return;
+            }
+        }
+        CConnectPasswordDlg unlock(false, this);
+        if (tlp::win::PrivateKeyNeedsPassword(credentialTarget) && unlock.DoModal() != IDOK) return;
+        std::string privateKey = tlp::win::LoadPrivateKey(credentialTarget, unlock.password);
+        tlp::win::SecureWipe(unlock.password);
         [[maybe_unused]] WipeString privateKeyWiper(privateKey);
         if (privateKey.empty()) throw tlp::Error("The WireGuard key for this connection is missing from Windows Credential Manager. Remove the connection and pair again.");
         std::string expectedPublicKey =
@@ -720,7 +802,7 @@ void CMainDlg::OnConnect() {
         delete value;
     });
     try {
-        RunInBackground(m_hWnd, OperationKind::Connect, "", [tunnelName, stagedConfig]() {
+        RunInBackground(m_hWnd, OperationKind::Connect, "", [tunnelName, stagedConfig](OperationResult&) {
             bool installed = false;
             try {
                 installed = tlp::win::InstallTunnel(tunnelName, *stagedConfig);
@@ -749,10 +831,19 @@ void CMainDlg::StartDisconnect(const std::string& reason) {
     UpdateButtons();
     SetState("Disconnecting...", reason);
     std::string tunnelName = active_->tunnelName;
+    const std::string sessionAddress = active_->pbxAddress;
     try {
         const auto profile = *FindProfile(active_->profileId);
-        RunInBackground(m_hWnd, OperationKind::Disconnect, reason, [tunnelName, profile]() {
+        RunInBackground(m_hWnd, OperationKind::Disconnect, reason, [tunnelName, profile, sessionAddress](OperationResult& result) {
             if (profile.kind == ProfileKind::Administrator) tlp::win::CloseManagedSsh(profile.id);
+            if (profile.kind == ProfileKind::Administrator) {
+                try {
+                    tlp::win::MaintainWorkstationSession(sessionAddress, true);
+                } catch (const std::exception& error) {
+                    result.warning = std::string("The PBX could not confirm lease release; capacity will be recovered after lease expiry: ") +
+                                     tlp::SanitizeDiagnosticDetail(error.what());
+                }
+            }
             tlp::win::RemoveTunnel(tunnelName);
             if (profile.kind == ProfileKind::Administrator && !profile.pairing.sshPublicKey.empty()) tlp::win::RemoveSshRuntime(profile);
             return true;
@@ -768,7 +859,7 @@ void CMainDlg::StartDisconnect(const std::string& reason) {
 void CMainDlg::OnDisconnect() { StartDisconnect(""); }
 
 void CMainDlg::OnOpenGui() {
-    const Profile* profile = active_ && active_->connected && !busy_ ? FindProfile(active_->profileId) : nullptr;
+    const Profile* profile = active_ && active_->connected && active_->verified && !busy_ ? FindProfile(active_->profileId) : nullptr;
     if (profile == nullptr) return;
     try {
         tlp::win::OpenFreePbx(*profile, active_->sessionId, CurrentPreferences());
@@ -792,7 +883,7 @@ void CMainDlg::OnOpenGui() {
             retry = ShowAppSettings(false, e.what());
         }
         if (!retry) return;
-        profile = active_ && active_->connected && !busy_ ? FindProfile(active_->profileId) : nullptr;
+        profile = active_ && active_->connected && active_->verified && !busy_ ? FindProfile(active_->profileId) : nullptr;
         if (profile == nullptr) return;
         try {
             tlp::win::OpenFreePbx(*profile, active_->sessionId, CurrentPreferences());
@@ -812,10 +903,7 @@ bool CMainDlg::SshReady() {
         ShowError("The PBX has not yet answered through the secure connection. Wait until TELIPHONES shows Connected, then choose Open SSH again.");
         return false;
     }
-    if (profile->kind == ProfileKind::Administrator && !profile->pairing.ssh) {
-        ShowError("SSH was not authorised for this workstation when it was paired.");
-        return false;
-    }
+    if (profile->kind == ProfileKind::Administrator && !profile->pairing.ssh) return false;
     if (profile->kind == ProfileKind::Administrator && profile->sshUser.empty()) {
         ShowError("No SSH user is set for this PBX. Remove and pair it again, entering the Linux account to use for SSH.");
         return false;
@@ -824,10 +912,58 @@ bool CMainDlg::SshReady() {
 }
 
 void CMainDlg::OnOpenSsh() {
+    const Profile* selected = active_ ? FindProfile(active_->profileId) : nullptr;
+    if (selected != nullptr && selected->kind == ProfileKind::Administrator && !selected->pairing.ssh) {
+        if (busy_ || !active_->connected || !active_->verified) {
+            ShowError("Connect and wait for PBX admission before requesting SSH access.");
+            return;
+        }
+        try {
+            Profile* profile = FindProfile(selected->id);
+            if (profile->pairing.sshRequestPublicKey.empty()) {
+                const std::string publicKey = tlp::win::GenerateWorkstationSshIdentity(*profile);
+                profile->pairing.sshRequestPublicKey = publicKey;
+                try {
+                    tlp::win::SaveProfiles(profiles_);
+                } catch (...) {
+                    profile->pairing.sshRequestPublicKey.clear();
+                    throw;
+                }
+            }
+            const Profile requestProfile = *profile;
+            const std::string publicKey = profile->pairing.sshRequestPublicKey;
+            busy_ = true;
+            UpdateButtons();
+            RunInBackground(m_hWnd, OperationKind::Ssh, "", [requestProfile, publicKey](OperationResult& result) {
+                auto status = tlp::win::MaintainWorkstationSession(requestProfile.pairing.pbxAddress, false,
+                    &requestProfile.pairing, "ssh-request", publicKey);
+                result.warning = status.sshRequestStatus == "applied"
+                    ? "SSH access was already approved by FreePBX."
+                    : "SSH request is Pending Approval by a FreePBX administrator. Web access remains unchanged.";
+                return true;
+            });
+        } catch (const std::exception& error) {
+            busy_ = false;
+            UpdateButtons();
+            ShowError(std::string("SSH access request could not be sent: ") + error.what());
+        }
+        return;
+    }
     if (!SshReady()) return;
     try {
         const auto profile = *FindProfile(active_->profileId);
         if (profile.kind == ProfileKind::Administrator) tlp::win::RequireManagedSsh(profile);
+        if (profile.kind == ProfileKind::Administrator) {
+            busy_ = true;
+            UpdateButtons();
+            LogEvent("ssh_requested", "info", "Starting the built-in TELIPHONES SSH console over the admitted WireGuard session.");
+            RunInBackground(m_hWnd, OperationKind::Ssh, "", [profile](OperationResult& result) {
+                result.sshConsole = tlp::win::StartManagedSshConsole(profile);
+                result.sshProfile = profile;
+                return true;
+            });
+            return;
+        }
         const auto session = active_->sessionId;
         auto preferences = CurrentPreferences();
         try {
@@ -841,7 +977,7 @@ void CMainDlg::OnOpenSsh() {
         busy_ = true;
         UpdateButtons();
         LogEvent("ssh_requested", "info", "Requesting SSH; terminal launch is not proof of terminal authentication.");
-        RunInBackground(m_hWnd, OperationKind::Ssh, "", [profile, session, preferences]() {
+        RunInBackground(m_hWnd, OperationKind::Ssh, "", [profile, session, preferences](OperationResult&) {
             tlp::win::OpenSsh(profile, session, preferences);
             return true;
         });
@@ -849,6 +985,78 @@ void CMainDlg::OnOpenSsh() {
         busy_ = false;
         UpdateButtons();
         ShowError(e.what());
+    }
+}
+
+void CMainDlg::OnLockWorkstation() {
+    if (!active_ || busy_ || !active_->connected || !active_->verified) return;
+    const Profile* current = FindProfile(active_->profileId);
+    if (current == nullptr || current->kind != ProfileKind::Administrator ||
+        (activePolicyLocked_ && unlockRequestPending_)) return;
+    const Profile profile = *current;
+    busy_ = true;
+    active_->verified = false;
+    UpdateButtons();
+    const bool requestUnlock = activePolicyLocked_;
+    SetState(requestUnlock ? "Requesting workstation unlock" : "Applying workstation restriction",
+             requestUnlock
+                 ? "The PBX will keep this workstation's current restrictions until a FreePBX administrator approves the request."
+                 : "The PBX will lock this workstation to its verified WireGuard public source. Session admission remains enforced during the listener migration.");
+    try {
+        RunInBackground(m_hWnd, OperationKind::Policy, "", [profile, requestUnlock](OperationResult& result) {
+            const auto status = tlp::win::MaintainWorkstationSession(profile.pairing.pbxAddress, false,
+                &profile.pairing, requestUnlock ? "unlock-request" : "lock-current");
+            result.warning = status.policySummary;
+            result.policyLocked = status.policyLocked || requestUnlock;
+            result.unlockRequestPending = status.unlockRequestPending;
+            return true;
+        });
+    } catch (const std::exception& error) {
+        busy_ = false;
+        if (active_) active_->verified = true;
+        UpdateButtons();
+        ShowError(std::string("The workstation restriction request could not be started: ") + error.what());
+    }
+}
+
+void CMainDlg::OnRequestSources() {
+    if (!active_ || busy_ || !active_->connected || !active_->verified || sourcesRequestPending_) return;
+    const Profile* current = FindProfile(active_->profileId);
+    if (current == nullptr || current->kind != ProfileKind::Administrator) return;
+    CStringW sourceText;
+    layout_.Find(IDC_ALLOWED_SOURCES)->GetWindowText(sourceText);
+    std::string sources;
+    try {
+        const std::wstring wideSources(sourceText.GetString(), static_cast<std::size_t>(sourceText.GetLength()));
+        sources = Narrow(wideSources);
+    } catch (const std::exception& error) {
+        ShowError(std::string("Allowed List text could not be encoded: ") + error.what());
+        return;
+    }
+    if (sources.empty() || sources.size() > 2048) {
+        ShowError("Enter one or more IPv4, IPv6, CIDR or DNS entries (maximum 2048 bytes).");
+        return;
+    }
+    const Profile profile = *current;
+    busy_ = true;
+    active_->verified = false;
+    UpdateButtons();
+    SetState("Requesting Allowed List change",
+             "The current PBX restrictions remain in force until a FreePBX administrator approves the requested list.");
+    try {
+        RunInBackground(m_hWnd, OperationKind::Policy, "", [profile, sources](OperationResult& result) {
+            const auto status = tlp::win::MaintainWorkstationSession(profile.pairing.pbxAddress, false,
+                &profile.pairing, "sources-request", "", sources);
+            result.warning = status.policySummary;
+            result.policyLocked = status.policyLocked;
+            result.sourcesRequestPending = status.sourcesRequestPending;
+            return true;
+        });
+    } catch (const std::exception& error) {
+        busy_ = false;
+        if (active_) active_->verified = true;
+        UpdateButtons();
+        ShowError(std::string("The Allowed List request could not be started: ") + error.what());
     }
 }
 
@@ -883,6 +1091,8 @@ void CMainDlg::OnTimer(UINT_PTR id) {
                                      connectedProfile->pairing.guiUrl : "http://" + address + "/admin/";
     std::string managedSshProfile = connectedProfile && connectedProfile->kind == ProfileKind::Administrator ?
                                    connectedProfile->id : std::string();
+    const bool workstationSessionRequired = connectedProfile && connectedProfile->kind == ProfileKind::Administrator;
+    const tlp::PairResponse pairing = connectedProfile ? connectedProfile->pairing : tlp::PairResponse{};
     std::wstring wgExecutable = wireguard_.wgExe;
     std::int64_t expiresAt = active_->expiresAt;
     std::uint64_t tickNow = GetTickCount64();
@@ -890,7 +1100,8 @@ void CMainDlg::OnTimer(UINT_PTR id) {
                             tickNow - lastTelemetryTickMs_ >= tlp::ConnectionHealthMonitor::kTelemetryIntervalSeconds * 1000ULL;
     if (collectTelemetry) lastTelemetryTickMs_ = tickNow;
     try {
-    std::thread([window, generation, tunnelName, address, managementUrl, peerPublicKey, managedSshProfile, wgExecutable, expiresAt, collectTelemetry]() {
+    std::thread([window, generation, tunnelName, address, managementUrl, peerPublicKey, managedSshProfile, pairing,
+                 workstationSessionRequired, wgExecutable, expiresAt, collectTelemetry]() {
         auto* result = new ProbeResult;
         result->sample.authorizationExpiresAt = expiresAt;
         result->sample.authorizationKnown = true;
@@ -907,11 +1118,31 @@ void CMainDlg::OnTimer(UINT_PTR id) {
             result->sample.tunnelKnown = result->statusKnown;
             result->sample.tunnelRunning = result->serviceRunning;
             if (result->serviceRunning && (expiresAt == 0 || tlp::win::UnixNow() < expiresAt)) {
-                tlp::win::TcpProbeMeasurement probe = tlp::win::MeasureTcpProbe(address, tlp::ManagementProbePort(managementUrl), 1200);
-                result->sample.probeKnown = probe.known;
-                result->error = probe.error;
-                result->sample.probeSucceeded = probe.known && probe.succeeded;
-                if (result->sample.probeSucceeded) result->sample.latencyMs = probe.latencyMs;
+                if (workstationSessionRequired) {
+                    result->sessionAdmissionRequired = true;
+                    try {
+                        const auto lease = tlp::win::MaintainWorkstationSession(address, false, &pairing);
+                        result->connectedWorkstations = lease.connectedWorkstations;
+                        result->maximumWorkstations = lease.maximumWorkstations;
+                        result->policyLocked = lease.policyLocked;
+                        result->unlockRequestPending = lease.unlockRequestPending;
+                        result->sourcesRequestPending = lease.sourcesRequestPending;
+                        result->policySummary = lease.policySummary;
+                        result->migration = lease.migration;
+                        result->pairingUpdate = lease.pairingUpdate;
+                        result->sshRevoked = lease.sshRevoked;
+                        result->sshRequestRejected = lease.sshRequestRejected;
+                    } catch (const std::exception& e) {
+                        result->sessionAdmissionError = e.what();
+                    }
+                }
+                if (result->sessionAdmissionError.empty()) {
+                    tlp::win::TcpProbeMeasurement probe = tlp::win::MeasureTcpProbe(address, tlp::ManagementProbePort(managementUrl), 1200);
+                    result->sample.probeKnown = probe.known;
+                    result->error = probe.error;
+                    result->sample.probeSucceeded = probe.known && probe.succeeded;
+                    if (result->sample.probeSucceeded) result->sample.latencyMs = probe.latencyMs;
+                }
                 if (collectTelemetry) {
                     result->sample.wireGuardTelemetryAttempted = true;
                     try {
@@ -956,6 +1187,105 @@ LRESULT CMainDlg::OnProbeDone(WPARAM generation, LPARAM lparam) {
     std::unique_ptr<ProbeResult> result(reinterpret_cast<ProbeResult*>(lparam));
     probing_ = false;
     if (generation != generation_ || !active_ || !active_->monitor || busy_) return 0;
+    if (result->migration) {
+        active_->verified = false;
+        UpdateButtons();
+        Profile* profile = FindProfile(active_->profileId);
+        if (profile == nullptr || profile->kind != ProfileKind::Administrator ||
+            result->migration->workstationId != profile->pairing.workstationId ||
+            result->migration->workstationPublicKey != profile->pairing.workstationPublicKey ||
+            result->migration->pbxPublicKey != profile->pairing.pbxPublicKey) {
+            SetState("Configuration migration rejected", "The migration did not match this saved workstation identity. The old tunnel remains in place and management access remains blocked.");
+            return 0;
+        }
+        const tlp::PairResponse previous = profile->pairing;
+        profile->pairing = *result->migration;
+        try {
+            tlp::win::SaveProfiles(profiles_);
+        } catch (const std::exception& error) {
+            profile->pairing = previous;
+            SetState("Configuration migration not saved", std::string("The saved profile was preserved; retry the secure migration. ") + error.what());
+            return 0;
+        }
+        migrationReconnectPending_ = true;
+        SetState("Applying PBX configuration", "The updated tunnel details were authenticated over the existing WireGuard identity. The old tunnel will be removed before reconnecting.");
+        StartDisconnect("Applying authenticated PBX configuration migration.");
+        return 0;
+    }
+    if (result->sessionAdmissionRequired && !result->sessionAdmissionError.empty()) {
+        active_->verified = false;
+        UpdateButtons();
+        const bool atLimit = result->sessionAdmissionError.find("Session limit reached:") == 0;
+        SetState(atLimit ? "Session limit reached" : "Admission unavailable",
+                 result->sessionAdmissionError + (atLimit
+                     ? " Disconnect an active workstation or ask the PBX administrator to increase the limit."
+                     : " The tunnel is authenticated, but management access remains blocked until the PBX grants a session."));
+        return 0;
+    }
+    if (result->sessionAdmissionRequired && result->sessionAdmissionError.empty()) {
+        Profile* profile = FindProfile(active_->profileId);
+        if (result->sshRevoked && profile != nullptr && profile->kind == ProfileKind::Administrator) {
+            const tlp::PairResponse previous = profile->pairing;
+            const std::string previousUser = profile->sshUser;
+            tlp::ApplyWorkstationSshRevocation(*profile);
+            try {
+                tlp::win::SaveProfiles(profiles_);
+            } catch (const std::exception& error) {
+                profile->pairing = previous;
+                profile->sshUser = previousUser;
+                SetState("SSH revocation not saved", std::string("FreePBX revoked SSH, but the Windows profile could not be updated: ") + error.what());
+                return 0;
+            }
+            try {
+                tlp::win::CloseManagedSsh(profile->id);
+            } catch (const std::exception& error) {
+                LogEvent("ssh_local_cleanup_failed", "warning", error.what());
+            }
+            RefreshList();
+            UpdateButtons();
+        }
+        if (result->sshRequestRejected && profile != nullptr && profile->kind == ProfileKind::Administrator) {
+            const std::string previous = profile->pairing.sshRequestPublicKey;
+            tlp::ApplyWorkstationSshRequestRejection(*profile);
+            try {
+                tlp::win::SaveProfiles(profiles_);
+            } catch (const std::exception& error) {
+                profile->pairing.sshRequestPublicKey = previous;
+                SetState("SSH rejection not saved", std::string("FreePBX rejected or removed SSH elevation; the local pending request could not be updated: ") + error.what());
+                return 0;
+            }
+            result->policySummary += " SSH elevation request was rejected or withdrawn; web access remains enabled.";
+        }
+        if (result->pairingUpdate) {
+            if (profile == nullptr) {
+                SetState("SSH approval not applied", "The PBX approval did not match this saved workstation's pending SSH key. Web access remains available.");
+                return 0;
+            }
+            const tlp::PairResponse previous = profile->pairing;
+            const std::string previousUser = profile->sshUser;
+            if (!tlp::ApplyWorkstationSshApproval(*profile, *result->pairingUpdate)) {
+                SetState("SSH approval not applied", "The PBX approval did not match this saved workstation's pending SSH key. Web access remains available.");
+                return 0;
+            }
+            try {
+                tlp::win::SaveProfiles(profiles_);
+            } catch (const std::exception& error) {
+                profile->pairing = previous;
+                profile->sshUser = previousUser;
+                SetState("SSH approval not saved", std::string("The saved profile remains web-only; retry after resolving the local storage error. ") + error.what());
+                return 0;
+            }
+            RefreshList();
+            UpdateButtons();
+        }
+    }
+    const Profile* observedProfile = FindProfile(active_->profileId);
+    activePolicyLocked_ = observedProfile != nullptr && observedProfile->kind == ProfileKind::Administrator &&
+                          result->policyLocked;
+    unlockRequestPending_ = observedProfile != nullptr && observedProfile->kind == ProfileKind::Administrator &&
+                            result->unlockRequestPending;
+    sourcesRequestPending_ = observedProfile != nullptr && observedProfile->kind == ProfileKind::Administrator &&
+                             result->sourcesRequestPending;
     if (active_->health) {
         try {
             active_->health->AddSample(result->sample);
@@ -1047,7 +1377,13 @@ LRESULT CMainDlg::OnProbeDone(WPARAM generation, LPARAM lparam) {
         return 0;
     }
     tlp::MonitorDecision decision = active_->monitor->Observe(now, result->serviceRunning, result->probeSucceeded);
-    SetState(decision.summary, decision.guidance);
+    std::string guidance = decision.guidance;
+    if (result->sessionAdmissionRequired && result->maximumWorkstations > 0) {
+        guidance += " PBX-admitted workstations: " + std::to_string(result->connectedWorkstations) +
+                    " of " + std::to_string(result->maximumWorkstations) + ".";
+    }
+    if (!result->policySummary.empty()) guidance += " " + result->policySummary;
+    SetState(decision.summary, guidance);
     bool verified = decision.state == tlp::LinkState::Connected;
     if (verified != active_->verified) {
         active_->verified = verified;
@@ -1068,13 +1404,38 @@ LRESULT CMainDlg::OnProbeDone(WPARAM generation, LPARAM lparam) {
 LRESULT CMainDlg::OnOperationDone(WPARAM, LPARAM lparam) {
     std::unique_ptr<OperationResult> result(reinterpret_cast<OperationResult*>(lparam));
     busy_ = false;
+    const bool reconnectAfterMigration = result->kind == OperationKind::Disconnect &&
+                                         migrationReconnectPending_ && result->error.empty();
+    const std::string reconnectProfileId = active_ ? active_->profileId : std::string();
     switch (result->kind) {
         case OperationKind::Ssh:
             if (!result->error.empty()) {
                 LogEvent("ssh_failed", "error", result->error);
                 ShowError(result->error);
             } else {
-                LogEvent("ssh_launched", "info", "SSH terminal process launched; authentication is not yet observed.");
+                if (result->sshConsole && result->sshProfile) {
+                    LogEvent("ssh_launched", "info", "Built-in SSH console opened; authentication status is reported by the SSH client.");
+                    CSshTerminalDlg terminal(*result->sshProfile, std::move(result->sshConsole), this);
+                    terminal.DoModal();
+                    LogEvent("ssh_ended", "info", "Built-in TELIPHONES SSH console closed.");
+                } else {
+                    LogEvent("ssh_launched", "info", "SSH terminal process launched; authentication is not yet observed.");
+                }
+                if (!result->warning.empty()) SetState("SSH request submitted", result->warning);
+            }
+            break;
+        case OperationKind::Policy:
+            if (!result->error.empty()) {
+                if (active_) active_->verified = false;
+                SetState("Workstation restriction unavailable", result->error);
+                ShowError(result->error);
+            } else {
+                activePolicyLocked_ = result->policyLocked;
+                unlockRequestPending_ = result->unlockRequestPending;
+                sourcesRequestPending_ = result->sourcesRequestPending;
+                SetState(sourcesRequestPending_ ? "Allowed List request submitted" :
+                    unlockRequestPending_ ? "Unlock request submitted" :
+                    activePolicyLocked_ ? "Restriction applied" : "Workstation policy updated", result->warning);
             }
             break;
         case OperationKind::Cleanup:
@@ -1130,9 +1491,23 @@ LRESULT CMainDlg::OnOperationDone(WPARAM, LPARAM lparam) {
                 healthDialog_.UpdateSnapshot(disconnected);
             }
             SetState("Disconnected", result->reason);
+            if (!result->warning.empty()) {
+                LogEvent("session_release_warning", "warning", result->warning);
+                SetState("Disconnected", result->reason + " " + result->warning);
+            }
             break;
     }
+    if (reconnectAfterMigration) migrationReconnectPending_ = false;
     RefreshList();
+    if (reconnectAfterMigration) {
+        for (std::size_t index = 0; index < profiles_.size(); ++index) {
+            if (profiles_[index].id == reconnectProfileId) {
+                list_.SetItemState(static_cast<int>(index), LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+                OnConnect();
+                break;
+            }
+        }
+    }
     return 0;
 }
 
@@ -1152,6 +1527,15 @@ void CMainDlg::OnCancel() {
         try {
             const auto* profile = FindProfile(active_->profileId);
             if (profile && profile->kind == ProfileKind::Administrator) tlp::win::CloseManagedSsh(profile->id);
+            if (profile && profile->kind == ProfileKind::Administrator) {
+                try {
+                    tlp::win::MaintainWorkstationSession(profile->pairing.pbxAddress, true);
+                } catch (const std::exception& releaseError) {
+                    const std::string warning = "PBX lease release was not confirmed during shutdown; capacity will recover after expiry: " +
+                                                tlp::SanitizeDiagnosticDetail(releaseError.what());
+                    LogEvent("session_release_warning", "warning", warning);
+                }
+            }
             tlp::win::RemoveTunnel(active_->tunnelName);
             if (profile && profile->kind == ProfileKind::Administrator && !profile->pairing.sshPublicKey.empty()) tlp::win::RemoveSshRuntime(*profile);
         } catch (const std::exception& e) {

@@ -200,7 +200,7 @@ $assert(strpos($bootstrapSource, "copy(\$moduleDir . '/support_broker.py', \$bro
     'Root bootstrap must install the current broker as a protected root-owned file and restart it.');
 $brokerSource = (string)file_get_contents(dirname(__DIR__) . '/support_broker.py');
 $assert(strpos($brokerSource, 'WORKSTATION_OWNER_CHAIN = "teliphones_owner_v1"') !== false
-    && strpos(BrokerBootstrap::UPGRADE_NOTE, '0.5.0 requires broker protocol 6') !== false
+    && strpos(BrokerBootstrap::UPGRADE_NOTE, '0.6.0 requires broker protocol 12') !== false
     && strpos(BrokerBootstrap::UPGRADE_NOTE, '/usr/local/lib/teliphones-broker/ssh_authority.py') !== false
     && strpos(BrokerBootstrap::UPGRADE_NOTE, 'normal system SSH service') !== false
     && strpos(BrokerBootstrap::UPGRADE_NOTE, 'incomplete rollback') !== false,

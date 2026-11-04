@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Try interactive, browser-local TELIPHONES demonstrations. No PBX connection.">
+  <title>Interactive demonstrations | TELIPHONES</title>
+  <link rel="icon" href="/assets/mark.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/assets/site.css">
+  <link rel="stylesheet" href="/assets/demo.css">
+  <script src="/assets/site.js" defer></script>
+  <script src="/assets/demo-state.js" defer></script>
+  <script src="/assets/demo.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="masthead"><div class="wrap masthead-inner">
+  <a class="brand" href="/" aria-label="TELIPHONES home"><img src="/assets/mark.svg" alt="" width="31" height="31">TELIPHONES</a>
+  <nav class="desktop-nav" aria-label="Primary"><a href="/features/">Features</a><a href="/windows/">Windows</a><a href="/freepbx/">FreePBX</a></nav>
+  <div class="header-actions"><a class="button small" href="/demo/" aria-current="page">Try the demos</a><button class="theme-toggle" type="button" data-theme-toggle hidden aria-label="Switch appearance"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 0 0 16Z" fill="currentColor"/></svg></button><details class="site-menu"><summary>Explore</summary><nav class="menu-panel" aria-label="All pages"><div class="wrap menu-grid"><a href="/">Home</a><a href="/features/">Features</a><a href="/windows/">For Windows</a><a href="/freepbx/">For FreePBX</a><a href="/demo/" aria-current="page">Interactive demos</a><a href="/docs/">Documentation</a><a href="/security/">Security &amp; evidence</a></div></nav></details></div>
+</div></header>
+<main id="main" class="demo-page">
+  <div class="page-head"><div class="wrap"><nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/">Home</a><span aria-hidden="true">/</span><span>Interactive demonstrations</span></nav><p class="eyebrow">Browser-local product tour</p><h1>Try the workflow.<br><em>No PBX connection.</em></h1><p class="lead">Pair a sample Windows workstation, approve it in the sample FreePBX module, then connect and request SSH. Both demonstrations share state in this browser.</p></div></div>
+  <div class="wrap">
+    <aside class="demo-banner" role="note"><strong>Interactive demo • no PBX connection</strong><span>All data is synthetic and stored only in this browser. No command, network request, SSH session, password, or PBX is used.</span><button type="button" class="button secondary small" data-action="reset">Reset Demo</button></aside>
+    <div class="demo-tabs" role="tablist" aria-label="Choose a demonstration"><button id="tab-pbx" role="tab" aria-selected="true" aria-controls="panel-pbx" data-action="tab" data-tab="pbx">FreePBX module</button><button id="tab-windows" role="tab" aria-selected="false" aria-controls="panel-windows" data-action="tab" data-tab="windows">Windows application</button></div>
+    <section id="panel-pbx" class="demo-panel" role="tabpanel" aria-labelledby="tab-pbx" data-panel="pbx"></section>
+    <section id="panel-windows" class="demo-panel" role="tabpanel" aria-labelledby="tab-windows" data-panel="windows" hidden></section>
+    <p class="fine demo-footnote">Demonstration only. Controls illustrate product workflows; they do not prove native Windows, live FreePBX or production behavior. <a href="/security/#evidence">Review verification boundaries.</a></p>
+  </div>
+</main>
+<footer class="site-footer"><div class="wrap"><div class="footer-grid"><div><a class="brand" href="/">TELIPHONES</a><p>Private administration.<br>Authority stays with your PBX.</p><span class="tag">Experimental software</span></div><div><h2>Product</h2><a href="/features/">Features</a><a href="/windows/">Windows</a><a href="/freepbx/">FreePBX</a><a href="/demo/">Interactive demos</a></div><div><h2>Resources</h2><a href="/docs/">Documentation</a><a href="/downloads/">Downloads</a><a href="/security/">Security</a><a href="/faq/">FAQ</a></div><div><h2>Project</h2><a href="/roadmap/">Roadmap</a><a href="/about/">About &amp; licensing</a><a href="https://github.com/kierknoby/teliphones">Source on GitHub ↗</a></div></div><div class="legal"><p>TELIPHONES is a UK registered trademark. Software licensed under GPL version 3 or later.</p><p>No analytics. No third-party scripts.</p></div></div></footer>
+</body>
+</html>

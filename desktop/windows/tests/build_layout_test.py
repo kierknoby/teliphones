@@ -23,6 +23,99 @@ def project(name):
 
 
 class BuildLayoutTests(unittest.TestCase):
+    def test_integrated_terminal_dependencies_and_native_cleanup_regression_are_registered(self):
+        cmake = (ROOT / "CMakeLists.txt").read_text()
+        for source in ("src/core/TerminalEmulator.cpp", "tests/terminal_emulator_tests.cpp",
+                       "third_party/libvterm/src/vterm.c"):
+            self.assertIn(source, cmake)
+        project_sources = {
+            item.attrib["Include"].replace("\\", "/")
+            for item in project("TELIPHONES.vcxproj").findall("ms:ItemGroup/ms:ClCompile", NS)
+        }
+        self.assertIn("src/core/TerminalEmulator.cpp", project_sources)
+        self.assertIn("third_party/libvterm/src/vterm.c", project_sources)
+        session = (ROOT / "src/platform/SshSession.cpp").read_text()
+        for contract in ("CreatePseudoConsole(", "ResizePseudoConsole(", "CancelSynchronousIo(",
+                         "JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE"):
+            self.assertIn(contract, session)
+        main = (ROOT / "src/app/MainDlg.cpp").read_text()
+        self.assertIn("result.sshConsole = tlp::win::StartManagedSshConsole(profile)", main)
+        native_host = (ROOT / "tests/ssh_native_host.cpp").read_text()
+        native_test = (ROOT / "tests/ssh_native_check.py").read_text()
+        self.assertIn("--production-console", native_host)
+        self.assertIn("CONSOLE_INTERACTIVE=1", native_host)
+        self.assertIn("test_production_embedded_console_pty_input_resize_and_disconnect", native_test)
+        helper = project("SshConsole.vcxproj")
+        helper_core = helper.find("ms:ItemGroup/ms:ClCompile[@Include='src\\core\\*.cpp']", NS)
+        self.assertIsNotNone(helper_core)
+        self.assertIn("src\\core\\TerminalEmulator.cpp", helper_core.get("Exclude", ""))
+        window_tests = project("HealthWindowTests.vcxproj")
+        window_core = window_tests.find("ms:ItemGroup/ms:ClCompile[@Include='src\\core\\*.cpp']", NS)
+        self.assertIsNotNone(window_core)
+        self.assertIn("src\\core\\ConnectProtection.cpp", window_core.get("Exclude", ""))
+        self.assertIn("src\\core\\TerminalEmulator.cpp", window_core.get("Exclude", ""))
+        self.assertIn("src\\core\\SshCrypto.cpp", window_core.get("Exclude", ""))
+        terminal_dialog = (ROOT / "src/app/SshTerminalDlg.cpp").read_text()
+        self.assertIn("key == VK_F4 && (flags & KF_ALTDOWN)", terminal_dialog)
+
+    def test_workstation_heartbeat_updates_are_outside_migration_path(self):
+        cmake = (ROOT / "CMakeLists.txt").read_text()
+        self.assertIn("src/core/WorkstationHeartbeat.cpp", cmake)
+        main = (ROOT / "src/app/MainDlg.cpp").read_text()
+        handler = main.split("LRESULT CMainDlg::OnProbeDone", 1)[1].split(
+            "LRESULT CMainDlg::OnOperationDone", 1
+        )[0]
+        migration = handler.index("if (result->migration)")
+        rejected_admission = handler.index(
+            "if (result->sessionAdmissionRequired && !result->sessionAdmissionError.empty())"
+        )
+        successful_admission = handler.index(
+            "if (result->sessionAdmissionRequired && result->sessionAdmissionError.empty())"
+        )
+        self.assertLess(migration, rejected_admission)
+        self.assertLess(rejected_admission, successful_admission)
+        for transition in (
+            "ApplyWorkstationSshRevocation",
+            "ApplyWorkstationSshRequestRejection",
+            "ApplyWorkstationSshApproval",
+        ):
+            self.assertGreater(handler.index(transition), successful_admission)
+
+    def test_connect_protection_is_credential_driven_not_a_settings_flag(self):
+        services = (ROOT / "src/platform/Services.cpp").read_text()
+        loader = services.split("std::string LoadPrivateKey(", 1)[1].split("void SetConnectPassword", 1)[0]
+        self.assertIn("OpenConnectKey(target, stored, password)", loader)
+        self.assertNotIn("LoadPreferences", loader)
+        self.assertNotIn("return stored", loader)
+        mutation = services.split("void SetConnectPassword(", 1)[1].split("void DeletePrivateKey", 1)[0]
+        self.assertLess(mutation.index("LoadPrivateKey(target, oldPassword)"), mutation.index("writeKeyCredential(target, stored)"))
+        main = (ROOT / "src/app/MainDlg.cpp").read_text()
+        connect = main.split("void CMainDlg::OnConnect()", 1)[1].split("void CMainDlg::StartDisconnect", 1)[0]
+        self.assertIn("PrivateKeyNeedsPassword(credentialTarget)", connect)
+        self.assertIn("LoadPrivateKey(credentialTarget, unlock.password)", connect)
+        self.assertLess(connect.index("LoadPrivateKey("), connect.index("RenderTunnel("))
+        crypto = (ROOT / "src/core/ConnectProtection.cpp").read_text()
+        self.assertIn('EVP_KDF_fetch(nullptr, "ARGON2ID", nullptr)', crypto)
+        self.assertNotIn("PBKDF", crypto)
+        self.assertIn("EVP_DecryptFinal_ex", crypto)
+
+    def test_tunnel_disk_config_cannot_recover_the_enrolled_private_key(self):
+        wireguard = (ROOT / "src/platform/WireGuard.cpp").read_text()
+        install = wireguard.split("bool InstallTunnel(", 1)[1].split("void RemoveTunnel(", 1)[0]
+        self.assertIn("RenderBootstrapTunnel(parsed)", install)
+        self.assertNotIn("RenderTunnel(parsed)", install)
+        self.assertIn("KeyPipe pipe(parsed.privateKey)", install)
+        helper = wireguard.split("DWORD helperUp(", 1)[1].split("DWORD runElevated(", 1)[0]
+        self.assertLess(helper.index("ValidateBootstrapTunnel(parsed)"), helper.index("WriteNewFile(configPath"))
+        self.assertLess(helper.index("waitForState(command.tunnelName, TunnelState::Running"), helper.index("activateKey("))
+        self.assertIn("GetNamedPipeClientProcessId", wireguard)
+        self.assertIn("client != GetProcessId(helper)", wireguard)
+        self.assertIn("PIPE_REJECT_REMOTE_CLIENTS", wireguard)
+        self.assertIn("FILE_FLAG_FIRST_PIPE_INSTANCE", wireguard)
+        self.assertIn("private_key=", wireguard)
+        manage = (ROOT / "src/app/ConnectPasswordDlg.cpp").read_text().split("bool ManageConnectPassword", 1)[1]
+        self.assertLess(manage.index("RemoveTunnel("), manage.index("SetConnectPassword("))
+
     @unittest.skipUnless(shutil.which("ssh-keygen") and shutil.which("ssh"),
                          "Local OpenSSH required; no download attempted")
     def test_fingerprint_diagnostics_with_real_openssh(self):
@@ -533,7 +626,7 @@ class BuildLayoutTests(unittest.TestCase):
         self.assertIn('run(["schtasks.exe", "/Create", "/TN", cls.task, "/XML", xml, "/RU", "SYSTEM"])', fixture)
         self.assertLess(fixture.index('security_state("Task", cls.task, cls.sid)'),
                         fixture.index('run(["schtasks.exe", "/Run", "/TN", cls.task])'))
-        self.assertEqual(len([name for name in dir(module.WindowsSshTests) if name.startswith("test_")]), 10)
+        self.assertEqual(len([name for name in dir(module.WindowsSshTests) if name.startswith("test_")]), 11)
 
     def test_ctest_platform_boundary_and_native_ssh_gate(self):
         stubbed = ("project", "set_target_properties", "add_library", "add_executable",
@@ -551,7 +644,7 @@ function(add_test)
     message(STATUS "REGISTERED=${ARGV1}")
 endfunction()
 """
-        portable = {"core_tests", "session_diagnostics", "build_layout", "contract_check",
+        portable = {"connect_protection", "terminal_emulator", "core_tests", "session_diagnostics", "build_layout", "contract_check",
                     "managed_ssh_check", "ssh_crypto_check"}
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "registration.cmake"
@@ -568,6 +661,8 @@ endfunction()
                 self.assertEqual(len(registered), len(expected))
         workflow = (ROOT.parents[1] / ".github/workflows/windows-build.yml").read_text(encoding="utf-8")
         self.assertIn("tests/provision_openssh.ps1", workflow)
+        self.assertIn("third_party/libvterm/LICENSE", workflow)
+        self.assertIn("build/artifact/libvterm-LICENSE.txt", workflow)
         self.assertLess(workflow.index("tests/provision_openssh.ps1"),
                         workflow.index("ctest --test-dir"))
         self.assertLess(workflow.index("tests/provision_openssh.ps1"),
@@ -619,8 +714,9 @@ endfunction()
         base = ".".join(map(str, parts[:3]))
         product = base
         numeric = ".".join(map(str, parts))
-        self.assertEqual(product, "0.7.0")
-        self.assertEqual(numeric, "0.7.0.0")
+        self.assertEqual(product, "0.8.0")
+        self.assertEqual(numeric, "0.8.0.0")
+        self.assertIn(f'"version-string": "{product}"', (ROOT / "vcpkg.json").read_text(encoding="utf-8"))
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
         self.assertIn(f"# TELIPHONES {product} for Windows", readme)
@@ -629,12 +725,12 @@ endfunction()
         self.assertIn(f"## {product} — Unreleased", changelog)
         self.assertEqual(re.findall(r"^## (\d+\.\d+\.\d+) ", changelog, re.MULTILINE)[0], product)
         self.assertIn(f"**{numeric}**", changelog)
-        self.assertIn("Windows 0.7.0 introduces managed My PBXs SSH certificates", readme)
+        self.assertIn("Windows 0.8.0 adds explicit pairing access selection", readme)
         self.assertIn(
-            "Windows 0.7.0 introduces managed My PBXs SSH certificates",
+            "Windows 0.8.0 adds explicit pairing access selection",
             " ".join(changelog.split()),
         )
-        self.assertIn("FreePBX module version is independent and is **0.4.1**", changelog)
+        self.assertIn("FreePBX module version: **0.6.0**", changelog)
         registered = {
             item.attrib["Include"].replace("\\", "/")
             for item in project("TELIPHONES.vcxproj").findall("ms:ItemGroup/ms:ClInclude", NS)
@@ -689,10 +785,10 @@ endfunction()
         self.assertNotIn('"TELIPHONES is a UK registered trademark.\\r\\n"', layout)
         self.assertIn("desktop/windows/build/artifact/LICENSE", workflow)
         module = ET.parse(ROOT.parents[1] / "teliphones/module.xml").getroot()
-        self.assertEqual(module.findtext("version"), "0.5.0")
+        self.assertEqual(module.findtext("version"), "0.6.0")
         for path, statement in (
-            (ROOT / "README.md", "TELIPHONES 0.7.0 for Windows is licensed under GPLv3."),
-            (ROOT.parents[1] / "teliphones/README.md", "TELIPHONES 0.5.0 for FreePBX is licensed under GPLv3."),
+            (ROOT / "README.md", "TELIPHONES 0.8.0 for Windows is licensed under GPLv3."),
+            (ROOT.parents[1] / "teliphones/README.md", "TELIPHONES 0.6.0 for FreePBX is licensed under GPLv3."),
         ):
             text = path.read_text()
             self.assertIn(statement, text)
@@ -706,6 +802,8 @@ endfunction()
             for item in app.findall("ms:ItemGroup/ms:ClCompile", NS)
         }
         expected = {path.relative_to(ROOT).as_posix() for path in (ROOT / "src").rglob("*.cpp")}
+        expected.update(path.relative_to(ROOT).as_posix()
+                        for path in (ROOT / "third_party/libvterm/src").rglob("*.c"))
         helper_main = "src/platform/SshConsoleMain.cpp"
         self.assertEqual(compiled, expected - {helper_main})
         helper = project("SshConsole.vcxproj")
@@ -722,17 +820,20 @@ endfunction()
         self.assertIn("src/app/ConnectionHealthDlg.cpp", compiled)
         self.assertIn("src/core/ConnectionHealth.cpp", compiled)
 
-    def test_pairing_ssh_capability_is_opt_in(self):
+    def test_pairing_access_choice_is_web_first_and_ssh_opt_in(self):
         source = (ROOT / "src/app/PairDlg.cpp").read_text()
         resource = (ROOT / "src/app/TELIPHONES.rc").read_text()
-        self.assertIn("CheckDlgButton(IDC_PAIR_SSH_CAPABILITY, BST_UNCHECKED);", source)
+        self.assertIn("IDC_PAIR_ACCESS", source)
+        self.assertIn('access->AddString(L"FreePBX Web Access")', source)
+        self.assertIn('access->AddString(L"FreePBX Web + SSH Access")', source)
+        self.assertIn("access->SetCurSel(0)", source)
         self.assertIn("tlp::CreatePairRequest(", source)
-        self.assertIn("IsDlgButtonChecked(IDC_PAIR_SSH_CAPABILITY) == BST_CHECKED", source)
+        self.assertIn("access->GetCurSel() == 1", source)
         self.assertIn("[this]() { return tlp::win::GenerateWorkstationSshIdentity(profile); }", source)
         self.assertNotIn("RequireEphemeralSshProvider", source)
         self.assertIn("pairing.ssh && sshPublicKey_.empty()", source)
         self.assertIn("if (sshKeyRequested_) {", source)
-        self.assertIn('IDC_PAIR_SSH_CAPABILITY, "Button", BS_AUTOCHECKBOX', resource)
+        self.assertIn("COMBOBOX        IDC_PAIR_ACCESS", resource)
 
     def test_managed_ssh_has_no_file_or_shared_agent_fallback(self):
         source = (ROOT / "src/platform/Ssh.cpp").read_text()
@@ -842,6 +943,22 @@ endfunction()
             self.assertIn(feature, native)
         app_sources = [node.get("Include") for node in project("HealthWindowTests.vcxproj").findall("ms:ItemGroup/ms:ClCompile", NS)]
         self.assertIn("src\\app\\DesktopLayout.cpp", app_sources)
+
+    def test_website_demo_disclaimer_and_keyboard_focus_survive_responsive_layout(self):
+        website = ROOT.parents[1] / "website"
+        page = (website / "demo/index.html").read_text(encoding="utf-8")
+        script = (website / "assets/demo.js").read_text(encoding="utf-8")
+        styles = (website / "assets/demo.css").read_text(encoding="utf-8")
+        self.assertIn("Interactive demo • no PBX connection", page)
+        self.assertIn("role=\"tablist\"", page)
+        self.assertIn("function focusTab(name)", script)
+        self.assertIn("focusTab(activeTab);", script)
+        self.assertIn("Connection Health:", script)
+        self.assertIn("position: sticky", styles)
+        mobile = styles.split("@media (max-width: 460px)", 1)[1]
+        self.assertNotIn(".demo-banner { position: static; }", mobile)
+        for unsafe in ("fetch(", "XMLHttpRequest", "WebSocket", "eval(", "new Function"):
+            self.assertNotIn(unsafe, script)
 
     def test_modeless_health_window_has_explicit_owner_and_native_lifecycle_tests(self):
         source = (ROOT / "src/app/ConnectionHealthDlg.cpp").read_text()
@@ -1036,7 +1153,7 @@ endfunction()
         for path in resource_dir.iterdir():
             if path.suffix in (".cpp", ".h", ".rc"):
                 used.update(re.findall(r"\bID[CD]_[A-Z0-9_]+\b", path.read_text()))
-        self.assertEqual(used - declared - {"IDC_ARROW"}, set())
+        self.assertEqual(used - declared - {"IDC_ARROW", "IDC_IBEAM"}, set())
         rc = (resource_dir / "TELIPHONES.rc").read_text()
         for name in ("IDD_MAIN", "IDD_PAIR", "IDD_SUPPORT", "IDD_APP_SETTINGS", "IDD_CONNECTION_HEALTH", "IDD_HEALTH_LIMITS", "IDD_SESSION_LOG"):
             self.assertRegex(rc, rf"\b{name}\s+DIALOGEX\b")

@@ -20,6 +20,7 @@
 #include "../src/core/TunnelConfig.h"
 #include "../src/core/Validation.h"
 #include "../src/core/WireGuardSetup.h"
+#include "../src/core/WorkstationHeartbeat.h"
 #include "../src/app/Version.h"
 
 using namespace tlp;
@@ -165,6 +166,23 @@ void testPairing() {
 
     PairResponse ok = ParsePairResponse("  " + response({}) + "\r\n", kNonce, kWorkstationKey);
     check(ok.workstationId == "0123456789abcdef" && ok.pbxAddress == "100.70.1.1" && ok.expiresAt == 2000000000 && ok.ssh, "valid response parsed");
+    const std::string migration = json::Serialize(json::Value::Object{
+        {"workstation_id", ok.workstationId}, {"workstation_public_key", ok.workstationPublicKey},
+        {"pbx_public_key", ok.pbxPublicKey}, {"address", "100.71.1.2/32"}, {"pbx_address", "100.71.1.1"},
+        {"listener_port", 51822}, {"gui_url", "http://100.71.1.1/admin/"},
+        {"generation", "0123456789abcdef0123456789abcdef"}, {"ssh_port", 0}, {"ssh_api_port", 0}});
+    const auto migrated = ApplyWorkstationMigration(ok, migration);
+    check(migrated.address == "100.71.1.2/32" && migrated.pbxAddress == "100.71.1.1" &&
+          migrated.endpoint == "pbx.example.net:51822" && migrated.workstationPublicKey == ok.workstationPublicKey,
+          "authenticated workstation migration changes tunnel routes without changing identity");
+    auto invalidMigration = json::Parse(migration).asObject();
+    invalidMigration["workstation_public_key"] = std::string(42, 'C') + "E=";
+    check(throws([&] { ApplyWorkstationMigration(ok, json::Serialize(json::Value(invalidMigration))); }),
+          "migration for a different workstation identity rejected");
+    invalidMigration = json::Parse(migration).asObject();
+    invalidMigration["address"] = "0.0.0.0/0";
+    check(throws([&] { ApplyWorkstationMigration(ok, json::Serialize(json::Value(invalidMigration))); }),
+          "migration with an unrestricted tunnel route rejected");
     PairResponse persistent = ParsePairResponse(response({{"mode", "persistent"}, {"expires_at", nullptr}}), kNonce, kWorkstationKey);
     check(persistent.mode == "persistent" && persistent.expiresAt == 0, "persistent response parsed");
     for (const char* url : {"http://100.70.1.1:8080/admin/", "https://100.70.1.1/admin/", "https://100.70.1.1:8443/admin/"}) {
@@ -263,6 +281,75 @@ void testPairing() {
     check(throws([&] { ParsePairResponse(v2(), kNonce, kWorkstationKey, sshKey); }), "managed certificate API port is fixed");
 }
 
+void testWorkstationHeartbeatSshUpdates() {
+    Bytes sshBlob{0, 0, 0, 11, 's', 's', 'h', '-', 'e', 'd', '2', '5', '5', '1', '9', 0, 0, 0, 32};
+    sshBlob.insert(sshBlob.end(), 32, 7);
+    const std::string sshKey = "ssh-ed25519 " + Base64Encode(sshBlob);
+    Profile approvalProfile = webOnlyPersistentProfile();
+    approvalProfile.pairing.sshRequestPublicKey = sshKey;
+    PairResponse approval = approvalProfile.pairing;
+    approval.ssh = true;
+    approval.sshRequestPublicKey.clear();
+    approval.sshPublicKey = sshKey;
+    approval.sshUser = "pbxadmin";
+    approval.sshHostKey = sshKey;
+    approval.sshCaKey = sshKey;
+    approval.sshPort = 22002;
+    approval.sshApiPort = 8765;
+    check(ApplyWorkstationSshApproval(approvalProfile, approval) &&
+              approvalProfile.pairing.ssh && approvalProfile.sshUser == "pbxadmin" &&
+              approvalProfile.pairing.sshPublicKey == sshKey &&
+              approvalProfile.pairing.address == approval.address,
+          "post-pair SSH approval updates the existing profile without migration or identity replacement");
+
+    Profile rejectedProfile = webOnlyPersistentProfile();
+    rejectedProfile.pairing.sshRequestPublicKey = sshKey;
+    const std::string webAddress = rejectedProfile.pairing.address;
+    check(ApplyWorkstationSshRequestRejection(rejectedProfile) &&
+              rejectedProfile.pairing.sshRequestPublicKey.empty() &&
+              !rejectedProfile.pairing.ssh && rejectedProfile.pairing.address == webAddress,
+          "SSH request rejection clears pending elevation while preserving web access without migration");
+
+    Profile revokedProfile = adminProfile();
+    revokedProfile.pairing.sshRequestPublicKey = revokedProfile.pairing.sshPublicKey;
+    revokedProfile.pairing.sshPublicKey = sshKey;
+    revokedProfile.pairing.ssh = true;
+    revokedProfile.pairing.sshPort = 22002;
+    revokedProfile.pairing.sshApiPort = 8765;
+    revokedProfile.pairing.sshUser = "pbxadmin";
+    revokedProfile.pairing.sshHostKey = sshKey;
+    revokedProfile.pairing.sshCaKey = sshKey;
+    revokedProfile.sshUser = "pbxadmin";
+    const std::string retainedWebAddress = revokedProfile.pairing.address;
+    check(ApplyWorkstationSshRevocation(revokedProfile) &&
+              !revokedProfile.pairing.ssh && revokedProfile.pairing.sshPort == 0 &&
+              revokedProfile.pairing.sshApiPort == 0 && revokedProfile.pairing.sshPublicKey.empty() &&
+              revokedProfile.pairing.sshUser.empty() && revokedProfile.sshUser.empty() &&
+              revokedProfile.pairing.sshRequestPublicKey == sshKey &&
+              revokedProfile.pairing.address == retainedWebAddress,
+          "SSH revocation removes local SSH authorization while retaining the web profile without migration");
+
+    Profile mismatchProfile = webOnlyPersistentProfile();
+    mismatchProfile.pairing.sshRequestPublicKey = sshKey;
+    PairResponse foreignApproval = approval;
+    foreignApproval.workstationId = "ffeeddccbbaa9988";
+    check(!ApplyWorkstationSshApproval(mismatchProfile, foreignApproval) &&
+              !mismatchProfile.pairing.ssh && mismatchProfile.sshUser.empty(),
+          "SSH approval for another workstation is rejected without changing its saved profile");
+
+    const PairResponse current = approvalProfile.pairing;
+    const std::string migration = json::Serialize(json::Value::Object{
+        {"workstation_id", current.workstationId}, {"workstation_public_key", current.workstationPublicKey},
+        {"pbx_public_key", current.pbxPublicKey}, {"address", "100.71.1.2/32"}, {"pbx_address", "100.71.1.1"},
+        {"listener_port", 51822}, {"gui_url", "http://100.71.1.1/admin/"},
+        {"generation", "0123456789abcdef0123456789abcdef"}, {"ssh_port", 22002}, {"ssh_api_port", 8765}});
+    const PairResponse migrated = ApplyWorkstationMigration(current, migration);
+    check(migrated.address == "100.71.1.2/32" && migrated.ssh &&
+              migrated.workstationPublicKey == current.workstationPublicKey &&
+              migrated.sshPublicKey == current.sshPublicKey,
+          "migration remains independently applicable and preserves authorized SSH and workstation identity");
+}
+
 void testTunnels() {
     Profile admin = adminProfile();
     std::string text = RenderTunnel(AdministratorTunnel(admin, kPrivateKey));
@@ -342,13 +429,30 @@ void testProfiles() {
     awaiting.hasGrant = false;
     awaiting.grant = SupportGrant();
     std::vector<Profile> profiles{adminProfile(), supportProfile(), awaiting, webOnlyPersistentProfile()};
+    Bytes sshBlob{0, 0, 0, 11, 's', 's', 'h', '-', 'e', 'd', '2', '5', '5', '1', '9', 0, 0, 0, 32};
+    sshBlob.insert(sshBlob.end(), 32, 9);
+    profiles[0].pairing.sshRequestPublicKey = "ssh-ed25519 " + Base64Encode(sshBlob);
     std::string stored = SerializeProfiles(profiles);
     check(stored.find(kPrivateKey) == std::string::npos && stored.find("private") == std::string::npos, "profile store contains no private keys");
     std::vector<Profile> loaded = ParseProfiles(stored);
     check(loaded.size() == 4 && loaded[0].pairing.pbxAddress == "100.70.1.1" && loaded[1].grant.sessions.size() == 2 && !loaded[2].hasGrant &&
               loaded[2].engineerPublicKey == kWorkstationKey && loaded[3].pairing.mode == "persistent" &&
-              loaded[3].pairing.expiresAt == 0 && !loaded[3].pairing.ssh && loaded[3].sshUser.empty() && SerializeProfiles(loaded) == stored,
+              loaded[3].pairing.expiresAt == 0 && !loaded[3].pairing.ssh && loaded[3].sshUser.empty() &&
+              loaded[0].pairing.sshRequestPublicKey == profiles[0].pairing.sshRequestPublicKey && SerializeProfiles(loaded) == stored,
           "profile store round trip");
+    loaded[0].connectPasswordSkippedPermanently = true;
+    check(ParseProfiles(SerializeProfiles(loaded))[0].connectPasswordSkippedPermanently,
+          "Skip Permanently choice persists with its workstation profile");
+    std::string legacy = stored;
+    const std::string skippedField = "\"connect_password_skipped_permanently\":";
+    const auto skippedOffset = legacy.find(skippedField);
+    check(skippedOffset != std::string::npos, "new profile schema stores the explicit first-use choice");
+    if (skippedOffset != std::string::npos) {
+        const auto fieldEnd = legacy.find(',', skippedOffset);
+        if (fieldEnd != std::string::npos) legacy.erase(skippedOffset, fieldEnd - skippedOffset + 1);
+    }
+    check(!ParseProfiles(legacy)[0].connectPasswordSkippedPermanently,
+          "existing profiles migrate without a Password Protection choice");
     check(TunnelNameFor(loaded[0]) == "TELIPHONES-001122334455" && IsTunnelName(TunnelNameFor(loaded[0])), "tunnel name");
     check(CredentialTargetFor(loaded[1]) == "TELIPHONES/workstation/8899aabbccddeeff", "credential target");
     std::string duplicate = stored;
@@ -386,17 +490,21 @@ void testCommandLine() {
     check(support.back() == "root@10.20.4.2" && support[5] == "22222", "Remote Support SSH uses the temporary support service");
 
     HelperCommand up{HelperCommand::Verb::TunnelUp, "TELIPHONES-001122334455", "C:\\Users\\a\\AppData\\Local\\TELIPHONES\\Staging\\TELIPHONES-001122334455.conf",
-                     "S-1-5-21-1-2-3-1001"};
+                     "S-1-5-21-1-2-3-1001", "00112233445566778899aabbccddeeff"};
     HelperCommand parsed = ParseHelperArguments(HelperArguments(up));
-    check(parsed.verb == HelperCommand::Verb::TunnelUp && parsed.stagingPath == up.stagingPath && parsed.userSid == up.userSid, "helper arguments round trip");
+    check(parsed.verb == HelperCommand::Verb::TunnelUp && parsed.stagingPath == up.stagingPath && parsed.userSid == up.userSid &&
+          parsed.keyPipe == up.keyPipe, "helper arguments round trip");
     check(ParseHelperArguments({"/tunnel-down", "TELIPHONES-001122334455"}).verb == HelperCommand::Verb::TunnelDown, "tunnel-down arguments");
     std::vector<std::vector<std::string>> bad = {
         {"/tunnel-down", "OtherTunnel"},
         {"/tunnel-down", "TELIPHONES-a b"},
-        {"/tunnel-up", "TELIPHONES-001122334455", "C:\\x\\other.conf", "S-1-5-21-1"},
-        {"/tunnel-up", "TELIPHONES-001122334455", "relative\\TELIPHONES-001122334455.conf", "S-1-5-21-1"},
-        {"/tunnel-up", "TELIPHONES-001122334455", "C:\\x\\..\\TELIPHONES-001122334455.conf", "S-1-5-21-1"},
-        {"/tunnel-up", "TELIPHONES-001122334455", "C:\\x\\TELIPHONES-001122334455.conf", "S-1-5--1"},
+        {"/tunnel-up", "TELIPHONES-001122334455", "C:\\x\\other.conf", "S-1-5-21-1", up.keyPipe},
+        {"/tunnel-up", "TELIPHONES-001122334455", "relative\\TELIPHONES-001122334455.conf", "S-1-5-21-1", up.keyPipe},
+        {"/tunnel-up", "TELIPHONES-001122334455", "C:\\x\\..\\TELIPHONES-001122334455.conf", "S-1-5-21-1", up.keyPipe},
+        {"/tunnel-up", "TELIPHONES-001122334455", "C:\\x\\TELIPHONES-001122334455.conf", "S-1-5--1", up.keyPipe},
+        {"/tunnel-up", up.tunnelName, up.stagingPath, up.userSid},
+        {"/tunnel-up", up.tunnelName, up.stagingPath, up.userSid, "not-a-random-pipe-token"},
+        {"/tunnel-up", up.tunnelName, up.stagingPath, up.userSid, "00112233445566778899AABBCCDDEEFF"},
         {"/tunnel-up", "TELIPHONES-001122334455", "C:\\x\\TELIPHONES-001122334455.conf"},
         {"/install", "x"},
     };
@@ -1232,12 +1340,13 @@ int main() {
     for (unsigned part : versionParts) check(part <= 65535, "Windows version component fits the resource WORD");
     check(TELIPHONES_VERSION_FILE_STRING == versionBase + "." + std::to_string(versionParts[3]), "file version expands consistently");
     check(TELIPHONES_VERSION_STRING == versionBase, "product version expands without a development suffix");
-    check(std::string(TELIPHONES_VERSION_STRING) == "0.7.0", "Windows application version is independent of the module");
-    check(std::string(TELIPHONES_VERSION_FILE_STRING) == "0.7.0.0", "Windows file version is 0.7.0.0");
+    check(std::string(TELIPHONES_VERSION_STRING) == "0.8.0", "Windows application version is independent of the module");
+    check(std::string(TELIPHONES_VERSION_FILE_STRING) == "0.8.0.0", "Windows file version is 0.8.0.0");
     testEncoding();
     testJson();
     testValidation();
     testPairing();
+    testWorkstationHeartbeatSshUpdates();
     testTunnels();
     testGrants();
     testProfiles();

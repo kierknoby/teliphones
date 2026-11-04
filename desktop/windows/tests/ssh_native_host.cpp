@@ -180,7 +180,8 @@ int runMain(int argc, char** argv) {
         if (argc > 1 && std::string(argv[1]) == "/ssh-console")
             return tlp::win::RunSshConsole(std::vector<std::string>(argv + 1, argv + argc));
         tlp::win::ProtectSshProcess(GetCurrentProcess());
-        if (argc == 3 && std::string(argv[1]) == "--production") {
+        const bool embeddedConsole = argc == 3 && std::string(argv[1]) == "--production-console";
+        if (argc == 3 && (embeddedConsole || std::string(argv[1]) == "--production")) {
             tlp::Profile profile;
             profile.id = argv[2];
             profile.kind = tlp::ProfileKind::Administrator;
@@ -202,6 +203,42 @@ int runMain(int argc, char** argv) {
             tlp::Preferences preferences;
             preferences.terminal = "cmd";
             try {
+                if (embeddedConsole) {
+                    auto console = tlp::win::StartManagedSshConsole(profile);
+                    std::cout << "PRODUCTION_STARTED" << std::endl;
+                    console->Resize(100, 30);
+                    console->WriteInput("echo TELIPHONES_CONSOLE_READY\r");
+                    std::string output;
+                    const auto deadline = GetTickCount64() + 15000;
+                    while (GetTickCount64() < deadline) {
+                        output += console->ReadAvailable();
+                        if (console->IsAuthenticated() &&
+                            output.find("TELIPHONES_CONSOLE_READY") != std::string::npos) break;
+                        if (!console->IsAlive()) throw tlp::Error("Embedded SSH console ended before interactive output.");
+                        Sleep(20);
+                    }
+                    if (!console->IsAuthenticated() || output.find("TELIPHONES_CONSOLE_READY") == std::string::npos)
+                        throw tlp::Error("Embedded SSH console did not return interactive PTY output.");
+                    std::cout << "CONSOLE_INTERACTIVE=1" << std::endl;
+                    if (!std::getline(std::cin, line) || line != "close")
+                        throw tlp::Error("Embedded console teardown requires an explicit close command.");
+                    console->Disconnect();
+                    for (int attempt = 0; attempt < 100 && tlp::win::ManagedSshSessionCount(profile.id); ++attempt)
+                        Sleep(100);
+                    if (tlp::win::ManagedSshSessionCount(profile.id) || console->IsAlive())
+                        throw tlp::Error("Embedded SSH console teardown retained an owned process.");
+                    console.reset();
+                    tlp::win::CloseManagedSsh(profile.id);
+                    const auto identityPath = tlp::win::KnownFolder(FOLDERID_LocalAppData) + L"\\TELIPHONES\\SSH\\" +
+                                              wide(profile.id) + L".dpapi";
+                    if (GetFileAttributesW(identityPath.c_str()) == INVALID_FILE_ATTRIBUTES)
+                        throw tlp::Error("Console teardown destroyed the permanent identity.");
+                    std::cout << "IDENTITY_RETAINED" << std::endl;
+                    tlp::win::RemoveSshRuntime(profile);
+                    tlp::win::DeleteSshPrivateKey(profile);
+                    std::cout << "PRODUCTION_CLOSED" << std::endl;
+                    return 0;
+                }
                 tlp::win::StartManagedSsh(profile, preferences);
                 std::cout << "PRODUCTION_STARTED" << std::endl;
                 if (!std::getline(std::cin, line)) throw tlp::Error("Native controller input ended.");

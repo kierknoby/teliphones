@@ -19,6 +19,7 @@ protected:
     void OnCancel() override;
     afx_msg void OnGenerate();
     afx_msg void OnCopy();
+    afx_msg void OnTimer(UINT_PTR timerId);
     DECLARE_MESSAGE_MAP()
 
 private:

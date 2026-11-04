@@ -39,7 +39,7 @@ class Teliphones extends Command
             ->setDescription('Manage temporary TELIPHONES support authority')
             ->addArgument('action', InputArgument::OPTIONAL, 'status|baseline|authorise|connect-request|provision|connect-confirm|peer|attest|checker-request|checker-accept|open|console-handoff|revoke|check|enable|disable|reconcile', 'status')
             ->addOption('minutes', null, InputOption::VALUE_REQUIRED, 'Support window in minutes', '60')
-            ->addOption('listen-port', null, InputOption::VALUE_REQUIRED, 'Internal WireGuard listener service reconciliation (0 removes it)')
+            ->addOption('listen-port', null, InputOption::VALUE_REQUIRED, 'Internal WireGuard listener UDP port(s), comma-separated (0 removes all)')
             ->addOption('session', null, InputOption::VALUE_REQUIRED, 'Internal session guard for expiry')
             ->addOption('peer-key', null, InputOption::VALUE_REQUIRED, 'Temporary Console-side WireGuard public key')
             ->addOption('peer-endpoint', null, InputOption::VALUE_REQUIRED, 'Temporary Console-side WireGuard endpoint host:port')
@@ -66,14 +66,20 @@ class Teliphones extends Command
                     throw new \RuntimeException('Rerun the root bootstrap to install the trusted firewall helper.');
                 }
                 require_once $helper;
-                $port = filter_var($input->getOption('listen-port'), FILTER_VALIDATE_INT);
-                if ($port === false) throw new \RuntimeException('A numeric listener port is required.');
+                $rawPorts = explode(',', (string)$input->getOption('listen-port'));
+                $ports = [];
+                foreach ($rawPorts as $rawPort) {
+                    $port = filter_var($rawPort, FILTER_VALIDATE_INT);
+                    if ($port === false) throw new \RuntimeException('Numeric listener port(s) are required.');
+                    if ($port !== 0) $ports[] = $port;
+                    elseif (count($rawPorts) !== 1) throw new \RuntimeException('Zero cannot be combined with listener ports.');
+                }
                 $stateFile = self::STATE_DIR . '/firewall-listener.json';
                 if (!is_file('/var/www/html/admin/modules/firewall/Firewall.class.php')) {
                     if (is_file($stateFile)) throw new \RuntimeException('Restore FreePBX Firewall to remove its owned listener service.');
                     return Command::SUCCESS;
                 }
-                \FreePBX\modules\Teliphones\FirewallListener::reconcile(\FreePBX::Firewall(), $port, $stateFile);
+                \FreePBX\modules\Teliphones\FirewallListener::reconcile(\FreePBX::Firewall(), $ports, $stateFile);
                 return Command::SUCCESS;
             } catch (\Exception $error) {
                 $output->writeln('<error>Listener reconciliation failed: ' . htmlspecialchars($error->getMessage(), ENT_QUOTES) . '</error>');

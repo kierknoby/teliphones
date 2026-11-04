@@ -66,6 +66,136 @@ private:
     TunnelConfig& config_;
 };
 
+class Handle {
+public:
+    explicit Handle(HANDLE value) : value_(value) {}
+    ~Handle() { if (value_ && value_ != INVALID_HANDLE_VALUE) CloseHandle(value_); }
+    Handle(const Handle&) = delete;
+    Handle& operator=(const Handle&) = delete;
+    HANDLE get() const { return value_; }
+private:
+    HANDLE value_;
+};
+
+void pipeTransfer(HANDLE pipe, void* buffer, DWORD size, bool write) {
+    DWORD total = 0;
+    while (total < size) {
+        Handle event(CreateEventW(nullptr, TRUE, FALSE, nullptr));
+        if (!event.get()) ThrowLastError("Unable to create tunnel IPC event");
+        OVERLAPPED operation{};
+        operation.hEvent = event.get();
+        DWORD count = 0;
+        auto* bytes = static_cast<unsigned char*>(buffer) + total;
+        BOOL ok = write ? WriteFile(pipe, bytes, size - total, &count, &operation)
+                        : ReadFile(pipe, bytes, size - total, &count, &operation);
+        if (!ok) {
+            if (GetLastError() != ERROR_IO_PENDING) throw Error("Tunnel key IPC failed.");
+            if (WaitForSingleObject(event.get(), 10000) != WAIT_OBJECT_0) {
+                CancelIoEx(pipe, &operation);
+                GetOverlappedResult(pipe, &operation, &count, TRUE);
+                throw Error("Tunnel key IPC timed out.");
+            }
+            if (!GetOverlappedResult(pipe, &operation, &count, FALSE)) throw Error("Tunnel key IPC failed.");
+        }
+        if (!count) throw Error("Tunnel key IPC closed unexpectedly.");
+        total += count;
+    }
+}
+
+std::wstring keyPipeName(const std::string& token) {
+    return L"\\\\.\\pipe\\TELIPHONES-connect-" + Widen(token);
+}
+
+class KeyPipe {
+public:
+    const std::string token = HexEncode(RandomBytes(16));
+    explicit KeyPipe(const std::string& key) : key_(key) {
+        const auto sddl = L"D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;" + Widen(CurrentUserSid()) + L")";
+        PSECURITY_DESCRIPTOR descriptor = nullptr;
+        if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.c_str(), SDDL_REVISION_1, &descriptor, nullptr))
+            ThrowLastError("Unable to secure tunnel key IPC");
+        SECURITY_ATTRIBUTES security{sizeof(security), descriptor, FALSE};
+        pipe_ = CreateNamedPipeW(keyPipeName(token).c_str(), PIPE_ACCESS_OUTBOUND | FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE,
+                                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+                                1, 128, 128, 0, &security);
+        LocalFree(descriptor);
+        if (pipe_ == INVALID_HANDLE_VALUE) ThrowLastError("Unable to create tunnel key IPC");
+    }
+    ~KeyPipe() { CloseHandle(pipe_); }
+    KeyPipe(const KeyPipe&) = delete;
+    KeyPipe& operator=(const KeyPipe&) = delete;
+    void deliver(HANDLE helper) {
+        Handle event(CreateEventW(nullptr, TRUE, FALSE, nullptr));
+        if (!event.get()) ThrowLastError("Unable to create tunnel IPC event");
+        OVERLAPPED operation{};
+        operation.hEvent = event.get();
+        const BOOL connected = ConnectNamedPipe(pipe_, &operation);
+        const DWORD error = connected ? ERROR_SUCCESS : GetLastError();
+        if (error == ERROR_IO_PENDING) {
+            HANDLE waits[]{event.get(), helper};
+            const auto result = WaitForMultipleObjects(2, waits, FALSE, 15000);
+            if (result != WAIT_OBJECT_0) {
+                CancelIoEx(pipe_, &operation);
+                DWORD count = 0;
+                GetOverlappedResult(pipe_, &operation, &count, TRUE);
+                throw Error("The tunnel helper did not request the unlocked key.");
+            }
+            DWORD count = 0;
+            if (!GetOverlappedResult(pipe_, &operation, &count, FALSE)) throw Error("Tunnel key IPC failed.");
+        } else if (error != ERROR_SUCCESS && error != ERROR_PIPE_CONNECTED) {
+            throw Error("Tunnel key IPC failed.");
+        }
+        ULONG client = 0;
+        if (!GetNamedPipeClientProcessId(pipe_, &client) || client != GetProcessId(helper) ||
+            WaitForSingleObject(helper, 0) != WAIT_TIMEOUT)
+            throw Error("Tunnel key IPC client was not the approved elevated helper.");
+        pipeTransfer(pipe_, const_cast<char*>(key_.data()), static_cast<DWORD>(key_.size()), true);
+    }
+private:
+    HANDLE pipe_ = INVALID_HANDLE_VALUE;
+    const std::string& key_;
+};
+
+std::string receiveKey(const std::string& token) {
+    const auto name = keyPipeName(token);
+    if (!WaitNamedPipeW(name.c_str(), 10000)) ThrowLastError("Tunnel key IPC is unavailable");
+    Handle pipe(CreateFileW(name.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING,
+                            FILE_FLAG_OVERLAPPED | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION, nullptr));
+    if (pipe.get() == INVALID_HANDLE_VALUE) ThrowLastError("Unable to open tunnel key IPC");
+    std::string key(44, '\0');
+    try {
+        pipeTransfer(pipe.get(), key.data(), static_cast<DWORD>(key.size()), false);
+        if (!IsWireGuardKey(key)) throw Error("Invalid unlocked tunnel key.");
+    } catch (...) {
+        SecureWipe(key);
+        throw;
+    }
+    return key;
+}
+
+void activateKey(const std::string& tunnelName, const std::string& privateKey) {
+    const auto name = L"\\\\.\\pipe\\ProtectedPrefix\\Administrators\\WireGuard\\" + Widen(tunnelName);
+    if (!WaitNamedPipeW(name.c_str(), 10000)) ThrowLastError("The WireGuard control pipe is unavailable");
+    Handle pipe(CreateFileW(name.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
+                            FILE_FLAG_OVERLAPPED | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION, nullptr));
+    if (pipe.get() == INVALID_HANDLE_VALUE) ThrowLastError("Unable to open the WireGuard control pipe");
+    Bytes raw = Base64Decode(privateKey);
+    std::string hex = HexEncode(raw);
+    SecureZeroMemory(raw.data(), raw.size());
+    WipeString hexWiper(hex);
+    std::string request = "set=1\nprivate_key=" + hex + "\n\n";
+    WipeString requestWiper(request);
+    pipeTransfer(pipe.get(), request.data(), static_cast<DWORD>(request.size()), true);
+    std::string response;
+    for (unsigned i = 0; i < 128; ++i) {
+        char byte = 0;
+        pipeTransfer(pipe.get(), &byte, 1, false);
+        response += byte;
+        if (response.size() >= 2 && response.compare(response.size() - 2, 2, "\n\n") == 0) break;
+    }
+    if (response != "errno=0\n\n") throw Error("WireGuard rejected the unlocked tunnel key.");
+}
+
 std::wstring serviceName(const std::string& tunnelName) { return L"WireGuardTunnel$" + Widen(tunnelName); }
 
 std::wstring tunnelFolder() { return KnownFolder(FOLDERID_ProgramFiles) + L"\\TELIPHONES\\Tunnels"; }
@@ -151,13 +281,16 @@ DWORD elevatedUninstall(const WireGuardInstallation& wireguard, const std::strin
         RunProcess(wireguard.wireguardExe, {"/uninstalltunnelservice", tunnelName}, "", 30000);
         if (!waitForState(tunnelName, TunnelState::Absent, 15000)) return kHelperRemoveFailed;
     }
-    DeleteFileW((tunnelFolder() + L"\\" + Widen(tunnelName) + L".conf").c_str());
+    if (!DeleteFileW((tunnelFolder() + L"\\" + Widen(tunnelName) + L".conf").c_str()) && GetLastError() != ERROR_FILE_NOT_FOUND &&
+        GetLastError() != ERROR_PATH_NOT_FOUND) return kHelperRemoveFailed;
     return kHelperOk;
 }
 
 DWORD helperUp(const HelperCommand& command) {
     WireGuardInstallation wireguard = FindWireGuard();
     if (!wireguard.installed || !wireguard.trusted) return kHelperWireGuardUnavailable;
+    std::string privateKey = receiveKey(command.keyPipe);
+    WipeString privateKeyWiper(privateKey);
     std::wstring staging = Widen(command.stagingPath);
     std::string canonical;
     try {
@@ -165,6 +298,8 @@ DWORD helperUp(const HelperCommand& command) {
         WipeString textWiper(text);
         TunnelConfig parsed = ParseTunnelStrict(text);
         WipeTunnelKey parsedKeyWiper(parsed);
+        // Legacy plaintext configurations are never a permitted helper input.
+        ValidateBootstrapTunnel(parsed);
         canonical = RenderTunnel(parsed);
     } catch (const Error&) {
         DeleteFileW(staging.c_str());
@@ -215,10 +350,16 @@ DWORD helperUp(const HelperCommand& command) {
         elevatedUninstall(wireguard, command.tunnelName);
         return kHelperStartFailed;
     }
+    try {
+        activateKey(command.tunnelName, privateKey);
+    } catch (...) {
+        elevatedUninstall(wireguard, command.tunnelName);
+        return kHelperStartFailed;
+    }
     return kHelperOk;
 }
 
-DWORD runElevated(const std::vector<std::string>& arguments) {
+DWORD runElevated(const std::vector<std::string>& arguments, KeyPipe* keyPipe = nullptr) {
     wchar_t self[MAX_PATH] = L"";
     DWORD length = GetModuleFileNameW(nullptr, self, MAX_PATH);
     if (length == 0 || length >= MAX_PATH) ThrowLastError("Unable to locate TELIPHONES");
@@ -236,11 +377,22 @@ DWORD runElevated(const std::vector<std::string>& arguments) {
         ThrowLastError("Windows could not start the TELIPHONES tunnel helper", error);
     }
     if (!execute.hProcess) throw Error("Windows did not start the TELIPHONES tunnel helper.");
+    Handle process(execute.hProcess);
+    try {
+        if (keyPipe) keyPipe->deliver(process.get());
+    } catch (...) {
+        TerminateProcess(process.get(), kHelperStartFailed);
+        WaitForSingleObject(process.get(), 10000);
+        throw;
+    }
     DWORD wait = WaitForSingleObject(execute.hProcess, 180000);
     DWORD exitCode = 1;
     GetExitCodeProcess(execute.hProcess, &exitCode);
-    CloseHandle(execute.hProcess);
-    if (wait != WAIT_OBJECT_0) throw Error("The TELIPHONES tunnel helper did not finish in time.");
+    if (wait != WAIT_OBJECT_0) {
+        TerminateProcess(process.get(), kHelperStartFailed);
+        WaitForSingleObject(process.get(), 10000);
+        throw Error("The TELIPHONES tunnel helper did not finish in time.");
+    }
     return exitCode;
 }
 
@@ -318,17 +470,19 @@ TunnelState QueryTunnel(const std::string& tunnelName) {
 bool InstallTunnel(const std::string& tunnelName, const std::string& configText) {
     TunnelConfig parsed = ParseTunnelStrict(configText);
     WipeTunnelKey parsedKeyWiper(parsed);
-    std::string canonical = RenderTunnel(parsed);
+    std::string canonical = RenderBootstrapTunnel(parsed);
     WipeString canonicalWiper(canonical);
     std::wstring path = stagingFolder() + L"\\" + Widen(tunnelName) + L".conf";
     std::wstring sddl = L"D:P(A;;FA;;;" + Widen(CurrentUserSid()) + L")(A;;FA;;;SY)(A;;FR;;;BA)";
     WriteNewFile(path, canonical, sddl.c_str());
     DWORD code = 1;
     try {
-        HelperCommand command{HelperCommand::Verb::TunnelUp, tunnelName, Narrow(path), CurrentUserSid()};
-        code = runElevated(HelperArguments(command));
+        KeyPipe pipe(parsed.privateKey);
+        HelperCommand command{HelperCommand::Verb::TunnelUp, tunnelName, Narrow(path), CurrentUserSid(), pipe.token};
+        code = runElevated(HelperArguments(command), &pipe);
     } catch (...) {
         DeleteFileW(path.c_str());
+        RemoveTunnel(tunnelName);
         throw;
     }
     DeleteFileW(path.c_str());
@@ -338,6 +492,9 @@ bool InstallTunnel(const std::string& tunnelName, const std::string& configText)
 }
 
 void RemoveTunnel(const std::string& tunnelName) {
+    const auto staging = KnownFolder(FOLDERID_LocalAppData) + L"\\TELIPHONES\\Staging\\" + Widen(tunnelName) + L".conf";
+    if (!DeleteFileW(staging.c_str()) && GetLastError() != ERROR_FILE_NOT_FOUND && GetLastError() != ERROR_PATH_NOT_FOUND)
+        ThrowLastError("Unable to remove the staged tunnel configuration");
     bool removed = false;
     {
         ServiceHandle manager(OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT));
@@ -353,10 +510,10 @@ void RemoveTunnel(const std::string& tunnelName) {
         }
     }
     if (removed) {
-        DeleteFileW((tunnelFolder() + L"\\" + Widen(tunnelName) + L".conf").c_str());
-        return;
+        if (DeleteFileW((tunnelFolder() + L"\\" + Widen(tunnelName) + L".conf").c_str()) || GetLastError() == ERROR_FILE_NOT_FOUND ||
+            GetLastError() == ERROR_PATH_NOT_FOUND) return;
     }
-    DWORD code = runElevated(HelperArguments(HelperCommand{HelperCommand::Verb::TunnelDown, tunnelName, "", ""}));
+    DWORD code = runElevated(HelperArguments(HelperCommand{HelperCommand::Verb::TunnelDown, tunnelName, "", "", ""}));
     if (code == ERROR_CANCELLED) throw Error("The tunnel is still connected because administrative approval was declined. Disconnect again, or stop it in WireGuard for Windows.");
     if (code != kHelperOk) throw Error(helperMessage(code));
 }
