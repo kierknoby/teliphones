@@ -10,6 +10,15 @@ session, migration, firewall and SSH acceptance remain outstanding.
 
 ## 0.6.3, pairing transport patch (local package, not published)
 
+**Subsequent unshipped source correction, version retained at 0.6.3:** the
+web-only form now submits exactly one explicit `ssh=0` when its SSH select is
+disabled. PHP reports field-specific missing/type errors and retains bounded
+non-sensitive values; pairing material/SSH approval are cleared. Actual page/POST
+and Unix-socket regressions pass locally. The preserved archive predates this
+correction; no broker implementation/version change is required.
+Windows is now independently prepared as 0.8.1; entries below retain the
+original component versions at packaging.
+
 - Replace the five-second synchronous pairing response deadline with opt-in,
   non-secret progress frames and a five-second inactivity timeout. Only the
   final verified response is success; pairing is dispatched once, and loss of

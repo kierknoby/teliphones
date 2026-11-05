@@ -6,6 +6,34 @@ heartbeats, expiry and restart recovery. A WireGuard handshake only proves
 tunnel authentication; it does not grant management access. The PBX firewall
 admits management traffic only for an active session lease.
 
+## Current Windows-to-FreePBX sequence
+
+Source targets: Windows **0.8.1**, module **0.6.3**, broker **0.6.2**, protocol
+**12**. These component versions are independent. The preserved 0.6.3 module
+archive contains transport fixes but predates the subsequent web-only form
+correction in source; neither current source nor portable tests prove live pairing.
+
+1. Enter the workstation name in Windows **Pair my PBX > Request access**.
+2. Select **FreePBX Web Access** or **FreePBX Web + SSH Access**, before generation.
+3. Choose **Generate request**, then **Copy request**.
+4. Open **Connectivity > TELIPHONES > Pair a Workstation** over trusted HTTPS
+   as a full FreePBX administrator.
+5. Complete request, endpoint, UDP port, source policy and lifetime. Under
+   **SSH approval**, explicitly authorise an existing account only when required
+   and the request supports SSH; otherwise approve web-only.
+6. Wait for final success and copy the response; progress is liveness, not success.
+7. Paste under Windows **Complete pairing**.
+8. Validate and **Save connection**. The approved SSH account is response-derived,
+   read-only and hidden for web-only approval. Clicking Save revalidates.
+
+Web-only uses request v1 without an SSH identity; v2 adds an independent SSH
+public key. Requested SSH is not approved SSH. Name/access changes invalidate
+the pending request, response and unused identities and require regeneration,
+retaining the name. Copy needs a generated current request; Save needs a valid
+request-bound response. The envelope is not independently signed: provenance
+relies on the trusted administrator HTTPS exchange, distinct from verified
+SSH certificate signatures. No schema change was needed for the dialogue.
+
 ## Persistent connection state
 
 The FreePBX workstation page can set the broker policy to **Open**, **Closed**
@@ -78,10 +106,10 @@ Broker protocol **8** adds dedicated source-restricted listeners while
 preserving protocol 7's persisted Open/Closed/Frozen policy and
 server-side enforcement that SSH permission requires an SSH-capable pairing
 request. Updated Windows builds expose a web-only or web-plus-SSH request
-choice, show explicit SSH authorization status, and use temporary inline
-clipboard feedback instead of success dialogs. Module and Windows versions
+choice, show explicit SSH authorisation status, and use temporary inline
+clipboard feedback instead of success dialogues. Module and Windows versions
 are independent; the current development targets are FreePBX **0.6.3**,
-root broker **0.6.2**, protocol **12** and Windows **0.8.0**.
+root broker **0.6.2**, protocol **12** and Windows **0.8.1**.
 
 When a pairing is Locked, an approved managed SSH listener and its short-lived
 certificate API bind to the dedicated `tlpw...` interface and tunnel address.
@@ -170,7 +198,7 @@ The system policy must be identical when evaluated at port 22 and the actual
 managed port for the approved user, source and PBX address; context-dependent
 differences fail closed. Generated configuration is checked with `sshd -T` at
 the actual managed port before installation. Owned CA/principal trust replaces
-ordinary authorized keys, while supported root/PAM/algorithm/revoked-key policy
+ordinary authorised keys, while supported root/PAM/algorithm/revoked-key policy
 is retained. Custom PAM service names and external principal restrictions are
 unsupported. Actual PAM/account and service lifecycle behaviour is a test-host
 release gate, not established by these checks.
@@ -189,7 +217,13 @@ is not included in the module-only package.
 
 ## Preserved version-1 contract
 
-Workstation pairing is for an administrator's own Windows workstation. It is separate from the customer-authorised Remote Support session workflow. The FreePBX module and root broker remain authoritative for peer enrollment, allowed traffic, expiry and revocation.
+This section records the original v1 contract and historical lifecycle;
+current source additionally requires module 0.6.3 / broker 0.6.2 / protocol 12,
+management leases, dedicated Locked interfaces and identity-preserving updates.
+The older protocol minima and full-interface rebuild description below are not
+the current broker compatibility/admission policy.
+
+Workstation pairing is for an administrator's own Windows workstation. It is separate from the customer-authorised Remote Support session workflow. The FreePBX module and root broker remain authoritative for peer enrolment, allowed traffic, expiry and revocation.
 
 The module requires broker status protocol 3 and a well-formed `workstations` block with boolean readiness/tool requirements and an items array. A protocol number alone is not sufficient. Workstation diagnostics require broker protocol 4. The packaged 0.1.3 broker used protocol 2; rerun the documented root bootstrap after Module Admin upgrade. Pairing and revocation are refused before dispatch when capability status is missing or malformed; missing tools or module disablement block new pairing, not revocation.
 
@@ -207,7 +241,7 @@ The request carries schema `teliphones-pair-request/1`, workstation name, WireGu
 
 The response schema is `teliphones-pair-response/1`. It must echo the request nonce and workstation public key. The client rejects unknown or missing fields, invalid key/address/endpoint values, addresses outside the broker's `100.64.0.0/10` workstation allocation, a PBX address that is not `.1` in the same `/24`, a mismatched GUI URL, and an invalid expiry. Temporary responses carry a positive absolute expiry; persistent responses carry `null`.
 
-The response is a copyable enrollment artifact, not proof that arbitrary access is safe. Treat it as sensitive operational data; do not post it publicly. It contains public keys and network metadata, never a private key.
+The response is a copyable enrolment artefact, not proof that arbitrary access is safe. Treat it as sensitive operational data; do not post it publicly. It contains public keys and network metadata, never a private key.
 
 ## Access and revocation
 
@@ -263,8 +297,10 @@ The historical 0.3.2 change added bounded diagnostics and protocol 4 without
 changing firewall permissions or pairing protocol. For a current upgrade,
 use the reviewed 0.6.3 test package, disconnect workstation tunnels, confirm no active support session,
 and rerun the root bootstrap. Preserve pairing state and the WireGuard key.
-Current managed SSH requires protocol 5 and both installed helpers; protocol 4
-identifies diagnostics support only. Follow [current upgrade verification](../README.md#updating-teliphones).
+Managed SSH originally required protocol 5; current module 0.6.3 requires broker
+0.6.2/protocol 12 and all three protected helpers even if an older broker reports
+protocol 12. Protocol 4 identifies historical diagnostics support only.
+Follow [current upgrade verification](../README.md#updating-teliphones).
 
 ## Network requirements
 
@@ -362,6 +398,6 @@ Limitations: the hook name `fpbxfirewall` and the `fail2ban-*` chain names come 
 
 Uninstall requires root, stops the broker service and independently verifies inactive/failed state with zero main/control PIDs. It then invokes only the installed, root-owned, non-symlink broker below trusted non-writable ancestors, with isolated Python (`-I`) and a bounded timeout. Older helpers without the verified teardown entry point are refused before execution; web-owned module Python is never executed as root.
 
-The helper shares the broker's verified teardown implementation. It removes the link before the owned rules and deletes the workstation key/state only after both absences are confirmed. A missing tool, unfamiliar table, query/disable/delete failure or helper timeout aborts uninstall and retains recovery information and the installed helper. Failed new pairing cleanup also retains its attempted public pairing metadata in root-private `workstation-recovery.json` alongside the previous saved state. Do not delete these files to hide an error; repair tools/ownership or the root broker, inspect the interface and retry. Support/gateway cleanup failures also abort artifact removal. A non-root Module Admin uninstall is refused rather than silently deleting metadata around live access.
+The helper shares the broker's verified teardown implementation. It removes the link before the owned rules and deletes the workstation key/state only after both absences are confirmed. A missing tool, unfamiliar table, query/disable/delete failure or helper timeout aborts uninstall and retains recovery information and the installed helper. Failed new pairing cleanup also retains its attempted public pairing metadata in root-private `workstation-recovery.json` alongside the previous saved state. Do not delete these files to hide an error; repair tools/ownership or the root broker, inspect the interface and retry. Support/gateway cleanup failures also abort artefact removal. A non-root Module Admin uninstall is refused rather than silently deleting metadata around live access.
 
 For protocol and implementation details, see `teliphones/support_broker.py`, `teliphones/WebSupport.php`, `desktop/windows/src/core/Pairing.cpp`, and `desktop/windows/README.md`.

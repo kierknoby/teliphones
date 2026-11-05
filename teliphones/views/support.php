@@ -56,6 +56,15 @@ $failedAction = isset($notice) && is_array($notice) && empty($notice['ok'])
 $expand = static function (array $actions) use ($failedAction): string {
     return in_array($failedAction, $actions, true) ? ' open' : '';
 };
+$pairValues = [];
+if ($failedAction === 'pair' && WebSupport::validRequest($_POST, $token ?? '')) {
+    foreach (['endpoint_host' => 253, 'listen_port' => 5, 'web' => 120, 'sources' => 2048] as $field => $limit) {
+        if (is_string($_POST[$field] ?? null) && strlen($_POST[$field]) <= $limit) $pairValues[$field] = $_POST[$field];
+    }
+    foreach (['mode' => ['temporary', 'persistent'], 'minutes' => ['60', '240', '480', '1440']] as $field => $allowed) {
+        if (in_array($_POST[$field] ?? null, $allowed, true)) $pairValues[$field] = $_POST[$field];
+    }
+}
 ?>
 <style>
 #teliphones-root .teliphones-spinner{display:inline-block;width:1em;height:1em;margin-right:.4em;vertical-align:-.15em;border:2px solid #ccc;border-top-color:#337ab7;border-radius:50%;animation:teliphones-spin .8s linear infinite}
@@ -641,24 +650,26 @@ foreach ($workstations['items'] as $workstation) {
 <h4>1. Windows application request</h4>
 <label for="teliphones-pair-request">Pairing request from the Windows application</label>
 <textarea id="teliphones-pair-request" class="form-control" name="request" rows="3" maxlength="4096" required></textarea>
+<?php if ($failedAction === 'pair'): ?><p class="help-block">Pairing material is not redisplayed after a failed submission. Refresh workstation status before retrying an unconfirmed operation, then paste the request again. SSH approval must be selected again explicitly.</p><?php endif; ?>
 </div>
 <div class="teliphones-pair-step">
 <h4>2. PBX hostname and WireGuard</h4>
 <label for="teliphones-pair-host">PBX public hostname or IP address (used by the workstation to reach WireGuard)</label>
-<input id="teliphones-pair-host" class="form-control" name="endpoint_host" maxlength="253" required value="<?=$escape($defaultHost)?>">
+<input id="teliphones-pair-host" class="form-control" name="endpoint_host" maxlength="253" required value="<?=$escape($pairValues['endpoint_host'] ?? $defaultHost)?>">
 <label for="teliphones-pair-port">WireGuard UDP port on the PBX</label>
-<input id="teliphones-pair-port" class="form-control" name="listen_port" inputmode="numeric" pattern="[0-9]{4,5}" required value="<?=$escape($workstations['listen_port'] ?? 51821)?>">
+<input id="teliphones-pair-port" class="form-control" name="listen_port" inputmode="numeric" pattern="[0-9]{4,5}" required value="<?=$escape($pairValues['listen_port'] ?? $workstations['listen_port'] ?? 51821)?>">
 </div>
 <div class="teliphones-pair-step">
 <h4>3. Management services and permissions</h4>
 <?php if ($workstations['web_supported']): ?>
 <label for="teliphones-pair-web">Management web services reachable through the tunnel (first entry becomes this workstation's GUI address)</label>
-<input id="teliphones-pair-web" class="form-control" name="web" maxlength="120" pattern="\s*(https?:[0-9]{1,5})(\s*,\s*https?:[0-9]{1,5}){0,3}\s*" value="<?=$escape($defaultWebText)?>">
+<input id="teliphones-pair-web" class="form-control" name="web" maxlength="120" pattern="\s*(https?:[0-9]{1,5})(\s*,\s*https?:[0-9]{1,5}){0,3}\s*" value="<?=$escape($pairValues['web'] ?? $defaultWebText)?>">
 <p class="help-block">Defaults to the saved configuration, or this server's current scheme/port when it is not listed. Behind a reverse proxy, enter the PBX's actual listener, not the proxy port. Verify service reachability on the tunnel address; firewall permissions alone do not configure Apache. Applies to all paired workstations.</p>
 <?php endif; ?>
 <div id="teliphones-pair-ssh-controls" hidden>
+<input id="teliphones-pair-web-only" type="hidden" name="ssh" value="0">
 <label for="teliphones-pair-ssh">SSH approval</label>
-<select id="teliphones-pair-ssh" class="form-control" name="ssh"><option value="0">FreePBX Web Access only</option><option value="1">FreePBX Web + SSH Access</option></select>
+<select id="teliphones-pair-ssh" class="form-control" name="ssh" disabled><option value="0">FreePBX Web Access only</option><option value="1">FreePBX Web + SSH Access</option></select>
 <div id="teliphones-pair-ssh-account" hidden>
 <label for="teliphones-pair-ssh-user">Authorised existing Linux account (required when SSH is approved)</label>
 <input id="teliphones-pair-ssh-user" class="form-control" name="ssh_user" maxlength="32" pattern="[a-z_][a-z0-9_-]{0,31}" autocomplete="off" disabled>
@@ -670,11 +681,11 @@ foreach ($workstations['items'] as $workstation) {
 <div class="teliphones-pair-step">
 <h4>4. Duration and optional source restrictions</h4>
 <label for="teliphones-pair-mode">Pairing</label>
-<select id="teliphones-pair-mode" class="form-control" name="mode"><option value="temporary">Temporary</option><option value="persistent">Persistent trusted workstation (until revoked)</option></select>
+<select id="teliphones-pair-mode" class="form-control" name="mode"><option value="temporary"<?=($pairValues['mode'] ?? 'temporary') === 'temporary' ? ' selected' : ''?>>Temporary</option><option value="persistent"<?=($pairValues['mode'] ?? '') === 'persistent' ? ' selected' : ''?>>Persistent trusted workstation (until revoked)</option></select>
 <label for="teliphones-pair-minutes">Temporary pairing duration (minutes)</label>
-<select id="teliphones-pair-minutes" class="form-control" name="minutes"><?php foreach ([60, 240, 480, 1440] as $minutes): ?><option value="<?=$minutes?>"><?=$minutes?></option><?php endforeach; ?></select>
+<select id="teliphones-pair-minutes" class="form-control" name="minutes"><?php foreach ([60, 240, 480, 1440] as $minutes): ?><option value="<?=$minutes?>"<?=($pairValues['minutes'] ?? '60') === (string)$minutes ? ' selected' : ''?>><?=$minutes?></option><?php endforeach; ?></select>
 <label for="teliphones-pair-sources">Lock this workstation to approved IPs/domains (optional, comma-separated)</label>
-<input id="teliphones-pair-sources" class="form-control" name="sources" maxlength="2048" placeholder="198.51.100.24, office.example.net"<?=$sourceLockOff?>>
+<input id="teliphones-pair-sources" class="form-control" name="sources" maxlength="2048" placeholder="198.51.100.24, office.example.net" value="<?=$escape($pairValues['sources'] ?? '')?>"<?=$sourceLockOff?>>
 <p class="help-block">A non-empty list uses a dedicated WireGuard listener port and tunnel interface; FreePBX Firewall service rules are managed automatically. If the PBX is behind router/NAT, forward the allocated UDP port to the PBX. DNS names are resolved and refreshed by the PBX; unresolved names do not add access. This initial lock is administrator-set during pairing.</p>
 <?php if ($sourceLockOff): ?><p class="help-block">Source-lock controls require broker protocol 8; update the root broker before using this option.</p><?php endif; ?>
 </div>
@@ -690,10 +701,11 @@ foreach ($workstations['items'] as $workstation) {
     var controls = document.getElementById('teliphones-pair-ssh-controls');
     var unavailable = document.getElementById('teliphones-pair-ssh-unavailable');
     var approval = document.getElementById('teliphones-pair-ssh');
+    var webOnly = document.getElementById('teliphones-pair-web-only');
     var account = document.getElementById('teliphones-pair-ssh-account');
     var username = document.getElementById('teliphones-pair-ssh-user');
     var sources = document.getElementById('teliphones-pair-sources');
-    if (!request || !controls || !approval || !account || !username) return;
+    if (!request || !controls || !approval || !webOnly || !account || !username) return;
     function updateAccount() {
         var needed = approval.value === '1' && !approval.disabled;
         account.hidden = !needed;
@@ -718,6 +730,7 @@ foreach ($workstations['items'] as $workstation) {
         var lockedSshUnavailable = sources && sources.value.trim() !== '' &&
             !<?=$workstations['supported'] && WebSupport::supportsLockedSsh($support) ? 'true' : 'false'?>;
         approval.disabled = !supported || lockedSshUnavailable;
+        webOnly.disabled = !approval.disabled;
         if (!supported) approval.value = '0';
         if (lockedSshUnavailable) approval.value = '0';
         unavailable.hidden = supported && !lockedSshUnavailable;

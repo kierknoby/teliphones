@@ -157,6 +157,24 @@ class WebSupport
         foreach (self::PAIRING_FIELDS[$request['action']] ?? ['minutes', 'evidence', 'url', 'certificate', 'private_key', 'ca', 'checker_key'] as $field) {
             if (isset($post[$field]) && is_string($post[$field])) $request[$field] = $post[$field];
         }
+        if ($request['action'] === 'pair') {
+            foreach (['request' => 'Windows pairing request', 'endpoint_host' => 'PBX hostname or IP address',
+                'listen_port' => 'WireGuard UDP port', 'mode' => 'pairing duration mode', 'ssh' => 'SSH access choice'] as $field => $label) {
+                if (!isset($request[$field]) || trim($request[$field]) === '') {
+                    return ['code' => 200, 'dispatched' => false, 'notice' => ['ok' => false, 'action_failed' => true,
+                        'action' => 'pair', 'operation' => $operation,
+                        'error' => 'Pairing was not attempted: ' . $label . ' is missing or is not text.']];
+                }
+            }
+            foreach (['mode' => ['temporary', 'persistent'], 'ssh' => ['0', '1']] as $field => $allowed) {
+                if (!in_array($request[$field], $allowed, true)) {
+                    return ['code' => 200, 'dispatched' => false, 'notice' => ['ok' => false, 'action_failed' => true,
+                        'action' => 'pair', 'operation' => $operation,
+                        'error' => 'Pairing was not attempted: select a valid '
+                            . ($field === 'mode' ? 'pairing duration mode.' : 'SSH access choice.')]];
+                }
+            }
+        }
         if ($request['action'] === 'pair' && !empty($request['web']) && !self::supportsWeb($support)) {
             return ['code' => 409, 'dispatched' => false, 'notice' => ['ok' => false, 'action_failed' => true,
                 'error' => 'Update the root broker before pairing with configured management web services.']];

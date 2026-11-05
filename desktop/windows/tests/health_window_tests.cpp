@@ -7,6 +7,8 @@
 #include <stdexcept>
 #include <vector>
 
+void RunPairDialogTests(CWnd* parent);
+
 namespace {
 
 class CWindowLifecycleTest : public CAppearanceDialog {
@@ -40,6 +42,7 @@ protected:
         try {
             LayoutTests();
             AppearanceTests();
+            RunPairDialogTests(this);
             tlp::HealthPreferences preferences;
             preferences.windowX = 90000;
             preferences.windowY = -90000;

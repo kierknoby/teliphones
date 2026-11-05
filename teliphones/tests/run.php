@@ -22,6 +22,8 @@ if ($node === '') {
     if ($status !== 0) exit($status);
     passthru(escapeshellarg($node) . ' ' . escapeshellarg(__DIR__ . '/admin-panels.test.js'), $status);
     if ($status !== 0) exit($status);
+    passthru(escapeshellarg($node) . ' ' . escapeshellarg(__DIR__ . '/pairing-form.test.js'), $status);
+    if ($status !== 0) exit($status);
 }
 
 $python = trim((string)shell_exec('command -v python3 2>/dev/null'));

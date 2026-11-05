@@ -116,27 +116,30 @@ BEGIN
     PUSHBUTTON      "Cancel", IDCANCEL, 139, 79, 58, 18
 END
 
-IDD_PAIR DIALOGEX 0, 0, 445, 350
+IDD_PAIR DIALOGEX 0, 0, 445, 394
 STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "Pair my PBX"
 FONT 9, "Segoe UI"
 BEGIN
-    LTEXT           "Workstation name:", -1, 10, 12, 100, 14
-    EDITTEXT        IDC_PAIR_WORKSTATION, 115, 10, 230, 18, ES_AUTOHSCROLL
-    PUSHBUTTON      "Generate request", IDC_PAIR_GENERATE, 350, 9, 85, 22
-    LTEXT           "Copy this request to Connectivity > TELIPHONES > Windows workstations on your PBX:", -1, 10, 37, 425, 25
-    EDITTEXT        IDC_PAIR_REQUEST, 10, 63, 425, 82, ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY | WS_VSCROLL
-    PUSHBUTTON      "Copy request", IDC_PAIR_COPY, 10, 149, 90, 22
-    LTEXT           "", IDC_PAIR_FINGERPRINT, 110, 152, 325, 18, SS_LEFT
-    LTEXT           "Paste the response produced by the PBX:", -1, 10, 178, 300, 14
-    EDITTEXT        IDC_PAIR_RESPONSE, 10, 195, 425, 52, ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL
-    LTEXT           "SSH account approved by FreePBX:", -1, 10, 255, 260, 14
-    EDITTEXT        IDC_PAIR_SSHUSER, 275, 252, 160, 18, ES_AUTOHSCROLL | ES_READONLY
-    LTEXT           "Access requested:", -1, 10, 280, 100, 14
-    COMBOBOX        IDC_PAIR_ACCESS, 115, 276, 320, 70, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
-    LTEXT           "Choose Web Access, or request Web + SSH. FreePBX must separately approve SSH.", IDC_PAIR_STATUS, 10, 301, 425, 28, SS_LEFT
-    DEFPUSHBUTTON   "Save connection", IDOK, 265, 326, 90, 20
-    PUSHBUTTON      "Cancel", IDCANCEL, 360, 326, 75, 20
+    GROUPBOX        "Request access", -1, 10, 7, 425, 207
+    LTEXT           "&Workstation name:", -1, 20, 24, 95, 14
+    EDITTEXT        IDC_PAIR_WORKSTATION, 120, 22, 305, 18, ES_AUTOHSCROLL
+    LTEXT           "&Access requested:", -1, 20, 48, 95, 14
+    COMBOBOX        IDC_PAIR_ACCESS, 120, 46, 305, 70, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    PUSHBUTTON      "&Generate request", IDC_PAIR_GENERATE, 20, 72, 95, 22
+    LTEXT           "Copy into Connectivity > TELIPHONES > Pair a Workstation in FreePBX.", -1, 125, 73, 300, 25
+    LTEXT           "Generated pairing &request:", -1, 20, 101, 405, 14
+    EDITTEXT        IDC_PAIR_REQUEST, 20, 117, 405, 56, ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY | WS_VSCROLL
+    PUSHBUTTON      "&Copy request", IDC_PAIR_COPY, 20, 181, 90, 22, WS_DISABLED
+    LTEXT           "", IDC_PAIR_FINGERPRINT, 120, 182, 305, 25, SS_LEFT
+    GROUPBOX        "Complete pairing", -1, 10, 223, 425, 113
+    LTEXT           "&Paste the response produced by the PBX:", -1, 20, 240, 405, 14
+    EDITTEXT        IDC_PAIR_RESPONSE, 20, 257, 405, 46, ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL | WS_DISABLED
+    LTEXT           "SSH account approved by FreePBX:", IDC_PAIR_SSHLABEL, 20, 313, 240, 14, NOT WS_VISIBLE
+    EDITTEXT        IDC_PAIR_SSHUSER, 265, 309, 160, 18, ES_AUTOHSCROLL | ES_READONLY | NOT WS_VISIBLE
+    LTEXT           "", IDC_PAIR_STATUS, 10, 343, 425, 25, SS_LEFT
+    DEFPUSHBUTTON   "&Save connection", IDOK, 265, 371, 90, 20, WS_DISABLED
+    PUSHBUTTON      "Cancel", IDCANCEL, 360, 371, 75, 20
 END
 
 IDD_SUPPORT DIALOGEX 0, 0, 445, 310

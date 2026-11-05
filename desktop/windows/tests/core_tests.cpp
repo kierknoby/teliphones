@@ -249,6 +249,11 @@ void testPairing() {
           "explicit SSH request reports missing OpenSSH rather than silently downgrading");
     const auto requestedSsh = CreatePairRequest("ADMIN-PC", kWorkstationKey, kNonce, true, [&]() { return sshKey; });
     check(requestedSsh.code == sshRequest && requestedSsh.sshPublicKey == sshKey, "SSH opt-in enrolls the separate key");
+    const auto sshBody = Base64UrlDecode(requestedSsh.code.substr(requestedSsh.code.find(':') + 1));
+    const auto sshFields = json::Parse(std::string(sshBody.begin(), sshBody.end()));
+    check(sshFields.at("schema").asString() == "teliphones-pair-request/2" &&
+          sshFields.at("ssh_public_key").asString() == sshKey &&
+          sshFields.at("workstation").asString() == "ADMIN-PC", "access and workstation encoded before generation");
     check(!ParsePairResponse(response({{"ssh", false}}), kNonce, kWorkstationKey).ssh,
           "new web-only request accepts web-only PBX approval without any SSH key");
     auto encoded = response({});
@@ -266,6 +271,20 @@ void testPairing() {
     };
     const auto managed = ParsePairResponse(v2(), kNonce, kWorkstationKey, sshKey);
     check(managed.sshUser == "root" && managed.sshPort == 22002, "explicit administrator-approved root account retained");
+    check(throws([&] { ParsePairResponse(v2(), "bcdefghijklmnopqrstuvw", kWorkstationKey, sshKey); }),
+          "regenerated nonce rejects stale PBX response even if public key stays the same");
+    auto denied = object;
+    denied["ssh"] = false;
+    denied["ssh_user"] = "";
+    denied["ssh_host_key"] = "";
+    denied["ssh_ca_key"] = "";
+    denied["ssh_port"] = 0;
+    denied["ssh_api_port"] = 0;
+    const auto deniedBody = json::Serialize(denied);
+    const auto webApproval = ParsePairResponse("TELIPHONES-PAIR-RESPONSE-2:" +
+        Base64UrlEncode(Bytes(deniedBody.begin(), deniedBody.end())), kNonce, kWorkstationKey, sshKey);
+    check(!webApproval.ssh && webApproval.sshUser.empty(),
+          "requesting SSH does not invent PBX approval or an SSH account");
     auto loopback = managed;
     loopback.address = "127.0.0.1/32";
     loopback.sshPort = 22001;
@@ -1340,8 +1359,8 @@ int main() {
     for (unsigned part : versionParts) check(part <= 65535, "Windows version component fits the resource WORD");
     check(TELIPHONES_VERSION_FILE_STRING == versionBase + "." + std::to_string(versionParts[3]), "file version expands consistently");
     check(TELIPHONES_VERSION_STRING == versionBase, "product version expands without a development suffix");
-    check(std::string(TELIPHONES_VERSION_STRING) == "0.8.0", "Windows application version is independent of the module");
-    check(std::string(TELIPHONES_VERSION_FILE_STRING) == "0.8.0.0", "Windows file version is 0.8.0.0");
+    check(std::string(TELIPHONES_VERSION_STRING) == "0.8.1", "Windows application version is independent of the module");
+    check(std::string(TELIPHONES_VERSION_FILE_STRING) == "0.8.1.0", "Windows file version is 0.8.1.0");
     testEncoding();
     testJson();
     testValidation();

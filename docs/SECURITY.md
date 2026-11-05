@@ -1,12 +1,13 @@
 # TELIPHONES security
 
-This document explains the security model of **FreePBX module 0.4.1** and
-**Windows 0.7.0**, the evidence behind each control and its limitations.
+This document explains current source targets **FreePBX module 0.6.3**, **root
+broker 0.6.2**, **protocol 12** and **Windows 0.8.1**, evidence and limitations.
 
 > [!WARNING]
 > TELIPHONES remains experimental. The operator reports successful native
 > Windows tests and initial live authenticated SSH, not complete lifecycle
-> assurance. Module 0.4.1's firewall correction has only local regression evidence.
+> assurance. The latest 0.8.1 source still requires native Windows validation,
+> and current firewall/session recovery requires live-PBX acceptance.
 > Do not use TELIPHONES on a production PBX.
 
 ## Contents
@@ -46,7 +47,7 @@ This documentation uses three levels of assurance. A control at one level should
 | Workstation nftables policy verification and monitoring | ✅ | ✅ Real nftables in namespaces | — |
 | FreePBX Firewall integration (`teliphones-ws`) | ✅ | ✅ Real packets, simulated FreePBX Firewall, both iptables backends | **Outstanding** |
 | Fail2Ban ordering preservation | ✅ | ✅ Simulated, using observed chain names | **Outstanding** |
-| Managed SSH authentication and client disconnect | ✅ | ✅ Linux OpenSSH and portable contracts | Operator reports native 10/10, live authentication and owned-terminal closure |
+| Managed SSH authentication and client disconnect | ✅ | ✅ Linux OpenSSH and portable contracts | Operator reports earlier 11/11 and first-run startup smoke passing; not current 0.8.1 validation |
 | SSH refusal for unapproved peers and complete server lifecycle | ✅ | ✅ | **Outstanding** on the real PBX; PuTTY is not supported for managed SSH |
 | Unauthorised PBX services inaccessible through the tunnel | ✅ | ✅ SIP, AMI, MySQL and IPv6 in simulation | **Outstanding** |
 | Revocation, expiry and verified uninstall | ✅ | ✅ Including failure injection | **Outstanding** |
@@ -54,13 +55,18 @@ This documentation uses three levels of assurance. A control at one level should
 
 ## Verification evidence
 
-This is the current evidence register for the documentation review on
-**3 November 2026**. It distinguishes supplied reports from local execution.
+This evidence register is reviewed on **5 November 2026**. It distinguishes
+supplied reports, current source and preserved packages from local execution.
 Earlier failed runs remain in the [Windows readiness history](../desktop/windows/tests/WINDOWS-READINESS.md#historical-investigations);
 they are not the current native-test result.
 
 | Evidence source | Result and boundary |
 |---|---|
+| Current source review | Windows 0.8.1 pairing dialogue implemented; portable Release build and 9/9 CTests passed, including 48 build/layout contracts. Native compilation, MFC dialogue and application startup smoke are registered in Windows CI, not executed in this Linux workspace. |
+| Pairing form source correction | Disabled SSH select omitted `ssh` from web-only POST. The module now submits explicit `ssh=0`, retains safe values and rejects missing/invalid choices. PHP/Node page-path tests passed; gateway suite 203 run, 202 passed, one skipped, includes actual PHP page/Unix-socket broker pairing with modelled network commands. This is not live PBX execution. |
+| Preserved current package | Local `TELIPHONES-0.6.3.tgz` contains transport corrections and broker 0.6.2, not subsequent form/documentation edits. Its existing checksum is unchanged; current archive/source equality is intentionally not claimed. No Windows 0.8.1 binary/public release is established. |
+| nftables repeatability | At 0.6.3 preparation, 10/10 working-tree and 10/10 unchanged-baseline namespace runs passed after an earlier intermittent own-event-filtering failure. That failure remains undiagnosed; successful samples do not exclude recurrence. |
+| Later operator report | Earlier Windows Actions run: all eleven native SSH integrations passed; first-run GUI smoke subsequently reported successful. No matching 0.8.1 run or independently fetched evidence is supplied. |
 | Operator's latest report | Successful Windows GitHub Actions builds and **all ten native OpenSSH integration tests passing**. No run URL, commit/build hash or raw logs accompanied this update; no external service was queried to verify it. |
 | Operator's live test | Windows 0.7.0 authenticated to a FreePBX 17 / Debian 12 server with installed module 0.4.0; the owned SSH terminal closed automatically on disconnect. This establishes an initial interoperability milestone, not complete PBX-side termination. |
 | Local 0.4.1 correction tests | Gateway suite: 148 run, 147 passed, one skipped because `wg` was absent. Includes genuine OpenSSH in isolated Linux namespaces and real packets through both iptables backends with simulated FreePBX rules; the SSH supervisor substitutes for systemd/cgroups. Module PHP/JS/docs, portable Windows 7/7 CTest and archive validation passed at packaging. |
@@ -140,9 +146,11 @@ signing capability is then destroyed. This does not guarantee physical erasure
 from memory, paging files, crash dumps or storage, or resist a compromised OS,
 administrator or pre-existing privileged handles. Full details are in the
 [managed SSH implementation reference](SSH-KEY-MANAGEMENT-PROPOSAL.md).
-OpenSSH-backed PowerShell, PowerShell 7, Windows Terminal and Command Prompt
-are supported. PuTTY belongs only to the separate Remote Support launch path;
-the planned integrated terminal is not implemented.
+Current My PBXs uses the built-in libvterm/ConPTY console over Windows system
+OpenSSH, including PTY/input/resize and protected per-session authentication-event
+handling. PuTTY is unsupported for managed certificates; external terminal
+preferences belong to Remote Support and the earlier helper paths. Current
+0.8.1 native validation remains outstanding.
 
 ## Temporary and persistent access
 
@@ -162,9 +170,9 @@ the planned integrated terminal is not implemented.
 ### FreePBX Firewall integration
 
 - The broker maintains the `teliphones-ws` iptables chain and one marked jump at the start of `fpbxfirewall`. Every direct INPUT Fail2Ban hook must precede entry. No rule is inserted above FreePBX's INPUT hook: that old placement triggered the reported recurring "invading rule" resets.
-- The chain accepts only TCP 80/443 and the explicitly approved SSH ports from each active paired `/32` to the PBX tunnel address on `tlp-admin`. Managed certificate SSH uses TCP 8765 and a per-peer listener, never system TCP 22; legacy SSH-approved pairings retain 22. Everything else returns to the remaining FreePBX rules.
+- The chain accepts only configured management TCP ports (default 80/443) and approved SSH ports from admitted peers to their PBX address on the shared/dedicated interface. Management requires an active session lease. Managed certificate SSH uses TCP 8765 and a per-peer listener, never system TCP 22; legacy approvals retain 22. Everything else returns to the remaining FreePBX rules.
 - The integration is installed only after the nftables policy has been verified, and before the interface is brought up.
-- Only TELIPHONES' exact marked jump is inserted/deleted inside `fpbxfirewall`; the exact legacy INPUT jump is removed during migration/cleanup. Unrelated rules, zones, trusted networks, settings and services are unchanged. Custom Rules need not be enabled. The interface and subnet are not trusted, because either would admit every service.
+- Only the exact marked jump is changed inside `fpbxfirewall`; the exact legacy INPUT jump is removed during migration/cleanup. A TELIPHONES Custom Service manages the required UDP listener ports through FreePBX's API and verifies generated rules. Unrelated zones/rules/services remain unchanged. Custom Rules need not be enabled; the interface/subnet are not trusted.
 - If Fail2Ban's hooks cannot all precede the integration, TELIPHONES withdraws the integration rather than bypass Fail2Ban. Tunnel web traffic is then dropped by FreePBX Firewall until the ordering is corrected.
 - `ip6tables` is never modified.
 
@@ -190,6 +198,14 @@ TELIPHONES never flushes the system ruleset or a foreign chain, deletes/replaces
 - Like other root-capable FreePBX services, the design relies on the integrity of FreePBX application code. **Do not allow untrusted code to run as the FreePBX service account.**
 
 ## Failure handling and recovery
+
+On missing monitor acknowledgement, pending transactions may be released only
+after kernel readback verifies the resulting owned state; unavailable readback
+retains pending state and blocks admission. Pairing progress conveys liveness,
+not success. Response loss leaves the operation outcome unconfirmed; refresh
+status before retrying and never automatically redispatch a mutation.
+Broker exception reporting is bounded to safe stages, categories and source
+locations; request/credential contents are not logged by that reporting path.
 
 | Failure | Behaviour |
 |---|---|

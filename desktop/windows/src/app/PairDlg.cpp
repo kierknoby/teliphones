@@ -84,6 +84,9 @@ std::string ComputerName() {
 BEGIN_MESSAGE_MAP(CPairDlg, CAppearanceDialog)
     ON_BN_CLICKED(IDC_PAIR_GENERATE, &CPairDlg::OnGenerate)
     ON_BN_CLICKED(IDC_PAIR_COPY, &CPairDlg::OnCopy)
+    ON_EN_CHANGE(IDC_PAIR_WORKSTATION, &CPairDlg::OnRequestChanged)
+    ON_CBN_SELCHANGE(IDC_PAIR_ACCESS, &CPairDlg::OnRequestChanged)
+    ON_EN_CHANGE(IDC_PAIR_RESPONSE, &CPairDlg::OnResponseChanged)
     ON_WM_TIMER()
 END_MESSAGE_MAP()
 
@@ -97,27 +100,102 @@ BOOL CPairDlg::OnInitDialog() {
     access->AddString(L"FreePBX Web Access");
     access->AddString(L"FreePBX Web + SSH Access");
     access->SetCurSel(0);
+    static_cast<CEdit*>(GetDlgItem(IDC_PAIR_WORKSTATION))->SetLimitText(64);
+    static_cast<CEdit*>(GetDlgItem(IDC_PAIR_RESPONSE))->SetLimitText(16000);
     SetDlgItemText(IDC_PAIR_REQUEST, L"Generate a key and pairing request first.");
     SetDlgItemText(IDC_PAIR_FINGERPRINT, L"");
     SetDlgItemText(IDC_PAIR_STATUS, L"Choose Web Access, or request Web + SSH. FreePBX must separately approve SSH.");
+    initialized_ = true;
+    SetDefID(IDC_PAIR_GENERATE);
+    OnResponseChanged();
     return TRUE;
+}
+
+bool CPairDlg::RequestCurrent() const {
+    CString name;
+    GetDlgItemText(IDC_PAIR_WORKSTATION, name);
+    auto* access = static_cast<CComboBox*>(GetDlgItem(IDC_PAIR_ACCESS));
+    return keyStored_ && !request_.empty() && (access->GetCurSel() == 0 || access->GetCurSel() == 1) &&
+        profile.workstationName == tlp::win::Narrow(std::wstring(name.GetString())) &&
+        sshKeyRequested_ == (access->GetCurSel() == 1);
+}
+
+bool CPairDlg::InvalidateRequest() {
+    request_.clear();
+    publicKey_.clear();
+    sshPublicKey_.clear();
+    nonce_.clear();
+    KillTimer(1);
+    SetDlgItemText(IDC_PAIR_COPY, L"&Copy request");
+    GetDlgItem(IDC_PAIR_COPY)->EnableWindow(FALSE);
+    GetDlgItem(IDOK)->EnableWindow(FALSE);
+    GetDlgItem(IDC_PAIR_RESPONSE)->EnableWindow(FALSE);
+    SetDefID(IDC_PAIR_GENERATE);
+    SetDlgItemText(IDC_PAIR_REQUEST, L"");
+    SetDlgItemText(IDC_PAIR_FINGERPRINT, L"");
+    SetDlgItemText(IDC_PAIR_RESPONSE, L"");
+    SetDlgItemText(IDC_PAIR_SSHUSER, L"");
+    GetDlgItem(IDC_PAIR_SSHUSER)->ShowWindow(SW_HIDE);
+    GetDlgItem(IDC_PAIR_SSHLABEL)->ShowWindow(SW_HIDE);
+    return DiscardKey();
+}
+
+void CPairDlg::OnRequestChanged() {
+    if (!initialized_ || (request_.empty() && !keyStored_)) return;
+    InvalidateRequest();
+    SetDlgItemText(IDC_PAIR_STATUS, L"Name or access changed. Generate a new request; the previous response cannot be used.");
+}
+
+tlp::PairResponse CPairDlg::ValidatedResponse() {
+    if (!RequestCurrent()) throw tlp::Error("Generate a request for the current workstation name and access choice.");
+    auto pairing = tlp::ParsePairResponse(GetEdit(this, IDC_PAIR_RESPONSE), nonce_, publicKey_, sshPublicKey_);
+    if (pairing.ssh && sshPublicKey_.empty())
+        throw tlp::Error("This request is web-only. Generate a new Web + SSH request before approving SSH.");
+    if (pairing.ssh && pairing.sshPort == 0)
+        throw tlp::Error("The PBX returned legacy SSH permission. Upgrade its TELIPHONES broker and approve again.");
+    if (pairing.ssh && !tlp::IsLinuxUser(pairing.sshUser))
+        throw tlp::Error("The PBX must supply the explicitly approved Linux SSH account.");
+    return pairing;
+}
+
+void CPairDlg::OnResponseChanged() {
+    if (!initialized_) return;
+    GetDlgItem(IDOK)->EnableWindow(FALSE);
+    SetDlgItemText(IDC_PAIR_SSHUSER, L"");
+    GetDlgItem(IDC_PAIR_SSHUSER)->ShowWindow(SW_HIDE);
+    GetDlgItem(IDC_PAIR_SSHLABEL)->ShowWindow(SW_HIDE);
+    if (!RequestCurrent()) return;
+    if (GetEdit(this, IDC_PAIR_RESPONSE).empty()) {
+        SetDlgItemText(IDC_PAIR_STATUS, L"Copy the generated request to FreePBX, then paste its response here.");
+        return;
+    }
+    try {
+        const auto pairing = ValidatedResponse();
+        if (pairing.ssh) {
+            SetEdit(this, IDC_PAIR_SSHUSER, pairing.sshUser);
+            GetDlgItem(IDC_PAIR_SSHUSER)->ShowWindow(SW_SHOW);
+            GetDlgItem(IDC_PAIR_SSHLABEL)->ShowWindow(SW_SHOW);
+        }
+        SetDlgItemText(IDC_PAIR_STATUS, pairing.ssh
+            ? L"Response verified. SSH approved by FreePBX for the account shown."
+            : L"Response verified. FreePBX Web Access only; SSH is not approved.");
+        GetDlgItem(IDOK)->EnableWindow(TRUE);
+        SetDefID(IDOK);
+    } catch (const tlp::Error& error) {
+        SetEdit(this, IDC_PAIR_STATUS, error.what());
+    }
 }
 
 void CPairDlg::OnGenerate() {
     try {
-        if (!DiscardKey()) return;
-        publicKey_.clear();
-        sshPublicKey_.clear();
-        nonce_.clear();
-        request_.clear();
-        SetDlgItemText(IDC_PAIR_REQUEST, L"");
-        SetDlgItemText(IDC_PAIR_FINGERPRINT, L"");
-        SetDlgItemText(IDC_PAIR_RESPONSE, L"");
-        SetDlgItemText(IDC_PAIR_SSHUSER, L"");
+        if (!InvalidateRequest()) return;
         std::string name = GetEdit(this, IDC_PAIR_WORKSTATION);
         if (!tlp::IsWorkstationName(name)) {
             throw tlp::Error("Use a workstation name beginning with a letter or number, up to 64 characters. Letters, numbers, spaces, dots, underscores, parentheses and hyphens are allowed.");
         }
+        auto* access = static_cast<CComboBox*>(GetDlgItem(IDC_PAIR_ACCESS));
+        if (access->GetCurSel() != 0 && access->GetCurSel() != 1)
+            throw tlp::Error("Select FreePBX Web Access or FreePBX Web + SSH Access before generating a request.");
         std::string privateKey = tlp::win::GeneratePrivateKey(wireguard_);
         [[maybe_unused]] WipeString privateKeyWiper(privateKey);
         publicKey_ = tlp::win::DerivePublicKey(wireguard_, privateKey);
@@ -131,25 +209,29 @@ void CPairDlg::OnGenerate() {
         nonce_ = tlp::MakeNonce(tlp::win::RandomBytes(16));
         tlp::win::SavePrivateKey(tlp::CredentialTargetFor(profile), privateKey);
         keyStored_ = true;
-        auto* access = static_cast<CComboBox*>(GetDlgItem(IDC_PAIR_ACCESS));
-        sshKeyRequested_ = access != nullptr && access->GetCurSel() == 1;
+        sshKeyRequested_ = access->GetCurSel() == 1;
         const auto request = tlp::CreatePairRequest(name, publicKey_, nonce_,
             sshKeyRequested_,
             [this]() { return tlp::win::GenerateWorkstationSshIdentity(profile); });
         sshPublicKey_ = request.sshPublicKey;
         request_ = request.code;
         SetEdit(this, IDC_PAIR_REQUEST, request_);
+        GetDlgItem(IDC_PAIR_COPY)->EnableWindow(TRUE);
+        GetDlgItem(IDC_PAIR_RESPONSE)->EnableWindow(TRUE);
+        SetDefID(IDOK);
         SetDlgItemText(IDC_PAIR_FINGERPRINT, tlp::win::Widen("Workstation public-key fingerprint: " + tlp::KeyFingerprint(publicKey_)).c_str());
         SetDlgItemText(IDC_PAIR_STATUS, sshKeyRequested_
             ? L"Request generated. FreePBX Web + SSH Access requires separate administrator approval."
             : L"Request generated for FreePBX Web Access. Copy it to the PBX to continue.");
     } catch (const std::exception& e) {
+        InvalidateRequest();
+        SetDlgItemText(IDC_PAIR_STATUS, L"Request generation failed. Correct the error and generate again.");
         tlp::ui::ShowMessage(tlp::win::Widen(e.what()).c_str(), MB_ICONERROR);
     }
 }
 
 void CPairDlg::OnCopy() {
-    if (request_.empty()) {
+    if (!RequestCurrent()) {
         tlp::ui::ShowMessage(L"Generate a pairing request first.", MB_ICONINFORMATION);
         return;
     }
@@ -165,33 +247,19 @@ void CPairDlg::OnCopy() {
 void CPairDlg::OnTimer(UINT_PTR timerId) {
     if (timerId == 1) {
         KillTimer(timerId);
-        SetDlgItemText(IDC_PAIR_COPY, L"Copy request");
+        SetDlgItemText(IDC_PAIR_COPY, L"&Copy request");
     }
     CAppearanceDialog::OnTimer(timerId);
 }
 
 void CPairDlg::OnOK() {
     try {
-        if (!keyStored_ || request_.empty()) throw tlp::Error("Generate a WireGuard key and pairing request first.");
-        std::string responseText = GetEdit(this, IDC_PAIR_RESPONSE);
-        if (responseText.empty()) throw tlp::Error("Paste the pairing response from the TELIPHONES page on your PBX.");
-        tlp::PairResponse pairing = tlp::ParsePairResponse(responseText, nonce_, publicKey_, sshPublicKey_);
-        if (pairing.ssh && sshPublicKey_.empty())
-            throw tlp::Error("This request is web-only. Leave SSH disabled on the PBX, or request SSH in a new pairing request.");
+        tlp::PairResponse pairing = ValidatedResponse();
         std::string sshUser = pairing.sshUser;
         SetEdit(this, IDC_PAIR_SSHUSER, sshUser);
         SetDlgItemText(IDC_PAIR_STATUS, pairing.ssh
             ? L"SSH authorised by FreePBX for the selected existing account."
             : L"SSH not authorised by FreePBX. Web Access remains available.");
-        if (pairing.ssh && pairing.sshPort == 0)
-            throw tlp::Error("The PBX returned legacy SSH permission. Upgrade the PBX TELIPHONES broker and approve this request again.");
-        if (pairing.ssh && !tlp::IsLinuxUser(sshUser)) {
-            throw tlp::Error("The PBX must supply the explicitly approved Linux SSH account.");
-        }
-
-        if (!pairing.ssh && !sshUser.empty() && !tlp::IsLinuxUser(sshUser)) {
-            throw tlp::Error("The SSH account name is invalid.");
-        }
         profile.name = pairing.pbxName + " (" + profile.workstationName + ")";
         if (profile.name.size() > 128) profile.name.resize(128);
         profile.sshUser = pairing.ssh ? sshUser : std::string();

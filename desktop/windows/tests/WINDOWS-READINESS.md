@@ -1,8 +1,21 @@
 # Windows developer builds, testing and readiness
 
-Targets: TELIPHONES for Windows **0.8.0**, TELIPHONES for FreePBX **0.6.3**.
+Targets: TELIPHONES for Windows **0.8.1**, TELIPHONES for FreePBX **0.6.3**.
 The FreePBX connection-state policy and Windows pairing/clipboard UX are
 independently versioned; neither entry declares a published release.
+
+Root broker remains **0.6.2**, protocol **12**. Version.h derives Windows
+product 0.8.1 and file 0.8.1.0; executable resources, captions, About/licence and
+build provenance reuse it. The dependency manifest must match the product version.
+Current Release portable build/CTest and source contracts can run on Linux;
+native MFC pairing tests, executable metadata and startup smoke are registered
+in the Windows workflow. No current native 0.8.1 execution is claimed.
+
+Later operator reports confirm eleven native SSH integrations and first-run
+startup smoke passed for an earlier build. The historical investigations below
+retain their original versions/counts and outstanding checks at that time;
+they are not evidence that the subsequent 0.8.1 pairing dialogue passed natively.
+The preserved 0.6.3 module archive predates its later PHP form correction.
 
 ## Current evidence
 
@@ -44,7 +57,7 @@ Codespace using the locally available OpenSSL 3.5.8 Argon2id provider: the
 independent interoperability vector, authenticated encryption/decryption,
 wrong-password rejection, envelope tampering checks and bootstrap-config
 checks passed. A separate system-OpenSSL 3.0.13 run verified fail-closed
-behavior when Argon2id is absent. No dependency was fetched or installed.
+behaviour when Argon2id is absent. No dependency was fetched or installed.
 First-use Set Password / Skip This Time / Skip Permanently, Settings > Security
 controls, existing-password checks and the credential-removal/re-pair recovery
 flow are implemented in source. This does **not** validate the native MFC,
@@ -84,6 +97,24 @@ native console test; the current-source Windows build and test suite have not
 been run in this workspace.
 
 ## Developer builds and testing
+
+### Pairing dialogue regression
+
+`HealthWindowTests.exe` now compiles the production `CPairDlg` and exercises its
+actual MFC controls, name/access change notifications, Copy/Save availability,
+response validation, approved-account display, invalid account rejection,
+stale-response rejection, request cleanup, tab sequence and control bounds.
+`tests/pair_dialog_tests.cpp` supplies test-target-only synthetic WireGuard/SSH
+generation and in-memory credential storage; it neither installs WireGuard nor
+writes real credentials. This verifies dialogue integration, not the Windows
+Credential Manager or cryptographic provider implementation. The normal
+application continues to use its real platform implementations.
+
+The portable Release build and all nine Linux CTests passed locally, including
+the extended protocol and source/resource checks. Native Release compilation,
+this MFC regression and the actual application startup smoke test cannot run
+in the Linux workspace. The Windows workflow runs both native executables and
+the existing startup smoke; their current-source results remain required.
 
 This section preserves the detailed build and test reference formerly in the Windows README. Commands below run from `desktop/windows/`. Test registration describes coverage, not execution evidence; see [verification evidence](../../../docs/SECURITY.md#verification-evidence) for the current results and remaining gates.
 
@@ -221,9 +252,9 @@ temporary SYSTEM task, real loopback SSH banner and verified shutdown/removal.
 It preserves all ten authentication/security tests; it does not replace them.
 Actual Windows ACL/task execution remains unverified locally. Independent window, executable and startup checks also
 continue after test failures when their build succeeded. Any required failure
-still fails the job and prevents application artifact publication. Full verbose
+still fails the job and prevents application artefact publication. Full verbose
 CTest/unittest output, CTest JUnit and native SSH logs are retained in the
-diagnostics artifact on success or failure. The [readiness audit](#historical-investigations)
+diagnostics artefact on success or failure. The [readiness audit](#historical-investigations)
 records the reproduced three-assertion CRT output defect and its helper-only fix.
 The fixture no longer invokes PowerShell for ACL, identity or task inspection.
 A separate diagnostic step records inherited versus reset Windows PowerShell
@@ -231,24 +262,24 @@ module discovery; its loader results are not used as security-test results.
 
 The x64 manifest uses explicit `amd64` application and Common Controls version 6 identities. The workflow extracts and prints the actual embedded manifest, validates it using the SDK's `mt.exe`, and requires exactly one matching Common Controls dependency after linker manifest merging. It preserves `asInvoker`, `uiAccess="false"` and the DPI settings. The project disables automatic DPI manifest generation so the custom manifest is the sole source: exactly one legacy `dpiAware` (`true/pm`) and one modern `dpiAwareness` (`PerMonitorV2`) declaration, checked in the embedded manifest by Actions. The startup smoke test must launch both malformed helper invocations and receive exit code 2 (argument rejection before elevation/networking); a loader error or timeout fails the run.
 
-If startup fails with an incorrect side-by-side configuration, the workflow prints the `sxstrace` activation trace and recent Windows Application **SideBySide** events. Download **TELIPHONES-Windows-startup-diagnostics** from that failed run for the extracted manifest, DLL import list, startup error and available trace/event files. Diagnostic-tool failures are reported and do not bypass the executable startup test. The application artifact is uploaded only after all validation succeeds. A manifest correction is not Windows-validated until a new run passes the real smoke test.
+If startup fails with an incorrect side-by-side configuration, the workflow prints the `sxstrace` activation trace and recent Windows Application **SideBySide** events. Download **TELIPHONES-Windows-startup-diagnostics** from that failed run for the extracted manifest, DLL import list, startup error and available trace/event files. Diagnostic-tool failures are reported and do not bypass the executable startup test. The application artefact is uploaded only after all validation succeeds. A manifest correction is not Windows-validated until a new run passes the real smoke test.
 
-Download **TELIPHONES-Windows-x64** only from a successful run. It contains `TELIPHONES.exe`, the required adjacent `TELIPHONES-SSH.exe`, this README, the changelog, `LICENSE`, `OpenSSL-LICENSE.txt` and `build-info.json`; no keys, profiles or runtime configurations are included. Keep both executables together. OpenSSL is statically linked, not a separately installed DLL. Build information records the source/Actions provenance and hashes of both executables. Existing embedded-version/prerelease checks remain. Artefacts are retained for 14 days; the workflow creates no release and deploys nothing. No new native artifact has been validated locally.
+Download **TELIPHONES-Windows-x64** only from a successful run. It contains `TELIPHONES.exe`, the required adjacent `TELIPHONES-SSH.exe`, this README, the changelog, `LICENSE`, `OpenSSL-LICENSE.txt` and `build-info.json`; no keys, profiles or runtime configurations are included. Keep both executables together. OpenSSL is statically linked, not a separately installed DLL. Build information records the source/Actions provenance and hashes of both executables. Existing embedded-version/prerelease checks remain. Artefacts are retained for 14 days; the workflow creates no release and deploys nothing. No new native artefact has been validated locally.
 
-Extract the artifact and run `TELIPHONES.exe` on Windows 10/11 x64. Release builds statically link MFC and the MSVC C/C++ runtime (`/MT`), so no separate Visual C++ Redistributable or MFC DLL is expected; Windows system DLLs remain required. No .NET runtime is used. The application offers [WireGuard installation](../README.md#secure-connectivity-and-wireguard-installation) if needed. OpenSSH-backed terminals require the Windows system OpenSSH Client; only Remote Support supports PuTTY. Unsigned test executables may trigger Windows SmartScreen; the workflow does not code-sign them.
+Extract the artefact and run `TELIPHONES.exe` on Windows 10/11 x64. Release builds statically link MFC and the MSVC C/C++ runtime (`/MT`), so no separate Visual C++ Redistributable or MFC DLL is expected; Windows system DLLs remain required. No .NET runtime is used. The application offers [WireGuard installation](../README.md#secure-connectivity-and-wireguard-installation) if needed. OpenSSH-backed terminals require the Windows system OpenSSH Client; only Remote Support supports PuTTY. Unsigned test executables may trigger Windows SmartScreen; the workflow does not code-sign them.
 
 
 ## Test coverage and manual validation
 
 
-The C++ core tests and contract tests check parsing, key/request binding, grant binding, narrow host routes, tunnel rendering, command construction, connection monitor behavior, and parity with the broker/gateway contracts. They also simulate health threshold persistence, WireGuard counter parsing, latency/jitter/rate calculations, stable/degraded/unstable/disconnected/unknown transitions, bounded 60-second/5-minute history, and recovery after measurement interruptions. These are deterministic model tests, not live WireGuard measurements. They also simulate browser and terminal preferences: first-run save, skip and cancel; detection-driven choices and defaults; saving, restoring and changing preferences; missing and mismatched applications; and the exact command line for each supported browser and terminal, including paths with spaces and rejection of unsafe arguments. They do not execute Win32 APIs, so registry detection, the dialogs and real application launches are untested on Linux.
+The C++ core tests and contract tests check parsing, key/request binding, grant binding, narrow host routes, tunnel rendering, command construction, connection monitor behaviour, and parity with the broker/gateway contracts. They also simulate health threshold persistence, WireGuard counter parsing, latency/jitter/rate calculations, stable/degraded/unstable/disconnected/unknown transitions, bounded 60-second/5-minute history, and recovery after measurement interruptions. These are deterministic model tests, not live WireGuard measurements. They also simulate browser and terminal preferences: first-run save, skip and cancel; detection-driven choices and defaults; saving, restoring and changing preferences; missing and mismatched applications; and the exact command line for each supported browser and terminal, including paths with spaces and rejection of unsafe arguments. They do not execute Win32 APIs, so registry detection, the dialogues and real application launches are untested on Linux.
 
-The build-layout checks also verify SDK header ordering (`Win.h`, which includes `windows.h`, before `shellapi.h`), the Settings dialog's explicit `commdlg.h` include, and the required shell, file-dialog and registry libraries in both native build configurations. These are source checks, not a substitute for compiling and linking with MSVC, MFC and the Windows SDK.
+The build-layout checks also verify SDK header ordering (`Win.h`, which includes `windows.h`, before `shellapi.h`), the Settings dialogue's explicit `commdlg.h` include, and the required shell, file-dialogue and registry libraries in both native build configurations. These are source checks, not a substitute for compiling and linking with MSVC, MFC and the Windows SDK.
 
 Appearance regressions cover all three persisted modes, legacy preferences,
 strict invalid-value rejection, simulated system/high-contrast policy and measured
 palette contrast (4.5:1 normal/status/selection text; 3:1 graph series and disabled
-text). `HealthWindowTests.exe` additionally exercises real MFC dialog resources,
+text). `HealthWindowTests.exe` additionally exercises real MFC dialogue resources,
 buttons, dropdowns, menus, message response codes, hidden pop-outs and graph pixel
 output with 96/120/144/192 DPI font/layout inputs. Its system/accessibility change
 events are simulated through the same UI-thread notification handler, without
@@ -270,14 +301,14 @@ Portable installer tests simulate existing/missing/untrusted installations, appr
 The following require real Windows and a disposable FreePBX/gateway environment:
 
 1. Build the Visual Studio solution with the selected Visual Studio/MFC components.
-2. Install and signature-check the expected WireGuard for Windows distribution; verify `wg.exe` availability and CLI behavior.
+2. Install and signature-check the expected WireGuard for Windows distribution; verify `wg.exe` availability and CLI behaviour.
 3. Approve a UAC prompt and validate tunnel service installation, ACLs, start, stop, and removal, including cancellation and an over-the-shoulder administrator account.
 4. Verify Credential Manager persistence, profile file permissions, multiple profiles, and cleanup.
-5. Pair with a disposable FreePBX 17 system, test HTTP/HTTPS redirection, selected UDP forwarding and FreePBX Firewall behavior, and confirm the PBX's interface and peer are removed on revocation/expiry.
+5. Pair with a disposable FreePBX 17 system, test HTTP/HTTPS redirection, selected UDP forwarding and FreePBX Firewall behaviour, and confirm the PBX's interface and peer are removed on revocation/expiry.
 6. Test Remote Support only with an explicitly enrolled test engineer key, a current grant and an authorised disposable session. Confirm gateway policy blocks access after expiry/revocation.
 7. Test direct connectivity across representative NAT/firewall configurations. No universal NAT traversal or relay is implemented.
 8. Test application preferences:
-   - Check the welcome dialog's Save, Skip and Cancel.
+   - Check the welcome dialogue's Save, Skip and Cancel.
    - Confirm detection of each installed browser and terminal, including per-user and 32-bit installs.
    - Use **Locate...** with a portable PuTTY.
    - Confirm preferences persist across a restart and an update.
@@ -286,7 +317,7 @@ The following require real Windows and a disposable FreePBX/gateway environment:
    - Uninstall or rename a selected application and confirm the error and recovery choices.
    - Confirm Open SSH stays unavailable without SSH approval.
 9. On disposable fresh Windows 10/11 x64 machines, test the complete installer UI with a standard user and a separate administrator account, cancellation/UAC refusal, blocked downloads and revocation servers, unexpected signatures/hashes, post-install detection, retries, safe temporary-file cleanup and connection controls becoming available. Repeat with WireGuard already installed and confirm profiles, preferences and pre-existing tunnels remain unchanged. No live Windows installer validation has been performed locally.
-10. With a disposable PBX and Windows workstation, verify the Connection Health dialog's resize, position/topmost/history/threshold persistence, sampling responsiveness, measured WireGuard counters/handshake age, disconnected/recovery states, network changes, and temporary authorization expiry. Compare displayed rates and TCP measurements with local Windows/WireGuard observations. Confirm an existing SSH terminal remains open during degradation and that no stale PBX address is probed. Linux tests only simulate the health algorithms; they do not establish native UI responsiveness or real Windows telemetry behavior.
+10. With a disposable PBX and Windows workstation, verify the Connection Health dialogue's resize, position/topmost/history/threshold persistence, sampling responsiveness, measured WireGuard counters/handshake age, disconnected/recovery states, network changes, and temporary authorisation expiry. Compare displayed rates and TCP measurements with local Windows/WireGuard observations. Confirm an existing SSH terminal remains open during degradation and that no stale PBX address is probed. Linux tests only simulate the health algorithms; they do not establish native UI responsiveness or real Windows telemetry behaviour.
 11. Compare the integrated and pop-out graphs at both history lengths; test persistent Until revoked and temporary UTC expiry with a fresh workstation uptime. As a standard user, verify exact-interface IP byte counters and the actual WireGuard CLI diagnostic reason. Export both sides' logs, check matching `ws-` identifiers and clock differences, exercise concurrent instances/rotation/retention, and verify another Windows user and a non-administrator FreePBX session cannot read them. Access-control/GUI tests here are not a substitute for this native/live exercise.
 12. On Windows 10 and 11, test System/Light/Dark at 100%, 125%, 150% and 200%
     scaling on 1024x768, 1366x768 and 1920x1080 work areas, including moving between
@@ -317,7 +348,7 @@ TELIPHONES uses the built-in **Windows Installer**, not a shell script or an ass
 2. WinHTTP retrieves the fixed official x64 MSI over HTTPS, using normal Windows certificate validation and proxy discovery. Redirects are refused. Downloads have time and size limits.
 3. The file is placed in a new, randomly named directory under `%LOCALAPPDATA%\TELIPHONES\Installer-*`, with a protected ACL for the current user, SYSTEM and administrator read access. Existing files are never reused.
 4. TELIPHONES checks the pinned SHA-256, then uses `WinVerifyTrust` to verify Authenticode trust and certificate revocation, and checks that both the signer's common name and organisation are **WireGuard LLC**. Verification failure prevents execution; revocation-service access may be required.
-5. The verified file stays locked against writes/deletion while the system `msiexec.exe` is launched with the normal UAC `runas` mechanism. The MSI uses basic Windows Installer progress and cancellation UI, `DO_NOT_LAUNCH=1` and `/norestart`. TELIPHONES also shows retrieval, verification and installation stages without freezing the dialog.
+5. The verified file stays locked against writes/deletion while the system `msiexec.exe` is launched with the normal UAC `runas` mechanism. The MSI uses basic Windows Installer progress and cancellation UI, `DO_NOT_LAUNCH=1` and `/norestart`. TELIPHONES also shows retrieval, verification and installation stages without freezing the dialogue.
 6. After Windows Installer exits, TELIPHONES checks again for `wireguard.exe` and `wg.exe` and verifies their signatures using the existing detection path. An exit code of zero is not sufficient. The readiness indicator and connection controls refresh without restarting TELIPHONES. A requested Windows restart is reported, not performed automatically.
 7. Normal completion, cancellation and failure all attempt targeted file and directory cleanup. Cleanup failures are reported. Abrupt process termination or Windows shutdown may leave a private installer directory; TELIPHONES does not recursively remove unrelated files or sweep other installations.
 
@@ -337,7 +368,7 @@ The fixed package avoids silently following an unreviewed newer release. If it i
 
 **Settings > Appearance** offers **System (follow Windows)**, **Light** and
 **Dark**. System is the default, including when reading older preferences.
-Changes preview immediately in the main window and all open TELIPHONES dialogs,
+Changes preview immediately in the main window and all open TELIPHONES dialogues,
 including pairing, Remote Support, Settings, thresholds, Session Log and the
 Connection Health pop-out. **Save** persists the choice; **Cancel** restores the
 previously saved choice. Welcome's **Save & Next** and **Skip** retain it too.
@@ -361,7 +392,7 @@ Windows title-bar decorations remain OS-rendered; TELIPHONES does not attempt to
 override security/system UI. The documented dark title-bar attribute is optional
 on older Windows 10 builds.
 
-New dialogs must derive from `CAppearanceDialog`; runtime-created content windows
+New dialogues must derive from `CAppearanceDialog`; runtime-created content windows
 enrol through `tlp::ui::ThemeWindow`. Rendering and environment notifications live
 in `src/app/Appearance.cpp`, with portable preferences/palettes in
 `src/core/Appearance.h`. New features advance the minor Windows version; fixes
@@ -372,9 +403,9 @@ The credential provider is implemented in source; native integration success is 
 ## Connection Health implementation and measurements
 
 
-The main window starts at approximately **1050 x 620 logical pixels**, scaled for the current DPI and clamped to the monitor work area. The left column contains the profile list, pairing/removal, Remote Support/grant actions and selected-profile details. The right contains connection status, distinct connected/authorization/healthy durations, measurements, the live graph, **Pop Out** and **View Session Log**. The list and graph grow with the window. Under narrow/high-DPI work areas the columns stack in a vertically scrollable viewport, with scrollbar, mouse wheel and automatic keyboard-focus reveal. **Connect**, **Disconnect**, **Open FreePBX**, **Open SSH**, **Settings** and **Close** remain in a fixed wrapping action bar outside that viewport. Read-only details and diagnostic guidance can also be scrolled/copied rather than being silently truncated. The main window does not restore stale saved geometry; each launch is positioned within the current work area, and DPI transitions relayout controls and fonts.
+The main window starts at approximately **1050 x 620 logical pixels**, scaled for the current DPI and clamped to the monitor work area. The left column contains the profile list, pairing/removal, Remote Support/grant actions and selected-profile details. The right contains connection status, distinct connected/authorisation/healthy durations, measurements, the live graph, **Pop Out** and **View Session Log**. The list and graph grow with the window. Under narrow/high-DPI work areas the columns stack in a vertically scrollable viewport, with scrollbar, mouse wheel and automatic keyboard-focus reveal. **Connect**, **Disconnect**, **Open FreePBX**, **Open SSH**, **Settings** and **Close** remain in a fixed wrapping action bar outside that viewport. Read-only details and diagnostic guidance can also be scrolled/copied rather than being silently truncated. The main window does not restore stale saved geometry; each launch is positioned within the current work area, and DPI transitions relayout controls and fonts.
 
-The main window shows the selected PBX's health, current TCP latency, recent jitter, application probe failures, upload/download rates, handshake freshness and continuously healthy duration. A plot selector switches between **Latency & jitter**, **Upload / download** and **Failures & interruptions**, using one compact plot instead of vertically stacked graphs. Axes and traffic rates auto-scale; unavailable observations are gaps rather than zero latency. History can be 60 seconds or five minutes. **Pop Out** opens a separate compact resizable monitor using the same samples and plot choices. Recent bounded history for each profile remains available in either display after disconnecting, until application exit or profile removal; no stale history initiates probes or restores authorization. Closing the pop-out never stops sampling. **Always on Top**, pop-out position, history length and thresholds persist locally; restarting the application starts fresh measurements.
+The main window shows the selected PBX's health, current TCP latency, recent jitter, application probe failures, upload/download rates, handshake freshness and continuously healthy duration. A plot selector switches between **Latency & jitter**, **Upload / download** and **Failures & interruptions**, using one compact plot instead of vertically stacked graphs. Axes and traffic rates auto-scale; unavailable observations are gaps rather than zero latency. History can be 60 seconds or five minutes. **Pop Out** opens a separate compact resizable monitor using the same samples and plot choices. Recent bounded history for each profile remains available in either display after disconnecting, until application exit or profile removal; no stale history initiates probes or restores authorisation. Closing the pop-out never stops sampling. **Always on Top**, pop-out position, history length and thresholds persist locally; restarting the application starts fresh measurements.
 
 The monitor is a separate modeless window explicitly owned by the main TELIPHONES window, which stays visible and enabled. It has a task-switcher/taskbar entry. Opening it again reuses the same window and restores it if minimised; Close, Escape and Enter hide only the monitor. Every opening checks its position against the current display work area, clamps partial/off-screen geometry and falls back to the main window's monitor after a display is removed. Native MFC tests are registered in Actions, but the reported SSH 10/10 result alone does not establish their detailed results or visual correctness.
 
@@ -382,15 +413,15 @@ Native tests now exercise the layout adapter at 1024/1366/1920 display sizes, re
 
 The monitor samples every two seconds when the UI is active; WireGuard counters/handshake are queried every six seconds to keep process and CPU overhead low. Its TCP connection-establishment time to the currently authorised PBX's tunnel address on port 443 (with port 80 as a fallback) is labelled **TCP RTT**; it is not ICMP ping. Probe success/failure percentages and consecutive failures are application-level TCP checks. A failed TCP application probe is **not** a measurement of network packet loss. It never probes an old pairing address, an Internet service, the SSH port, or any host other than the active profile's PBX.
 
-Transmit/receive rates use actual interval byte-counter deltas, not an estimate of bandwidth. The preferred source is `wg.exe show <active tunnel> transfer`; handshake age uses `latest-handshakes`. These WireGuard Windows management reads can require administrator permission independently of PBX traffic. If unavailable, the Windows IP Helper `GetIfTable2` API reads the exact active tunnel interface alias's IP-byte counters, labelled separately from WireGuard peer transport counters. No service/pipe ACLs are widened and no automatic elevation is introduced. Handshake remains **Unknown** when its source is inaccessible. Diagnostics preserve the command stage, exit code and sanitized error, or the specific interface lookup failure. A source change resets rate baselines rather than mixing incompatible counters.
+Transmit/receive rates use actual interval byte-counter deltas, not an estimate of bandwidth. The preferred source is `wg.exe show <active tunnel> transfer`; handshake age uses `latest-handshakes`. These WireGuard Windows management reads can require administrator permission independently of PBX traffic. If unavailable, the Windows IP Helper `GetIfTable2` API reads the exact active tunnel interface alias's IP-byte counters, labelled separately from WireGuard peer transport counters. No service/pipe ACLs are widened and no automatic elevation is introduced. Handshake remains **Unknown** when its source is inaccessible. Diagnostics preserve the command stage, exit code and sanitised error, or the specific interface lookup failure. A source change resets rate baselines rather than mixing incompatible counters.
 
-Stable requires five consistent successful checks. Defaults warn at 300 ms current TCP latency or 100 ms recent jitter; **Limits...** allows 200/300/500 ms latency, 50/100/200 ms jitter and 2/3/4 consecutive failures before Unstable. Five consecutive failures or a known stopped tunnel produce Disconnected health, but application-probe failures do not remove the WireGuard tunnel. Expired authorization does remove it. Unknown local measurements are not failures. A handshake older than 180 seconds is a freshness warning, not proof an idle peer disconnected. No packet loss, total available bandwidth, network saturation or guaranteed SSH command safety is claimed.
+Stable requires five consistent successful checks. Defaults warn at 300 ms current TCP latency or 100 ms recent jitter; **Limits...** allows 200/300/500 ms latency, 50/100/200 ms jitter and 2/3/4 consecutive failures before Unstable. Five consecutive failures or a known stopped tunnel produce Disconnected health, but application-probe failures do not remove the WireGuard tunnel. Expired authorisation does remove it. Unknown local measurements are not failures. A handshake older than 180 seconds is a freshness warning, not proof an idle peer disconnected. No packet loss, total available bandwidth, network saturation or guaranteed SSH command safety is claimed.
 
-Authorization remaining time is displayed separately from reachability: for example, an unexpired pairing can still have 44 minutes remaining while the PBX is disconnected or no longer answering. A degraded connection disables starting a new SSH session until TELIPHONES verifies the PBX again. Health warnings do not close existing terminal windows or automatically remove the tunnel; authorization expiry continues to use the existing disconnect behavior. Recovery is observed through subsequent successful checks.
+Authorisation remaining time is displayed separately from reachability: for example, an unexpired pairing can still have 44 minutes remaining while the PBX is disconnected or no longer answering. A degraded connection disables starting a new SSH session until TELIPHONES verifies the PBX again. Health warnings do not close existing terminal windows or automatically remove the tunnel; authorisation expiry continues to use the existing disconnect behaviour. Recovery is observed through subsequent successful checks.
 
-Persistent authorization displays **Until revoked**. Temporary expiry and WireGuard handshake timestamps use UTC, while graph history, intervals and healthy duration use a monotonic clock. Mixing Unix expiry with Windows uptime caused the previous enormous remaining-time display; it is no longer used.
+Persistent authorisation displays **Until revoked**. Temporary expiry and WireGuard handshake timestamps use UTC, while graph history, intervals and healthy duration use a monotonic clock. Mixing Unix expiry with Windows uptime caused the previous enormous remaining-time display; it is no longer used.
 
-The main panel and pop-out share three separate values: **Connected for** starts at zero on the first successful PBX reachability check and uses monotonic elapsed time; **Authorisation remaining** uses the original UTC expiry (or **Until revoked**); **Connection health** shows the independent continuously healthy duration, beginning only when Stable is established. Brief failed checks reset healthy time but keep the connected timer running. Declared connection loss (three consecutive failed checks), a stopped tunnel or expiry stops connected time; subsequent successful recovery starts it at zero. Manual disconnect/reconnect also starts a fresh duration without renewing authorization. Missing fresh measurements do not display an advancing connected duration.
+The main panel and pop-out share three separate values: **Connected for** starts at zero on the first successful PBX reachability check and uses monotonic elapsed time; **Authorisation remaining** uses the original UTC expiry (or **Until revoked**); **Connection health** shows the independent continuously healthy duration, beginning only when Stable is established. Brief failed checks reset healthy time but keep the connected timer running. Declared connection loss (three consecutive failed checks), a stopped tunnel or expiry stops connected time; subsequent successful recovery starts it at zero. Manual disconnect/reconnect also starts a fresh duration without renewing authorisation. Missing fresh measurements do not display an advancing connected duration.
 
 
 ## Historical investigations
@@ -464,7 +495,7 @@ disposable loopback sshd, generated CA/host keys and the same agent protocol:
 Both configs now use `IdentityFile certificate.pub` and `CertificateFile none`.
 The latter prevents a second, separately loaded certificate candidate; it does
 not disable certificates. The identity itself is the exact certificate exposed
-by the agent. `identity.pub` remains a public subject/audit artifact, never a
+by the agent. `identity.pub` remains a public subject/audit artefact, never a
 private-key fallback. Certificate-only algorithms, `IdentitiesOnly`, strict host
 verification and no password/shared-agent fallback remain enforced.
 
@@ -502,7 +533,7 @@ public fingerprints. Direct clients and the test-built production helper use
 `-vvv -E` logs outside the public-runtime directories, avoiding verbose-stderr
 pipe blockage. Client/server tails and issuer errors accompany production
 authentication failure; full client logs are copied to the existing diagnostics
-artifact before cleanup. No private seeds/keys/signature requests are logged.
+artefact before cleanup. No private seeds/keys/signature requests are logged.
 Production binaries do not include the test helper's log-path environment hook.
 All ten test methods, working ACL/Task Scheduler code, independent CI suite
 execution and mandatory failure outcomes are retained.
@@ -662,7 +693,7 @@ that disconnect as expected; it is not evidence of authenticated login.
 Failure output identifies the stage, sent/received identification bytes and
 actual socket error (including Win32/errno where available). Startup failures
 and teardown print only the last 30 log lines, read from at most 8 KiB; the full
-server log is still copied into the existing diagnostic artifact. No retry loop
+server log is still copied into the existing diagnostic artefact. No retry loop
 can silently turn an established-connection protocol failure into success.
 
 Local regression tests cover send-before-read ordering, fragmented valid banner,
@@ -783,7 +814,7 @@ uppercase keys; optional discovery variables are not assumed to exist.
 The actual correction removes **all** PowerShell calls from the SSH harness:
 
 - `GetNamedSecurityInfoW`, `GetSecurityDescriptorOwner/Control/Dacl`, `GetAce`,
-  SID conversion and SDDL serialization inspect real file security; the filesystem
+  SID conversion and SDDL serialisation inspect real file security; the filesystem
   must advertise persistent ACL support. No localised CLI output is parsed.
 - Task Scheduler COM sets and reads back the protected task descriptor and
   resolves principal names to SIDs; its actual SYSTEM SID, service-account logon
@@ -817,7 +848,7 @@ verification/login remains a required Windows result.
 | Before tests: server | Generated test-only CA/host keys; public-key-only auth, pinned host, no password/interactive fallback, forwarding disabled, StrictModes enabled; `sshd -t/-T`, exclusive port availability, actual live PID/banner. No production config/firewall changes |
 | During tests: API issuer | Loopback HTTP server with authenticated SSHSIG request, exact-byte verification, distinct public subject/session/principal and short-lived generated certificate; rejects invalid/denied requests; issuer thread/socket stopped in finally |
 | During tests: isolation | Actual Windows named pipe and exact client PID enforcement; real process access probes, locked Ed25519 key, DPAPI, Windows SSH client/helper, anonymous kill-on-close Jobs; concurrent sessions and unexpected termination exercised, not mocked |
-| During tests: paths/encoding | Native host uses `wmain`, UTF-8 protocol and UTF-16 Win32/COM APIs; Python uses argument arrays, XML task serialization and quoted OpenSSH paths. Task operations restricted to the generated fixture namespace |
+| During tests: paths/encoding | Native host uses `wmain`, UTF-8 protocol and UTF-16 Win32/COM APIs; Python uses argument arrays, XML task serialisation and quoted OpenSSH paths. Task operations restricted to the generated fixture namespace |
 | After tests: ownership/termination | Stop marker, SYSTEM wrapper kill-on-close Job, zero-active-process acknowledgement, bounded PID wait, closed loopback listener, exact task deletion and absence query; retain failure if any mandatory check fails |
 | After failure/interruption | Cleanup registered immediately, recovery descriptor recorded before sensitive setup; created-but-unstarted tasks cleaned; always-run recovery ends only the recorded task and removes only its validated temporary path. No name-based process killing or production service changes |
 
@@ -952,14 +983,14 @@ their presence/success has not been observed locally.
 
 | Test | Additional dependencies / assertions | Success and failure teardown |
 |---|---|---|
-| `test_native_login_destroys_key_and_creates_no_private_key_files` | Actual certificate login and remote echo; one-signature key destruction; only public session artifacts | Host/agent/SSH Job closes; test files removed with fixture |
+| `test_native_login_destroys_key_and_creates_no_private_key_files` | Actual certificate login and remote echo; one-signature key destruction; only public session artefacts | Host/agent/SSH Job closes; test files removed with fixture |
 | `test_other_process_cannot_enumerate_or_use_agent` | ctypes Win32 overlapped pipe I/O, exact connecting PID enforcement | Bounded five-second probe, I/O cancellation and event/pipe close; host cleanup |
 | `test_new_process_handles_cannot_read_memory_or_duplicate_credentials` | Disabled debug privilege; OpenProcess denied VM_READ/VM_WRITE/DUP_HANDLE/CREATE_THREAD | Every acquired probe handle closed; host cleanup |
 | `test_concurrent_sessions_and_wrong_certificate` | Two distinct live keys/certificates and independently owned Jobs; mismatched certificate rejected | Per-host cleanup, server Job ultimately reaps remote commands |
 | `test_expired_cert_and_wrong_host_fail_without_password_fallback` | Real expired certificate, wrong pinned host and cryptographically tampered certificate | Nonzero results mandatory, no fallback; each owned host stopped |
 | `test_controller_crash_kills_owned_ssh_only` | Long-running remote ping, forced exact controller PID termination; unrelated login survives | Per-controller Job; unrelated host cleanup; fixture Job reaps server-side commands |
 | `test_ssh_crash_ends_agent_and_prevents_reuse` | Exact owned SSH handle forcibly terminated; agent pipe disappears | Host cleanup; fixture process-tree teardown |
-| `test_production_dpapi_identity_certificate_api_console_and_disconnect` | User DPAPI/LOCALAPPDATA; cmd.exe; WinHTTP; Python HTTP issuer verifies SSHSIG and correct public subject; PTY login | CloseManagedSsh, public artifacts removed, permanent identity survives session then explicit test deletion; issuer stopped |
+| `test_production_dpapi_identity_certificate_api_console_and_disconnect` | User DPAPI/LOCALAPPDATA; cmd.exe; WinHTTP; Python HTTP issuer verifies SSHSIG and correct public subject; PTY login | CloseManagedSsh, public artefacts removed, permanent identity survives session then explicit test deletion; issuer stopped |
 | `test_production_certificate_refusal_cleans_identity_without_launch` | Same authenticated issuer returns 403 after verifying request | No terminal/session; test-owned DPAPI identity removed; principal restored and HTTP server stopped |
 | `test_production_local_authorisation_expiry_ends_owned_session` | Real login plus fixed local authorisation deadline; bounded wait accommodates expiry | Owned SSH/helper/agent end; identity retention checked before test deletion |
 

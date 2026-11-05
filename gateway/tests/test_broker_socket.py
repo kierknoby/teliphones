@@ -25,7 +25,7 @@ class BrokerSocketTests(unittest.TestCase):
         return {"action": "pair", "request": helpers.pair_request(), "endpoint_host": "pbx.example.net",
                 "listen_port": "51821", "mode": "persistent", "minutes": "60", "ssh": "0"}
 
-    def php(self, request, handler=None):
+    def php(self, request, handler=None, page=False):
         path = Path(self.directory.name) / "broker.sock"
         errors = []
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
@@ -49,8 +49,9 @@ class BrokerSocketTests(unittest.TestCase):
             try:
                 source = ('require $argv[1]; $client = new \\FreePBX\\modules\\Teliphones\\WebSupport($argv[2]);'
                           ' echo json_encode($client->request(json_decode($argv[3], true)), JSON_THROW_ON_ERROR);')
-                process = subprocess.run(["php", "-r", source, str(MODULE / "WebSupport.php"), str(path),
-                                          json.dumps(request)], env={**os.environ, "XDEBUG_MODE": "off"},
+                command = (["php", str(MODULE / "tests/pairing-page.php"), str(path), json.dumps(request)] if page
+                           else ["php", "-r", source, str(MODULE / "WebSupport.php"), str(path), json.dumps(request)])
+                process = subprocess.run(command, env={**os.environ, "XDEBUG_MODE": "off"},
                                          capture_output=True, text=True, timeout=20)
             finally:
                 thread.join(10)
@@ -59,7 +60,11 @@ class BrokerSocketTests(unittest.TestCase):
             if errors:
                 raise errors[0]
             self.assertEqual(process.returncode, 0, process.stderr)
-            return json.loads(process.stdout)
+            result = json.loads(process.stdout)
+            if page:
+                self.assertNotIn(request["request"], result["html"], "Pairing material must not be redisplayed")
+                return result["notice"]
+            return result
 
     @staticmethod
     def read_request(connection):
@@ -98,6 +103,38 @@ class BrokerSocketTests(unittest.TestCase):
         self.assertEqual(self.broker.monitor.pending, [])
         state, _ = self.broker.workstation_state()
         self.assertTrue(broker.policy_equal(self.broker.owned_table(), self.broker.expected_policy(state)))
+
+    @unittest.skipUnless(shutil.which("node"), "Node is required to execute the actual form script")
+    def test_rendered_web_only_form_submits_through_php_page_and_actual_broker(self):
+        result = subprocess.run(["node", str(MODULE / "tests/pairing-form.test.js"), "--post"],
+                                capture_output=True, text=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        post = json.loads(result.stdout)
+        self.assertEqual(post["ssh"], "0")
+        with self.assertRaisesRegex(broker.BrokerError, "Complete workstation pairing details"):
+            broker.validate({key: value for key, value in post.items() if key not in ("token", "ssh")})
+        response = self.php(post, page=True)
+        self.assertTrue(response["ok"], response)
+        decoded = helpers.decode_response(response["pairing_response"])
+        self.assertFalse(decoded["ssh"])
+        self.assertEqual(decoded["workstation_public_key"], broker.parse_pair_request(post["request"])["public_key"])
+        self.assertTrue(self.net.up)
+        state, _ = self.broker.workstation_state()
+        self.assertEqual(len(state["workstations"]), 1)
+        self.assertTrue(broker.policy_equal(self.broker.owned_table(), self.broker.expected_policy(state)))
+        self.assertEqual(self.broker.monitor.pending, [])
+
+        for field, value, message in [
+                ("request", "TELIPHONES-PAIR-REQUEST-1:not-valid-json", "pairing request"),
+                ("request", broker.PAIR_REQUEST_PREFIX + broker.b64url_encode(b'{}'), "malformed or incomplete"),
+                ("listen_port", "70000", "WireGuard UDP port"),
+                ("endpoint_host", "https://pbx.example.net", "hostname")]:
+            with self.subTest(field=field, value=value):
+                rejected = self.php({**post, field: value}, page=True)
+                self.assertFalse(rejected["ok"], rejected)
+                self.assertIn(message, rejected["error"])
+                state, _ = self.broker.workstation_state()
+                self.assertEqual(len(state["workstations"]), 1, "Rejected input must not mutate existing pairing")
 
     def test_pairing_failure_after_progress_reports_real_error_and_retains_fail_closed_cleanup(self):
         original = self.broker.reconcile_listener

@@ -52,6 +52,7 @@
 #define IDC_PAIR_FINGERPRINT        1107
 #define IDC_PAIR_ACCESS             1108
 #define IDC_PAIR_STATUS             1109
+#define IDC_PAIR_SSHLABEL           1110
 
 #define IDC_SUP_NAME                1200
 #define IDC_SUP_GENERATE            1201

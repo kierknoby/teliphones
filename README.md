@@ -15,21 +15,30 @@ workflow for bounded support windows.
 | Component | Current version | Start here |
 |---|---|---|
 | FreePBX module / root broker | **0.6.3** / **0.6.2**, protocol 12 (local experimental package) | [Install](teliphones/README.md#installing-the-module) · [Upgrade](teliphones/README.md#updating-teliphones) |
-| Windows application | **0.8.0** (file version 0.8.0.0; unreleased development target) | [Download and requirements](desktop/windows/README.md#requirements-and-download) · [Pair a PBX](desktop/windows/README.md#pair-an-administrator-workstation) |
+| Windows application | **0.8.1** (file version 0.8.1.0; unreleased development target) | [Download and requirements](desktop/windows/README.md#requirements-and-download) · [Pair a PBX](desktop/windows/README.md#pair-an-administrator-workstation) |
 | Reference gateway and Checker probe | Optional laboratory infrastructure | [Integration guide](teliphones/docs/INTEGRATION.md) · [Gateway](gateway/README.md) |
 
-FreePBX module **0.6.3**, root broker **0.6.2** and Windows **0.8.0** are
+FreePBX module **0.6.3**, root broker **0.6.2** and Windows **0.8.1** are
 independently versioned; the broker protocol remains 12. The module/broker
 update fixes pairing response timeouts with progress frames and a five-second
-inactivity deadline, returns sanitized JSON errors and preserves command timeout
+inactivity deadline, returns sanitised JSON errors and preserves command timeout
 causes through cleanup. Progress is never pairing success; firewall verification
 and single-dispatch behaviour remain unchanged. Upgrade the module in place and
 rerun the root bootstrap so the separately installed broker is refreshed;
 pairings and their identities are preserved.
-Windows **0.8.0** adds password protection, PBX policy requests, secure
-listener migration and post-pair SSH elevation in source; it has not received a
-native Windows build verification in this environment.
+Windows **0.8.1** is an unreleased release candidate correcting the pairing
+dialogue: select name/access, generate and copy the request, then validate and
+save FreePBX's response. Name/access changes invalidate stale requests; approved
+SSH accounts are response-derived. It retains 0.8.0's password protection, PBX
+policy requests, listener migration and post-pair SSH elevation.
 The Windows application is not included in the Module Admin package.
+
+The preserved local `TELIPHONES-0.6.3.tgz` contains the pairing transport fixes
+and broker 0.6.2, **not** the later FreePBX web-only form correction. Current
+module source fixes the omitted `ssh=0` submission and retains safe values after
+failure. That source must be reviewed and packaged separately before distribution.
+No Windows 0.8.1 executable or public download has been established; check the
+exact build provenance, not the target version alone.
 
 > [!WARNING]
 > **Experimental; not currently suitable for production PBXs.** Gateway,
@@ -49,7 +58,7 @@ The Windows application is not included in the Module Admin package.
 
 The historical 0.5.0 test package manages the public WireGuard listener through
 a persistent FreePBX Custom Service and supports configured management ports.
-The local 0.6.0 package adds Open/Closed/Frozen state, atomic session leases,
+The historical 0.6.0 source adds Open/Closed/Frozen state, atomic session leases,
 authenticated policy requests and identity-preserving listener migration. The
 0.6.2 nftables regression is exercised with real nftables in an isolated
 namespace; Debian 12 / FreePBX 17 and a live PBX were not available for
@@ -87,13 +96,13 @@ validation. See the [investigation and validation limits](teliphones/docs/CONNEC
 2. **Approve:** a full FreePBX administrator pastes the request into
    **Connectivity > TELIPHONES > Windows workstations**, sets the period and
    explicitly approves an existing account if granting managed SSH.
-3. **Pair:** paste the bound response back into the waiting Windows dialog and
+3. **Pair:** paste the bound response back into the waiting Windows dialogue and
    save the connection. Private keys stay on their originating device.
 4. **Connect:** approve Windows tunnel setup, open FreePBX and sign in normally.
    The unreleased Windows source includes an experimental built-in VT console
    on the approved managed SSH path, using the approved account, pinned host/CA
    keys and a fresh session certificate. Portable VT tests pass; the native
-   MFC/ConPTY integration and real SSH behavior remain unverified.
+   MFC/ConPTY integration and real SSH behaviour remain unverified.
 5. **Disconnect or revoke:** disconnecting closes the local connection, not its
    authorisation. To remove authority, **Revoke** on the PBX. Deleting a Windows
    profile is not PBX-side revocation.

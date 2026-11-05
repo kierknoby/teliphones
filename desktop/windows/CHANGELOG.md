@@ -5,20 +5,45 @@ No Windows release is declared published by this document. Earlier development
 builds lacked embedded file/product versions and cannot be assigned reliable
 version numbers retrospectively.
 
-## 0.8.0 — Unreleased
+## 0.8.1 — Unreleased release candidate
 
-Windows file version: **0.8.0.0**. FreePBX module version: **0.6.3**.
+Windows file/product version: **0.8.1.0** / **0.8.1**. Compatible source targets:
+FreePBX module **0.6.3**, root broker **0.6.2**, protocol **12**, unchanged.
+This patch identifies the pairing dialogue corrections, not a published release
+or a new FreePBX package. The preserved 0.6.3 archive predates the separate
+module-side web-only form correction.
+
+The pairing dialogue groups **Request access** before **Complete pairing**:
+choose the workstation name and access before generating/copying the request,
+then paste the PBX response and save. Changing name/access invalidates unused
+request identities and stale responses. Copy requires successful generation;
+Save requires a current validated response. Approved SSH accounts are read-only,
+response-derived and shown only for approved SSH. The existing v1 web-only/v2
+SSH-capability protocol and independent FreePBX versions remain unchanged.
+Portable Release tests cover protocol bindings and source layout; native MFC
+regressions are registered but require Windows execution.
+
+The generated response is request-bound, not independently signed as an
+envelope: its provenance relies on the trusted, administrator-approved HTTPS
+exchange. SSH certificates are separately signature-verified at session launch.
+No pairing schema or cryptographic trust check was changed.
+
+## 0.8.0 — Previous unreleased development target
+
+Windows file version: **0.8.0.0**. FreePBX module version at preparation: **0.6.3**.
 Windows 0.8.0 adds explicit pairing access selection, post-pair policy requests,
 identity-preserving migration, SSH elevation and an experimental built-in
-managed SSH console with a libvterm screen model and ConPTY resize path. Native
-Windows and live SSH validation remain outstanding.
+managed SSH console with a libvterm screen model and ConPTY resize path.
+Earlier operator reports include eleven native SSH integrations and first-run
+startup smoke passing, without independently fetched matching logs.
+They do not validate subsequent 0.8.1 source changes.
 The FreePBX policy and Windows client changes are independently versioned.
 No Windows release or build is declared by this entry.
 
 - Replace the SSH opt-in checkbox with an explicit Web access / Web + SSH
   access choice. Continue to omit SSH identity generation for web-only requests.
 - Display whether SSH was authorised in saved-profile details.
-- Replace successful clipboard-copy dialogs with short-lived inline feedback.
+- Replace successful clipboard-copy dialogues with short-lived inline feedback.
 - Display the PBX-applied policy, source list, DNS failures, verified public
   source and actual/max admitted session count. Lock to the PBX-verified
   current IP; request Allowed List changes or unlocking through the authenticated
@@ -46,7 +71,7 @@ No Windows release or build is declared by this entry.
   cannot restore the enrolled identity. Preserve DPAPI-only credential mode
   when protection is disabled; no weaker KDF fallback.
 - Add portable authentication/tampering, independent-vector and bootstrap
-  regressions. New native password/UAC/WireGuard behavior remains unverified
+  regressions. New native password/UAC/WireGuard behaviour remains unverified
   until tested on Windows; no dependency was fetched or installed locally.
 - Local portable-core tests can validate shared code; native MFC/Win32 UI
   validation requires Windows and has not been performed in this environment.
@@ -134,7 +159,7 @@ Native MSVC/MFC compilation and visual validation remain pending.
 
 - Display the version-derived trademark and GPLv3 statements in a fixed main-window
   footer below the action buttons, with DPI scaling and narrow-window wrapping.
-- Retain Settings > About and the existing appearance, layout and connection behavior.
+- Retain Settings > About and the existing appearance, layout and connection behaviour.
 
 ## 0.6.2 — Previous development version (not released)
 
@@ -171,19 +196,19 @@ Windows file version: **0.6.0.0**. FreePBX module version: **0.3.2**.
 Native MSVC/MFC compilation and visual validation remain pending.
 
 - Add Settings > Appearance: System (default), Light and Dark, persisted with the
-  existing per-user preferences. Preview changes immediately in all open dialogs;
+  existing per-user preferences. Preview changes immediately in all open dialogues;
   Save retains them and Cancel restores the previously saved appearance.
 - Follow live Windows application colour changes through the supported WinRT
   UISettings event, marshalled to the UI thread, without touching connection state.
-- Centralize application dialog, list/header, selection, button, checkbox, combo,
+- Centralize application dialogue, list/header, selection, button, checkbox, combo,
   edit, menu, border, scrollbar, message and graph rendering. The main window,
   pairing, Remote Support, Settings, thresholds, health pop-out and Session Log
   share the same palette. Hidden monitors stay hidden when themes change.
 - Respect Windows high contrast with native control rendering/system colours;
-  retain keyboard behavior, focus cues and native accessibility roles. OS-owned
+  retain keyboard behaviour, focus cues and native accessibility roles. OS-owned
   file pickers, title-bar/system decorations on older Windows and security prompts
   remain controlled by Windows rather than private/undocumented dark-mode APIs.
-- Add portable preference/policy/contrast tests and native open-dialog, live
+- Add portable preference/policy/contrast tests and native open-dialogue, live
   simulated notification, control/graph pixel, hidden-window and DPI-input tests.
   Simulations do not constitute interactive Windows visual validation.
 - Pre-build appearance review: preserve owner-drawn menu mnemonics (including
@@ -198,7 +223,7 @@ Native MSVC/MFC compilation and visual validation remain pending.
 Windows file version: **0.5.2.0**. FreePBX module version: **0.3.2**.
 No new native Windows build or live measurements have been validated locally.
 
-- Replace the tall main dialog with a landscape two-column native layout and
+- Replace the tall main dialogue with a landscape two-column native layout and
   responsive DPI-aware resizing. The PBX management list and connection/health
   panels use available space; a fixed wrapping action bar keeps connection controls
   accessible, with a vertical scroll viewport, scrollbar, mouse wheel and focus
@@ -207,7 +232,7 @@ No new native Windows build or live measurements have been validated locally.
   upload/download traffic, and failures/interruption plots. Fix traffic graph
   rendering so ordinary two-second probes do not break six-second counter samples.
 - Preserve per-profile health history for disconnected review, alongside pairing,
-  Remote Support, WireGuard, SSH and session diagnostics behavior.
+  Remote Support, WireGuard, SSH and session diagnostics behaviour.
 - Add native MFC layout, scrolling, command-routing, graph and DPI-input tests to
   the Actions build. Actual Windows rendering/scaling remains to be validated.
 
@@ -215,12 +240,12 @@ No new native Windows build or live measurements have been validated locally.
 
 Windows file version: **0.5.1.0**. FreePBX module version: **0.3.2**.
 
-- Correct UTC/monotonic clock separation for authorization expiry and handshake
-  age. Persistent authorization displays Until revoked; absent evidence is Unknown.
+- Correct UTC/monotonic clock separation for authorisation expiry and handshake
+  age. Persistent authorisation displays Until revoked; absent evidence is Unknown.
 - Integrate health measurements and a shared graph into the main window, retaining
   an independent resizable pop-out and persisted preferences.
 - Show current TCP latency, recent jitter and actual interval traffic rates.
-  Separate connected duration, authorization expiry and continuously healthy time.
+  Separate connected duration, authorisation expiry and continuously healthy time.
 - Report WireGuard CLI failures and use Windows IP Helper tunnel interface byte
   counters when peer telemetry is unavailable, without fabricating handshake data.
 - Add bounded local diagnostics with native viewing/export and correlation to
@@ -247,7 +272,7 @@ not been published as a release and is not production-ready.
   with local PBX TCP probes, WireGuard peer byte counters and handshake age,
   latency/jitter history, configurable health thresholds, and persistent
   window/history preferences. Reachability warnings are separate from
-  authorization expiry and do not close existing SSH windows.
+  authorisation expiry and do not close existing SSH windows.
 - Embedded file/product version metadata, a visible version in the main window,
   and build validation of the version information.
 
@@ -285,7 +310,7 @@ These are source-history milestones, **not published Windows releases**:
 
 | Source revision | Changes |
 |---|---|
-| `31ab8e1` | Corrected SDK header ordering for `ShellExecuteW`, explicitly included common-dialog declarations and strengthened build-layout checks. |
+| `31ab8e1` | Corrected SDK header ordering for `ShellExecuteW`, explicitly included common-dialogue declarations and strengthened build-layout checks. |
 | `c80619e` | Added browser and SSH terminal preferences, first-run application setup and persistent user settings as part of the 0.3.0 milestone. |
 | `2c8bb22` | Added Windows workstation pairing and direct WireGuard PBX access with administrator-controlled SSH. |
 | `3f451f1` | Corrected duplicate DPI manifest declarations and added regression checks. |

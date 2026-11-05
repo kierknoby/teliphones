@@ -154,7 +154,7 @@ class BuildLayoutTests(unittest.TestCase):
         resource = (ROOT / "src/app/resource.h").read_text(encoding="utf-8")
         self.assertRegex(resource, rf"#define IDC_APPS_HEADING\s+{module.IDC_APPS_HEADING}\b")
         self.assertRegex(resource, rf"#define IDC_MESSAGE_TEXT\s+{module.IDC_MESSAGE_TEXT}\b")
-        self.assertTrue(module.is_main_window_title("TELIPHONES 0.8.0"))
+        self.assertTrue(module.is_main_window_title("TELIPHONES 0.8.1"))
         self.assertFalse(module.is_main_window_title(module.WELCOME_TITLE))
         self.assertFalse(module.is_main_window_title("TELIPHONES Settings"))
         self.assertEqual(module.first_run_preferences(
@@ -806,7 +806,7 @@ class BuildLayoutTests(unittest.TestCase):
         self.assertIn("if: always()", steps["Upload startup diagnostics on failure"])
         self.assertNotIn("if:", steps["Prepare application artifact"])
         for name in ("Run native Windows core and diagnostics regression tests",
-                     "Run native appearance, layout and Connection Health window tests",
+                     "Run native pairing, appearance, layout and Connection Health window tests",
                      "Verify real x64 native executable and runtime dependencies",
                      "Smoke-test executable loading without UAC or networking"):
             self.assertIn("!cancelled() && steps.application_build.outcome == 'success'", steps[name])
@@ -924,8 +924,8 @@ endfunction()
         base = ".".join(map(str, parts[:3]))
         product = base
         numeric = ".".join(map(str, parts))
-        self.assertEqual(product, "0.8.0")
-        self.assertEqual(numeric, "0.8.0.0")
+        self.assertEqual(product, "0.8.1")
+        self.assertEqual(numeric, "0.8.1.0")
         self.assertIn(f'"version-string": "{product}"', (ROOT / "vcpkg.json").read_text(encoding="utf-8"))
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
@@ -935,14 +935,14 @@ endfunction()
         self.assertIn(f"## {product} — Unreleased", changelog)
         self.assertEqual(re.findall(r"^## (\d+\.\d+\.\d+) ", changelog, re.MULTILINE)[0], product)
         self.assertIn(f"**{numeric}**", changelog)
-        self.assertIn("Windows 0.8.0 adds explicit pairing access selection", readme)
+        self.assertIn("Windows 0.8.1 corrects the", readme)
         self.assertIn(
             "Windows 0.8.0 adds explicit pairing access selection",
             " ".join(changelog.split()),
         )
         module_version = ET.parse(ROOT.parents[1] / "teliphones/module.xml").getroot().findtext("version")
         self.assertRegex(module_version or "", r"^\d+\.\d+\.\d+$")
-        self.assertIn(f"FreePBX module version: **{module_version}**", changelog)
+        self.assertIn(f"FreePBX module **{module_version}**", changelog)
         registered = {
             item.attrib["Include"].replace("\\", "/")
             for item in project("TELIPHONES.vcxproj").findall("ms:ItemGroup/ms:ClInclude", NS)
@@ -999,7 +999,7 @@ endfunction()
         module_version = ET.parse(ROOT.parents[1] / "teliphones/module.xml").getroot().findtext("version")
         self.assertRegex(module_version or "", r"^\d+\.\d+\.\d+$")
         for path, statement in (
-            (ROOT / "README.md", "TELIPHONES 0.8.0 for Windows is licensed under GPLv3."),
+            (ROOT / "README.md", "TELIPHONES 0.8.1 for Windows is licensed under GPLv3."),
             (ROOT.parents[1] / "teliphones/README.md",
              f"TELIPHONES {module_version} for FreePBX is licensed under GPLv3."),
         ):
@@ -1047,6 +1047,59 @@ endfunction()
         self.assertIn("pairing.ssh && sshPublicKey_.empty()", source)
         self.assertIn("if (sshKeyRequested_) {", source)
         self.assertIn("COMBOBOX        IDC_PAIR_ACCESS", resource)
+
+    def test_pairing_dialogue_groups_order_keyboard_and_initial_availability(self):
+        resource = (ROOT / "src/app/TELIPHONES.rc").read_text()
+        dialog = resource.split("IDD_PAIR DIALOGEX", 1)[1].split("\nEND", 1)[0]
+        self.assertIn('GROUPBOX        "Request access"', dialog)
+        self.assertIn('GROUPBOX        "Complete pairing"', dialog)
+        ids = ["IDC_PAIR_WORKSTATION", "IDC_PAIR_ACCESS", "IDC_PAIR_GENERATE", "IDC_PAIR_REQUEST",
+               "IDC_PAIR_COPY", "IDC_PAIR_RESPONSE", "IDC_PAIR_SSHUSER", "IDOK"]
+        positions = [dialog.index(identifier + ",") for identifier in ids]
+        self.assertEqual(positions, sorted(positions), "Resource order is native keyboard tab order")
+        previous_bottom = 0
+        for identifier in ids:
+            match = re.search(rf"{identifier},\s*(\d+),\s*(\d+),\s*(\d+),\s*(\d+)([^\n]*)", dialog)
+            self.assertIsNotNone(match, identifier)
+            x, y, width, height = map(int, match.groups()[:4])
+            self.assertGreaterEqual(y, previous_bottom)
+            self.assertLessEqual(x + width, 445)
+            if identifier == "IDC_PAIR_ACCESS":
+                height = 18  # Resource height includes the expanded dropdown list, not its closed face.
+            previous_bottom = y + height
+            self.assertLessEqual(previous_bottom, 394)
+            if identifier in ("IDC_PAIR_COPY", "IDC_PAIR_RESPONSE", "IDOK"):
+                self.assertIn("WS_DISABLED", match.group(5))
+        self.assertRegex(dialog, r'IDC_PAIR_SSHUSER,[^\n]*ES_READONLY[^\n]*NOT WS_VISIBLE')
+        self.assertIn('IDC_PAIR_SSHLABEL', dialog)
+        for mnemonic in ("&Workstation", "&Access", "&Generate", "&Copy", "&Paste", "&Save"):
+            self.assertIn(mnemonic, dialog)
+        self.assertIn("Connectivity > TELIPHONES > Pair a Workstation", dialog)
+
+    def test_pairing_dialogue_invalidates_and_revalidates_without_trusting_account_edit(self):
+        source = (ROOT / "src/app/PairDlg.cpp").read_text()
+        for binding in ("ON_EN_CHANGE(IDC_PAIR_WORKSTATION, &CPairDlg::OnRequestChanged)",
+                        "ON_CBN_SELCHANGE(IDC_PAIR_ACCESS, &CPairDlg::OnRequestChanged)",
+                        "ON_EN_CHANGE(IDC_PAIR_RESPONSE, &CPairDlg::OnResponseChanged)"):
+            self.assertIn(binding, source)
+        self.assertIn("profile.workstationName = name", source)
+        self.assertIn("profile.workstationName == ", source)
+        self.assertIn("sshKeyRequested_ == (access->GetCurSel() == 1)", source)
+        self.assertIn("if (!InvalidateRequest()) return", source)
+        reset = source.split("bool CPairDlg::InvalidateRequest()", 1)[1].split("void CPairDlg::OnRequestChanged", 1)[0]
+        for field in ("request_", "publicKey_", "sshPublicKey_", "nonce_"):
+            self.assertIn(field + ".clear()", reset)
+        self.assertIn("return DiscardKey()", reset)
+        save = source.split("void CPairDlg::OnOK()", 1)[1].split("bool CPairDlg::DiscardKey()", 1)[0]
+        self.assertIn("pairing = ValidatedResponse()", save)
+        self.assertIn("std::string sshUser = pairing.sshUser", save)
+        self.assertNotIn("GetEdit(this, IDC_PAIR_SSHUSER)", source)
+        window_project = project("HealthWindowTests.vcxproj")
+        compiled = {item.attrib["Include"].replace("\\", "/")
+                    for item in window_project.findall("ms:ItemGroup/ms:ClCompile", NS)}
+        self.assertIn("src/app/PairDlg.cpp", compiled)
+        self.assertIn("tests/pair_dialog_tests.cpp", compiled)
+        self.assertIn("RunPairDialogTests(this)", (ROOT / "tests/health_window_tests.cpp").read_text())
 
     def test_managed_ssh_has_no_file_or_shared_agent_fallback(self):
         source = (ROOT / "src/platform/Ssh.cpp").read_text()

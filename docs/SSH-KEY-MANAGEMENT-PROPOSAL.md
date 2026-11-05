@@ -1,9 +1,9 @@
 # My PBXs managed SSH: implementation and validation
 
-The approved Option 1 implementation targets **Windows 0.7.0** and **FreePBX
-0.4.1**, independently versioned. Module 0.4.1 corrects the firewall defect in
-the installed/tested 0.4.0 build; Windows remains 0.7.0. The historical proposal below
-is retained as design history, not the current contract.
+The current implementation targets **Windows 0.8.1**, **FreePBX 0.6.3**, **root
+broker 0.6.2**, protocol **12**, independently versioned. The preserved module
+archive predates its later web-only form correction. Historical reports and the
+proposal below retain their original versions; they do not validate current source.
 
 ## Current status: native integration and initial live SSH reported successful
 
@@ -31,8 +31,8 @@ See the [current evidence register](SECURITY.md#verification-evidence).
 ## Pairing identity and ephemeral certificate contract
 
 1. Windows generates a per-PBX WireGuard key. GUI-only pairing is the default
-   version-1 path and never invokes OpenSSH. Selecting **Request SSH in next
-   generated request** generates a separately DPAPI-encrypted permanent identity,
+   version-1 path and never invokes OpenSSH. Selecting **FreePBX Web + SSH Access**
+   before **Generate request** generates a separately DPAPI-encrypted permanent identity,
    without requiring OpenSSH to generate either request. The version-2 contract enrols a separate,
    persistent Ed25519 workstation authentication public key; that identity must
    never be the disposable session key. Only public keys appear in
@@ -44,6 +44,11 @@ See the [current evidence register](SECURITY.md#verification-evidence).
 3. `teliphones-pair-response/2` binds the nonce and WireGuard key and supplies the
    account, PBX Ed25519 host public key, dedicated CA public key and managed ports.
    The trusted pairing exchange pins these keys without a fingerprint prompt.
+   Windows displays the approved account read-only only after response validation;
+   Copy/Save availability follows current request/response state. Changing name
+   or requested access invalidates unused identities and requires regeneration.
+   The response envelope is not separately signed: provenance relies on trusted
+   administrator HTTPS, while SSH certificates are signature-verified separately.
 4. The implemented **server** API on TCP 8765 serves a 30-second, one-use challenge
    bound to the workstation and exact WireGuard source. Windows generates a fresh
    session key locally and signs these exact bytes with the
@@ -90,8 +95,9 @@ See the [current evidence register](SECURITY.md#verification-evidence).
 - Only public identity/certificate/known_hosts/config files are staged. OpenSSH
   uses the pinned host key, isolated `-F` configuration, exact agent endpoint,
   certificate-only auth and no password, host-prompt, forwarding or mux fallback.
-- `TELIPHONES-SSH.exe` is a console-subsystem companion, hosted by PowerShell,
-  PowerShell 7, Command Prompt or Windows Terminal. Before creating SSH suspended,
+- Current My PBXs hosts its libvterm/ConPTY console in the application using
+  `TELIPHONES-SSH.exe` as the verified companion. The companion can also serve
+  external OpenSSH-backed console paths. Before creating SSH suspended,
   it must join an anonymous, non-inheritable kill-on-close Job owned by the GUI.
   The GUI verifies the child executable and Job membership, authorises the agent
   for its process handle and only then permits execution.
@@ -127,7 +133,7 @@ present or compatible. No new Actions run has been triggered or claimed.
 
 ## Isolation and ownership
 
-- The API and SSH acceptor bind to the exact PBX `tlp-admin` address **and**
+- The API and SSH acceptor bind to the exact shared/dedicated PBX tunnel address **and**
   use `SO_BINDTODEVICE`. An alternate interface cannot reach them even if a
   firewall rule is removed. Never publish or forward these TCP ports.
 - Each authorised workstation has its own port (`22000 + address last octet`)
@@ -185,7 +191,7 @@ gate below; the checks do not claim preservation of every arbitrary system setti
 | Workstation SSH identity generation | `PairDlg` called `Ssh.cpp`, which ran `ssh-keygen -f ...\\identity`, creating plaintext private/public files | OpenSSL generates a permanent workstation identity in memory; DPAPI encrypts its seed before storage, with transient copies cleared |
 | Windows reusable identity | `ReadSmallFile` copied the private key into `std::string`; `Services.cpp` DPAPI-encrypted it into `%LOCALAPPDATA%\\TELIPHONES\\SSH\\<profile>.dpapi` | `SshSession` decrypts only for workstation SSHSIG authentication; legacy blobs remain compatible. The identity is never the session subject |
 | Per-attempt Windows private key | DPAPI decryption copied the identity into strings and a plaintext `identity` file under a random attempt directory; OpenSSH/ssh-keygen helper processes read it for public-key extraction, SSHSIG and authentication | This entire export, signing and launch path is removed, with no plaintext fallback |
-| Windows runtime artifacts | Private key, public key, signature, certificate, config and known_hosts persisted until cleanup, possibly beyond a terminal/app crash | New files contain only public key/certificate, config and pinned known_hosts. Cleanup handles known legacy artifacts too; it cannot securely erase old copies or terminate old unowned terminals |
+| Windows runtime artefacts | Private key, public key, signature, certificate, config and known_hosts persisted until cleanup, possibly beyond a terminal/app crash | New files contain only public key/certificate, config and pinned known_hosts. Cleanup handles known legacy artefacts too; it cannot securely erase old copies or terminate old unowned terminals |
 | Disposable session key | Previously the reusable identity was also the certificate subject | Generated in locked seed memory, transient OpenSSL signing contexts only, no export/persistence; one process-bound userauth signature, then explicit destruction |
 | Network request | Previously public identity, challenge, signature and certificate; no private key was intentionally transmitted | Exact request/2 allows only public session key, session ID, challenge, workstation ID and identity signature; extra fields are rejected |
 | PBX SSH CA | Generated by ssh-keygen into root-private `/etc/teliphones/ssh/ca` and used by signing subprocesses | Preserved across sessions and migration; private CA never sent to Windows |

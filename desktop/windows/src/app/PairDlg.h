@@ -19,11 +19,16 @@ protected:
     void OnCancel() override;
     afx_msg void OnGenerate();
     afx_msg void OnCopy();
+    afx_msg void OnRequestChanged();
+    afx_msg void OnResponseChanged();
     afx_msg void OnTimer(UINT_PTR timerId);
     DECLARE_MESSAGE_MAP()
 
 private:
     bool DiscardKey();
+    bool RequestCurrent() const;
+    bool InvalidateRequest();
+    tlp::PairResponse ValidatedResponse();
     tlp::win::WireGuardInstallation wireguard_;
     std::string publicKey_;
     std::string sshPublicKey_;
@@ -31,4 +36,5 @@ private:
     std::string request_;
     bool keyStored_ = false;
     bool sshKeyRequested_ = false;
+    bool initialized_ = false;
 };

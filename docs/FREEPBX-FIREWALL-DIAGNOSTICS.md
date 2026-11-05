@@ -1,5 +1,13 @@
 # FreePBX 17: workstation firewall integration investigation
 
+This is the historical 0.4.0/0.4.1 incident and read-only evidence runbook,
+not current installation instructions or archive availability. Current targets
+are module 0.6.3, root broker 0.6.2, protocol 12 and Windows 0.8.1. Use the
+[current upgrade guide](../teliphones/README.md#updating-teliphones) for bootstrap;
+account for dedicated Locked interfaces and configured management ports when
+interpreting the shared-interface/default-port examples below. The preserved
+0.6.3 archive predates the subsequent module-side web-only form correction.
+
 ## Current evidence and scope
 
 During module **0.4.0** / Windows **0.7.0** WireGuard and SSH testing on
@@ -100,7 +108,7 @@ console/recovery route. The read-only collection below is not deployment approva
    then exactly one internal jump, without peer/link churn or repeated resets.
 4. Reconnect/disconnect Windows 0.7.0 repeatedly, restart the broker and PBX,
    and test persistent and unexpired/expired temporary pairings. A Windows
-   disconnect alone leaves pairing authorization intact; it must not duplicate
+   disconnect alone leaves pairing authorisation intact; it must not duplicate
    or broaden rules. Deadlines must not extend across restart.
 5. Test web-only and managed certificate SSH peers, pinned host keys, approved
    accounts, renewal, expiry, revocation and active-session termination. System

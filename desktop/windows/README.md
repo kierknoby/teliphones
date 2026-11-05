@@ -1,30 +1,34 @@
-# TELIPHONES 0.8.0 for Windows (experimental)
+# TELIPHONES 0.8.1 for Windows (experimental)
 
 **TELIPHONES is a UK registered trademark.**
 
-**TELIPHONES 0.8.0 for Windows is licensed under GPLv3.**
+**TELIPHONES 0.8.1 for Windows is licensed under GPLv3.**
 
 Reach your PBX privately, open FreePBX in your preferred browser and start an
 approved SSH session without distributing permanent administrator SSH credentials.
 This guide covers installing and using the Windows application. The
 [FreePBX administration guide](../../teliphones/README.md) covers server setup.
 
-Windows **0.8.0** (file version **0.8.0.0**) is independent of FreePBX module
-**0.6.3**. Windows 0.8.0 adds explicit pairing access selection, password
-protection, authenticated identity-preserving listener migration, effective PBX
-policy/status, restricted Allowed List and unlock requests, and post-pair SSH
-elevation.
+Windows **0.8.1** (file version **0.8.1.0**) is independent of FreePBX module
+**0.6.3**, root broker **0.6.2**, protocol **12**. Windows 0.8.1 corrects the
+pairing dialogue order, stale-request handling, Copy/Save availability and
+response-derived approved SSH account display. It retains the 0.8.0 source
+features: password protection, listener migration, PBX policy/status, Allowed
+List and unlock requests, post-pair SSH elevation and the experimental built-in
+SSH console. It is an unreleased release candidate, not a published download.
 The [version definition](src/app/Version.h), not the manifest assembly identity,
 defines the application version.
 
 > [!WARNING]
 > **Experimental, not production-ready.** The operator reports successful
-> Windows Actions builds, all **ten native OpenSSH integration tests passing**,
+> earlier Windows Actions builds, including a later report of **eleven native
+> OpenSSH integration tests passing** and a successful first-run startup smoke,
 > authenticated SSH into a FreePBX 17 test server and automatic closure of the
 > owned terminal when TELIPHONES disconnects. Complete server-side revocation,
 > authorisation expiry, systemd/cgroup lifecycle, reconnection and failure
-> recovery still need live validation. The module 0.4.1 firewall correction has
-> not yet been validated on that PBX. See [verification status](#verification-status).
+> recovery still need live validation. These supplied reports do not validate
+> the current 0.8.1 dialogue or establish a matching binary. See
+> [verification status](#verification-status).
 
 ## Choose your workflow
 
@@ -117,17 +121,53 @@ The installer downloads only a reviewed official x64 MSI after explicit approval
 - **Installer returns success but detection fails:** TELIPHONES reports failure and keeps connections disabled. Choose **Check Again**; restart Windows only if Windows Installer requested it.
 - **Existing files cannot be verified or only part of WireGuard is present:** TELIPHONES will not overwrite them automatically. The failure is reported for administrator investigation.
 
-During installation the dialog cannot be closed until the worker finishes; cancel an active MSI in its Windows Installer window. TELIPHONES does not kill a running installer or delete its input while it is in use.
+During installation the dialogue cannot be closed until the worker finishes; cancel an active MSI in its Windows Installer window. TELIPHONES does not kill a running installer or delete its input while it is in use.
 
 ## Pair an administrator workstation
 
-1. Install the locally built `TELIPHONES-0.6.3.tgz` test package through FreePBX Module Admin and complete its [documented root broker bootstrap](../../teliphones/README.md#complete-installation-on-freepbx-17). After upgrading the module, rerun the bootstrap with no active support session and Windows tunnels disconnected so the separately installed broker is current. A module upgrade alone does not replace the privileged broker.
-2. Select **Add my PBX...** and enter a workstation name. Choose **Web access** for GUI-only access (no OpenSSH dependency), or **Web + SSH access** to enrol an independent DPAPI-protected workstation SSH identity. Choose **Generate request** and copy it. This identity authenticates future certificate requests; it is never used as the session certificate subject.
-3. In the PBX web interface, open **Connectivity > TELIPHONES > Windows workstations**, paste the request, provide the PBX's externally reachable WireGuard hostname/IP and UDP port, select temporary or persistent access, and explicitly choose whether SSH is allowed. The pairing operation requires HTTPS.
-4. Leave SSH **Not permitted** for a GUI-only request. For SSH-capable requests the PBX administrator explicitly selects the existing account; root is never implicit. Copy the response into Windows and **Save connection**. The response supplies the account and pinned host/CA keys; no manual username or fingerprint acceptance is needed.
-5. Select the profile and **Connect**, approving Windows tunnel setup. Wait
+The preserved 0.6.3 module archive includes broker transport fixes but predates
+the web-only form correction now in module source. Do not assume that correction
+is shipped: use a reviewed build containing it for the web-only workflow.
+Updating that PHP/template correction alone needs no root-broker change.
+
+Prepare a reviewed Module Admin test package containing the required form
+correction and complete the [root broker bootstrap](../../teliphones/README.md#complete-installation-on-freepbx-17).
+After module upgrades, repeat bootstrap with no active support session and
+tunnels disconnected; verify broker 0.6.2/protocol 12, not just an operational
+socket. The later PHP form correction alone requires no broker change.
+
+1. Select **Add my PBX...** and enter the workstation name under **Pair my PBX >
+   Request access**.
+2. Select **FreePBX Web Access** (default, no SSH identity/OpenSSH dependency)
+   or **FreePBX Web + SSH Access** before generating. The latter enrols a
+   separate DPAPI-protected permanent identity for certificate requests, never
+   the disposable session certificate subject. Requesting SSH grants nothing.
+3. Select **Generate request**, then **Copy request**. Copy is unavailable until
+   generation succeeds. Changing name/access clears the stale request/response
+   and unused identities and requires regeneration, retaining the name.
+4. A full administrator opens **Connectivity > TELIPHONES > Pair a Workstation**
+   over trusted HTTPS.
+5. Paste the request and complete endpoint hostname/IP, UDP port, source policy
+   and lifetime. Under **SSH approval**, leave **FreePBX Web Access only**, or
+   explicitly approve **FreePBX Web + SSH Access** for an SSH-capable request and
+   select an existing Linux account. Root is never implicit. An SSH-capable
+   request may receive web-only approval.
+6. Wait for the final pairing result and copy the response produced by FreePBX.
+   Progress means liveness, never successful approval.
+7. Paste the response under Windows **Complete pairing**. Validation supplies
+   the approved SSH account automatically, read-only and hidden for web-only
+   approval.
+8. Select **Save connection** when enabled. Save requires a response bound to
+   the current request and revalidates addresses, endpoint, expiry, account and
+   pinned host/CA keys. Invalid, old or mismatched responses remain rejected.
+
+The existing v1/v2 pairing protocol is unchanged. The response envelope is
+request-bound but not independently signed: trusted administrator HTTPS supplies
+its provenance. SSH session certificates are separately signature-verified.
+
+After saving, select the profile and **Connect**, approving tunnel setup. Wait
    for Connection Health to confirm that the PBX is reachable.
-6. Select **Open FreePBX** and sign in with your normal FreePBX credentials.
+Select **Open FreePBX** and sign in with normal FreePBX credentials.
    The browser opens the approved HTTP/HTTPS management URL (including a custom
    port, when configured) on the PBX tunnel address inside the encrypted
    tunnel. Redirects and HTTPS certificates still depend on the PBX web setup;
@@ -186,7 +226,7 @@ The built-in console uses the existing managed certificate, pinned host key,
 isolated agent and kill-on-close SSH job. Its source includes a libvterm screen
 model, MFC renderer and ConPTY-backed OpenSSH path with resize propagation.
 Portable terminal tests pass, but the MFC/ConPTY integration, full-screen
-applications and real SSH behavior have not been verified on Windows here.
+applications and real SSH behaviour have not been verified on Windows here.
 
 ## Disconnect, remove or revoke
 
@@ -218,7 +258,7 @@ or profile removal; restarting starts fresh measurements.
 | **Connected for** | Elapsed time since confirmed PBX reachability, not VPN service uptime; resets after declared loss or reconnect |
 | **Authorisation remaining** | Original PBX UTC expiry, or **Until revoked**; reconnecting never renews it |
 | **Connection health** | Independent continuously healthy duration; failed checks reset it |
-| **TCP RTT** and jitter | Application TCP connection timing to this PBX's tunnel address, 443 then 80 fallback; not ICMP ping or network packet loss |
+| **TCP RTT** and jitter | Application TCP timing to the approved management URL's port (HTTP 80 / HTTPS 443 if omitted); not ICMP ping, network packet loss, HTTP or TLS validation |
 | Upload/download | Actual counter deltas, labelled by source: WireGuard peer transport or exact-interface IP bytes; not available bandwidth |
 | Handshake age | WireGuard freshness; older than 180 seconds warns, but does not prove an idle peer disconnected |
 
@@ -242,11 +282,11 @@ preserves timing, telemetry, window-lifecycle and manual display-test detail.
 
 ### Session diagnostics
 
-**View Session Log** shows the selected pairing's sanitized local timeline and exports the same text through a native Save dialog. Logs live under `%LOCALAPPDATA%\TELIPHONES\Diagnostics` with a protected current-user/SYSTEM directory. Storage rotates at 1 MiB per file, retains three files total and removes records older than seven days on access. Cross-process locking protects writes/rotation; failures are reported rather than silently ignored. Shutdown closes logging without a persistent logging worker.
+**View Session Log** shows the selected pairing's sanitised local timeline and exports the same text through a native Save dialogue. Logs live under `%LOCALAPPDATA%\TELIPHONES\Diagnostics` with a protected current-user/SYSTEM directory. Storage rotates at 1 MiB per file, retains three files total and removes records older than seven days on access. Cross-process locking protects writes/rotation; failures are reported rather than silently ignored. Shutdown closes logging without a persistent logging worker.
 
-Events include startup/shutdown, local pairing changes, manual connection attempts, service establishment/removal, health/probe/telemetry transitions, errors and minute summaries. Deterioration events retain recent bounded measurements. Logs never dump profiles, tunnel configurations, passwords or key material; detail sanitization also applies before viewing/export.
+Events include startup/shutdown, local pairing changes, manual connection attempts, service establishment/removal, health/probe/telemetry transitions, errors and minute summaries. Deterioration events retain recent bounded measurements. Logs never dump profiles, tunnel configurations, passwords or key material; detail sanitisation also applies before viewing/export.
 
-For **My PBXs**, both ends use `ws-<workstation_id>` as a non-secret pairing-lifetime diagnostic identifier. Each Windows connection has a separate local attempt identifier, since the current pairing protocol does not notify the broker of application button presses. The PBX records only its own peer/interface/authorization/firewall observations, never a fictional client connect or failure. Compare UTC timelines allowing for clock skew, aided by local monotonic elapsed milliseconds. **Remote Support** uses separate local `support-<profile_id>` identifiers, not these PBX workstation logs.
+For **My PBXs**, both ends use `ws-<workstation_id>` as a non-secret pairing-lifetime diagnostic identifier. Each Windows connection has a separate local attempt identifier, since the current pairing protocol does not notify the broker of application button presses. The PBX records only its own peer/interface/authorisation/firewall observations, never a fictional client connect or failure. Compare UTC timelines allowing for clock skew, aided by local monotonic elapsed milliseconds. **Remote Support** uses separate local `support-<profile_id>` identifiers, not these PBX workstation logs.
 
 The FreePBX full-administrator interface provides the corresponding bounded broker diagnostics. Export each side to compare events; insufficient evidence remains explicitly inconclusive. The diagnostics do not grant SSH access or transmit logs to a telemetry service.
 
@@ -266,7 +306,7 @@ TELIPHONES opens the FreePBX interface and SSH sessions with applications you ch
 
 ### First run
 
-The first time TELIPHONES starts for a Windows user, a **Welcome to TELIPHONES** dialog asks for:
+The first time TELIPHONES starts for a Windows user, a **Welcome to TELIPHONES** dialogue asks for:
 
 - **Default Browser**: the Windows default browser, plus whichever of Google Chrome, Microsoft Edge, Mozilla Firefox, Brave and Vivaldi are installed.
 - **Default SSH Terminal**: whichever of Windows PowerShell, PowerShell 7, Windows Terminal, PuTTY and Command Prompt are installed; this preference is not used by managed My PBXs SSH, which opens the built-in console.
@@ -275,7 +315,7 @@ Only applications found on the computer are listed. Google Chrome is preselected
 
 - **Save & Next** stores your choices and advances to secure connectivity.
 - **Skip** stores the preselected defaults and advances to secure connectivity. Change them later in Settings.
-- **Cancel** in Step 1 stores nothing, and the welcome dialog appears again at the next start. Closing later steps preserves the saved preferences.
+- **Cancel** in Step 1 stores nothing, and the welcome dialogue appears again at the next start. Closing later steps preserves the saved preferences.
 
 ### Settings
 
@@ -294,7 +334,7 @@ Windows accessibility/high-contrast colours override the preference. Graph line
 patterns and text labels do not rely on colour alone. Windows-owned file
 pickers, UAC and credential prompts remain OS-rendered; title-bar support varies
 by Windows version. See the [native appearance reference](tests/WINDOWS-READINESS.md#native-appearance-implementation)
-for renderer, accessibility and new-dialog implementation details.
+for renderer, accessibility and new-dialogue implementation details.
 
 ### How applications are launched
 
@@ -305,7 +345,11 @@ for renderer, accessibility and new-dialog implementation details.
 | Windows PowerShell / PowerShell 7 / Windows Terminal / Command Prompt | Available for the separate Remote Support workflow; managed My PBXs uses the built-in console |
 | PuTTY (Remote Support only) | PuTTY with `-ssh`, the tunnel address, the approved SSH port (`-P`), the user name (`-l`) and a per-PBX `-loghost` name for host-key checking; not managed My PBXs certificate authentication |
 
-The FreePBX address is unchanged: `http://<PBX tunnel address>/admin/`. Managed My PBXs uses the approved account and dedicated per-workstation port, with the helper controlled by the app and the existing short-lived certificate path. The helper never holds a private key. Remote Support retains its independent service on port `22222` and its existing terminal/credential workflow.
+The FreePBX address uses the approved HTTP/HTTPS scheme and management port
+on `<PBX tunnel address>/admin/`, not a hardcoded HTTP default. Managed My PBXs
+uses the approved account and dedicated port, the app-controlled helper and
+short-lived certificate path; the helper never holds a private key.
+Remote Support retains port `22222` and its separate terminal/credential workflow.
 
 Earlier builds opened the Windows default browser and ran `ssh.exe` directly in a new console window.
 
@@ -392,7 +436,7 @@ revoke the old peer in FreePBX, then pair a new identity.
 Portable tests cover successful authenticated decryption, independent
 Argon2id/AES interoperability, wrong-password and tampering rejection,
 missing-provider refusal and secret-free bootstrap rendering. Native MFC,
-Credential Manager, DPAPI, UAC, Windows service and WireGuard UAPI behavior
+Credential Manager, DPAPI, UAC, Windows service and WireGuard UAPI behaviour
 still need Windows validation; portable success is not that evidence.
 
 ### Storage
@@ -403,8 +447,8 @@ still need Windows validation; portable success is not that evidence.
 - Public-bootstrap-only tunnel configuration is staged in a user-restricted local directory, revalidated by an elevated helper, then placed under `%ProgramFiles%\TELIPHONES\Tunnels` with a restrictive ACL. The enrolled WireGuard key is injected only in memory after service startup.
 - Each tunnel is demand-started. The helper grants the current Windows user only the service rights needed to query, stop and remove that TELIPHONES tunnel; it does not grant permission to start or reconfigure it.
 - UAC approval is required for tunnel installation. Declining it cancels the connection.
-- Only one connection is active at a time. The app probes the PBX through the tunnel and displays session expiry separately from reachability. Authorization expiry disconnects the tunnel; detected loss of PBX reachability warns and disables new SSH launches, but does not automatically remove the tunnel or close existing terminal windows. Normal application exit requests disconnection.
-- Revocation detection is based on reachability checks, not a server-pushed revocation channel. A revoked but otherwise reachable/established flow may not be detected instantaneously; verify teardown behavior in the supported PBX/gateway environment before relying on it.
+- Only one connection is active at a time. The app probes the PBX through the tunnel and displays session expiry separately from reachability. Authorisation expiry disconnects the tunnel; detected loss of PBX reachability warns and disables new SSH launches, but does not automatically remove the tunnel or close existing terminal windows. Normal application exit requests disconnection.
+- Revocation detection is based on reachability checks, not a server-pushed revocation channel. A revoked but otherwise reachable/established flow may not be detected instantaneously; verify teardown behaviour in the supported PBX/gateway environment before relying on it.
 
 ## Troubleshooting
 
@@ -433,7 +477,7 @@ identity-bound migration parsing and the Argon2id positive-path provider tests
 when available. This is not a native Windows build: this Linux environment
 cannot compile or exercise the MFC application, Windows Credential Manager,
 DPAPI, UAC, service/helper lifecycle, or actual WireGuard reconnect path.
-Historical operator reports for 0.7.0 are not evidence for the current 0.8.0
+Historical operator reports for 0.7.0 are not evidence for the current 0.8.1
 changes.
 
 Live FreePBX session admission, listener migration, source restrictions,

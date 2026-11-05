@@ -22,6 +22,8 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="tests\health_window_tests.cpp" />
+    <ClCompile Include="tests\pair_dialog_tests.cpp" />
+    <ClCompile Include="src\app\PairDlg.cpp" />
     <ClCompile Include="src\app\ConnectionHealthDlg.cpp" />
     <ClCompile Include="src\app\Appearance.cpp" />
     <ClCompile Include="src\app\DesktopLayout.cpp" />

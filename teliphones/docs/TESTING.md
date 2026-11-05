@@ -1,5 +1,28 @@
 # TELIPHONES testing
 
+## Windows 0.8.1 source review and package boundary
+
+Windows 0.8.1 is independently versioned; module 0.6.3, root broker 0.6.2 and
+protocol 12 are unchanged. The existing 0.6.3 archive **does not match current
+module source**: it predates the later PHP web-only form correction and these
+documentation changes. Exact-source package validation is expected to reject
+that mismatch until an explicitly authorised new package is prepared. Do not
+rebuild or describe the correction as shipped implicitly.
+
+Offline documentation and site validation, from the repository root:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 teliphones/tests/documentation-links.py
+node --test website/tests/*.test.js
+```
+
+The site is static HTML/CSS/JavaScript; no generator/build installation is
+needed. Local links, assets, fragments and source version references are checked
+without accessing external URLs. For native Windows version resources, MFC
+pairing behaviour, startup smoke and portable Release checks, use the
+`desktop/windows/tests/WINDOWS-READINESS.md` reference in the source repository.
+Linux checks do not substitute for Windows execution.
+
 ## 0.6.3 pairing transport and package validation
 
 Run the PHP/Node and gateway suites below, then run
@@ -21,7 +44,7 @@ or excluded by these results. Do not remove or weaken its assertion.
 
 ## 0.6.2 nftables acknowledgement and recovery
 
-The broker tests include regressions for canonical UDP rule serialization,
+The broker tests include regressions for canonical UDP rule serialisation,
 unacknowledged monitor events, kernel-state readback before pending-event
 release, fail-closed behaviour when readback is unavailable, verified cleanup,
 recovery and a subsequent pairing attempt. PHP tests verify that an old
@@ -44,21 +67,36 @@ these results. Keep that live-PBX check as a release gate.
 
 ## Workstation enforcement regression coverage
 
+`teliphones/tests/pairing-form.test.js` renders the actual PHP page, executes its
+inline pairing script with modelled DOM controls, serializes successful named
+controls, and submits them through the page POST handler. It covers the web-only
+disabled-SSH-select regression, exactly one explicit SSH access value, managed
+SSH selection, no-JavaScript web-only submission, field-specific missing/type
+errors, CSRF, escaping and retention of bounded non-sensitive values. Pairing
+requests and SSH approval are not redisplayed after failure.
+The corresponding gateway socket regression submits the generated POST through
+the same PHP page and actual broker socket, verifies completed web-only pairing
+against modelled firewall/WireGuard state, and checks that malformed requests,
+ports and endpoints cannot mutate existing pairings. This is not a browser
+engine or live FreePBX test. The form correction changes module PHP/templates,
+not root broker 0.6.2; the existing 0.6.3 archive remains unchanged and does not
+contain these subsequent source edits until explicitly rebuilt.
+
 `gateway/tests/test_broker_socket.py` runs the real PHP client against real
 Unix sockets and the production broker request handler, with modelled network
 commands. It reproduces the old five-second read timeout during a six-second
 listener verification, verifies final success and failure after progress frames,
 and checks that new workstation admission waits for verification. It also covers
-peer authorization, legacy single-response clients, invalid progress options,
+peer authorisation, legacy single-response clients, invalid progress options,
 fragmented/malformed/oversized replies, inactivity, older-helper rejection,
-sanitized exception/serialization errors, and transaction completion without
+sanitised exception/serialisation errors, and transaction completion without
 re-dispatch after a client disconnect. PHP is required for this integration
 class; a missing interpreter produces an explicit skip.
 
 These tests do not execute real FreePBX listener convergence, web-server/proxy
 request deadlines, installed broker upgrades or live workstation pairing.
-Those remain live-PBX validation requirements. The new 0.6.3 package is checked
-against current module source; the preserved 0.6.2 archive remains historical.
+Those remain live-PBX validation requirements. At packaging, 0.6.3 was checked
+against then-current source; it now predates later edits. The 0.6.2 archive is historical.
 
 From the repository root, run `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s gateway/tests -v` and `php teliphones/tests/run.php`. The new enforcement cases exercise complete JSON-policy tampering, ownership conflicts, verified disable/delete failures, recovery-file retention, both pairing lifetimes, transient external flush/restore events, monitor startup/death and own-event filtering. PHP covers trusted-helper ancestry, refusal of legacy/web-owned helpers, verified service stopping and abort-on-failure ordering. The existing portable C++ contract tests reuse the updated Python fake network; Windows sources are unchanged.
 
@@ -106,7 +144,7 @@ documentation-only overhaul**:
 - Module PHP/JavaScript suite and documentation link tests passed.
 - Portable Windows CMake build and all seven CTest cases passed.
 - `git diff --check` passed.
-- Package/source equality, corrected archived firewall behavior, authoritative
+- Package/source equality, corrected archived firewall behaviour, authoritative
   module/broker/web version consistency and preservation of the older 0.4.0
   archive are checked by `teliphones/tests/package-validation.py`.
   The 0.4.1 SHA-256 sidecar identifies the exact package contents.
@@ -171,13 +209,14 @@ with versions and build provenance recorded separately:
 2. **Windows settings:** Applications/Connectivity and Appearance in System,
    Light and Dark. Include one high-contrast and narrow/high-DPI example only
    after real visual inspection; injected test DPI is not a screenshot.
-3. **Authenticated SSH:** an implemented OpenSSH-backed terminal beside the
-   connected profile, then observed owned-terminal closure on disconnect.
-   Never label this as the planned integrated TELIPHONES terminal.
+3. **Authenticated SSH:** the actual current built-in managed console and
+   observed owned-session closure on disconnect. Earlier external-terminal
+   screenshots are historical, not evidence of the current integrated console.
 4. **FreePBX workstation approval:** SSH opt-in with a deliberately selected
    test account, permission/lifetime controls, integration status and diagnostics.
-5. **FreePBX readiness/upgrade:** current module 0.4.1 and separately refreshed
-   broker status. A 0.4.0 capture is historical, not evidence of the correction.
+5. **FreePBX readiness/upgrade:** module 0.6.3 and separately refreshed broker
+   0.6.2/protocol 12. Record whether the trusted module build includes the later
+   form correction; an older capture does not establish that correction.
 
 Use synthetic names and harmless commands. Redact keys, pairing strings,
 certificates, grants, credentials, customer names, usernames, hostnames,
@@ -228,7 +267,7 @@ Confirm the module is enabled but support is off. A read-only page/status reques
 
 Run the documented Windows pairing steps with a genuinely reachable UDP endpoint. Test temporary web-only and explicitly persistent web-plus-SSH approval. Compare fingerprints; verify only the PBX `/32` is routed and ordinary credentials remain necessary. Check the last-handshake table, **Disconnect**, individual **Revoke**, persistent removal and automatic expiry. A revoked saved profile must not regain access without fresh approval. Confirm a protocol-2 or malformed protocol-3 broker displays **Root broker update required** and refuses pairing server-side while the existing remote support workflow remains available.
 
-Portable CTest executes the actual Python broker approval/revocation with only OS network calls doubled, and feeds its generated responses into the actual C++ parser, profile serialization/reload and tunnel renderer. It covers temporary/persistent expiry, SSH scope, request key/nonce binding and reference-gateway support configuration; this is not a real tunnel or Windows Credential Manager/systemd test.
+Portable CTest executes the actual Python broker approval/revocation with only OS network calls doubled, and feeds its generated responses into the actual C++ parser, profile serialisation/reload and tunnel renderer. It covers temporary/persistent expiry, SSH scope, request key/nonce binding and reference-gateway support configuration; this is not a real tunnel or Windows Credential Manager/systemd test.
 
 Run a management command as a non-root user. It must be refused.
 

@@ -5,6 +5,10 @@ on:
   push:
     paths:
       - 'desktop/windows/**'
+      - 'website/**'
+      - 'docs/**'
+      - 'README.md'
+      - 'teliphones/**/*.md'
       - '.github/workflows/windows-build.yml'
 
 permissions:
@@ -120,6 +124,15 @@ jobs:
           python -u desktop/windows/tests/powershell_environment_check.py 2>&1 |
             Tee-Object -FilePath (Join-Path $env:STARTUP_DIAGNOSTICS 'powershell-environment.log')
           if ($LASTEXITCODE -ne 0) { throw 'Unable to collect Windows PowerShell process/module diagnostics.' }
+
+      - name: Validate offline website and documentation links
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python teliphones/tests/documentation-links.py
+          if ($LASTEXITCODE -ne 0) { throw 'Offline documentation link checks failed.' }
+          $tests = @(Get-ChildItem -LiteralPath website/tests -Filter '*.test.js' | ForEach-Object { $_.FullName })
+          node --test @tests
+          if ($LASTEXITCODE -ne 0) { throw 'Offline website content and demonstration tests failed.' }
 
       - name: Provision official Windows OpenSSH capabilities
         id: openssh
@@ -248,21 +261,33 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw 'Isolated SSH task/process/temporary-file cleanup could not be verified.' }
           }
 
-      - name: Run native appearance, layout and Connection Health window tests
+      - name: Run native pairing, appearance, layout and Connection Health window tests
         if: ${{ !cancelled() && steps.application_build.outcome == 'success' }}
         run: |
           $tests = Join-Path $env:GITHUB_WORKSPACE 'desktop\windows\build\Release\HealthWindowTests.exe'
           if (-not (Test-Path -LiteralPath $tests -PathType Leaf)) {
             throw "The native MFC window test executable was not produced: $tests"
           }
-          $process = Start-Process -FilePath $tests -PassThru
-          if (-not $process.WaitForExit(30000)) {
-            $process.Kill()
-            throw 'Native MFC window lifecycle tests timed out.'
-          }
-          $process.Refresh()
-          if ($process.ExitCode -ne 0) {
-            throw "Native MFC window lifecycle tests failed with exit code $($process.ExitCode)."
+          $stdout = Join-Path $env:RUNNER_TEMP ('teliphones-window-' + [guid]::NewGuid() + '.out')
+          $stderr = $stdout + '.err'
+          try {
+            $process = Start-Process -FilePath $tests -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+            if (-not $process.WaitForExit(30000)) {
+              $process.Kill()
+              $process.WaitForExit()
+              throw 'Native MFC window lifecycle tests timed out.'
+            }
+            $process.Refresh()
+            if ($process.ExitCode -ne 0) {
+              throw "Native MFC window lifecycle tests failed with exit code $($process.ExitCode)."
+            }
+          } finally {
+            foreach ($log in @($stdout, $stderr)) {
+              if (Test-Path -LiteralPath $log) {
+                Get-Content -LiteralPath $log -Tail 100
+                Remove-Item -LiteralPath $log
+              }
+            }
           }
 
       - name: Verify real x64 native executable and runtime dependencies

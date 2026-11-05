@@ -1,5 +1,14 @@
 # TELIPHONES for FreePBX 17: module guide
 
+Current source is module **0.6.3**, root broker **0.6.2**, protocol **12**;
+Windows is independently **0.8.1**. The preserved local `TELIPHONES-0.6.3.tgz`
+contains the transport patch but **not** the later web-only form correction or
+current documentation. That PHP/template-only correction submits explicit
+`ssh=0` when the select is disabled and retains bounded non-sensitive values
+after failure; pairing material and SSH approval are cleared. Do not describe
+it as shipped without a reviewed new package. Native Windows 0.8.1 and complete
+live FreePBX 17 / Debian 12 pairing remain validation gates.
+
 Approve private access to your PBX from the FreePBX interface. TELIPHONES
 **0.6.3** pairs Windows workstations over WireGuard, with web access and,
 when explicitly approved, temporary SSH certificates for an existing account.
@@ -47,7 +56,7 @@ See [Licence](#licence).
 
 ## Secure Administration Without Exposing Your PBX
 
-With independently versioned **Windows 0.8.0**, administrators use **My PBXs**
+With independently versioned **Windows 0.8.1**, administrators use **My PBXs**
 to connect their own paired workstations. **Remote Support** is a separate,
 customer-authorised, time-limited workflow for enrolled MSP engineers.
 Neither replaces normal FreePBX sign-in or creates Linux accounts.
@@ -91,7 +100,7 @@ The module adds **Connectivity > TELIPHONES** to FreePBX and the `fwconsole teli
 |---|---|
 | **System readiness** | Broker state and prerequisites, including **Approve installation of WireGuard tools** |
 | **Remote support** and **Active session** | Authorise, monitor and revoke a temporary support session, and submit Checker evidence |
-| **Secure gateway enrollment** | Store gateway, certificate and Checker trust material for Remote Support |
+| **Secure gateway enrolment** | Store gateway, certificate and Checker trust material for Remote Support |
 | **Windows workstations** | Pair, list, diagnose and revoke administrator workstations |
 
 Privileged work is carried out by a separate root-owned broker, which must be installed once from a root shell (see [Complete Installation on FreePBX 17](#complete-installation-on-freepbx-17)) and refreshed after every upgrade.
@@ -277,7 +286,7 @@ by 0.4.0 and 0.4.1; it does not identify the firewall correction.
 Protocol 4 identifies older diagnostics support only. A matching module version
 does not establish that either root-owned helper was upgraded. Preserve an
 independent administrator/root shell until service, socket and readiness checks
-succeed. If rollback reports incomplete recovery, retain all recovery artifacts
+succeed. If rollback reports incomplete recovery, retain all recovery artefacts
 and repair the TELIPHONES installation from that shell rather than removing the
 module or changing the normal SSH service. Actual Debian 12 / FreePBX 17
 systemd upgrade, failure recovery and uninstall validation remains a release gate.
@@ -313,7 +322,7 @@ Keep the independent root shell open throughout these checks.
 
 This workflow pairs an administrator's own Windows workstation with this PBX.
 A web-only pairing needs WireGuard, not Windows OpenSSH. For automatic SSH,
-select **Request SSH in next generated request** in Windows before generating
+select **FreePBX Web + SSH Access** in Windows before generating
 the request, then explicitly approve an existing account on the PBX. New SSH
 pairings use an isolated managed listener, never the ordinary system SSH port.
 It does not require the reference gateway, Checker or any external service.
@@ -339,12 +348,14 @@ It does not require the reference gateway, Checker or any external service.
 ### 2. Generate a pairing request
 
 1. Select **Add my PBX...**.
-2. Enter a workstation name. For managed SSH, select **Request SSH in next
-   generated request** before selecting **Generate request**; otherwise leave
-   it unchecked for GUI-only access.
-3. Select **Copy request**. Note the key fingerprint shown beside it.
+2. In **Request access**, enter a workstation name and select **FreePBX Web
+   Access** or **FreePBX Web + SSH Access** before **Generate request**.
+   Web-only is the default and creates no SSH identity.
+3. Select **Generate request**, then **Copy request**. Note the fingerprint.
+   Changing name or access invalidates the previous request/response and requires
+   regeneration; the workstation name is retained.
 
-Keep the **Pair my PBX** dialog open. The response will be bound to this request and to the key that has just been generated.
+Keep the **Pair my PBX** dialogue open. The response will be bound to this request and to the key that has just been generated.
 
 ### 3. Approve the pairing on the PBX
 
@@ -354,15 +365,22 @@ Keep the **Pair my PBX** dialog open. The response will be bound to this request
 4. Choose the access period:
    - **Temporary**, with a **Temporary pairing duration** of 60, 240, 480 or 1440 minutes; or
    - **Persistent trusted workstation (until revoked)**.
-5. Choose **SSH access through the tunnel**. Leave **Not permitted** for GUI-only requests. An SSH-capable request requires explicitly selecting **Authorise SSH for this workstation** and an existing Linux account; there is no default account or implicit root. Windows 0.8.0 offers explicit **Web access** and **Web + SSH access** request choices; an SSH identity is generated only for the latter. For a Locked pairing, the managed SSH listener and certificate API are bound to that workstation's dedicated interface and tunnel address, with firewall permits scoped to its peer identity.
-6. Select **Pair workstation**. Compare the key fingerprint shown on the PBX with the one shown in the Windows dialog. They must match.
+5. Under **SSH approval**, leave **FreePBX Web Access only** for web-only access.
+   A valid SSH-capable request reveals **FreePBX Web + SSH Access** and requires
+   explicitly selecting an existing Linux account; there is no default account
+   or implicit root. Requesting SSH in Windows does not itself approve it.
+   For a Locked pairing, the managed SSH listener and certificate API bind to
+   its dedicated interface/address with firewall permits scoped to that peer.
+6. Select **Pair workstation**. Compare the key fingerprint shown on the PBX with the one shown in the Windows dialogue. They must match.
 
 ### 4. Complete pairing on Windows
 
 1. On the PBX, select **Copy pairing response**.
-2. Paste the response into the waiting Windows dialog.
-3. If SSH was approved, its administrator-approved account is supplied automatically by the pairing response.
-4. Select **Save connection**.
+2. Paste the response into **Complete pairing** in the waiting Windows dialogue.
+3. If SSH was approved, the validated response supplies its account automatically;
+   the display is read-only and hidden for web-only approval.
+4. **Save connection** enables only for a response bound to the current request
+   and is revalidated when clicked. Invalid or old responses cannot be saved.
 
 Pairing creates no SSH account or password. The SSH-capable server contract enrols a permanent workstation authentication public key, separate from disposable session keys, and pins the PBX's Ed25519 host key and certificate authority. Neither private key belongs in a pairing or certificate request. Existing saved identities remain preserved and can be imported from their encrypted DPAPI store in memory.
 
@@ -371,7 +389,10 @@ Pairing creates no SSH account or password. The SSH-capable server contract enro
 1. Select the saved connection and select **Connect**.
 2. Approve the Windows UAC prompt, which installs the TELIPHONES tunnel service for this PBX.
 3. Wait until the application reports that the PBX is reachable.
-4. Select **Open FreePBX**. This opens `http://<PBX tunnel address>/admin/` inside the encrypted WireGuard tunnel, in the browser chosen in the Windows application (see [browser and SSH terminal preferences](#browser-and-ssh-terminal-preferences)). Sign in with your existing FreePBX credentials; FreePBX authentication is never bypassed.
+4. Select **Open FreePBX**. This opens the approved HTTP/HTTPS scheme, port and
+   `/admin/` path on the PBX tunnel address in the preferred browser (see
+   [browser and SSH terminal preferences](#browser-and-ssh-terminal-preferences)).
+   Sign in with existing FreePBX credentials; authentication is never bypassed.
 
 The workstation routes only the PBX's tunnel address (`/32`); other traffic does not use the tunnel. Only one TELIPHONES connection is active at a time.
 
@@ -464,7 +485,7 @@ Remote Support has not been validated end to end on a real PBX.
 
 ### 1. Enrol the gateway
 
-Expand **Secure gateway enrollment** over HTTPS, then enter:
+Expand **Secure gateway enrolment** over HTTPS, then enter:
 
 - the HTTPS gateway origin;
 - the customer mTLS client certificate and private key;
@@ -605,7 +626,7 @@ The installed broker is older than the module. Rerun the root bootstrap, as desc
 | *TELIPHONES is disabled.* | Enable it as root with `fwconsole teliphones enable` |
 | *Paired workstations already use UDP port ...* | Use the same port, or revoke all workstations first |
 | *No workstation addresses remain* | Revoke unused workstations |
-| The Windows application rejects the response | Pair again from the same, still-open request dialog. A response is valid only for the request that produced it. |
+| The Windows application rejects the response | Pair again from the same, still-open request dialogue. A response is valid only for the request that produced it. |
 
 An **Operational** broker and verified control socket establish that a status
 request succeeded, not that a pairing transaction completed. Pairing may spend
@@ -623,6 +644,14 @@ Request-boundary failures identify the operation stage and a safe error category
 `journalctl -u teliphones-broker.service -n 50 --no-pager` provides the exception
 class and source location without recording request or command contents.
 Keep journal excerpts private and redact existing sensitive records before sharing.
+
+After a failed pairing submission, bounded hostname, port, management-service,
+duration and source-restriction values are retained for correction. The Windows
+pairing request is deliberately cleared, and SSH approval must be selected again
+explicitly after repasting it. A web-only request still submits an explicit
+`ssh=0` even when its SSH approval select is disabled; missing or non-text
+required fields are identified by label before the pairing is dispatched.
+Malformed Windows request contents remain subject to broker validation.
 
 Module 0.6.3 requires root broker 0.6.2 for these corrections. Refresh **both**
 the module PHP and the root-owned helpers through the reviewed
@@ -729,7 +758,9 @@ After uninstalling, verify that no `tlp-admin` or `wg-teliphones` interface rema
 - **Direct connectivity only.** No relay or NAT traversal; the PBX's WireGuard UDP port must be reachable through the router/NAT. The broker opens only the PBX host firewall.
 - **No revocation push.** Windows detects revocation through lost reachability.
 - **Remote Support.** Only On-PBX is implemented. Support-session reachability with FreePBX Firewall enabled is unknown, and no support firewall policy is changed. The temporary SSH service uses root with session-specific keys. No production Checker signer or Console is included.
-- **Framework checks.** FreePBX menu rendering, permissions and navigation have only metadata-level automated checks.
+- **Framework checks.** Menu metadata, permissions, page POST handling and
+  templates have modelled regression checks; they do not execute genuine
+  FreePBX navigation or browser rendering.
 
 The project-wide security model and its complete list of known limitations are in `docs/SECURITY.md` in the TELIPHONES source repository.
 
@@ -737,6 +768,10 @@ The project-wide security model and its complete list of known limitations are i
 
 | Evidence | What it establishes |
 |---|---|
+| Current Windows 0.8.1 source | Pairing dialogue state/access/response improvements implemented and portable Release 9/9 plus 48 layout contracts passed; native MFC dialogue/startup/PE metadata execution remains outstanding |
+| Current PHP/Node and gateway regressions | Module suite passed; gateway 203 run, 202 passed, one unavailable-WireGuard skip; actual form POST/Unix-socket transport tested with modelled network operations, not live FreePBX |
+| Later operator-reported eleven native SSH integrations and first-run startup smoke passing | Earlier native milestone, not matching 0.8.1 execution or complete live lifecycle assurance |
+| Preserved local 0.6.3 archive | Contains transport fixes and broker 0.6.2; does not contain subsequent module form/documentation corrections, and current source equality is not claimed |
 | Operator-reported successful Windows Actions builds and all ten native OpenSSH tests passing | Native build/integration milestone; no run URL, build hash or raw logs supplied with this documentation review |
 | Operator-reported authenticated Windows 0.7.0 SSH into FreePBX 17 with module 0.4.0, and terminal closure on disconnect | Initial real interoperability and client-side process closure, not complete server-side revocation or expiry |
 | Local module, broker, OpenSSH and packet tests | Automated contract/failure coverage; both iptables backends with simulated FreePBX rules; service supervision substituted for real systemd/cgroups |
@@ -745,7 +780,7 @@ The project-wide security model and its complete list of known limitations are i
 Historical ownership testing belongs in the [module changelog](docs/CHANGELOG.md).
 The current acceptance programme still requires:
 
-- 0.4.x-to-0.5.0 upgrade, repeated root bootstrap and installed-helper
+- representative older-module-to-0.6.3 upgrade, repeated root bootstrap and installed-helper
   verification while preserving an independent administration route;
 - live confirmation that a paired workstation establishes new WireGuard
   handshakes from previously unknown public addresses with FreePBX Firewall
@@ -889,7 +924,7 @@ The human contributor remains solely responsible for the contribution. AI tools 
 
 ## Release History
 
-The complete [FreePBX module change history](docs/CHANGELOG.md) is bundled with the module. Version 0.6.3 fixes pairing transport and error handling, retaining the 0.6.2 nftables acknowledgement and recovery corrections. It includes root broker 0.6.2 with protocol 12. Windows remains independently versioned at 0.8.0; this release makes no Windows changes. Neither product has been published from this working tree.
+The complete [FreePBX module change history](docs/CHANGELOG.md) is bundled with the module. Version 0.6.3 fixes pairing transport and error handling, retaining the 0.6.2 nftables acknowledgement and recovery corrections. It includes root broker 0.6.2 with protocol 12. Windows remains independently versioned at 0.8.1; this release makes no Windows changes. Neither product has been published from this working tree.
 
 The administration page groups System Readiness, Remote Support, Windows
 Workstation Access, Paired Workstations and Security & Access Restrictions.
@@ -897,7 +932,7 @@ Technical dependency and firewall explanations are expandable; missing
 requirements and security warnings remain visible. Diagnostics and Pair a
 Workstation use native, keyboard-operable expandable panels. Pairing retains
 one form with five visual groups, not a wizard. Invalid fields reveal their
-containing panel; server-rejected pairing/enrollment forms reopen on reload.
+containing panel; server-rejected pairing/enrolment forms reopen on reload.
 Styles and panel events are scoped to TELIPHONES. Layout/control regressions
 and JavaScript behaviour are tested locally, but no browser engine is
 available here: desktop/narrow FreePBX rendering, keyboard interaction and a
@@ -917,12 +952,13 @@ redirects from an authorised peer. A listening socket alone is not proof.
 The [historical root-cause report and read-only live-PBX verification procedure](docs/CONNECTIVITY-REGRESSION.md)
 describe confirmed evidence, hypotheses and outstanding release gates.
 Do not install an earlier review archive expecting these source changes.
-The root-level `TELIPHONES-0.6.2.tgz` archive and checksum, and any available
-historical archives, are retained unchanged. Build the root-level
-`TELIPHONES-0.6.3.tgz` package from the current
-module source and run the package validator for exact archive/source equality
-before any distribution. This is an experimental local package, not a
-production release or verified public download.
+The root-level 0.6.3 archive/checksum remain unchanged; no 0.6.2 archive is
+currently present locally. Historical release references are not download
+availability claims. The preserved 0.6.3 package predates the later
+form/documentation changes and no longer matches current source. Prepare a
+reviewed new package only when explicitly authorised and verify exact
+archive/source equality before distribution. No publication, live installation
+or production readiness is claimed.
 
 The root bootstrap also installs and retains `FirewallListener.php` alongside
 the Python helpers; the root-only listener action uses that protected copy.
@@ -936,6 +972,6 @@ Upgrade rollback restores the installed helper files and service unit; matching
 module/broker downgrade, asynchronous Firewall recovery and systemd behaviour
 still require disposable-PBX tests. Do not downgrade one component alone.
 
-Use an updated Windows 0.8.0 build from this source for custom management URLs
+Use an updated Windows 0.8.1 build from this source for custom management URLs
 and Connection Health. Health probes the approved URL's TCP port, including
 8080/8443; it does not validate HTTP contents, redirects or TLS certificates.
