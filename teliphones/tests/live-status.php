@@ -32,7 +32,7 @@ namespace {
     $session = ['AMP_user' => 'admin', 'teliphones_token' => 'known-token'];
     $operation = ['id' => 'abc123', 'action' => 'dependencies', 'state' => 'running', 'stage' => 'Installing WireGuard tools',
         'message' => '', 'started_at' => 1000, 'finished_at' => null];
-    $ready = ['ok' => true, 'error' => null, 'status' => ['protocol' => 3, 'phase' => 'Missing dependency', 'enabled' => true, 'can_authorise' => false,
+    $ready = ['ok' => true, 'error' => null, 'status' => ['protocol' => 3, 'component_version' => '0.6.1', 'phase' => 'Missing dependency', 'enabled' => true, 'can_authorise' => false,
         'workstations' => ['ready' => false, 'requirements' => ['wg' => false, 'ip' => true, 'nft' => true], 'items' => []],
         'readiness' => ['WireGuard wg' => false, 'Gateway enrollment' => true], 'session' => null, 'server_time' => 1010, 'operation' => $operation,
         'private_key' => '-----BEGIN PRIVATE KEY-----secret', 'gateway' => ['certificate' => 'secret-cert']]];
@@ -76,6 +76,14 @@ namespace {
         'Status must not expose credentials, keys or configuration.');
     $assert($status['readiness'] === ['WireGuard wg' => false, 'Gateway enrollment' => true], 'Readiness must be a boolean map.');
     $assert($status['broker_current'] === true, 'A protocol 3 broker supports live monitoring and pairing.');
+    foreach (['0.6.0', '0.6.1', '0.7.0', 'invalid', null] as $version) {
+        $versioned = $ready;
+        if ($version === null) unset($versioned['status']['component_version']);
+        else $versioned['status']['component_version'] = $version;
+        $current = WebSupport::publicStatus($versioned, ['available' => true])['broker_current'];
+        $assert($current === ($version === '0.6.1' || $version === '0.7.0'),
+            'Only brokers at or above the required patch version may report current.');
+    }
     foreach ([null, 1, 2, '3', 3.0] as $protocol) {
         $legacy = $ready;
         $legacy['status']['protocol'] = $protocol;

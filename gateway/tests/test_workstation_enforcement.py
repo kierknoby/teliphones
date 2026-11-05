@@ -450,6 +450,94 @@ class EnforcementTests(unittest.TestCase):
         self.assertTrue(self.net.up)
         self.assertEqual(self.broker.monitor.pending, [])
 
+    def drop_monitor_events(self, dropped):
+        original = self.net.emit
+        self.net.emit = lambda events: original([event for event in events if not dropped(event)])
+        return original
+
+    def test_udp_rules_match_the_form_nft_reports_back(self):
+        policy = broker.workstation_policy(
+            "100.70.1.1", [], (), (80, 443), [{"port": 52001, "sources": ["203.0.113.7", "2001:db8::/32"]}], [],
+            [{"port": 51821, "source": "192.0.2.9"}])
+        udp = [item["rule"]["expr"] for item in policy["nftables"] if "rule" in item
+               and any(expression.get("match", {}).get("left", {}).get("payload", {}).get("protocol") == "udp"
+                       for expression in item["rule"]["expr"])]
+        self.assertGreaterEqual(len(udp), 3)
+        for expressions in udp:
+            # nft omits the implicit l4proto dependency from monitor events and listings, so it can never be acknowledged.
+            self.assertNotIn({"meta": {"key": "l4proto"}}, [expression.get("match", {}).get("left") for expression in expressions])
+
+    def test_unacknowledged_transaction_is_read_back_released_cleaned_up_and_recovers(self):
+        restore = self.drop_monitor_events(lambda event: "rule" in event.get("add", {}))
+        with self.assertRaises(broker.BrokerError) as raised:
+            self.pair()
+        message = str(raised.exception)
+        self.assertIn("Workstation access could not be applied and was removed", message)
+        self.assertIn("not acknowledged by the nft monitor", message)
+        self.assertIn("add rule", message)
+        self.assertIn("Firewall readback: the TELIPHONES table matches the requested policy", message)
+        self.assertNotIn("100.70.", message)
+        self.assertFalse(self.net.up)
+        self.assertEqual(self.net.peers, {})
+        self.assertEqual(self.broker.monitor.pending, [])
+        self.assertFalse(self.broker.workstation_cleanup_failed)
+        self.assertIsNone(self.broker.owned_table())
+        self.assertNotIn("cleanup could not be confirmed", self.broker.workstation_status()["error"])
+        self.net.emit = restore
+        self.pair()
+        self.assertTrue(self.net.up)
+        self.assertNotEqual(self.net.peers, {})
+        self.assertEqual(self.broker.monitor.pending, [])
+        self.assertEqual(self.broker.workstation_status()["error"], "")
+
+    def test_unreadable_state_after_unacknowledged_transaction_stays_latched_until_read_back(self):
+        restore = self.drop_monitor_events(lambda event: "rule" in event.get("add", {}))
+        original_owned = self.broker.owned_table
+        readable = []
+        def owned_table():
+            if not readable and self.broker.monitor.pending:
+                raise broker.BrokerError("Workstation network operation failed: nft")
+            return original_owned()
+        self.broker.owned_table = owned_table
+        with self.assertRaises(broker.BrokerError) as raised:
+            self.pair()
+        # Unreadable state cannot be released, so cleanup also cannot be confirmed; the cause names the readback failure.
+        self.assertIn("Workstation cleanup could not be confirmed", str(raised.exception))
+        self.assertIn("could not be read back after an unacknowledged nft transaction", str(raised.exception.__cause__))
+        self.assertFalse(self.net.up)
+        self.assertEqual(self.net.peers, {})
+        self.assertNotEqual(self.broker.monitor.pending, [])
+        self.assertTrue(self.broker.workstation_cleanup_failed)
+        readable.append(True)
+        self.net.emit = restore
+        self.pair()
+        self.assertTrue(self.net.up)
+        self.assertEqual(self.broker.monitor.pending, [])
+        self.assertFalse(self.broker.workstation_cleanup_failed)
+
+    def test_unacknowledged_teardown_reports_readback_and_keeps_access_disabled(self):
+        self.pair()
+        restore = self.drop_monitor_events(lambda event: "table" in event.get("delete", {}))
+        with self.assertRaises(broker.BrokerError) as raised:
+            self.broker.teardown_workstations()
+        self.assertIn("Firewall readback: the TELIPHONES table is absent", str(raised.exception))
+        self.assertFalse(self.net.up)
+        self.assertEqual(self.broker.monitor.pending, [])
+        self.net.emit = restore
+        self.broker.teardown_workstations()
+        self.assertIsNone(self.broker.owned_table())
+
+    def test_monitor_errors_name_the_actual_condition(self):
+        self.pair()
+        self.broker.monitor.pending = [("add", "rule", {"family": "inet", "table": broker.WORKSTATION_TABLE, "chain": "input"})]
+        with self.assertRaisesRegex(broker.BrokerError, r"unacknowledged earlier transaction \(add rule input x1\)"):
+            self.broker.monitor.expect([])
+        self.broker.monitor.pending = []
+        self.net.process.terminate()
+        self.broker.monitor.thread.join(2)
+        with self.assertRaisesRegex(broker.BrokerError, "nft monitor is unavailable: "):
+            self.broker.monitor.expect([])
+
     def test_temporary_peer_event_repair_does_not_extend_expiry(self):
         self.pair(mode="temporary")
         saved = self.saved()

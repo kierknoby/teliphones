@@ -44,7 +44,7 @@ namespace {
     if ($postAction === 'configure') $_SERVER['HTTPS'] = 'on';
     $GLOBALS['brokerRequests'] = 0;
     $GLOBALS['brokerPeers'] = [];
-    $readyStatus = ['ok' => true, 'error' => null, 'status' => ['protocol' => 3, 'phase' => 'Missing dependency', 'enabled' => true, 'can_authorise' => true,
+    $readyStatus = ['ok' => true, 'error' => null, 'status' => ['protocol' => 3, 'component_version' => '0.6.1', 'phase' => 'Missing dependency', 'enabled' => true, 'can_authorise' => true,
         'workstations' => ['ready' => false, 'requirements' => ['wg' => false, 'ip' => true, 'nft' => true], 'items' => []],
         'readiness' => ['WireGuard wg' => false, 'Temporary SSH server' => true, 'Gateway enrollment' => true, 'Checker trusted public key' => false]]];
     $GLOBALS['brokerResponses'] = [];

@@ -37,7 +37,7 @@ SOCKET = "/run/teliphones/control.sock"
 # Protocol 11 adds PBX-enforced workstation session leases and management gating.
 # Protocol 12 adds post-pair workstation policy management.
 PROTOCOL = 12
-VERSION = "0.6.0"
+VERSION = "0.6.1"
 SESSION_CONTROL_PORT = 8766
 SESSION_LEASE_SECONDS = 30
 FWCONSOLE = "/usr/sbin/fwconsole"
@@ -681,7 +681,11 @@ def workstation_ruleset(pbx_address, ssh_sources, web_ports=(80, 443)):
 
 def workstation_policy(pbx_address, ssh_sources, managed_sources=(), web_ports=(80, 443), listener_sources=(),
                        peer_interfaces=(), banned_sources=(), admitted_sources=(), control_sources=()):
-    """Offline expected nft JSON, deliberately without sets, counters or implicit expressions."""
+    """Offline expected nft JSON, deliberately without sets, counters or implicit expressions.
+
+    Rules must use the form nft reports back: for example "udp dport" without "meta l4proto udp", which
+    nft adds as the implicit protocol dependency and omits from listings and monitor events.
+    """
     family = {"family": "inet", "table": WORKSTATION_TABLE}
     # nftables 1.0.6 accepts table comments in JSON but drops them from kernel state.
     # A hookless, ruleless chain remains visible and verifiable on that version.
@@ -712,7 +716,7 @@ def workstation_policy(pbx_address, ssh_sources, managed_sources=(), web_ports=(
         address_family = "ip" if network_source.version == 4 else "ip6"
         source_match = (str(network_source.network_address) if network_source.prefixlen == network_source.max_prefixlen
                         else {"prefix": {"addr": str(network_source.network_address), "len": network_source.prefixlen}})
-        rule("input", [match(meta("l4proto"), "udp"), match(payload("udp", "dport"), port),
+        rule("input", [match(payload("udp", "dport"), port),
                        match(payload(address_family, "saddr"), source_match), {"drop": None}])
     for listener in sorted(listener_sources, key=lambda item: int(item["port"])):
         port = int(listener["port"])
@@ -723,9 +727,9 @@ def workstation_policy(pbx_address, ssh_sources, managed_sources=(), web_ports=(
             address_family = "ip" if network_source.version == 4 else "ip6"
             source_match = (str(network_source.network_address) if network_source.prefixlen == network_source.max_prefixlen
                             else {"prefix": {"addr": str(network_source.network_address), "len": network_source.prefixlen}})
-            rule("input", [match(meta("l4proto"), "udp"), match(payload("udp", "dport"), port),
+            rule("input", [match(payload("udp", "dport"), port),
                            match(payload(address_family, "saddr"), source_match), {"accept": None}])
-        rule("input", [match(meta("l4proto"), "udp"), match(payload("udp", "dport"), port), {"drop": None}])
+        rule("input", [match(payload("udp", "dport"), port), {"drop": None}])
     for peer in sorted(peer_interfaces, key=lambda item: item["interface"]):
         interface = peer["interface"]
         peer_pbx = str(ipaddress.IPv4Address(peer["pbx_address"]))
@@ -887,6 +891,7 @@ class NftMonitor:
         self.broker = broker
         self.condition = threading.Condition()
         self.pending = []
+        self.expected_count = 0
         self.failed = ""
         self.process = broker.run([broker.tool("nft"), "-j", "monitor", "ruleset"], stream=True)
         self.thread = threading.Thread(target=self.read, daemon=True)
@@ -895,16 +900,46 @@ class NftMonitor:
     def alive(self):
         return not self.failed and self.process.poll() is None and self.thread.is_alive()
 
+    def unavailable_reason(self):
+        if self.failed:
+            return self.failed
+        if self.process.poll() is not None:
+            return "nft monitor exited with status %s." % self.process.returncode
+        return "nft monitor reader stopped."
+
+    @staticmethod
+    def describe(signatures):
+        """Bounded, address-free summary of outstanding events, for example "add rule input x4"."""
+        counts = {}
+        for action, kind, value in signatures:
+            label = " ".join(filter(None, (action, kind, value.get("chain") if kind == "rule" else value.get("name"))))
+            counts[label] = counts.get(label, 0) + 1
+        return ", ".join("%s x%d" % item for item in sorted(counts.items())[:8]) + ("; ..." if len(counts) > 8 else "")
+
     def expect(self, events):
         with self.condition:
-            if not self.alive() or self.pending:
-                raise BrokerError("Workstation nft monitor is unavailable or has an unacknowledged transaction.")
+            if not self.alive():
+                raise BrokerError("Workstation nft monitor is unavailable: " + self.unavailable_reason())
+            if self.pending:
+                raise BrokerError("Workstation nft monitor still has an unacknowledged earlier transaction (%s) whose "
+                                  "firewall result could not be read back." % self.describe(self.pending))
             self.pending = events[:]
+            self.expected_count = len(events)
 
     def wait(self):
         with self.condition:
             if not self.condition.wait_for(lambda: not self.pending or not self.alive(), timeout=3) or not self.alive():
-                raise BrokerError("Workstation nft monitor registration/transaction could not be verified.")
+                if not self.alive():
+                    raise BrokerError("Workstation nft monitor stopped during a transaction: " + self.unavailable_reason())
+                raise BrokerError("Workstation nft transaction was not acknowledged by the nft monitor: %d of %d events "
+                                  "outstanding after 3 s (%s)." % (len(self.pending), self.expected_count,
+                                                                     self.describe(self.pending)))
+
+    def release(self):
+        """Forget an unacknowledged transaction; callers must first read back kernel state. Late events then count as external changes."""
+        with self.condition:
+            self.pending = []
+            self.condition.notify_all()
 
     @staticmethod
     def signature(action, kind, value):
@@ -1111,7 +1146,7 @@ class Broker:
                 fingerprint = "SHA256:" + base64.b64encode(hashlib.sha256(base64.b64decode(key[1], validate=True)).digest()).decode().rstrip("=")
             except ValueError:
                 fingerprint = "Invalid gateway SSH identity"
-        return {"protocol": PROTOCOL, "phase": phase, "readiness": readiness, "enabled": enabled,
+        return {"protocol": PROTOCOL, "component_version": VERSION, "phase": phase, "readiness": readiness, "enabled": enabled,
                 "operation": dict(self.operation) if self.operation else None, "server_time": int(time.time()),
                 "can_authorise": all(readiness.values()) and enabled and not session and not quarantine and not self.running and not self.revoking,
                 "session": {key: session[key] for key in ("session_id", "state", "expires_at") if key in session},
@@ -2198,25 +2233,49 @@ class Broker:
             return
         monitored = self.monitor is not None and self.monitor.alive()
         if monitored:
+            if self.monitor.pending:
+                # A transaction whose result could not be read back earlier; release it only after a successful readback.
+                self.readback_unacknowledged(expected)
             self.monitor.expect(events)
         try:
             self.run([nft, "-j", "-f", "-"], stdin=json.dumps({"nftables": commands}))
         except (BrokerError, OSError, subprocess.SubprocessError):
             if monitored:
-                with self.monitor.condition:
-                    self.monitor.pending = []
+                # A timed-out nft may still have committed; the kernel state is read back before release.
+                self.readback_unacknowledged(expected)
             raise
         if monitored:
             try:
                 self.monitor.wait()
-            except BrokerError:
-                if expected is None or not registration_retry or not self.monitor.alive():
+            except BrokerError as error:
+                if not self.monitor.alive():
                     raise
+                if expected is None or not registration_retry:
+                    raise BrokerError(str(error) + " Firewall readback: " + self.readback_unacknowledged(expected)[0]
+                                      + "; workstation access was not admitted.") from error
                 # Popen is not subscription readiness. With the interface still down,
                 # retry once and require a complete observed transaction before admission.
-                with self.monitor.condition:
-                    self.monitor.pending = []
-                self.mutate_policy(expected, self.owned_table(), registration_retry=False)
+                self.mutate_policy(expected, self.readback_unacknowledged(expected)[1], registration_retry=False)
+
+    def readback_unacknowledged(self, expected):
+        """Read the owned kernel table before releasing an unacknowledged transaction; unreadable state stays latched."""
+        try:
+            actual = self.owned_table()
+        except (BrokerError, OSError, ValueError, subprocess.SubprocessError) as error:
+            raise BrokerError("Workstation firewall state could not be read back after an unacknowledged nft transaction; "
+                              "access remains disabled: " + (str(error) if isinstance(error, BrokerError) else "nft list failed.")) from error
+        if actual is None:
+            readback = "the TELIPHONES table is absent"
+        elif expected is None:
+            readback = "the TELIPHONES table is still present"
+        else:
+            try:
+                matches = policy_equal(actual, expected)
+            except BrokerError:
+                matches = False
+            readback = "the TELIPHONES table %s the requested policy" % ("matches" if matches else "differs from")
+        self.monitor.release()
+        return readback, actual
 
     def teardown_workstations(self, state=None):
         """Shared by revoke, failure, shutdown and the trusted uninstall entry point."""

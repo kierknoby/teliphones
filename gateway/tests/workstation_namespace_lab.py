@@ -52,6 +52,21 @@ with tempfile.TemporaryDirectory(prefix=".workstation-lab-", dir=ROOT) as direct
         assert instance.link_state() is None and instance.owned_table() is None
         assert nft("-j", "list", "table", "inet", "teliphones_lab_foreign") == foreign
 
+        # Banned and Allowed List listener rules must be acknowledged and read back exactly as the kernel reports them.
+        listeners = broker.workstation_policy(
+            "100.70.1.1", [], (), (80, 443),
+            [{"port": 52001, "sources": ["203.0.113.7", "198.51.100.0/24", "2001:db8::/32"]}],
+            [{"interface": "tlpwabcdef01234", "pbx_address": "100.70.2.1", "source": "100.70.2.2", "ssh_port": 2223}],
+            [{"port": 51821, "source": "192.0.2.9"}, {"port": 52001, "source": "2001:db8:1::/48"}],
+            admitted_sources={"100.70.2.2"}, control_sources={"100.70.2.2"})
+        instance.enforcement_event.clear()  # Teardown's rule/chain delete events precede its acknowledged table delete.
+        instance.mutate_policy(listeners, None)
+        assert broker.policy_equal(instance.owned_table(), listeners), "listener policy differs from kernel state"
+        assert not instance.monitor.pending, "listener transaction left unacknowledged events"
+        assert not instance.enforcement_event.is_set(), "own listener mutations triggered enforcement"
+        instance.teardown_workstations()
+        assert instance.owned_table() is None and not instance.monitor.pending
+
         # A foreign namesake created between inventory and transaction must survive.
         instance.mutate_policy(expected, None)
         inspected = instance.owned_table()

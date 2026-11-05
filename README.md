@@ -14,14 +14,17 @@ workflow for bounded support windows.
 
 | Component | Current version | Start here |
 |---|---|---|
-| FreePBX module / root broker | **0.6.1** UI patch / **0.6.0** broker, protocol 12 (local experimental package) | [Install](teliphones/README.md#installing-the-module) · [Upgrade](teliphones/README.md#updating-teliphones) |
+| FreePBX module / root broker | **0.6.2** / **0.6.1**, protocol 12 (local experimental package) | [Install](teliphones/README.md#installing-the-module) · [Upgrade](teliphones/README.md#updating-teliphones) |
 | Windows application | **0.8.0** (file version 0.8.0.0; unreleased development target) | [Download and requirements](desktop/windows/README.md#requirements-and-download) · [Pair a PBX](desktop/windows/README.md#pair-an-administrator-workstation) |
 | Reference gateway and Checker probe | Optional laboratory infrastructure | [Integration guide](teliphones/docs/INTEGRATION.md) · [Gateway](gateway/README.md) |
 
-FreePBX **0.6.1** and Windows **0.8.0** are independently versioned.
-The 0.6.1 module refines administration panels without changing the 0.6.0
-broker or protocol 12. Updating an existing 0.6.0 installation does not
-require uninstalling, clearing pairings or refreshing that broker.
+FreePBX module **0.6.2**, root broker **0.6.1** and Windows **0.8.0** are
+independently versioned; the broker protocol remains 12. The module/broker
+update fixes nftables rule acknowledgement, verifies kernel state before
+releasing an unacknowledged transaction, recovers workstation cleanup safely
+and reports the actual pairing-readiness error. Upgrade the module in place and
+rerun the root bootstrap so the separately installed broker is refreshed;
+pairings and their identities are preserved.
 Windows **0.8.0** adds password protection, PBX policy requests, secure
 listener migration and post-pair SSH elevation in source; it has not received a
 native Windows build verification in this environment.
@@ -46,9 +49,10 @@ The Windows application is not included in the Module Admin package.
 The historical 0.5.0 test package manages the public WireGuard listener through
 a persistent FreePBX Custom Service and supports configured management ports.
 The local 0.6.0 package adds Open/Closed/Frozen state, atomic session leases,
-authenticated policy requests and identity-preserving listener migration. Its
-archive is locally matched to source; no live-PBX or native Windows validation
-is claimed. See the [investigation and validation limits](teliphones/docs/CONNECTIVITY-REGRESSION.md).
+authenticated policy requests and identity-preserving listener migration. The
+0.6.2 nftables regression is exercised with real nftables in an isolated
+namespace; Debian 12 / FreePBX 17 and a live PBX were not available for
+validation. See the [investigation and validation limits](teliphones/docs/CONNECTIVITY-REGRESSION.md).
 
 ## Find your route
 
@@ -123,10 +127,10 @@ Remote Support uses `wg-teliphones`, separate from My PBXs' `tlp-admin`.
 1. **Check the platform:** FreePBX 17 on Debian 12, root console access, HTTPS,
    WireGuard kernel support, `wg`, `ip`, `nft`, iptables and systemd.
    See [PBX requirements](teliphones/README.md#requirements).
-2. **Verify and install** `TELIPHONES-0.4.1.tgz` through Module Admin:
+2. **Verify and install** `TELIPHONES-0.6.2.tgz` through Module Admin:
 
    ```bash
-   sha256sum -c TELIPHONES-0.4.1.tgz.sha256
+   sha256sum -c TELIPHONES-0.6.2.tgz.sha256
    ```
 
 3. **Complete the root bootstrap** using the
@@ -230,20 +234,21 @@ The [package validator](teliphones/tests/package-validation.py) checks exact
 archive/source equality. Documentation edits after packaging deliberately make
 that equality fail; they do not justify rewriting a preserved archive.
 
-Build the module-only 0.6.1 archive from the repository root using the existing
+Build the module-only 0.6.2 archive from the repository root using the existing
 package exclusions, then validate the exact contents and checksum:
 
 ```bash
 tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
   --mode='u+rwX,go+rX,go-w' --exclude='*/.*' --exclude='*/tests' \
   --exclude='*/__pycache__' --exclude='*.pyc' --exclude='*.pyo' \
-  -czf TELIPHONES-0.6.1.tgz teliphones
-sha256sum TELIPHONES-0.6.1.tgz > TELIPHONES-0.6.1.tgz.sha256
+  -czf TELIPHONES-0.6.2.tgz teliphones
+sha256sum TELIPHONES-0.6.2.tgz > TELIPHONES-0.6.2.tgz.sha256
 PYTHONDONTWRITEBYTECODE=1 python3 teliphones/tests/package-validation.py
 ```
 
-Do not rebuild the preserved 0.6.0 archive. The 0.6.1 package still contains
-the unchanged 0.6.0 broker; no Windows or gateway sources are included.
+Do not rebuild the preserved 0.6.1 archive. The 0.6.2 package
+contains the 0.6.1 root broker and protocol 12; no Windows or gateway sources
+are included.
 
 ## Contributing
 

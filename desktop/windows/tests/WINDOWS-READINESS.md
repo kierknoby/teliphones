@@ -1,6 +1,6 @@
 # Windows developer builds, testing and readiness
 
-Targets: TELIPHONES for Windows **0.8.0**, TELIPHONES for FreePBX **0.6.1**.
+Targets: TELIPHONES for Windows **0.8.0**, TELIPHONES for FreePBX **0.6.2**.
 The FreePBX connection-state policy and Windows pairing/clipboard UX are
 independently versioned; neither entry declares a published release.
 

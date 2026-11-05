@@ -3,8 +3,19 @@ namespace FreePBX\modules\Teliphones;
 
 class WebSupport
 {
-    public const VERSION = '0.6.1';
     public const DIAGNOSTIC_ID_PATTERN = '/^ws-[a-f0-9]{16}$/';
+
+    public static function moduleVersion(): string
+    {
+        static $version = null;
+        if ($version !== null) return $version;
+        $metadata = simplexml_load_file(__DIR__ . '/module.xml');
+        $value = $metadata ? (string)$metadata->version : '';
+        if (preg_match('/^\d+\.\d+\.\d+$/', $value) !== 1) {
+            throw new \RuntimeException('TELIPHONES module version is missing or invalid.');
+        }
+        return $version = $value;
+    }
 
     public static function authorised($sessionUser, $frameworkUser = null): bool
     {
@@ -95,6 +106,7 @@ class WebSupport
     public const OPERATION_STATES = ['running', 'succeeded', 'failed'];
     /** Broker status protocol this module requires (support_broker.py PROTOCOL): 2 adds live operation records, 3 adds workstation pairing. */
     public const BROKER_PROTOCOL = 3;
+    public const BROKER_VERSION = '0.6.1';
     public const DIAGNOSTICS_PROTOCOL = 4;
     public const SSH_PROTOCOL = 5;
     /** Protocol 6 adds the WireGuard listener firewall permit and configurable management web services. */
@@ -207,7 +219,7 @@ class WebSupport
                     'error' => !$workstations['supported']
                         ? 'Workstation operation was not attempted: the root broker does not report compatible pairing capabilities. Rerun Complete Installation from a root shell after upgrading, with no active support session.'
                         : (($request['action'] === 'pair')
-                            ? 'Workstation pairing was not attempted: WireGuard tools, iproute2 and nftables must be available and TELIPHONES must be enabled.'
+                            ? self::pairingNotAttempted($workstations, ($support['status']['enabled'] ?? true) === true)
                             : (in_array($request['action'], ['workstation-ssh-approve', 'workstation-ssh-reject', 'workstation-ssh-revoke'], true)
                                 ? 'Post-pair SSH elevation was not attempted: update the root broker and verify the managed SSH authority.'
                                 : (in_array($request['action'], ['workstation-manage', 'workstation-unlock-approve',
@@ -528,7 +540,7 @@ class WebSupport
         $exportedAt = is_string($reply['exported_at'] ?? null)
             && preg_match('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/', $reply['exported_at']) === 1
             ? $reply['exported_at'] : gmdate('Y-m-d\TH:i:s\Z');
-        return ['component_version' => self::VERSION, 'diagnostic_id' => $diagnosticId,
+        return ['component_version' => self::moduleVersion(), 'diagnostic_id' => $diagnosticId,
             'exported_at' => $exportedAt, 'events' => $events];
     }
 
@@ -543,7 +555,10 @@ class WebSupport
     private static function supportsWorkstations(array $support): bool
     {
         $status = $support['status'] ?? null;
-        if (!self::brokerOperational($support) || !is_int($status['protocol'] ?? null) || $status['protocol'] < self::BROKER_PROTOCOL) return false;
+        if (!self::brokerOperational($support) || !is_int($status['protocol'] ?? null) || $status['protocol'] < self::BROKER_PROTOCOL
+            || !is_string($status['component_version'] ?? null)
+            || preg_match('/^\d+\.\d+\.\d+$/', $status['component_version']) !== 1
+            || version_compare($status['component_version'], self::BROKER_VERSION, '<')) return false;
         $raw = $status['workstations'] ?? null;
         if (!is_array($raw) || !is_bool($raw['ready'] ?? null) || !is_array($raw['items'] ?? null) || !is_array($raw['requirements'] ?? null)) return false;
         foreach (['wg', 'ip', 'nft'] as $tool) {
@@ -553,6 +568,24 @@ class WebSupport
     }
 
     /** Validated workstation pairing status for server-side rendering; never contains WireGuard keys. */
+    private static function pairingNotAttempted(array $workstations, bool $enabled): string
+    {
+        if ($enabled && !in_array(false, $workstations['requirements'], true) && $workstations['error'] !== '') {
+            return 'Workstation pairing was not attempted: ' . $workstations['error'];
+        }
+        return 'Workstation pairing was not attempted. ' . self::pairingBlockedReason($workstations, $enabled);
+    }
+
+    /** Why pairing is not ready, distinguishing missing tools from a broker readiness error. */
+    public static function pairingBlockedReason(array $workstations, bool $enabled): string
+    {
+        if (!$enabled) return 'TELIPHONES is disabled. Workstation pairing is unavailable; revocation remains available.';
+        $missing = array_keys(array_filter($workstations['requirements'], static function ($value) { return $value !== true; }));
+        if ($missing) return 'Workstation pairing requires WireGuard tools, iproute2 and nftables on the PBX. Missing: ' . implode(', ', $missing) . '.';
+        if ($workstations['error'] !== '') return 'Workstation pairing is blocked by the root broker. WireGuard tools, iproute2 and nftables are installed; the failed readiness condition is reported below.';
+        return 'The root broker reports that workstation pairing is not ready, although WireGuard tools, iproute2 and nftables are installed.';
+    }
+
     public static function workstations(array $support): array
     {
         $status = is_array($support['status'] ?? null) ? $support['status'] : [];

@@ -7,7 +7,7 @@ version numbers retrospectively.
 
 ## 0.8.0 — Unreleased
 
-Windows file version: **0.8.0.0**. FreePBX module version: **0.6.1**.
+Windows file version: **0.8.0.0**. FreePBX module version: **0.6.2**.
 Windows 0.8.0 adds explicit pairing access selection, post-pair policy requests,
 identity-preserving migration, SSH elevation and an experimental built-in
 managed SSH console with a libvterm screen model and ConPTY resize path. Native

@@ -1,14 +1,14 @@
 # TELIPHONES for FreePBX 17: module guide
 
 Approve private access to your PBX from the FreePBX interface. TELIPHONES
-**0.6.1** pairs Windows workstations over WireGuard, with web access and,
+**0.6.2** pairs Windows workstations over WireGuard, with web access and,
 when explicitly approved, temporary SSH certificates for an existing account.
 This is the authoritative guide to installing, upgrading and operating the
 FreePBX module and its separately installed root broker.
 
 **TELIPHONES is a UK registered trademark.**
 
-**TELIPHONES 0.6.1 for FreePBX is licensed under GPLv3.**
+**TELIPHONES 0.6.2 for FreePBX is licensed under GPLv3.**
 
 The software grant is GPL version 3 or later; the product footer uses the
 GPLv3 wording above. Software licensing does not grant trademark rights.
@@ -148,10 +148,10 @@ TELIPHONES is a community module and is not listed in the FreePBX online module 
 
 ### Install through Module Admin (recommended)
 
-1. Obtain `TELIPHONES-0.6.1.tgz` and its SHA-256 checksum from a trusted source, then verify the archive:
+1. Obtain `TELIPHONES-0.6.2.tgz` and its SHA-256 checksum from a trusted source, then verify the archive:
 
    ```bash
-   sha256sum -c TELIPHONES-0.6.1.tgz.sha256
+   sha256sum -c TELIPHONES-0.6.2.tgz.sha256
    ```
 
 2. In FreePBX, open **Admin > Module Admin**, choose **Upload modules**, and upload the archive.
@@ -250,17 +250,17 @@ On success, `systemctl status` shows `Loaded: loaded (/etc/systemd/system/teliph
 
 Update TELIPHONES in place. Do not uninstall the module first: uninstalling removes workstation pairings.
 
-**0.6.0 to 0.6.1 (administration-only patch):** upload the verified 0.6.1
-archive through Module Admin as an upgrade. Do not uninstall the module or
-delete workstation configuration. The installer, persisted state and broker
-helpers are unchanged; an operational 0.6.0 broker reporting protocol 12 needs
-no refresh or restart for this UI patch. This compatibility is verified from
-source and package comparisons; a live FreePBX upgrade remains an acceptance
-check.
+**0.6.1 to 0.6.2:** upload the verified 0.6.2 archive through Module Admin as
+an in-place upgrade. Do not uninstall the module or delete workstation
+configuration. Then rerun the root bootstrap below: 0.6.2 includes root broker
+0.6.1, which corrects nftables transaction acknowledgement and safe cleanup
+recovery without changing protocol 12. Module Admin does not necessarily
+replace the separately installed root-owned broker. The module reports an
+outdated broker version and refuses workstation pairing until the current
+broker status is confirmed.
 
-The following steps and root-broker procedure apply to older or incomplete
-installations, not an otherwise operational 0.6.0 installation receiving this
-UI patch:
+The root-broker procedure is required for every 0.6.2 upgrade and older or
+incomplete installations:
 
 1. Confirm, as root, that no support session is active: `fwconsole teliphones status`.
 2. Disconnect Windows workstation tunnels.
@@ -270,7 +270,7 @@ UI patch:
 
 ### After upgrading TELIPHONES
 
-A Module Admin upgrade updates the FreePBX module files but does not necessarily update the separately installed, root-owned broker. TELIPHONES 0.6.0 requires broker protocol 12 and both `/usr/local/lib/teliphones-broker/support_broker.py` and `/usr/local/lib/teliphones-broker/ssh_authority.py`; an older broker or a missing SSH helper cannot provide managed SSH, connection-state policy, source-locked pairing, post-pair workstation policy, identity-preserving listener migration, Windows policy requests, post-pair SSH elevation, manual listener bans or enforced workstation session limits. Confirm that no support session is active (as root: `fwconsole teliphones status`), disconnect Windows tunnels and expect existing TELIPHONES-managed SSH sessions to terminate, then rerun the root bootstrap from an existing root shell. The bootstrap retains the previous helper files and broker unit, validates the installed helpers, and enables and restarts `teliphones-broker.service`. Verify that service is active, `/run/teliphones/control.sock` exists, and the refreshed Connectivity > TELIPHONES page reports the current broker and managed SSH readiness. On failure, rollback attempts to restore prior files and the previous enabled/active state; an incomplete rollback is an error requiring recovery from the existing root shell. Do not restart, reconfigure or disable the normal system SSH service or change administrator accounts. Valid pairings retain their original deadlines and cryptographic identities during listener migration.
+A Module Admin upgrade updates the FreePBX module files but does not necessarily update the separately installed, root-owned broker. TELIPHONES 0.6.2 requires broker version 0.6.1, broker protocol 12 and both `/usr/local/lib/teliphones-broker/support_broker.py` and `/usr/local/lib/teliphones-broker/ssh_authority.py`; an older broker or a missing SSH helper cannot provide nftables transaction acknowledgement, safe workstation cleanup recovery, managed SSH, connection-state policy, source-locked pairing, post-pair workstation policy, identity-preserving listener migration, Windows policy requests, post-pair SSH elevation, manual listener bans or enforced workstation session limits. Confirm that no support session is active (as root: `fwconsole teliphones status`), disconnect Windows tunnels and expect existing TELIPHONES-managed SSH sessions to terminate, then rerun the root bootstrap from an existing root shell. The bootstrap retains the previous helper files and broker unit, validates the installed helpers, and enables and restarts `teliphones-broker.service`. Verify that service is active, `/run/teliphones/control.sock` exists, and the refreshed Connectivity > TELIPHONES page reports broker version 0.6.1, protocol 12 and managed SSH readiness. On failure, rollback attempts to restore prior files and the previous enabled/active state; an incomplete rollback is an error requiring recovery from the existing root shell. Do not restart, reconfigure or disable the normal system SSH service or change administrator accounts. Valid pairings retain their original deadlines and cryptographic identities during listener migration.
 
 Protocol 5 identifies the certificate endpoint and managed SSH contract shared
 by 0.4.0 and 0.4.1; it does not identify the firewall correction.
@@ -282,7 +282,7 @@ and repair the TELIPHONES installation from that shell rather than removing the
 module or changing the normal SSH service. Actual Debian 12 / FreePBX 17
 systemd upgrade, failure recovery and uninstall validation remains a release gate.
 
-For current 0.6.0 corrections, rerun the bootstrap even if an older
+For current 0.6.2 corrections, rerun the bootstrap even if an older
 protocol was already reported. It copies all three current module helpers into the
 separately installed root-owned broker directory and restarts the service.
 Afterward, compare the installed files to the module files from a root shell:
@@ -295,7 +295,7 @@ grep '^VERSION = ' /usr/local/lib/teliphones-broker/support_broker.py
 systemctl show teliphones-broker.service -p ActiveState -p MainPID -p ExecMainStartTimestamp
 ```
 
-All three `cmp` commands must succeed and the installed broker must declare `0.6.0`.
+All three `cmp` commands must succeed and the installed broker must declare `0.6.1`.
 Confirm the process started after bootstrap, then verify no TELIPHONES jump
 remains in INPUT and exactly one marked jump exists inside
 `fpbxfirewall`. Verify that every TELIPHONES ACCEPT rule in the owned chain
@@ -601,6 +601,7 @@ The installed broker is older than the module. Rerun the root bootstrap, as desc
 |---|---|
 | *Workstations may only be paired over HTTPS.* | Open the FreePBX administration interface using `https://` |
 | *Workstation pairing requires WireGuard tools, iproute2 and nftables on the PBX. Missing: ...* | Approve WireGuard tools in the GUI, or ask a root administrator to install `iproute2` or the `nftables` package. The `nftables` service does not need to be enabled. |
+| Pairing reports the root broker's failed readiness condition although the tools are installed | Read the broker error on the page. For an outdated broker version, follow [Updating TELIPHONES](#updating-teliphones) and rerun the root bootstrap; protocol 12 alone does not prove that broker 0.6.1 is installed. |
 | *TELIPHONES is disabled.* | Enable it as root with `fwconsole teliphones enable` |
 | *Paired workstations already use UDP port ...* | Use the same port, or revoke all workstations first |
 | *No workstation addresses remain* | Revoke unused workstations |
@@ -838,7 +839,7 @@ Never include private keys, credentials, pairing requests or responses, gateway 
 
 TELIPHONES is a UK registered trademark.
 
-TELIPHONES 0.6.1 for FreePBX is licensed under GPLv3.
+TELIPHONES 0.6.2 for FreePBX is licensed under GPLv3.
 
 The software grant is **GPL version 3 or, at your option, any later version
 (GPL-3.0-or-later)**, expressed as `GPLv3+` in module metadata. The product
@@ -863,7 +864,7 @@ The human contributor remains solely responsible for the contribution. AI tools 
 
 ## Release History
 
-The complete [FreePBX module change history](docs/CHANGELOG.md) is bundled with the module. Version 0.6.1 refines administration layout and validation visibility over 0.6.0's persisted Open/Closed/Frozen connection states. It retains the 0.6.0 root broker and protocol 12. Windows remains independently versioned at 0.8.0; this patch makes no Windows changes. Neither product has been published from this working tree.
+The complete [FreePBX module change history](docs/CHANGELOG.md) is bundled with the module. Version 0.6.2 fixes nftables transaction acknowledgement, readback-gated recovery and pairing readiness reporting. It includes root broker 0.6.1 with protocol 12. Windows remains independently versioned at 0.8.0; this release makes no Windows changes. Neither product has been published from this working tree.
 
 The administration page groups System Readiness, Remote Support, Windows
 Workstation Access, Paired Workstations and Security & Access Restrictions.
@@ -875,7 +876,7 @@ containing panel; server-rejected pairing/enrollment forms reopen on reload.
 Styles and panel events are scoped to TELIPHONES. Layout/control regressions
 and JavaScript behaviour are tested locally, but no browser engine is
 available here: desktop/narrow FreePBX rendering, keyboard interaction and a
-live 0.6.0 upgrade must still be checked in FreePBX 17.
+live 0.6.2 upgrade must still be checked in FreePBX 17.
 
 ### Non-standard management ports
 
@@ -891,11 +892,11 @@ redirects from an authorised peer. A listening socket alone is not proof.
 The [historical root-cause report and read-only live-PBX verification procedure](docs/CONNECTIVITY-REGRESSION.md)
 describe confirmed evidence, hypotheses and outstanding release gates.
 Do not install an earlier review archive expecting these source changes.
-The root-level `TELIPHONES-0.6.0.tgz` and checksum are retained unchanged.
-The root-level `TELIPHONES-0.6.1.tgz` and checksum are built from the current
-module source and checked for exact archive/source equality. This is an
-experimental local package, not a production release or verified public
-download.
+The root-level `TELIPHONES-0.6.1.tgz` archive and checksum are retained
+unchanged. Build the root-level `TELIPHONES-0.6.2.tgz` package from the current
+module source and run the package validator for exact archive/source equality
+before any distribution. This is an experimental local package, not a
+production release or verified public download.
 
 The root bootstrap also installs and retains `FirewallListener.php` alongside
 the Python helpers; the root-only listener action uses that protected copy.

@@ -10,7 +10,7 @@ This guide covers installing and using the Windows application. The
 [FreePBX administration guide](../../teliphones/README.md) covers server setup.
 
 Windows **0.8.0** (file version **0.8.0.0**) is independent of FreePBX module
-**0.6.1**. Windows 0.8.0 adds explicit pairing access selection, password
+**0.6.2**. Windows 0.8.0 adds explicit pairing access selection, password
 protection, authenticated identity-preserving listener migration, effective PBX
 policy/status, restricted Allowed List and unlock requests, and post-pair SSH
 elevation.
@@ -121,7 +121,7 @@ During installation the dialog cannot be closed until the worker finishes; cance
 
 ## Pair an administrator workstation
 
-1. Install the locally built `TELIPHONES-0.6.1.tgz` test package through FreePBX Module Admin and complete its [documented root broker bootstrap](../../teliphones/README.md#complete-installation-on-freepbx-17). After upgrading the module, rerun the bootstrap with no active support session and Windows tunnels disconnected so the separately installed broker is current. A module upgrade alone does not replace the privileged broker.
+1. Install the locally built `TELIPHONES-0.6.2.tgz` test package through FreePBX Module Admin and complete its [documented root broker bootstrap](../../teliphones/README.md#complete-installation-on-freepbx-17). After upgrading the module, rerun the bootstrap with no active support session and Windows tunnels disconnected so the separately installed broker is current. A module upgrade alone does not replace the privileged broker.
 2. Select **Add my PBX...** and enter a workstation name. Choose **Web access** for GUI-only access (no OpenSSH dependency), or **Web + SSH access** to enrol an independent DPAPI-protected workstation SSH identity. Choose **Generate request** and copy it. This identity authenticates future certificate requests; it is never used as the session certificate subject.
 3. In the PBX web interface, open **Connectivity > TELIPHONES > Windows workstations**, paste the request, provide the PBX's externally reachable WireGuard hostname/IP and UDP port, select temporary or persistent access, and explicitly choose whether SSH is allowed. The pairing operation requires HTTPS.
 4. Leave SSH **Not permitted** for a GUI-only request. For SSH-capable requests the PBX administrator explicitly selects the existing account; root is never implicit. Copy the response into Windows and **Save connection**. The response supplies the account and pinned host/CA keys; no manual username or fingerprint acceptance is needed.

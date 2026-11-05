@@ -1,4 +1,4 @@
-# TELIPHONES 0.6.0 workstation pairing and connection policy
+# TELIPHONES 0.6.2 workstation pairing and connection policy
 
 The current broker is protocol 12. It enforces a default maximum of one
 simultaneous admitted workstation with atomic lease admission, authenticated
@@ -80,8 +80,8 @@ server-side enforcement that SSH permission requires an SSH-capable pairing
 request. Updated Windows builds expose a web-only or web-plus-SSH request
 choice, show explicit SSH authorization status, and use temporary inline
 clipboard feedback instead of success dialogs. Module and Windows versions
-are independent; the current development targets are FreePBX **0.6.0** and
-Windows **0.8.0**.
+are independent; the current development targets are FreePBX **0.6.2**,
+root broker **0.6.1**, protocol **12** and Windows **0.8.0**.
 
 When a pairing is Locked, an approved managed SSH listener and its short-lived
 certificate API bind to the dedicated `tlpw...` interface and tunnel address.
@@ -227,7 +227,7 @@ The response is a copyable enrollment artifact, not proof that arbitrary access 
 
 This also applies when upgrading from 0.2.1. Install the current module and rerun the root bootstrap before relying on the separately installed broker.
 
-Install the current test package `TELIPHONES-0.6.0.tgz` through Module Admin, then rerun the documented root bootstrap with no active support session and Windows tunnels disconnected. Installation does not delete `workstations.json`, `workstation-recovery.json` or `workstation-wg.key`. Valid pairings keep their identities, keys and original deadlines; a required listener migration is authenticated and coordinated rather than requiring re-pairing.
+Install the current test package `TELIPHONES-0.6.2.tgz` through Module Admin, then rerun the documented root bootstrap with no active support session and Windows tunnels disconnected. Installation does not delete `workstations.json`, `workstation-recovery.json` or `workstation-wg.key`. Valid pairings keep their identities, keys and original deadlines; a required listener migration is authenticated and coordinated rather than requiring re-pairing.
 
 The bootstrap copies the current broker into its protected root-owned installation and restarts it. Protocol 3 was already used in 0.2.0: an operational socket or protocol number alone does **not** prove these security corrections are installed. Rerunning the bootstrap is mandatory even if no update warning appears.
 
@@ -237,13 +237,13 @@ An unmarked legacy table is migrated only when its complete nft JSON exactly mat
 
 The 0.3.1 broker adds the hookless `teliphones_owner_v1` chain because Debian 12 nftables 1.0.6 drops table comments from kernel JSON readback. The operator reports that this ownership correction was tested successfully on the actual FreePBX 17 test PBX. The repository code still needs to be installed and verified on that PBX through the normal upgrade/bootstrap procedure; this document does not claim that deployment has occurred.
 
-Install the current test package `TELIPHONES-0.6.0.tgz`, confirm there is no active support session, disconnect Windows tunnels, then rerun [Complete Installation on FreePBX 17](../README.md#complete-installation-on-freepbx-17) from an existing root shell. The 0.3.1 ownership correction originally kept protocol 3; protocol 12 alone likewise does not prove the installed helper's version or contents. On restart, the broker verifies the tunnel is down, safely migrates only the exact known 0.3.0 policy, restores current policy from saved state and readmits valid, unexpired pairings. Pairing identities, addresses, SSH permissions, deadlines and the PBX WireGuard key are preserved. If exact ownership cannot be established, migration is refused and recovery data remains intact.
+Install the current test package `TELIPHONES-0.6.2.tgz`, confirm there is no active support session, disconnect Windows tunnels, then rerun [Complete Installation on FreePBX 17](../README.md#complete-installation-on-freepbx-17) from an existing root shell. The 0.3.1 ownership correction originally kept protocol 3; protocol 12 alone likewise does not prove the installed helper's version or contents. On restart, the broker verifies the tunnel is down, safely migrates only the exact known 0.3.0 policy, restores current policy from saved state and readmits valid, unexpired pairings. Pairing identities, addresses, SSH permissions, deadlines and the PBX WireGuard key are preserved. If exact ownership cannot be established, migration is refused and recovery data remains intact.
 
 ## Upgrading from 0.3.1
 
 The historical 0.3.2 change added bounded diagnostics and protocol 4 without
 changing firewall permissions or pairing protocol. For a current upgrade,
-use the reviewed 0.6.0 test package, disconnect workstation tunnels, confirm no active support session,
+use the reviewed 0.6.2 test package, disconnect workstation tunnels, confirm no active support session,
 and rerun the root bootstrap. Preserve pairing state and the WireGuard key.
 Current managed SSH requires protocol 5 and both installed helpers; protocol 4
 identifies diagnostics support only. Follow [current upgrade verification](../README.md#updating-teliphones).
@@ -274,7 +274,11 @@ The current managed table is `inet teliphones_workstations` and contains the exa
 
 Expected JSON is generated offline from the approved PBX address and SSH sources. The broker compares the actual `nft -j list table` output with the complete expected table, both base chains (type, hooks, priority and policy), ordered rules and every expression. Only kernel handles, envelope metadata and chain enumeration order are ignored. Extra rules/objects or changed destinations, interfaces, protocols, ports, verdicts or ownership fail validation. The same JSON is submitted atomically, read back and checked before peer admission. Exclusive table creation refuses a newly appearing namesake; deletion uses the inspected table handle so a replacement table is not deleted by name.
 
-A local `nft -j monitor ruleset` stream observes external mutations, including a flush followed by restoration between periodic checks. Registration is proven by acknowledging the broker's own complete initial transaction before admission, not merely by starting a process. Expected own-event signatures are consumed without launching repair loops; unrelated-table events are ignored. External events wake the serialized enforcement worker; it disables the interface and revalidates/reapplies the policy. Approximately 15-second periodic validation is a fallback for both persistent and temporary pairings, including idle persistent peers. Stream death, malformed output or an enforcement-worker failure reports an error and attempts verified interface disablement; admission then requires broker repair/restart. Saved temporary deadlines are never extended.
+A local `nft -j monitor ruleset` stream observes external mutations, including a flush followed by restoration between periodic checks. Registration is proven by acknowledging the broker's own complete initial transaction before admission, not merely by starting a process. Expected event signatures use nft's canonical output: for example, `udp dport` is emitted without an explicit `meta l4proto udp` match because nft treats the protocol match as an implicit dependency. A mismatch cannot be acknowledged and must not be hidden by weakening verification.
+
+If a transaction is not acknowledged, the broker reads back the owned kernel table before releasing its pending event signatures. A successful readback records whether the table is absent, matches the requested policy or differs from it; a failed readback keeps the pending state latched and workstation access disabled. Pairing is admitted only after a fully observed transaction and a complete policy readback. Cleanup verifies that the interface and table are removed. A recoverable failure can then be retried by the regular reconciliation worker or a subsequent pairing attempt; it never clears recovery state or pending events based only on a command exit status. Monitor errors and pairing refusals distinguish missing system tools from actual broker/readiness errors and include a bounded, address-free summary of outstanding event types.
+
+Expected own-event signatures are consumed without launching repair loops; unrelated-table events are ignored. External events wake the serialized enforcement worker; it disables the interface and revalidates/reapplies the policy. Approximately 15-second periodic validation is a fallback for both persistent and temporary pairings, including idle persistent peers. Stream death, malformed output or an enforcement-worker failure reports an error and attempts verified interface disablement; admission then requires broker repair/restart. Saved temporary deadlines are never extended.
 
 **This is detection and recovery, not atomic protection against another privileged firewall manager.** External flushes/removals can expose an already-up interface until the local event is delivered and processed (or the periodic fallback runs). A transient removal can pass traffic even if rules are restored before detection. There is also a verification/admission race with concurrent external changes, and no detection-latency guarantee under load, process suspension or resource failure. Failed interface shutdown may leave access active and needs immediate operator intervention. Do not describe this as truly fail-closed or zero-exposure protection against external flushes.
 

@@ -146,7 +146,7 @@ try {
     $assert(strpos($html, 'Broker state not verified') !== false && strpos($html, 'Complete Installation') !== false, 'Unverified state must still offer installation guidance.');
     $html = $renderBroker(['available' => false, 'condition' => 'stopped', 'service' => '<script>']);
     $assert(strpos($html, '"<script>"') === false && strpos($html, '&lt;script&gt;') !== false, 'Service state must be escaped.');
-    $html = $renderBroker(['available' => true, 'condition' => 'operational'], ['ok' => true, 'error' => null, 'status' => ['protocol' => 3, 'phase' => 'Ready', 'enabled' => true, 'can_authorise' => true,
+    $html = $renderBroker(['available' => true, 'condition' => 'operational'], ['ok' => true, 'error' => null, 'status' => ['protocol' => 3, 'component_version' => '0.6.1', 'phase' => 'Ready', 'enabled' => true, 'can_authorise' => true,
         'workstations' => ['ready' => true, 'requirements' => ['wg' => true, 'ip' => true, 'nft' => true], 'items' => []],
         'readiness' => ['WireGuard wg' => true, 'Gateway enrollment' => true]]]);
     $assert(strpos($html, 'Operational (control socket verified)') !== false && strpos($html, 'missing') === false
@@ -200,7 +200,7 @@ $assert(strpos($bootstrapSource, "copy(\$moduleDir . '/support_broker.py', \$bro
     'Root bootstrap must install the current broker as a protected root-owned file and restart it.');
 $brokerSource = (string)file_get_contents(dirname(__DIR__) . '/support_broker.py');
 $assert(strpos($brokerSource, 'WORKSTATION_OWNER_CHAIN = "teliphones_owner_v1"') !== false
-    && strpos(BrokerBootstrap::UPGRADE_NOTE, '0.6.0 requires broker protocol 12') !== false
+    && strpos(BrokerBootstrap::UPGRADE_NOTE, '0.6.2 requires broker version 0.6.1, broker protocol 12') !== false
     && strpos(BrokerBootstrap::UPGRADE_NOTE, '/usr/local/lib/teliphones-broker/ssh_authority.py') !== false
     && strpos(BrokerBootstrap::UPGRADE_NOTE, 'normal system SSH service') !== false
     && strpos(BrokerBootstrap::UPGRADE_NOTE, 'incomplete rollback') !== false,

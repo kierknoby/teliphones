@@ -8,6 +8,28 @@ repository. Portable Linux validation is current for the broker, FreePBX module 
 Windows core. Native Windows compilation/UI integration and live FreePBX
 session, migration, firewall and SSH acceptance remain outstanding.
 
+## 0.6.2, workstation firewall recovery patch (local package, not published)
+
+- Correct nftables policy serialization so UDP port matches use the same
+  canonical form reported by kernel listings and monitor events. This allows
+  the broker to verify Banned List and Locked/Allowed List listener rules.
+- On an unacknowledged transaction, read back the TELIPHONES kernel table
+  before releasing pending monitor events. If readback fails, retain the
+  pending transaction and keep workstation access disabled. Cleanup and the
+  next pairing attempt recover only after verified kernel state and an observed
+  transaction; no firewall verification is bypassed.
+- Restore workstation pairing after recoverable acknowledgement failures and
+  report missing tools separately from broker readiness errors.
+- Increment the FreePBX module to 0.6.2 and the independently identified root
+  broker to 0.6.1. Keep broker protocol 12 and Windows 0.8.0 unchanged. The GUI
+  refuses workstation pairing until it sees broker 0.6.1; after Module Admin
+  upgrade, rerun the documented root bootstrap without uninstalling or clearing
+  pairings.
+- Gateway regression suite and real-nft isolated namespace lab pass locally.
+  The lab uses nftables 1.0.9; Debian 12's nftables 1.0.6 and a live FreePBX
+  17 host were not available for this validation. This is not a production
+  certification.
+
 
 Entries for 0.0.2 to 0.2.1 are summarised from the repository history. Release dates are recorded only where they were previously published.
 

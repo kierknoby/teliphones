@@ -11,7 +11,7 @@ $recorder = new class extends WebSupport {
     public array $reply = ['ok' => true, 'message' => 'paired', 'pairing_response' => 'TELIPHONES-PAIR-RESPONSE-1:eyJzY2hlbWEiOiJ0ZWxpcGhvbmVzIn0'];
     public function request(array $request): array
     {
-        if ($request['action'] === 'status') return ['ok' => true, 'status' => ['protocol' => 4, 'phase' => 'Ready',
+        if ($request['action'] === 'status') return ['ok' => true, 'status' => ['protocol' => 4, 'component_version' => '0.6.1', 'phase' => 'Ready',
             'workstations' => ['ready' => true, 'requirements' => ['wg' => true, 'ip' => true, 'nft' => true], 'items' => []]]];
         $this->sent[] = $request;
         return $this->reply;
@@ -88,7 +88,7 @@ $assert($result['dispatched'], 'Missing SSH prerequisites must not disable web-o
 $result = WebSupport::handleAction($recorder, ['ssh' => '1'] + $post, 'known', $modern, $https);
 $assert(!$result['dispatched'] && strpos($result['notice']['error'], 'did not include SSH capability') !== false,
     'A version-1 web-only request must never receive SSH permission.');
-$policyStatus = ['ok' => true, 'status' => ['protocol' => 8, 'workstations' => [
+$policyStatus = ['ok' => true, 'status' => ['protocol' => 8, 'component_version' => '0.6.1', 'workstations' => [
     'ready' => true, 'items' => [], 'requirements' => ['wg' => true, 'ip' => true, 'nft' => true],
     'connection_state' => 'closed']]];
 $assert(WebSupport::supportsWorkstationPolicy($policyStatus), 'Protocol 8 must expose connection-state controls.');
@@ -97,7 +97,7 @@ $recorder->sent = [];
 $result = WebSupport::handleAction($recorder, $policyPost, 'known', $policyStatus, $https);
 $assert($result['dispatched'] && $recorder->sent[0] === ['action' => 'workstation-policy', 'state' => 'frozen'],
     'Connection-state changes must forward only the selected state.');
-$sessionStatus = ['ok' => true, 'status' => ['protocol' => 11, 'workstations' => [
+$sessionStatus = ['ok' => true, 'status' => ['protocol' => 11, 'component_version' => '0.6.1', 'workstations' => [
     'ready' => true, 'items' => [], 'requirements' => ['wg' => true, 'ip' => true, 'nft' => true],
     'max_sessions' => 1, 'connected_workstations' => 1]]];
 $assert(WebSupport::supportsWorkstationSessions($sessionStatus), 'Protocol 11 must report enforced workstation session capacity.');
@@ -238,7 +238,7 @@ $item = ['id' => '0123456789abcdef', 'name' => 'ADMIN-PC', 'address' => '100.70.
     'created_at' => 1, 'expires_at' => 2000000000, 'last_handshake' => 0,
     'verified_endpoint' => ['address' => '2001:db8::24', 'port' => 51821],
     'fingerprint' => 'SHA256:abcdefghijklmnop', 'public_key' => 'LEAKED-PUBLIC-KEY'];
-$status = ['ok' => true, 'status' => ['protocol' => 4, 'phase' => 'Ready', 'workstations' => ['ready' => true, 'requirements' => ['wg' => true, 'ip' => true, 'nft' => true],
+$status = ['ok' => true, 'status' => ['protocol' => 4, 'component_version' => '0.6.1', 'phase' => 'Ready', 'workstations' => ['ready' => true, 'requirements' => ['wg' => true, 'ip' => true, 'nft' => true],
     'error' => '', 'listen_port' => 51821, 'pbx_address' => '100.70.1.1', 'items' => [$item, ['id' => '../../x', 'name' => 'bad']]]]];
 $workstations = WebSupport::workstations($status);
 $assert($workstations['supported'] && $workstations['ready'] && count($workstations['items']) === 1 && !isset($workstations['items'][0]['public_key']), 'Workstation status must be allowlisted.');
@@ -262,6 +262,9 @@ $invalidEndpoint['status']['workstations']['items'][0]['verified_endpoint'] = ['
 $assert(WebSupport::workstations($invalidEndpoint)['items'][0]['verified_endpoint'] === null,
     'Malformed or asserted endpoint text must not be presented as a verified public source.');
 $assert(!WebSupport::workstations(['ok' => true, 'status' => ['protocol' => 2, 'workstations' => $status['status']['workstations']]])['supported'], 'Older brokers do not support pairing.');
+$oldBroker = $status;
+$oldBroker['status']['component_version'] = '0.6.0';
+$assert(!WebSupport::workstations($oldBroker)['supported'], 'A protocol-12 broker older than the nftables acknowledgement fix must not be current.');
 foreach (['TELIPHONES-PAIR-RESPONSE-1:abc', 'TELIPHONES-PAIR-RESPONSE-1:' . str_repeat('a', 30) . '"', 'x', null, ['a']] as $invalid) {
     $assert(!WebSupport::validPairingResponse($invalid), 'Invalid pairing responses must be rejected.');
 }
@@ -341,6 +344,18 @@ $disabled['status']['enabled'] = false;
 $assert(!WebSupport::workstations($disabled)['ready'], 'Disabled TELIPHONES must not allow new pairings.');
 $html = $render($notReady);
 $assert($buttonDisabled($html, 'pair') && strpos($html, 'Missing: nft') !== false, 'Missing nftables must disable pairing with an explanation.');
+$assert(strpos($result['notice']['error'], 'Missing: nft.') !== false, 'A refused pairing must name the missing tool.');
+
+$brokerBlocked = $status;
+$brokerBlocked['status']['workstations']['ready'] = false;
+$brokerBlocked['status']['workstations']['error'] = 'Workstation cleanup could not be confirmed: Workstation nft transaction was not acknowledged by the nft monitor: 3 of 15 events outstanding after 3 s (add rule input x3).';
+$recorder->sent = [];
+$result = WebSupport::handleAction($recorder, $post, 'known', $brokerBlocked, $https);
+$assert(!$result['dispatched'] && $recorder->sent === [] && strpos($result['notice']['error'], 'add rule input x3') !== false
+    && strpos($result['notice']['error'], 'Missing') === false, 'A broker readiness error must block pairing and be reported instead of missing tools.');
+$html = $render($brokerBlocked);
+$assert($buttonDisabled($html, 'pair') && strpos($html, 'Missing:') === false && strpos($html, 'blocked by the root broker') !== false
+    && strpos($html, 'add rule input x3') !== false, 'Installed tools with a broker readiness error must show that error, not an empty missing-tools list.');
 
 $legacy = ['ok' => true, 'status' => ['protocol' => 2, 'phase' => 'Ready', 'readiness' => ['WireGuard wg' => true]]];
 $html = $render($legacy);

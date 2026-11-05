@@ -56,10 +56,10 @@ $assert($model['files'][BrokerBootstrap::BROKER_DIR . '/FirewallListener.php'] =
     && $model['files'][BrokerBootstrap::BROKER_FILE] === \file_get_contents(dirname(__DIR__) . '/support_broker.py')
     && $model['files'][BrokerBootstrap::BROKER_DIR . '/ssh_authority.py'] === \file_get_contents(dirname(__DIR__) . '/ssh_authority.py'),
     'Both current module helpers must replace the separately installed root helpers byte-for-byte.');
-$assert(strpos($model['files'][BrokerBootstrap::BROKER_FILE], 'VERSION = "0.6.0"') !== false
+$assert(strpos($model['files'][BrokerBootstrap::BROKER_FILE], 'VERSION = "0.6.1"') !== false
     && strpos($model['files'][BrokerBootstrap::BROKER_FILE], 'self.ipt(iptables, "-I", FREEPBX_HOOK, "1"') !== false
     && strpos($model['files'][BrokerBootstrap::BROKER_FILE], 'def reconcile_listener(') !== false,
-    'The upgraded root broker must be 0.6.0 with the internal FreePBX jump and persistent listener service reconciliation.');
+    'The upgraded root broker must be 0.6.1 with the internal FreePBX jump and persistent listener service reconciliation.');
 $commands = implode("\n", $model['commands']);
 $assert(strpos($commands, ' -c ') < strpos($commands, 'systemctl restart teliphones-broker.service'), 'Import validation must precede activation.');
 foreach (['import', 'php', 'activation'] as $failure) {

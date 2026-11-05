@@ -1,4 +1,27 @@
-# TELIPHONES 0.4.1 testing
+# TELIPHONES testing
+
+## 0.6.2 nftables acknowledgement and recovery
+
+The broker tests include regressions for canonical UDP rule serialization,
+unacknowledged monitor events, kernel-state readback before pending-event
+release, fail-closed behaviour when readback is unavailable, verified cleanup,
+recovery and a subsequent pairing attempt. PHP tests verify that an old
+protocol-12 broker is reported as outdated and that pairing readiness errors
+are not misreported as missing networking tools.
+
+Run the suites from the repository root:
+
+```bash
+XDEBUG_MODE=off php teliphones/tests/run.php
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s gateway/tests
+sudo -n env PYTHONDONTWRITEBYTECODE=1 unshare -n \
+  python3 gateway/tests/workstation_namespace_lab.py "$(readlink /proc/self/ns/net)"
+```
+
+The real-nft namespace lab passed with nftables 1.0.9 in this development
+environment. It does not change the host firewall. Debian 12's nftables 1.0.6
+and a live FreePBX 17 system were not available, so neither is certified by
+these results. Keep that live-PBX check as a release gate.
 
 ## Workstation enforcement regression coverage
 

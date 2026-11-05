@@ -1,4 +1,5 @@
 <?php
+require_once dirname(__DIR__) . '/WebSupport.php';
 $moduleFile = dirname(__DIR__) . '/module.xml';
 $module = simplexml_load_file($moduleFile);
 if (!$module) {
@@ -11,7 +12,7 @@ $pageSource = is_readable($pageFile) ? file_get_contents($pageFile) : '';
 $assertions = [
     (string)$module->rawname === 'teliphones',
     (string)$module->name === 'TELIPHONES',
-    (string)$module->version === '0.6.1',
+    (string)$module->version === '0.6.2',
     (string)$module->category === 'Connectivity',
     count($menuItems) === 1,
     isset($module->menuitems->teliphones),
@@ -57,6 +58,16 @@ if (strpos($disclaimer, '<strong>') !== false || strpos($disclaimer, '<br>') !==
 }
 if ((string)$module->license !== 'GPLv3+') {
     throw new RuntimeException('The existing GPLv3-or-later licence grant must be preserved.');
+}
+if (\FreePBX\modules\Teliphones\WebSupport::moduleVersion() !== (string)$module->version) {
+    throw new RuntimeException('The GUI module version must come from module.xml.');
+}
+$state = [];
+ob_start();
+require dirname(__DIR__) . '/views/main.php';
+$mainView = (string)ob_get_clean();
+if (strpos($mainView, '<h2>TELIPHONES ' . (string)$module->version . '</h2>') === false) {
+    throw new RuntimeException('The main GUI heading must render the authoritative module version.');
 }
 
 echo "Module metadata tests: PASS (version, CLI identity, Connectivity menu, auth-guarded page)\n";

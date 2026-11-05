@@ -1,4 +1,6 @@
 <?php
+require_once dirname(__DIR__) . '/WebSupport.php';
+$moduleVersion = \FreePBX\modules\Teliphones\WebSupport::moduleVersion();
 $state = isset($state) && is_array($state) ? $state : [];
 $enabled = !empty($state['enabled']);
 $sessionId = isset($state['session_id']) && is_scalar($state['session_id']) ? (string)$state['session_id'] : '';
@@ -12,7 +14,7 @@ $verification=!empty($state['checker_accepted'])?'Verified':(!empty($state['atte
 $engineerAccess=$stage==='ready'?'Ready for the authorised engineer':'Not available';
 ?>
 <div class="container-fluid">
-<h2>TELIPHONES</h2><p>Temporary, locally authorised support for FreePBX.</p>
+<h2>TELIPHONES <?=htmlspecialchars($moduleVersion, ENT_QUOTES, 'UTF-8')?></h2><p>Temporary, locally authorised support for FreePBX.</p>
 <?php if(!$enabled): ?><div class="alert alert-warning"><strong>TELIPHONES is disabled.</strong> Local root must enable it before support can be authorised.</div>
 <?php elseif($hasSession): ?><div class="alert alert-info"><strong>Session status: <?=htmlspecialchars(ucfirst($stage),ENT_QUOTES,'UTF-8')?></strong><br>Topology: <strong><?=htmlspecialchars($topology,ENT_QUOTES,'UTF-8')?></strong><br>WireGuard transport: <?=htmlspecialchars($transport,ENT_QUOTES,'UTF-8')?><br>Verification: <?=htmlspecialchars($verification,ENT_QUOTES,'UTF-8')?><br>Engineer service access: <?=htmlspecialchars($engineerAccess,ENT_QUOTES,'UTF-8')?><br>Engineer presence: <strong>Not reliably reported</strong><br>Session: <code><?=htmlspecialchars($sessionId,ENT_QUOTES,'UTF-8')?></code><br>Expires: <?=htmlspecialchars(date(DATE_RFC3339,$expiresAt),ENT_QUOTES,'UTF-8')?><br>Remaining: <?=htmlspecialchars((string)max(0,$expiresAt-time()),ENT_QUOTES,'UTF-8')?> seconds<br><strong>Support is not implied by authorisation or transport connectivity.</strong></div>
 <?php else: ?><div class="alert alert-success"><strong>TELIPHONES is enabled.</strong> Remote support is off until local root explicitly authorises a temporary window.</div><?php endif; ?>

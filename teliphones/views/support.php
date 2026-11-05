@@ -103,7 +103,7 @@ $expand = static function (array $actions) use ($failedAction): string {
 @media (max-width:767px){#teliphones-root .teliphones-policy-grid{grid-template-columns:1fr;gap:0}#teliphones-root .teliphones-panel{padding:14px}#teliphones-root .teliphones-panel>h3{margin-left:-14px;margin-right:-14px;padding-left:14px;padding-right:14px}#teliphones-root .btn{max-width:100%}}
 </style>
 <div class="container-fluid" id="teliphones-root" data-teliphones-ajax="ajax.php?module=teliphones">
-<h2>TELIPHONES</h2>
+<h2>TELIPHONES <?=htmlspecialchars(WebSupport::moduleVersion(), ENT_QUOTES, 'UTF-8')?></h2>
 <p>Administrator-owned PBX connections and temporary, administrator-authorised remote support. Installation and module enablement do not authorise workstation or engineer access.</p>
 <?php if (!$available): ?>
 <div class="alert alert-danger teliphones-system-warning">
@@ -412,11 +412,7 @@ foreach ($workstations['items'] as $workstation) {
 <?php if (!$workstations['supported']): ?>
 <p class="help-block teliphones-pairing-unavailable"><?=!$available ? $escape($unavailableReason) : ($live['broker_current'] ? 'Workstation pairing status was not reported by the root broker; pairing is unavailable.' : 'Workstation pairing requires the updated root broker; see Root broker update required above.')?></p>
 <?php elseif (!$workstations['ready']): ?>
-<?php if (($status['enabled'] ?? true) === false): ?>
-<div class="alert alert-warning teliphones-pairing-requirements">TELIPHONES is disabled. Workstation pairing is unavailable; revocation remains available.</div>
-<?php else: ?>
-<div class="alert alert-warning teliphones-pairing-requirements">Workstation pairing requires WireGuard tools, iproute2 and nftables on the PBX. Missing: <?=$escape(implode(', ', array_keys(array_filter($workstations['requirements'], static function ($value) { return $value !== true; }))))?>.</div>
-<?php endif; ?>
+<div class="alert alert-warning teliphones-pairing-requirements"><?=$escape(WebSupport::pairingBlockedReason($workstations, ($status['enabled'] ?? true) !== false))?></div>
 <?php endif; ?>
 <?php if ($workstations['error'] !== ''): ?><div class="alert alert-danger teliphones-pairing-error"><?=$escape($workstations['error'])?></div><?php endif; ?>
 <?php $integration = $workstations['firewall_integration']; $integrationActive = $integration['state'] === 'active'; ?>
