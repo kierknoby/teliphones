@@ -1094,12 +1094,17 @@ endfunction()
         self.assertIn("pairing = ValidatedResponse()", save)
         self.assertIn("std::string sshUser = pairing.sshUser", save)
         self.assertNotIn("GetEdit(this, IDC_PAIR_SSHUSER)", source)
+        self.assertIn("if (sshKeyRequested_ && !pairing.ssh)", source)
         window_project = project("HealthWindowTests.vcxproj")
         compiled = {item.attrib["Include"].replace("\\", "/")
                     for item in window_project.findall("ms:ItemGroup/ms:ClCompile", NS)}
         self.assertIn("src/app/PairDlg.cpp", compiled)
         self.assertIn("tests/pair_dialog_tests.cpp", compiled)
         self.assertIn("RunPairDialogTests(this)", (ROOT / "tests/health_window_tests.cpp").read_text())
+        native_tests = (ROOT / "tests/pair_dialog_tests.cpp").read_text()
+        self.assertIn("edit->ReplaceSel(wide.c_str())", native_tests)
+        self.assertIn("multiline WM_SETTEXT does not notify response validation", native_tests)
+        self.assertIn("explicitly denied managed SSH approval blocks save and hides account", native_tests)
 
     def test_managed_ssh_has_no_file_or_shared_agent_fallback(self):
         source = (ROOT / "src/platform/Ssh.cpp").read_text()

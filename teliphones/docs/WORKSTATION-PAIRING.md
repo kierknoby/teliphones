@@ -26,6 +26,12 @@ correction in source; neither current source nor portable tests prove live pairi
 8. Validate and **Save connection**. The approved SSH account is response-derived,
    read-only and hidden for web-only approval. Clicking Save revalidates.
 
+   With **Web + SSH Access** selected, Save additionally requires explicit valid
+   SSH approval and its response-derived account. A web-only approval cannot
+   satisfy that selection; obtain SSH approval or generate a new Web Access
+   request. The protocol parser still understands web-only replies independently
+   of the dialogue's selected-access policy.
+
 Web-only uses request v1 without an SSH identity; v2 adds an independent SSH
 public key. Requested SSH is not approved SSH. Name/access changes invalidate
 the pending request, response and unused identities and require regeneration,

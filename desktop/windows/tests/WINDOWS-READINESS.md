@@ -19,6 +19,25 @@ The preserved 0.6.3 module archive predates its later PHP form correction.
 
 ## Current evidence
 
+### Pairing Save-state notification regression
+
+The reported `HealthWindowTests.exe` failure at **valid web approval enables
+save without SSH account** came from filling the multiline response control
+with `SetDlgItemText` (`WM_SETTEXT`), which does not send `EN_CHANGE`.
+The native fixture now uses `CEdit::ReplaceSel` to exercise editing notifications,
+not a direct call to the validation handler. It separately verifies that the
+web fixture passes the production parser and that `WM_SETTEXT` alone leaves
+Save disabled. Modal saves cover web-only and SSH approvals and reject manual
+account override. Invalid, incomplete and request-mismatched edits disable Save.
+
+The production dialogue additionally requires explicit SSH approval when
+**Web + SSH Access** was selected. Web-only approvals need no SSH account;
+denied, missing or malformed managed approval cannot satisfy SSH selection.
+The parser remains compatible with web-only replies; dialogue Save policy
+enforces the selected access, including revalidation on click.
+Current native execution remains outstanding on Linux; the existing Windows
+workflow builds and runs these MFC tests and propagates failures.
+
 ### Encoding object collision and embedded-console authentication fix
 
 The MFC project assigns libvterm's `encoding.c` the object filename

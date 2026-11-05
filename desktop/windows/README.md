@@ -151,7 +151,9 @@ socket. The later PHP form correction alone requires no broker change.
    and lifetime. Under **SSH approval**, leave **FreePBX Web Access only**, or
    explicitly approve **FreePBX Web + SSH Access** for an SSH-capable request and
    select an existing Linux account. Root is never implicit. An SSH-capable
-   request may receive web-only approval.
+   request may receive web-only approval from the PBX, but Windows will not save
+   it with **Web + SSH Access** selected. Obtain explicit SSH approval or generate
+   a new **Web Access** request; access is never silently downgraded.
 6. Wait for the final pairing result and copy the response produced by FreePBX.
    Progress means liveness, never successful approval.
 7. Paste the response under Windows **Complete pairing**. Validation supplies

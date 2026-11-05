@@ -23,6 +23,13 @@ SSH-capability protocol and independent FreePBX versions remain unchanged.
 Portable Release tests cover protocol bindings and source layout; native MFC
 regressions are registered but require Windows execution.
 
+Correct native dialogue fixtures to replace multiline response text through
+the edit-control path, which emits `EN_CHANGE`, rather than `WM_SETTEXT`, which
+does not. Cover web-only Save without an SSH account, invalid/request-mismatched
+responses, explicit SSH denial and missing/invalid response-derived accounts.
+Web + SSH selection now requires explicit PBX SSH approval before Save; a
+web-only reply requires a new Web Access request instead of a silent downgrade.
+
 The generated response is request-bound, not independently signed as an
 envelope: its provenance relies on the trusted, administrator-approved HTTPS
 exchange. SSH certificates are separately signature-verified at session launch.

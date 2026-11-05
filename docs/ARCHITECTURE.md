@@ -109,7 +109,10 @@ The request and response formats, and the client-side validation rules, are spec
 
 Web-only requests use v1; v2 adds an independent SSH public identity. Neither
 requests approval by itself. The administrator may approve web-only even for an
-SSH-capable request. Changing name/access in Windows clears the pending request,
+SSH-capable request, but Windows requires explicit SSH approval to save with
+Web + SSH selected. A web-only reply requires generating a new Web Access
+request rather than silently downgrading the selected access.
+Changing name/access in Windows clears the pending request,
 response and unused identities and requires regeneration. Copy is available
 only for a generated current request; Save revalidates its response and never
 trusts a manually altered account display. The response envelope is not signed:

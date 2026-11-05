@@ -149,6 +149,8 @@ void CPairDlg::OnRequestChanged() {
 tlp::PairResponse CPairDlg::ValidatedResponse() {
     if (!RequestCurrent()) throw tlp::Error("Generate a request for the current workstation name and access choice.");
     auto pairing = tlp::ParsePairResponse(GetEdit(this, IDC_PAIR_RESPONSE), nonce_, publicKey_, sshPublicKey_);
+    if (sshKeyRequested_ && !pairing.ssh)
+        throw tlp::Error("FreePBX has not approved the requested SSH access. Obtain explicit SSH approval, or generate a new Web Access request.");
     if (pairing.ssh && sshPublicKey_.empty())
         throw tlp::Error("This request is web-only. Generate a new Web + SSH request before approving SSH.");
     if (pairing.ssh && pairing.sshPort == 0)
