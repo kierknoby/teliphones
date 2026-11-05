@@ -11,7 +11,7 @@ $recorder = new class extends WebSupport {
     public array $reply = ['ok' => true, 'message' => 'paired', 'pairing_response' => 'TELIPHONES-PAIR-RESPONSE-1:eyJzY2hlbWEiOiJ0ZWxpcGhvbmVzIn0'];
     public function request(array $request): array
     {
-        if ($request['action'] === 'status') return ['ok' => true, 'status' => ['protocol' => 4, 'component_version' => '0.6.1', 'phase' => 'Ready',
+        if ($request['action'] === 'status') return ['ok' => true, 'status' => ['protocol' => 4, 'component_version' => '0.6.2', 'phase' => 'Ready',
             'workstations' => ['ready' => true, 'requirements' => ['wg' => true, 'ip' => true, 'nft' => true], 'items' => []]]];
         $this->sent[] = $request;
         return $this->reply;
@@ -27,6 +27,14 @@ $result = WebSupport::handleAction($recorder, $post, 'known', $operational, $htt
 $assert($result['dispatched'] && $recorder->sent === [['action' => 'pair', 'request' => 'TELIPHONES-PAIR-REQUEST-1:abc', 'endpoint_host' => 'pbx.example.net',
     'listen_port' => '51821', 'mode' => 'temporary', 'minutes' => '60', 'ssh' => '0']], 'Pairing must forward exactly its own allowlisted fields.');
 $assert($result['notice']['pairing_response'] === $recorder->reply['pairing_response'], 'Pairing response must reach the page.');
+$olderBroker = $operational;
+$olderBroker['status']['protocol'] = 12;
+$olderBroker['status']['component_version'] = '0.6.1';
+$before = $recorder->sent;
+$olderResult = WebSupport::handleAction($recorder, $post, 'known', $olderBroker, $https);
+$assert(!$olderResult['dispatched'] && $recorder->sent === $before
+    && strpos($olderResult['notice']['error'], 'root broker') !== false,
+    'Broker 0.6.1 must not receive pairing even if operational and reporting protocol 12.');
 $sourceLockedPost = ['sources' => '198.51.100.24'] + $post;
 $lockedResult = WebSupport::handleAction($recorder, $sourceLockedPost, 'known', $operational, $https);
 $assert(!$lockedResult['dispatched'], 'Source-lock requests must not be sent to a pre-protocol-8 broker.');
@@ -88,7 +96,7 @@ $assert($result['dispatched'], 'Missing SSH prerequisites must not disable web-o
 $result = WebSupport::handleAction($recorder, ['ssh' => '1'] + $post, 'known', $modern, $https);
 $assert(!$result['dispatched'] && strpos($result['notice']['error'], 'did not include SSH capability') !== false,
     'A version-1 web-only request must never receive SSH permission.');
-$policyStatus = ['ok' => true, 'status' => ['protocol' => 8, 'component_version' => '0.6.1', 'workstations' => [
+$policyStatus = ['ok' => true, 'status' => ['protocol' => 8, 'component_version' => '0.6.2', 'workstations' => [
     'ready' => true, 'items' => [], 'requirements' => ['wg' => true, 'ip' => true, 'nft' => true],
     'connection_state' => 'closed']]];
 $assert(WebSupport::supportsWorkstationPolicy($policyStatus), 'Protocol 8 must expose connection-state controls.');
@@ -97,7 +105,7 @@ $recorder->sent = [];
 $result = WebSupport::handleAction($recorder, $policyPost, 'known', $policyStatus, $https);
 $assert($result['dispatched'] && $recorder->sent[0] === ['action' => 'workstation-policy', 'state' => 'frozen'],
     'Connection-state changes must forward only the selected state.');
-$sessionStatus = ['ok' => true, 'status' => ['protocol' => 11, 'component_version' => '0.6.1', 'workstations' => [
+$sessionStatus = ['ok' => true, 'status' => ['protocol' => 11, 'component_version' => '0.6.2', 'workstations' => [
     'ready' => true, 'items' => [], 'requirements' => ['wg' => true, 'ip' => true, 'nft' => true],
     'max_sessions' => 1, 'connected_workstations' => 1]]];
 $assert(WebSupport::supportsWorkstationSessions($sessionStatus), 'Protocol 11 must report enforced workstation session capacity.');
@@ -238,7 +246,7 @@ $item = ['id' => '0123456789abcdef', 'name' => 'ADMIN-PC', 'address' => '100.70.
     'created_at' => 1, 'expires_at' => 2000000000, 'last_handshake' => 0,
     'verified_endpoint' => ['address' => '2001:db8::24', 'port' => 51821],
     'fingerprint' => 'SHA256:abcdefghijklmnop', 'public_key' => 'LEAKED-PUBLIC-KEY'];
-$status = ['ok' => true, 'status' => ['protocol' => 4, 'component_version' => '0.6.1', 'phase' => 'Ready', 'workstations' => ['ready' => true, 'requirements' => ['wg' => true, 'ip' => true, 'nft' => true],
+$status = ['ok' => true, 'status' => ['protocol' => 4, 'component_version' => '0.6.2', 'phase' => 'Ready', 'workstations' => ['ready' => true, 'requirements' => ['wg' => true, 'ip' => true, 'nft' => true],
     'error' => '', 'listen_port' => 51821, 'pbx_address' => '100.70.1.1', 'items' => [$item, ['id' => '../../x', 'name' => 'bad']]]]];
 $workstations = WebSupport::workstations($status);
 $assert($workstations['supported'] && $workstations['ready'] && count($workstations['items']) === 1 && !isset($workstations['items'][0]['public_key']), 'Workstation status must be allowlisted.');

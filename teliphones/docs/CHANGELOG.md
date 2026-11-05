@@ -8,6 +8,34 @@ repository. Portable Linux validation is current for the broker, FreePBX module 
 Windows core. Native Windows compilation/UI integration and live FreePBX
 session, migration, firewall and SSH acceptance remain outstanding.
 
+## 0.6.3, pairing transport patch (local package, not published)
+
+- Replace the five-second synchronous pairing response deadline with opt-in,
+  non-secret progress frames and a five-second inactivity timeout. Only the
+  final verified response is success; pairing is dispatched once, and loss of
+  its response does not interrupt verified enforcement or cleanup.
+- Serialize broker operation and response-encoding failures into valid JSON
+  errors. Report safe exception categories, stages and source locations without
+  recording requests, credentials or subprocess contents. Preserve initiating
+  command timeout errors through cleanup and rollback.
+- Distinguish socket inactivity, early closure, malformed/oversized replies and
+  invalid progress framing from an explicit broker operation failure. An
+  unconfirmed outcome requires refreshing status before retrying.
+- Require independently versioned root broker 0.6.2 for module 0.6.3, including
+  when an older broker reports protocol 12. Keep protocol 12 and Windows 0.8.0
+  unchanged. Rerun the documented root bootstrap after the Module Admin upgrade.
+  The GUI heading continues to use authoritative module metadata.
+- Retain nftables acknowledgement, readback-gated recovery, workstation
+  authorisation, SSH protections and fail-closed enforcement. No GUI layout
+  change is included.
+- Add real PHP/Unix-socket regressions with modelled network commands. The
+  isolated real-nft lab passed 10/10 runs on this source and 10/10 against the
+  unchanged pre-transport baseline. The earlier intermittent own-event-filtering
+  failure was not reproduced; these runs do not prove it cannot recur.
+  Live FreePBX 17 / Debian 12 pairing, installed upgrades and web-server/proxy
+  request deadlines remain unvalidated. This is a local test package, not a
+  published or production-certified release.
+
 ## 0.6.2, workstation firewall recovery patch (local package, not published)
 
 - Correct nftables policy serialization so UDP port matches use the same

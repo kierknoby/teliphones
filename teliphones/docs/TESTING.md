@@ -1,5 +1,24 @@
 # TELIPHONES testing
 
+## 0.6.3 pairing transport and package validation
+
+Run the PHP/Node and gateway suites below, then run
+`PYTHONDONTWRITEBYTECODE=1 python3 teliphones/tests/package-validation.py`
+after building `TELIPHONES-0.6.3.tgz` using the root README procedure.
+The package validator checks exact module-source equality, module 0.6.3,
+root broker 0.6.2, compatibility declarations, protocol 12, Windows exclusion
+and preservation of available historical archives. PHP tests verify the
+metadata-derived `TELIPHONES 0.6.3` heading and reject broker 0.6.1 even when
+it reports protocol 12.
+
+During this preparation the isolated real-nft namespace lab passed 10/10
+working-tree runs and 10/10 runs using the unchanged `2c67adc` broker source
+loaded in memory. Each run used a fresh network namespace; the host firewall
+was untouched. The previous investigation had one own-event-filtering assertion
+failure followed by successful isolated reruns. There was no recurrence in this
+sample, including the baseline, but the intermittent condition is not diagnosed
+or excluded by these results. Do not remove or weaken its assertion.
+
 ## 0.6.2 nftables acknowledgement and recovery
 
 The broker tests include regressions for canonical UDP rule serialization,
@@ -24,6 +43,22 @@ and a live FreePBX 17 system were not available, so neither is certified by
 these results. Keep that live-PBX check as a release gate.
 
 ## Workstation enforcement regression coverage
+
+`gateway/tests/test_broker_socket.py` runs the real PHP client against real
+Unix sockets and the production broker request handler, with modelled network
+commands. It reproduces the old five-second read timeout during a six-second
+listener verification, verifies final success and failure after progress frames,
+and checks that new workstation admission waits for verification. It also covers
+peer authorization, legacy single-response clients, invalid progress options,
+fragmented/malformed/oversized replies, inactivity, older-helper rejection,
+sanitized exception/serialization errors, and transaction completion without
+re-dispatch after a client disconnect. PHP is required for this integration
+class; a missing interpreter produces an explicit skip.
+
+These tests do not execute real FreePBX listener convergence, web-server/proxy
+request deadlines, installed broker upgrades or live workstation pairing.
+Those remain live-PBX validation requirements. The new 0.6.3 package is checked
+against current module source; the preserved 0.6.2 archive remains historical.
 
 From the repository root, run `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s gateway/tests -v` and `php teliphones/tests/run.php`. The new enforcement cases exercise complete JSON-policy tampering, ownership conflicts, verified disable/delete failures, recovery-file retention, both pairing lifetimes, transient external flush/restore events, monitor startup/death and own-event filtering. PHP covers trusted-helper ancestry, refusal of legacy/web-owned helpers, verified service stopping and abort-on-failure ordering. The existing portable C++ contract tests reuse the updated Python fake network; Windows sources are unchanged.
 

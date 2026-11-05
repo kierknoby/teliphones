@@ -25,13 +25,13 @@ def included(path):
 
 class PackageTests(unittest.TestCase):
     def test_authoritative_versions_and_archive_checksum(self):
-        self.assertEqual(VERSION, "0.6.2")
+        self.assertEqual(VERSION, "0.6.3")
         tree = ast.parse((MODULE / "support_broker.py").read_text())
         versions = [ast.literal_eval(node.value) for node in tree.body if isinstance(node, ast.Assign)
                     and any(isinstance(target, ast.Name) and target.id == "VERSION" for target in node.targets)]
-        self.assertEqual(versions, ["0.6.1"], "The broker patch version identifies the nftables acknowledgement fix")
+        self.assertEqual(versions, ["0.6.2"], "The broker patch version identifies the pairing transport corrections")
         self.assertIn("BROKER_VERSION = '%s';" % versions[0], (MODULE / "WebSupport.php").read_text())
-        self.assertIn("TELIPHONES 0.6.2 requires broker version 0.6.1, broker protocol 12",
+        self.assertIn("TELIPHONES 0.6.3 requires broker version 0.6.2, broker protocol 12",
                       (MODULE / "BrokerBootstrap.php").read_text())
         self.assertTrue(PACKAGE.exists(), "Build the current installation archive before package validation")
         digest = hashlib.sha256(PACKAGE.read_bytes()).hexdigest()
@@ -92,6 +92,20 @@ class PackageTests(unittest.TestCase):
             broker = archive.extractfile("teliphones/support_broker.py").read().decode()
             self.assertIn('VERSION = "0.6.0"', broker)
             self.assertIn("PROTOCOL = 12", broker)
+
+    @unittest.skipUnless((ROOT / "TELIPHONES-0.6.2.tgz").exists(),
+                         "The previous 0.6.2 archive is not present in the repository")
+    def test_previous_0_6_2_package_remains_unchanged(self):
+        previous = ROOT / "TELIPHONES-0.6.2.tgz"
+        digest = hashlib.sha256(previous.read_bytes()).hexdigest()
+        self.assertEqual(digest, "5b1ef90abc1c02f08f5fed7222f16be2709dd4c98bf15d2d3716bcbf8c2ee53e")
+        self.assertEqual(Path(str(previous) + ".sha256").read_text(), "%s  %s\n" % (digest, previous.name))
+        with tarfile.open(previous, "r:gz") as archive:
+            self.assertEqual(ET.fromstring(archive.extractfile("teliphones/module.xml").read()).findtext("version"),
+                             "0.6.2")
+            source = archive.extractfile("teliphones/support_broker.py").read().decode()
+            self.assertIn('VERSION = "0.6.1"', source)
+            self.assertIn("PROTOCOL = 12", source)
 
     def test_packaged_firewall_migrates_legacy_input_and_survives_rebuild(self):
         self.assertTrue(PACKAGE.exists(), "Build the current installation archive before package validation")
@@ -171,6 +185,13 @@ class PackageTests(unittest.TestCase):
                                 'FAIL2BAN_PREFIXES = ("fail2ban-", "f2b-")', "def reconcile_integration(",
                                 "class DiagnosticLog", "PROTOCOL = 12", "def reconcile_listener(", "def parse_web("):
                     self.assertIn(feature, broker)
+                self.assertIn('VERSION = "0.6.2"', broker)
+                for feature in ("def socket_response(", "def handle_connection(", 'done.wait(1)',
+                                '"progress": progress["stage"]', "except subprocess.TimeoutExpired"):
+                    self.assertIn(feature, broker)
+                web = (Path(directory) / "teliphones/WebSupport.php").read_text()
+                self.assertIn("stream_set_timeout($socket, 5)", web)
+                self.assertIn("if ($pairing) $request['progress'] = true;", web)
                 bootstrap = (Path(directory) / "teliphones/BrokerBootstrap.php").read_text()
                 self.assertIn("copy($moduleDir . '/support_broker.py', $brokerFile)", bootstrap)
                 self.assertIn("'restart teliphones-broker.service'", bootstrap)

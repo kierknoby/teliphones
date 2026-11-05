@@ -37,7 +37,7 @@ SOCKET = "/run/teliphones/control.sock"
 # Protocol 11 adds PBX-enforced workstation session leases and management gating.
 # Protocol 12 adds post-pair workstation policy management.
 PROTOCOL = 12
-VERSION = "0.6.1"
+VERSION = "0.6.2"
 SESSION_CONTROL_PORT = 8766
 SESSION_LEASE_SECONDS = 30
 FWCONSOLE = "/usr/sbin/fwconsole"
@@ -1010,6 +1010,105 @@ def permitted_peer(uid, web_uid):
     return uid == web_uid and web_uid != 0
 
 
+def socket_response(broker, request, uid, progress):
+    """Serialize failures at the IPC boundary without disclosing request or subprocess contents."""
+    action = request.get("action", "invalid") if isinstance(request, dict) else "invalid"
+    try:
+        broker.request_context.progress = progress
+        response = broker.dispatch(request, uid)
+        if not isinstance(response, dict) or not isinstance(response.get("ok"), bool):
+            raise BrokerError("TELIPHONES operation produced an invalid response; inspect the private broker journal and refresh status before retrying.")
+        return json.dumps(response, allow_nan=False).encode() + b"\n"
+    except Exception as error:
+        stage = progress["stage"]
+        cause = error
+        for _ in range(4):
+            trace = cause.__traceback__
+            while trace and trace.tb_next:
+                trace = trace.tb_next
+            location = "%s:%d (%s)" % (os.path.basename(trace.tb_frame.f_code.co_filename), trace.tb_lineno,
+                                       trace.tb_frame.f_code.co_name) if trace else "unknown"
+            LOGGER.error("TELIPHONES socket operation %s failed at %s: %s in %s",
+                         action if action in ACTIONS else "invalid", stage, type(cause).__name__, location)
+            cause = cause.__cause__
+            if cause is None:
+                break
+        if isinstance(error, BrokerError):
+            message = str(error)
+        elif isinstance(error, subprocess.TimeoutExpired):
+            message = "TELIPHONES command timed out during %s; refresh status before retrying." % stage
+        elif isinstance(error, ssh.SshError):
+            message = "Managed SSH verification failed during %s; inspect the private broker journal." % stage
+        elif isinstance(error, OSError):
+            message = "TELIPHONES operating-system operation failed during %s (errno %s); refresh status before retrying." % (
+                stage, error.errno)
+        else:
+            message = "TELIPHONES operation failed during %s (%s); inspect the private broker journal and refresh status before retrying." % (
+                stage, type(error).__name__)
+        return json.dumps({"ok": False, "error": message}).encode() + b"\n"
+    finally:
+        broker.request_context.progress = None
+
+
+def handle_connection(broker, connection, web_uid):
+    with connection:
+        connection.settimeout(5)
+        try:
+            uid = struct.unpack("3i", connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i")))[1]
+            if not permitted_peer(uid, web_uid):
+                raise BrokerError("Only the configured FreePBX web service account may contact this broker.")
+            data = bytearray()
+            while b"\n" not in data and len(data) <= 100000:
+                chunk = connection.recv(4096)
+                if not chunk:
+                    break
+                data.extend(chunk)
+            if len(data) > 100000 or b"\n" not in data:
+                raise BrokerError("Invalid or oversized request.")
+            request = json.loads(data.split(b"\n", 1)[0])
+            # Optional IPC framing only; legacy protocol-12 clients still receive one final response.
+            streaming = isinstance(request, dict) and "progress" in request
+            if streaming:
+                if request.get("action") != "pair" or request.pop("progress") is not True:
+                    raise BrokerError("Progress framing is available only for workstation pairing.")
+            validate(request)
+        except (BrokerError, ValueError, OSError) as error:
+            response = {"ok": False, "error": str(error) if isinstance(error, BrokerError) else "Invalid TELIPHONES socket request."}
+            try:
+                connection.sendall(json.dumps(response).encode() + b"\n")
+            except OSError:
+                LOGGER.error("TELIPHONES socket closed before request rejection could be delivered")
+            return
+        progress = {"stage": "Validating pairing request"}
+        if not streaming:
+            response = socket_response(broker, request, uid, progress)
+        else:
+            done = threading.Event()
+            result = []
+
+            def dispatch():
+                try:
+                    result.append(socket_response(broker, request, uid, progress))
+                finally:
+                    done.set()
+
+            threading.Thread(target=dispatch, daemon=True).start()
+            try:
+                # Liveness is not success: keep PHP's five-second inactivity limit while
+                # bounded firewall commands finish, without releasing the pairing lock early.
+                while not done.wait(1):
+                    connection.sendall(json.dumps({"progress": progress["stage"]}).encode() + b"\n")
+            except OSError:
+                LOGGER.error("TELIPHONES pairing socket closed during %s; operation outcome must be checked",
+                             progress["stage"])
+                return
+            response = result[0]
+        try:
+            connection.sendall(response)
+        except OSError:
+            LOGGER.error("TELIPHONES socket closed before final response could be delivered; operation outcome must be checked")
+
+
 class Broker:
     def __init__(self):
         self.lock = threading.Lock()
@@ -1022,6 +1121,7 @@ class Broker:
         self.operation = None
         # Workstation pairing is independent of support sessions and serialised separately.
         self.wslock = threading.RLock()
+        self.request_context = threading.local()
         self.workstation_error = ""
         self.monitor = None
         self.enforcement_event = threading.Event()
@@ -1163,11 +1263,27 @@ class Broker:
         raise BrokerError("Workstation pairing requires %s, which is not installed." % {"wg": "WireGuard tools (wg)", "ip": "iproute2 (ip)", "nft": "nftables (nft)"}[name])
 
     def run(self, arguments, stdin=None, check=True, stream=False):
+        progress = getattr(self.request_context, "progress", None)
+        if progress is not None:
+            progress["stage"] = {
+                "nft": "Running nftables verification",
+                "ip": "Configuring workstation interface",
+                "wg": "Configuring WireGuard",
+                "fwconsole": "Verifying FreePBX listener rules",
+            }.get(os.path.basename(arguments[0]), "Running workstation command")
         if stream:
             return subprocess.Popen(arguments, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                     stderr=subprocess.DEVNULL, text=True, env=ENV)
         listener = arguments[:3] == [FWCONSOLE, "teliphones", "listener"]
-        result = subprocess.run(arguments, input=stdin, capture_output=True, text=True, timeout=60 if listener else 20, env=ENV)
+        timeout = 60 if listener else 20
+        try:
+            result = subprocess.run(arguments, input=stdin, capture_output=True, text=True, timeout=timeout, env=ENV)
+        except subprocess.TimeoutExpired as error:
+            # Preserve the initiating condition through verified cleanup and pairing rollback.
+            command = "FreePBX listener verification" if listener else {
+                "nft": "nftables command", "ip": "iproute2 command", "wg": "WireGuard command",
+            }.get(os.path.basename(arguments[0]), "workstation command")
+            raise BrokerError("Workstation %s timed out after %d seconds." % (command, timeout)) from error
         if result.returncode and check:
             detail = (" " + (result.stdout or result.stderr).strip()[-500:]) if listener or os.path.basename(arguments[0]) == "nft" else ""
             raise BrokerError("Workstation network operation failed: " + os.path.basename(arguments[0]) + " " + arguments[1] + "." + detail)
@@ -3110,7 +3226,12 @@ class Broker:
             return {"ok": True, "component_version": VERSION, "diagnostic_id": request["diagnostic_id"],
                     "exported_at": DiagnosticLog._timestamp(time.time()), "events": events}
         if action == "pair":
+            progress = getattr(self.request_context, "progress", None)
+            if progress is not None:
+                progress["stage"] = "Waiting for workstation policy lock"
             with self.wslock:
+                if progress is not None:
+                    progress["stage"] = "Validating pairing request"
                 code, entry = self.pair(request, uid)
             return {"ok": True, "pairing_response": code,
                     "message": "Workstation '%s' paired. Paste the pairing response into the TELIPHONES Windows application." % entry["name"]}
@@ -3327,29 +3448,9 @@ def serve():
     os.chmod(SOCKET, 0o660)
     server.listen(8)
 
-    def handle(connection):
-        with connection:
-            connection.settimeout(5)
-            uid = struct.unpack("3i", connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i")))[1]
-            try:
-                if not permitted_peer(uid, user.pw_uid):
-                    raise BrokerError("Only the configured FreePBX web service account may contact this broker.")
-                data = bytearray()
-                while b"\n" not in data and len(data) <= 100000:
-                    chunk = connection.recv(4096)
-                    if not chunk:
-                        break
-                    data.extend(chunk)
-                if len(data) > 100000 or b"\n" not in data:
-                    raise BrokerError("Invalid or oversized request.")
-                response = broker.dispatch(json.loads(data.split(b"\n", 1)[0]), uid)
-            except (BrokerError, ValueError, OSError) as error:
-                response = {"ok": False, "error": str(error) if isinstance(error, BrokerError) else "TELIPHONES request failed."}
-            connection.sendall(json.dumps(response).encode() + b"\n")
-
     while True:
         connection, _ = server.accept()
-        threading.Thread(target=handle, args=(connection,), daemon=True).start()
+        threading.Thread(target=handle_connection, args=(broker, connection, user.pw_uid), daemon=True).start()
 
 
 if __name__ == "__main__":

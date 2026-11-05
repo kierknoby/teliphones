@@ -106,7 +106,7 @@ class WebSupport
     public const OPERATION_STATES = ['running', 'succeeded', 'failed'];
     /** Broker status protocol this module requires (support_broker.py PROTOCOL): 2 adds live operation records, 3 adds workstation pairing. */
     public const BROKER_PROTOCOL = 3;
-    public const BROKER_VERSION = '0.6.1';
+    public const BROKER_VERSION = '0.6.2';
     public const DIAGNOSTICS_PROTOCOL = 4;
     public const SSH_PROTOCOL = 5;
     /** Protocol 6 adds the WireGuard listener firewall permit and configurable management web services. */
@@ -727,22 +727,77 @@ class WebSupport
 
     public function request(array $request): array
     {
+        $pairing = ($request['action'] ?? null) === 'pair';
+        if ($pairing) $request['progress'] = true;
+        try {
+            $payload = json_encode($request, JSON_THROW_ON_ERROR) . "\n";
+        } catch (\JsonException $error) {
+            error_log('TELIPHONES request serialization failed: ' . $error->getMessage());
+            return ['ok' => false, 'error' => 'TELIPHONES request could not be encoded; no operation was sent.'];
+        }
         $socket = @stream_socket_client('unix://' . $this->socket, $errno, $error, 2);
         if ($socket === false) return ['ok' => false, 'unavailable' => true, 'error' => 'Privileged TELIPHONES broker unavailable. FreePBX Module Admin installed the module, but its root component is not reachable.'];
         stream_set_timeout($socket, 5);
-        $payload = json_encode($request, JSON_THROW_ON_ERROR) . "\n";
-        $offset = 0;
-        while ($offset < strlen($payload)) {
-            $written = fwrite($socket, substr($payload, $offset));
-            if ($written === false || $written === 0) {
-                fclose($socket);
-                return ['ok' => false, 'unavailable' => true, 'error' => 'Unable to send the TELIPHONES request.'];
+        $stage = 'Waiting for broker response';
+        try {
+            $offset = 0;
+            while ($offset < strlen($payload)) {
+                $written = @fwrite($socket, substr($payload, $offset));
+                if ($written === false || $written === 0) {
+                    return $this->responseFailure('Unable to send the TELIPHONES request.');
+                }
+                $offset += $written;
             }
-            $offset += $written;
+            while (true) {
+                $line = '';
+                do {
+                    $chunk = @fgets($socket, 131073 - strlen($line));
+                    $metadata = stream_get_meta_data($socket);
+                    if ($metadata['timed_out']) {
+                        return $this->responseFailure('TELIPHONES broker response timed out after five seconds without progress during '
+                            . $stage . '. The operation outcome is unconfirmed; refresh status before retrying.');
+                    }
+                    if ($chunk === false) {
+                        return $this->responseFailure('TELIPHONES broker closed or failed to read the response during '
+                            . $stage . '. The operation outcome is unconfirmed; inspect the private broker journal and refresh status before retrying.');
+                    }
+                    $line .= $chunk;
+                    if (strlen($line) >= 131072 && substr($line, -1) !== "\n") {
+                        return $this->responseFailure('TELIPHONES broker response exceeded the 128 KiB limit; refresh status before retrying.');
+                    }
+                } while (substr($line, -1) !== "\n");
+                $response = json_decode($line, true);
+                if (!is_array($response)) {
+                    return $this->responseFailure('TELIPHONES broker response was not a JSON object ('
+                        . json_last_error_msg() . '); refresh status before retrying.');
+                }
+                if (isset($response['progress'])) {
+                    if (!$pairing || array_keys($response) !== ['progress'] || !in_array($response['progress'], [
+                        'Validating pairing request', 'Waiting for workstation policy lock',
+                        'Running nftables verification', 'Configuring workstation interface',
+                        'Configuring WireGuard', 'Verifying FreePBX listener rules', 'Running workstation command',
+                    ], true)) {
+                        return $this->responseFailure('TELIPHONES broker returned invalid progress framing; refresh status before retrying.');
+                    }
+                    $stage = $response['progress'];
+                    continue;
+                }
+                if (!is_bool($response['ok'] ?? null)) {
+                    return $this->responseFailure('TELIPHONES broker response is missing its success/failure result; refresh status before retrying.');
+                }
+                if ($pairing && ($response['error'] ?? null) === 'Unexpected TELIPHONES input.') {
+                    $response['error'] = 'The installed root broker does not support pairing progress responses. Rerun Complete Installation from a root shell to refresh the broker helpers supplied with module 0.6.3, then refresh status before pairing.';
+                }
+                return $response;
+            }
+        } finally {
+            fclose($socket);
         }
-        $line = fgets($socket, 131073);
-        fclose($socket);
-        $response = is_string($line) ? json_decode($line, true) : null;
-        return is_array($response) ? $response : ['ok' => false, 'unavailable' => true, 'error' => 'TELIPHONES broker did not return a valid response. Refresh status before retrying.'];
+    }
+
+    private function responseFailure(string $message): array
+    {
+        error_log($message);
+        return ['ok' => false, 'unavailable' => true, 'error' => $message];
     }
 }

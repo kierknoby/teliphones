@@ -1,4 +1,4 @@
-# TELIPHONES 0.6.2 workstation pairing and connection policy
+# TELIPHONES 0.6.3 workstation pairing and connection policy
 
 The current broker is protocol 12. It enforces a default maximum of one
 simultaneous admitted workstation with atomic lease admission, authenticated
@@ -80,8 +80,8 @@ server-side enforcement that SSH permission requires an SSH-capable pairing
 request. Updated Windows builds expose a web-only or web-plus-SSH request
 choice, show explicit SSH authorization status, and use temporary inline
 clipboard feedback instead of success dialogs. Module and Windows versions
-are independent; the current development targets are FreePBX **0.6.2**,
-root broker **0.6.1**, protocol **12** and Windows **0.8.0**.
+are independent; the current development targets are FreePBX **0.6.3**,
+root broker **0.6.2**, protocol **12** and Windows **0.8.0**.
 
 When a pairing is Locked, an approved managed SSH listener and its short-lived
 certificate API bind to the dedicated `tlpw...` interface and tunnel address.
@@ -227,7 +227,25 @@ The response is a copyable enrollment artifact, not proof that arbitrary access 
 
 This also applies when upgrading from 0.2.1. Install the current module and rerun the root bootstrap before relying on the separately installed broker.
 
-Install the current test package `TELIPHONES-0.6.2.tgz` through Module Admin, then rerun the documented root bootstrap with no active support session and Windows tunnels disconnected. Installation does not delete `workstations.json`, `workstation-recovery.json` or `workstation-wg.key`. Valid pairings keep their identities, keys and original deadlines; a required listener migration is authenticated and coordinated rather than requiring re-pairing.
+Install the current test package `TELIPHONES-0.6.3.tgz` through Module Admin, then rerun the documented root bootstrap with no active support session and Windows tunnels disconnected. Installation does not delete `workstations.json`, `workstation-recovery.json` or `workstation-wg.key`. Valid pairings keep their identities, keys and original deadlines; a required listener migration is authenticated and coordinated rather than requiring re-pairing.
+
+Module Admin does not necessarily replace the root-owned broker. Module 0.6.3
+requires broker 0.6.2 even if an earlier helper reports protocol 12. The bootstrap
+copies the packaged helpers and restarts the service; confirm the component
+version and compare installed files as described in
+[Updating TELIPHONES](../README.md#updating-teliphones).
+
+Pairing remains synchronous and single-dispatch. Its authenticated Unix-socket
+request opts into non-secret progress frames while firewall/listener verification
+finishes, retaining PHP's five-second inactivity deadline. Progress cannot grant
+access or supply a pairing response; only the final verified result can do so.
+An interrupted or malformed reply leaves the outcome unconfirmed: refresh the
+workstation list before retrying rather than automatically repeating a mutation.
+Safe stage/error diagnostics distinguish transport problems from operation
+failures and retain command timeout causes through verified cleanup. Real
+PHP/socket tests use modelled network commands, not live FreePBX pairing; the
+installed upgrade, listener convergence and web-server/proxy deadlines remain
+live-PBX validation gates.
 
 The bootstrap copies the current broker into its protected root-owned installation and restarts it. Protocol 3 was already used in 0.2.0: an operational socket or protocol number alone does **not** prove these security corrections are installed. Rerunning the bootstrap is mandatory even if no update warning appears.
 
@@ -237,13 +255,13 @@ An unmarked legacy table is migrated only when its complete nft JSON exactly mat
 
 The 0.3.1 broker adds the hookless `teliphones_owner_v1` chain because Debian 12 nftables 1.0.6 drops table comments from kernel JSON readback. The operator reports that this ownership correction was tested successfully on the actual FreePBX 17 test PBX. The repository code still needs to be installed and verified on that PBX through the normal upgrade/bootstrap procedure; this document does not claim that deployment has occurred.
 
-Install the current test package `TELIPHONES-0.6.2.tgz`, confirm there is no active support session, disconnect Windows tunnels, then rerun [Complete Installation on FreePBX 17](../README.md#complete-installation-on-freepbx-17) from an existing root shell. The 0.3.1 ownership correction originally kept protocol 3; protocol 12 alone likewise does not prove the installed helper's version or contents. On restart, the broker verifies the tunnel is down, safely migrates only the exact known 0.3.0 policy, restores current policy from saved state and readmits valid, unexpired pairings. Pairing identities, addresses, SSH permissions, deadlines and the PBX WireGuard key are preserved. If exact ownership cannot be established, migration is refused and recovery data remains intact.
+Install the current test package `TELIPHONES-0.6.3.tgz`, confirm there is no active support session, disconnect Windows tunnels, then rerun [Complete Installation on FreePBX 17](../README.md#complete-installation-on-freepbx-17) from an existing root shell. The 0.3.1 ownership correction originally kept protocol 3; protocol 12 alone likewise does not prove the installed helper's version or contents. On restart, the broker verifies the tunnel is down, safely migrates only the exact known 0.3.0 policy, restores current policy from saved state and readmits valid, unexpired pairings. Pairing identities, addresses, SSH permissions, deadlines and the PBX WireGuard key are preserved. If exact ownership cannot be established, migration is refused and recovery data remains intact.
 
 ## Upgrading from 0.3.1
 
 The historical 0.3.2 change added bounded diagnostics and protocol 4 without
 changing firewall permissions or pairing protocol. For a current upgrade,
-use the reviewed 0.6.2 test package, disconnect workstation tunnels, confirm no active support session,
+use the reviewed 0.6.3 test package, disconnect workstation tunnels, confirm no active support session,
 and rerun the root bootstrap. Preserve pairing state and the WireGuard key.
 Current managed SSH requires protocol 5 and both installed helpers; protocol 4
 identifies diagnostics support only. Follow [current upgrade verification](../README.md#updating-teliphones).
