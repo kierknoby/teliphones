@@ -37,7 +37,7 @@ SOCKET = "/run/teliphones/control.sock"
 # Protocol 11 adds PBX-enforced workstation session leases and management gating.
 # Protocol 12 adds post-pair workstation policy management.
 PROTOCOL = 12
-VERSION = "0.6.2"
+VERSION = "0.6.3"
 SESSION_CONTROL_PORT = 8766
 SESSION_LEASE_SECONDS = 30
 FWCONSOLE = "/usr/sbin/fwconsole"
@@ -85,6 +85,22 @@ DEFAULT_WEB = ({"scheme": "http", "port": 80}, {"scheme": "https", "port": 443})
 MAX_WEB_SERVICES = 4
 DIAGNOSTIC_ID = re.compile(r"ws-[a-f0-9]{16}")
 LOGGER = logging.getLogger("teliphones.broker")
+
+
+def listener_failure_output(output):
+    """Only report our structured verifier diagnostic, never arbitrary command output."""
+    if isinstance(output, bytes):
+        output = output.decode("utf-8", errors="replace")
+    if not output or not output.strip():
+        return "empty"
+    mismatch = (r"(?:UDP ACCEPT missing|service rules remain \(\d+\)|"
+                r"service rules differ \(rules=\d+, exact ACCEPTs=\d+\)|"
+                r"zone-(?:external|internal|other|reject|trusted) jump (?:missing|remains))")
+    match = re.search(
+        r"FreePBX generated listener rules have not converged; reconciliation will retry\."
+        r"(?: fpbxsvc-[a-f0-9]{16} (?:UDP \d{1,5}|removal): " + mismatch
+        + r"(?:; " + mismatch + r")*)?(?=\s*$)", output)
+    return match.group(0) if match else "unrecognised output withheld; inspect private FreePBX diagnostics"
 
 
 class BrokerError(Exception):
@@ -1133,6 +1149,9 @@ class Broker:
         self.integration = {"state": "inactive", "message": "", "backend": None}
         self.source_cache = {}
         self.workstation_cleanup_failed = False
+        self.workstation_retry_policy = None
+        self.workstation_retry_at = 0.0
+        self.workstation_retry_delay = 0
         self.diagnostics = DiagnosticLog(STATE / "diagnostics")
         self.diagnostic_active_peers = set()
         self.diagnostic_interface_up = False
@@ -1275,6 +1294,10 @@ class Broker:
             return subprocess.Popen(arguments, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                     stderr=subprocess.DEVNULL, text=True, env=ENV)
         listener = arguments[:3] == [FWCONSOLE, "teliphones", "listener"]
+        listener_ports = arguments[3].removeprefix("--listen-port=") if listener and len(arguments) == 4 else ""
+        if not re.fullmatch(r"\d{1,5}(?:,\d{1,5})*", listener_ports):
+            listener_ports = "invalid"
+        listener_operation = "removal" if listener_ports == "0" else "admission"
         timeout = 60 if listener else 20
         try:
             result = subprocess.run(arguments, input=stdin, capture_output=True, text=True, timeout=timeout, env=ENV)
@@ -1283,9 +1306,21 @@ class Broker:
             command = "FreePBX listener verification" if listener else {
                 "nft": "nftables command", "ip": "iproute2 command", "wg": "WireGuard command",
             }.get(os.path.basename(arguments[0]), "workstation command")
+            if listener:
+                LOGGER.error("TELIPHONES listener %s timed out: ports=%s stdout=%s stderr=%s",
+                             listener_operation, listener_ports,
+                             listener_failure_output(error.stdout), listener_failure_output(error.stderr))
             raise BrokerError("Workstation %s timed out after %d seconds." % (command, timeout)) from error
         if result.returncode and check:
-            detail = (" " + (result.stdout or result.stderr).strip()[-500:]) if listener or os.path.basename(arguments[0]) == "nft" else ""
+            if listener:
+                stdout = listener_failure_output(result.stdout)
+                stderr = listener_failure_output(result.stderr)
+                LOGGER.error("TELIPHONES listener %s failed: ports=%s exit=%d stdout=%s stderr=%s",
+                             listener_operation, listener_ports, result.returncode, stdout, stderr)
+                detail = " Listener %s ports=%s exit=%d. stdout: %s; stderr: %s" % (
+                    listener_operation, listener_ports, result.returncode, stdout, stderr)
+            else:
+                detail = (" " + (result.stdout or result.stderr).strip()[-500:]) if os.path.basename(arguments[0]) == "nft" else ""
             raise BrokerError("Workstation network operation failed: " + os.path.basename(arguments[0]) + " " + arguments[1] + "." + detail)
         return result.stdout if result.returncode == 0 else None
 
@@ -2292,8 +2327,45 @@ class Broker:
         if not isinstance(ports, (list, tuple)) or any(type(port) is not int or not 1024 <= port <= 65535 for port in ports):
             raise BrokerError("Invalid managed WireGuard listener port set.")
         values = sorted(set(ports))
+        if getattr(self.request_context, "background_listener_check", False) and self.listener_rules_current(values):
+            return
         value = ",".join(str(port) for port in values) if values else "0"
         self.run([FWCONSOLE, "teliphones", "listener", "--listen-port=" + value])
+
+    def listener_rules_current(self, ports):
+        """Read-only background check; explicit admission/removal still uses the trusted PHP helper."""
+        saved = read_json(STATE / "firewall-listener.json")
+        if not saved:
+            return not ports
+        services = saved.get("services")
+        if not isinstance(services, dict) or set(services) != {str(port) for port in ports}:
+            return False
+        chains = {}
+        for port, record in services.items():
+            if not isinstance(record, dict):
+                raise BrokerError("Invalid TELIPHONES listener ownership record.")
+            identifier = record.get("id")
+            if (not isinstance(identifier, str)
+                    or re.fullmatch(r"[a-fA-F0-9-]{32,36}", identifier) is None
+                    or len(identifier.replace("-", "")) != 32):
+                return False
+            chain = "fpbxsvc-" + identifier.replace("-", "")[:16]
+            if chain in chains:
+                raise BrokerError("Duplicate TELIPHONES listener chain identifiers.")
+            chains[chain] = int(port)
+        iptables = self.iptables_tool()
+        if iptables is None:
+            return False
+        lines = self.ipt(iptables, "-S").splitlines()
+        for chain, port in chains.items():
+            expected = "-A %s -p udp -m udp --dport %d -j ACCEPT" % (chain, port)
+            if [line for line in lines if line.startswith("-A " + chain + " ")] != [expected]:
+                return False
+            for zone in ("external", "internal", "other", "reject", "trusted"):
+                present = "-A zone-%s -j %s" % (zone, chain) in lines
+                if present != (zone in ("external", "internal", "other")):
+                    return False
+        return True
 
     def remove_integration(self):
         iptables = self.iptables_tool()
@@ -2571,7 +2643,10 @@ class Broker:
                 self.teardown_workstations(state)
             except (BrokerError, OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as cleanup_error:
                 self.workstation_cleanup_failed = True
-                self.workstation_error = "Workstation cleanup could not be confirmed: " + (str(cleanup_error) if isinstance(cleanup_error, BrokerError) else "network operation failed.")
+                initiating = str(error) if isinstance(error, BrokerError) else type(error).__name__
+                self.workstation_error = ("Initiating failure: " + initiating
+                                          + " Workstation cleanup could not be confirmed: "
+                                          + (str(cleanup_error) if isinstance(cleanup_error, BrokerError) else "network operation failed."))
                 raise BrokerError(self.workstation_error) from error
             self.workstation_error = "Workstation access could not be applied and was removed: " + (str(error) if isinstance(error, BrokerError) else "network configuration failed.")
             raise BrokerError(self.workstation_error) from error
@@ -2731,7 +2806,16 @@ class Broker:
                            if isinstance(item, dict) and re.fullmatch(r"[a-f0-9]{16}", str(item.get("id", "")))
                            and item.get("mode") != "persistent" and isinstance(item.get("expires_at"), int)
                            and item["expires_at"] <= now]
+            retry_policy = json.dumps([stored, (STATE / "disabled").exists()], sort_keys=True)
+            self.request_context.background_listener_check = True
             try:
+                if retry_policy != self.workstation_retry_policy:
+                    self.workstation_retry_delay = 0
+                    self.workstation_retry_at = 0.0
+                if time.monotonic() < self.workstation_retry_at:
+                    # The prior attempt disabled access. Reassert that boundary even under an event storm.
+                    self.disable_workstations()
+                    return
                 state, changed = self.workstation_state()
                 active = state["connection_state"] != "closed" and not (STATE / "disabled").exists()
                 if active:
@@ -2766,17 +2850,28 @@ class Broker:
                 elif active and links_ready:
                     # Repairs a FreePBX Firewall reload without re-admitting peers; a no-op when already exact.
                     self.reconcile_integration(state)
-                    self.reconcile_listener([state["listen_port"]] + [item["listener_port"] for item in state["workstations"]
-                                                                      if item.get("locked")])
+                    ports = [state["listen_port"]] + [item["listener_port"] for item in state["workstations"]
+                                                     if item.get("locked")]
+                    self.reconcile_listener(ports)
                     if any(ssh.managed(item) for item in state["workstations"]):
                         self.ssh.reconcile(state)
+                self.workstation_retry_policy = None
+                self.workstation_retry_at = 0.0
+                self.workstation_retry_delay = 0
             except (BrokerError, ssh.SshError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
                 self.workstation_error = str(error)
+                self.workstation_retry_policy = retry_policy
+                self.workstation_retry_delay = min(60, max(5, self.workstation_retry_delay * 2))
+                LOGGER.warning("TELIPHONES background workstation reconciliation failed (%s); retry in %d seconds",
+                               type(error).__name__, self.workstation_retry_delay)
                 try:
                     self.disable_workstations()
                     self.ssh.reconcile({"workstations": []})
                 except (BrokerError, ssh.SshError, OSError, ValueError, subprocess.SubprocessError) as cleanup_error:
                     self.workstation_error += " Cleanup could not be confirmed: " + str(cleanup_error)
+                self.workstation_retry_at = time.monotonic() + self.workstation_retry_delay
+            finally:
+                self.request_context.background_listener_check = False
 
     def pair(self, request, uid):
         if (STATE / "disabled").exists():
@@ -2876,7 +2971,10 @@ class Broker:
             try:
                 self.apply_workstations(previous, preserve_unrelated=bool(previous.get("workstations")))
             except (BrokerError, OSError, subprocess.SubprocessError) as rollback_error:
-                self.workstation_error = "Pairing rollback failed; affected access remains blocked and recovery requires retry: " + str(rollback_error)
+                initiating = str(error) if isinstance(error, BrokerError) else type(error).__name__
+                self.workstation_error = ("Initiating failure: " + initiating
+                                          + " Pairing rollback failed; affected access remains blocked and recovery requires retry: "
+                                          + (str(rollback_error) if isinstance(rollback_error, BrokerError) else type(rollback_error).__name__))
                 raise BrokerError(self.workstation_error) from error
             raise
         for diagnostic_id in expired_ids:
@@ -3405,7 +3503,9 @@ def serve():
 
     def expiry():
         while True:
-            broker.wake.wait(15)
+            retry_at = broker.workstation_retry_at
+            timeout = min(15, max(0, retry_at - time.monotonic())) if retry_at else 15
+            broker.wake.wait(timeout)
             broker.wake.clear()
             try:
                 broker.expire_workstations()

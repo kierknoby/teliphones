@@ -179,21 +179,36 @@ final class FirewallListener
             if (self::rulesConverged($lines, $chain, $port)) return;
             usleep(500000);
         }
-        throw new \RuntimeException('FreePBX generated listener rules have not converged; reconciliation will retry.');
+        throw new \RuntimeException('FreePBX generated listener rules have not converged; reconciliation will retry. '
+            . $chain . ' ' . ($port === 0 ? 'removal' : 'UDP ' . $port) . ': '
+            . self::rulesMismatch($lines, $chain, $port));
     }
 
     public static function rulesConverged(array $lines, string $chain, int $port): bool
+    {
+        return self::rulesMismatch($lines, $chain, $port) === '';
+    }
+
+    public static function rulesMismatch(array $lines, string $chain, int $port): string
     {
         $accept = '-A ' . $chain . ' -p udp -m udp --dport ' . $port . ' -j ACCEPT';
         $rules = array_values(array_filter($lines, static function ($line) use ($chain) {
             return strpos($line, '-A ' . $chain . ' ') === 0;
         }));
+        $mismatches = [];
+        if ($port === 0 && count($rules) !== 0) {
+            $mismatches[] = 'service rules remain (' . count($rules) . ')';
+        } elseif ($port !== 0 && $rules !== [$accept]) {
+            $mismatches[] = count($rules) === 0 ? 'UDP ACCEPT missing'
+                : 'service rules differ (rules=' . count($rules)
+                    . ', exact ACCEPTs=' . count(array_keys($rules, $accept, true)) . ')';
+        }
         foreach (array_merge(self::ZONES, ['reject', 'trusted']) as $zone) {
             $present = in_array('-A zone-' . $zone . ' -j ' . $chain, $lines, true);
             $required = $port !== 0 && in_array($zone, self::ZONES, true);
-            if ($present !== $required) return false;
+            if ($present !== $required) $mismatches[] = 'zone-' . $zone . ($required ? ' jump missing' : ' jump remains');
         }
-        return $port === 0 ? count($rules) === 0 : $rules === [$accept];
+        return implode('; ', $mismatches);
     }
 
     private static function service(string $id, int $port, string $name = self::NAME): array

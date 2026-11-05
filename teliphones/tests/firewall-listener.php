@@ -40,6 +40,7 @@ $serviceForPort = static function ($fw, $port) {
     return [null, null];
 };
 $state = tempnam(sys_get_temp_dir(), 'tlp-listener-');
+$iptables = tempnam(sys_get_temp_dir(), 'tlp-listener-rules-');
 unlink($state);
 try {
     $kernelFailure = false;
@@ -117,8 +118,40 @@ try {
     $assert(!FirewallListener::rulesConverged(array_merge($rules, [$rules[0]]), 'fpbxsvc-owned', 51821));
     $assert(!FirewallListener::rulesConverged($rules, 'fpbxsvc-owned', 0));
     $assert(FirewallListener::rulesConverged([], 'fpbxsvc-owned', 0));
-    echo "Firewall listener tests: PASS (API model, interrupted creation recovery, multi-port reconciliation, zone failure, removal verification, kernel convergence fixtures, idempotence and unrelated preservation)\n";
+    $chain = 'fpbxsvc-50dc73725c3e4073';
+    $observed = array_map(static function ($line) use ($chain) {
+        return str_replace('fpbxsvc-owned', $chain, $line);
+    }, $rules);
+    $assert(FirewallListener::rulesMismatch($observed, $chain, 51821) === '');
+    $assert(FirewallListener::rulesMismatch($observed, $chain, 0)
+        === 'service rules remain (1); zone-external jump remains; zone-internal jump remains; zone-other jump remains');
+    $assert(FirewallListener::rulesMismatch($observed, 'fpbxsvc-newlistener', 52800)
+        === 'UDP ACCEPT missing; zone-external jump missing; zone-internal jump missing; zone-other jump missing');
+    $assert(FirewallListener::rulesMismatch($observed, $chain, 51822)
+        === 'service rules differ (rules=1, exact ACCEPTs=0)');
+    $assert(FirewallListener::rulesMismatch(array_merge($observed, [$observed[0]]), $chain, 51821)
+        === 'service rules differ (rules=2, exact ACCEPTs=2)');
+    $assert(FirewallListener::rulesMismatch(array_slice($observed, 0, 3), $chain, 51821)
+        === 'zone-other jump missing');
+    $assert(FirewallListener::rulesMismatch(array_merge($observed, ['-A zone-trusted -j ' . $chain]), $chain, 51821)
+        === 'zone-trusted jump remains');
+    file_put_contents($iptables, "#!/bin/sh\nprintf '%s\\n' "
+        . implode(' ', array_map('escapeshellarg', $observed)) . "\n");
+    chmod($iptables, 0700);
+    FirewallListener::verifyRules('50dc7372-5c3e-4073-a477-e49ecf930b1f', 51821, $iptables);
+    file_put_contents($iptables, "#!/bin/sh\nprintf '%s\\n' "
+        . escapeshellarg('-A ' . $chain . ' -m comment --comment PRIVATE-KEY-FIXTURE -j ACCEPT') . "\n");
+    try {
+        FirewallListener::verifyRules('50dc7372-5c3e-4073-a477-e49ecf930b1f', 51821, $iptables);
+        throw new LogicException('Unconverged listener was accepted.');
+    } catch (RuntimeException $error) {
+        $assert(strpos($error->getMessage(), $chain . ' UDP 51821: service rules differ (rules=1, exact ACCEPTs=0)') !== false);
+        $assert(strpos($error->getMessage(), 'zone-other jump missing') !== false);
+        $assert(strpos($error->getMessage(), 'PRIVATE-KEY-FIXTURE') === false);
+    }
+    echo "Firewall listener tests: PASS (API model, interrupted creation recovery, multi-port reconciliation, zone failure, removal verification, kernel convergence fixtures, bounded mismatch diagnostics, idempotence and unrelated preservation)\n";
 } finally {
+    if (is_file($iptables)) unlink($iptables);
     if (is_file($state)) unlink($state);
     if (is_file($state . '.lock')) unlink($state . '.lock');
 }

@@ -522,6 +522,9 @@ class IntegrationTests(unittest.TestCase):
         self.assertTrue(self.broker.workstation_error)
         self.net.fail = None
         self.broker.expire_workstations()
+        self.assertFalse(self.net.up, "A new notification must not bypass failure backoff")
+        with patch.object(broker.time, "monotonic", return_value=self.broker.workstation_retry_at):
+            self.broker.expire_workstations()
         self.assertTrue(self.net.up)
         self.assertFalse(self.broker.workstation_error)
         self.assert_placement()

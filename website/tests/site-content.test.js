@@ -62,11 +62,11 @@ test('current product and installation copy matches independent source versions'
     assert.match(html, /protocol (?:<strong>)?12/, name);
   }
   for (const [file, html] of contents) {
-    assert.doesNotMatch(html, /0\.8\.0|0\.6\.0|protocol 7|broker 0\.6\.3/, file);
+    assert.doesNotMatch(html, /0\.8\.0|0\.6\.0|protocol 7|broker 0\.6\.4/, file);
   }
 });
 
-test('pairing guide distinguishes request, approval, validation and unshipped module correction', () => {
+test('pairing guide distinguishes approval, current package and preserved archive', () => {
   const html = contents.get(path.join(site, 'windows/index.html'));
   const pairing = html.slice(html.indexOf('<section id="pair">'), html.indexOf('<section id="connect">'));
   assert.equal((pairing.match(/<li>/g) || []).length, 8);
@@ -76,6 +76,7 @@ test('pairing guide distinguishes request, approval, validation and unshipped mo
     assert.ok(pairing.includes(phrase), `Missing pairing guidance: ${phrase}`);
   }
   assert.match(contents.get(path.join(site, 'downloads/index.html')), /has not been rebuilt/);
+  assert.match(contents.get(path.join(site, 'downloads/index.html')), /0\.6\.4 archive includes the web-only form correction and listener diagnostics/);
   assert.match(contents.get(path.join(site, 'about/index.html')), /localStorage/);
 });
 

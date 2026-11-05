@@ -1,7 +1,7 @@
 # TELIPHONES security
 
-This document explains current source targets **FreePBX module 0.6.3**, **root
-broker 0.6.2**, **protocol 12** and **Windows 0.8.1**, evidence and limitations.
+This document explains current source targets **FreePBX module 0.6.4**, **root
+broker 0.6.3**, **protocol 12** and **Windows 0.8.1**, evidence and limitations.
 
 > [!WARNING]
 > TELIPHONES remains experimental. The operator reports successful native
@@ -64,7 +64,7 @@ they are not the current native-test result.
 |---|---|
 | Current source review | Windows 0.8.1 pairing dialogue implemented; portable Release build and 9/9 CTests passed, including 48 build/layout contracts. Native compilation, MFC dialogue and application startup smoke are registered in Windows CI, not executed in this Linux workspace. |
 | Pairing form source correction | Disabled SSH select omitted `ssh` from web-only POST. The module now submits explicit `ssh=0`, retains safe values and rejects missing/invalid choices. PHP/Node page-path tests passed; gateway suite 203 run, 202 passed, one skipped, includes actual PHP page/Unix-socket broker pairing with modelled network commands. This is not live PBX execution. |
-| Preserved current package | Local `TELIPHONES-0.6.3.tgz` contains transport corrections and broker 0.6.2, not subsequent form/documentation edits. Its existing checksum is unchanged; current archive/source equality is intentionally not claimed. No Windows 0.8.1 binary/public release is established. |
+| Current and preserved packages | Local `TELIPHONES-0.6.4.tgz` includes form and listener diagnostic corrections with broker 0.6.3/protocol 12; exact module-source equality is checked during packaging, not proof of live connectivity. Preserved `TELIPHONES-0.6.3.tgz` contains broker 0.6.2 and predates these corrections; its checksum is unchanged. No Windows 0.8.1 binary/public release is established. |
 | nftables repeatability | At 0.6.3 preparation, 10/10 working-tree and 10/10 unchanged-baseline namespace runs passed after an earlier intermittent own-event-filtering failure. That failure remains undiagnosed; successful samples do not exclude recurrence. |
 | Later operator report | Earlier Windows Actions run: all eleven native SSH integrations passed; first-run GUI smoke subsequently reported successful. No matching 0.8.1 run or independently fetched evidence is supplied. |
 | Operator's latest report | Successful Windows GitHub Actions builds and **all ten native OpenSSH integration tests passing**. No run URL, commit/build hash or raw logs accompanied this update; no external service was queried to verify it. |

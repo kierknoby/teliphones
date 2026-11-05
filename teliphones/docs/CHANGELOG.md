@@ -8,14 +8,60 @@ repository. Portable Linux validation is current for the broker, FreePBX module 
 Windows core. Native Windows compilation/UI integration and live FreePBX
 session, migration, firewall and SSH acceptance remain outstanding.
 
+## 0.6.4, pairing form and listener diagnostics (local test package, not published)
+
+- Include the web-only pairing form correction developed after the preserved
+  0.6.3 archive: submit exactly one explicit `ssh=0`, report field-specific
+  validation errors and retain bounded non-sensitive values after failure.
+  Pairing payloads and SSH approval are cleared rather than redisplayed.
+- Identify listener admission versus removal, requested ports and exit status.
+  Report the owned chain and exact rule/zone mismatch at verification timeout.
+  Retain separately sanitised stdout/stderr and the initiating error when
+  cleanup or policy restoration also fails. Unrecognised command output is
+  explicitly withheld; raw keys, payloads, comments and tokens are not echoed.
+- Preserve ownership checks, firewall verification, retry deadlines and
+  fail-closed workstation access. Pairing, cleanup and policy restoration remain
+  serialised against the background worker; no speculative lifecycle fix is
+  included. The initiating live FreePBX convergence failure is not established.
+- Correct the subsequently reported broker 0.6.2 CPU/spawn loop, also present
+  in the initial pending 0.6.3 source: the background worker invoked the costly
+  FreePBX listener command on every tick/wakeup, including its own generated
+  `ip filter` notifications. Before a background command, compare the exact
+  desired port set, owned journal and generated service/zone rules read-only.
+  Correct state now needs no `fwconsole` process. Explicit pairing and cleanup
+  still use the trusted PHP helper; unmatched owned-nft events still disable
+  and reverify enforcement, including a transient flush followed by restoration.
+- Back off failed background transactions by 5, 10, 20, 40 then at most 60
+  seconds after cleanup, coalescing notifications without bypassing the retry
+  deadline. Reassert disabled access during cooldown; a changed authoritative
+  policy can be applied immediately. Success resets retry state. This is a
+  bounded retry rate, not a finite limit that abandons recovery.
+- New simulated scheduling tests count listener commands over 240 idle ticks,
+  notification storms, successful self-notification feedback and failures.
+  They cover dedicated-listener rollback, ownership/readback rejection, retry
+  deadlines and recovery. No live CPU measurement or PBX acceptance of this
+  correction has yet been performed. Keep the affected development broker
+  stopped until the replacement package is reviewed.
+- Module **0.6.4** requires independently versioned root broker **0.6.3**,
+  even when an older broker reports protocol **12**. Windows remains **0.8.1**.
+  Upgrade in place, then repeat the trusted root bootstrap with Windows tunnels
+  disconnected and no active support session. Do not uninstall or clear state.
+- Local PHP/JavaScript, broker and package regressions cover form submission,
+  lock contention, Open policy with zero peers, cleanup, restoration, recovery
+  and sanitised diagnostics. Networking/FreePBX operations are modelled except
+  where individual test output explicitly identifies isolated kernel/SSH tests.
+  Debian 12 / FreePBX 17 upgrade, pairing, WireGuard traffic, approved management
+  access, reconnect and final cleanup still require live acceptance.
+  Regression success is not a connectivity fix or production certification.
+
 ## 0.6.3, pairing transport patch (local package, not published)
 
-**Subsequent unshipped source correction, version retained at 0.6.3:** the
+**Historical packaging boundary; subsequently included in 0.6.4:** the
 web-only form now submits exactly one explicit `ssh=0` when its SSH select is
 disabled. PHP reports field-specific missing/type errors and retains bounded
 non-sensitive values; pairing material/SSH approval are cleared. Actual page/POST
 and Unix-socket regressions pass locally. The preserved archive predates this
-correction; no broker implementation/version change is required.
+correction; that form correction alone required no broker implementation change.
 Windows is now independently prepared as 0.8.1; entries below retain the
 original component versions at packaging.
 

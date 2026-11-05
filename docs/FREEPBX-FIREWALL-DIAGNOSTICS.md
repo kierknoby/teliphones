@@ -2,13 +2,93 @@
 
 This is the historical 0.4.0/0.4.1 incident and read-only evidence runbook,
 not current installation instructions or archive availability. Current targets
-are module 0.6.3, root broker 0.6.2, protocol 12 and Windows 0.8.1. Use the
+are module 0.6.4, root broker 0.6.3, protocol 12 and Windows 0.8.1. Use the
 [current upgrade guide](../teliphones/README.md#updating-teliphones) for bootstrap;
 account for dedicated Locked interfaces and configured management ports when
 interpreting the shared-interface/default-port examples below. The preserved
-0.6.3 archive predates the subsequent module-side web-only form correction.
+0.6.3 archive predates the subsequent module-side web-only form correction
+and listener diagnostics, both included in the new local 0.6.4 test package.
 
 ## Current evidence and scope
+
+### Listener convergence failures in current source
+
+The listener verifier now includes the owned chain, requested UDP port (or
+`removal`) and final mismatch in its timeout error. It reports missing exact
+UDP ACCEPT rules, differing service-rule counts and missing or remaining zone
+jumps. It does not echo raw rules, comments, keys or pairing material. The
+verification predicate, retry deadline and fail-closed cleanup are unchanged.
+This diagnostic improvement is included in the local 0.6.4 test package, not a
+demonstrated correction of the operator's live pairing failure. Follow the
+[development-server acceptance checklist](../teliphones/README.md#064-development-server-acceptance)
+after the in-place module upgrade and root broker refresh.
+
+### Operator-confirmed listener subprocess overload
+
+The operator observed changing `fwconsole teliphones listener --listen-port=51821`
+PIDs, all parented by broker 0.6.2, almost every second on a single-vCPU Debian 12
+/ FreePBX 17 system. CPU returned to 96--99% idle after the broker was stopped.
+This confirms the operational CPU source; keep that broker stopped.
+
+Both installed-version 0.6.2 code and the initial pending 0.6.3 code called
+the listener command unconditionally in the stable Open background branch.
+Every `ip filter` nft notification wakes that worker, including changes generated
+by its own integration/FreePBX operations. Periodic ticks alone caused 241
+commands in the 240-tick simulated reproduction. A modelled successful helper
+emitting a filter event also reproduces the feedback path. The exact live
+notification stream and whether any individual command failed were not captured;
+neither asynchronous rejection nor nft transaction failure is required to
+produce the unnecessary subprocesses.
+
+The pending broker 0.6.3 now checks desired ports against the root-owned listener
+journal and exact generated IPv4 service/zone rules before background helper
+invocation. It does not cache success without checking kernel state or bypass
+explicit pairing/cleanup verification. Failed background transactions use
+monotonic 5/10/20/40/60-second backoff after cleanup, capped at one retry
+transaction per minute thereafter; transactions can include both admission and
+cleanup commands. Events cannot bypass cooldown. Authoritative policy changes
+invalidate that cooldown, and success resets it. Access remains disabled after
+failure. FreePBX rule changes still trigger readback and repair.
+
+The observed `51821,58490` versus `51821` is consistent with a Locked workstation
+attempt followed by rollback to the authoritative Open/zero-peer shared policy.
+A regression covers that sequence without continued port oscillation. The
+historical live attempt's exact requested source-lock policy remains unproven.
+This fix is included in the rebuilt pending 0.6.4 test archive; prior 0.6.3
+archives are unchanged. Review it before any controlled installation. Successful
+local regressions are not demonstrated end-to-end pairing or live CPU acceptance.
+
+The operator-supplied FreePBX Firewall 17.0.1.35 snapshots contained one UDP
+51821 ACCEPT and exact external/internal/other zone jumps for the owned service.
+Those snapshots pass the actual admission predicate and fail the removal
+predicate. They were captured after the failure, not at the failed verification.
+An Open policy with no paired workstations can subsequently restore the shared
+listener through background reconciliation. Neither those snapshots nor
+matching installed-source hashes establish successful pairing or the initiating
+transient failure. A missing dedicated Locked listener, incomplete generation,
+or stale removal rules must be distinguished using the failed chain/port and
+matching read-only API/kernel evidence; none is yet established as the cause.
+
+Pairing dispatch holds the broker's `wslock` through admission, failure teardown
+and restoration of the previous policy. Background `expire_workstations()`
+acquires the same lock. The PHP listener helper additionally holds the ownership
+journal's exclusive file lock through API changes and kernel verification.
+The broker background worker therefore cannot recreate a listener during pairing
+cleanup. Failure teardown verifies listener removal while interfaces are down;
+only after successful cleanup does rollback restore the previous Open policy,
+including its shared listener with zero peers. These are separate transactions,
+not contradictory simultaneous desired states. FreePBX's own asynchronous
+generator is not protected by these TELIPHONES locks.
+
+The broker now journals failed listener commands at the failure point, before
+cleanup changes the progress stage. Diagnostics distinguish admission ports
+from removal, include exit status and separately sanitise stdout/stderr. Only
+the helper's structured convergence diagnostic is retained; unrecognised output
+is explicitly withheld, not silently discarded. When admission and cleanup both
+fail, the returned error retains the initiating failure as well as the cleanup
+failure. Simulated concurrent-worker and PHP/socket regressions verify these
+boundaries; they do not establish live FreePBX generation timing or successful
+end-to-end pairing.
 
 During module **0.4.0** / Windows **0.7.0** WireGuard and SSH testing on
 FreePBX 17 / Debian 12, the operator reports intermittent PBX connectivity.

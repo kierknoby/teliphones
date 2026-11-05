@@ -106,7 +106,7 @@ class WebSupport
     public const OPERATION_STATES = ['running', 'succeeded', 'failed'];
     /** Broker status protocol this module requires (support_broker.py PROTOCOL): 2 adds live operation records, 3 adds workstation pairing. */
     public const BROKER_PROTOCOL = 3;
-    public const BROKER_VERSION = '0.6.2';
+    public const BROKER_VERSION = '0.6.3';
     public const DIAGNOSTICS_PROTOCOL = 4;
     public const SSH_PROTOCOL = 5;
     /** Protocol 6 adds the WireGuard listener firewall permit and configurable management web services. */
@@ -804,7 +804,7 @@ class WebSupport
                     return $this->responseFailure('TELIPHONES broker response is missing its success/failure result; refresh status before retrying.');
                 }
                 if ($pairing && ($response['error'] ?? null) === 'Unexpected TELIPHONES input.') {
-                    $response['error'] = 'The installed root broker does not support pairing progress responses. Rerun Complete Installation from a root shell to refresh the broker helpers supplied with module 0.6.3, then refresh status before pairing.';
+                    $response['error'] = 'The installed root broker does not support pairing progress responses. Rerun Complete Installation from a root shell to refresh the broker helpers supplied with module 0.6.4, then refresh status before pairing.';
                 }
                 return $response;
             }

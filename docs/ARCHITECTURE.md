@@ -1,6 +1,6 @@
 # TELIPHONES architecture
 
-This document describes **FreePBX module 0.6.3**, **root broker 0.6.2**,
+This document describes **FreePBX module 0.6.4**, **root broker 0.6.3**,
 **broker protocol 12** and **Windows 0.8.1** source:
 components, trust boundaries, interfaces, firewall layers and stored state.
 Architecture describes the implementation, not proof of production behaviour.
@@ -70,8 +70,8 @@ flowchart TB
 Key points:
 
 - The broker is installed by a **root bootstrap**, because Module Admin runs as the web service account and cannot create root-owned files or services. The bootstrap stages the module into a root-owned directory before executing it, so root never runs code directly from the web-writable module directory.
-- The broker reports protocol, component version and capabilities. Module 0.6.3 requires broker 0.6.2 even at protocol 12; missing/malformed capabilities or an older component block workstation operations.
-- Pairing opts into fixed, non-secret progress frames while synchronous verification runs. PHP retains a five-second inactivity deadline; only the final result is success. Connection loss does not cancel or redispatch the mutation. The preserved 0.6.3 archive contains these transport fixes but predates the later module-side web-only `ssh=0` form correction.
+- The broker reports protocol, component version and capabilities. Module 0.6.4 requires broker 0.6.3 even at protocol 12; missing/malformed capabilities or an older component block workstation operations.
+- Pairing opts into fixed, non-secret progress frames while synchronous verification runs. PHP retains a five-second inactivity deadline; only the final result is success. Connection loss does not cancel or redispatch the mutation. The local 0.6.4 package includes the web-only `ssh=0` form correction and listener diagnostics; the preserved 0.6.3 archive predates them. Diagnostic improvements do not establish live pairing success.
 - Like other root `fwconsole` services, this design trusts the integrity of the FreePBX application code. Anyone able to execute code as the FreePBX service account can send requests to the broker.
 
 ## Administrator workstation connections

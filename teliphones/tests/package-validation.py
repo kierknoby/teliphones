@@ -25,13 +25,13 @@ def included(path):
 
 class PackageTests(unittest.TestCase):
     def test_authoritative_versions_and_archive_checksum(self):
-        self.assertEqual(VERSION, "0.6.3")
+        self.assertEqual(VERSION, "0.6.4")
         tree = ast.parse((MODULE / "support_broker.py").read_text())
         versions = [ast.literal_eval(node.value) for node in tree.body if isinstance(node, ast.Assign)
                     and any(isinstance(target, ast.Name) and target.id == "VERSION" for target in node.targets)]
-        self.assertEqual(versions, ["0.6.2"], "The broker patch version identifies the pairing transport corrections")
+        self.assertEqual(versions, ["0.6.3"], "The broker patch version identifies the listener diagnostic corrections")
         self.assertIn("BROKER_VERSION = '%s';" % versions[0], (MODULE / "WebSupport.php").read_text())
-        self.assertIn("TELIPHONES 0.6.3 requires broker version 0.6.2, broker protocol 12",
+        self.assertIn("TELIPHONES 0.6.4 requires broker version 0.6.3, broker protocol 12",
                       (MODULE / "BrokerBootstrap.php").read_text())
         self.assertTrue(PACKAGE.exists(), "Build the current installation archive before package validation")
         digest = hashlib.sha256(PACKAGE.read_bytes()).hexdigest()
@@ -106,6 +106,16 @@ class PackageTests(unittest.TestCase):
             source = archive.extractfile("teliphones/support_broker.py").read().decode()
             self.assertIn('VERSION = "0.6.1"', source)
             self.assertIn("PROTOCOL = 12", source)
+
+    def test_previous_0_6_3_package_remains_unchanged(self):
+        previous = ROOT / "TELIPHONES-0.6.3.tgz"
+        digest = hashlib.sha256(previous.read_bytes()).hexdigest()
+        self.assertEqual(digest, "46c851197ae5e3bd70a48fb90a18bb39918d4f7774c0a8c76b6fcd4f8c4abf27")
+        self.assertEqual(Path(str(previous) + ".sha256").read_text(), "%s  %s\n" % (digest, previous.name))
+        with tarfile.open(previous, "r:gz") as archive:
+            self.assertEqual(ET.fromstring(archive.extractfile("teliphones/module.xml").read()).findtext("version"),
+                             "0.6.3")
+            self.assertIn('VERSION = "0.6.2"', archive.extractfile("teliphones/support_broker.py").read().decode())
 
     def test_packaged_firewall_migrates_legacy_input_and_survives_rebuild(self):
         self.assertTrue(PACKAGE.exists(), "Build the current installation archive before package validation")
@@ -185,7 +195,19 @@ class PackageTests(unittest.TestCase):
                                 'FAIL2BAN_PREFIXES = ("fail2ban-", "f2b-")', "def reconcile_integration(",
                                 "class DiagnosticLog", "PROTOCOL = 12", "def reconcile_listener(", "def parse_web("):
                     self.assertIn(feature, broker)
-                self.assertIn('VERSION = "0.6.2"', broker)
+                self.assertIn('VERSION = "0.6.3"', broker)
+                for feature in ("def listener_failure_output(", "listener_operation", "Initiating failure:",
+                                "listener_failure_output(result.stderr)", "def listener_rules_current(",
+                                "background_listener_check", "workstation_retry_at",
+                                "min(60, max(5, self.workstation_retry_delay * 2))"):
+                    self.assertIn(feature, broker)
+                listener = (Path(directory) / "teliphones/FirewallListener.php").read_text()
+                for feature in ("function rulesMismatch(", "UDP ACCEPT missing", " jump missing",
+                                "service rules remain", "($port === 0 ? 'removal'"):
+                    self.assertIn(feature, listener)
+                form = (Path(directory) / "teliphones/views/support.php").read_text()
+                self.assertIn('name="ssh" value="0"', form)
+                self.assertIn('id="teliphones-pair-web-only"', form)
                 for feature in ("def socket_response(", "def handle_connection(", 'done.wait(1)',
                                 '"progress": progress["stage"]', "except subprocess.TimeoutExpired"):
                     self.assertIn(feature, broker)

@@ -8,10 +8,13 @@ version numbers retrospectively.
 ## 0.8.1 — Unreleased release candidate
 
 Windows file/product version: **0.8.1.0** / **0.8.1**. Compatible source targets:
-FreePBX module **0.6.3**, root broker **0.6.2**, protocol **12**, unchanged.
+FreePBX module **0.6.4**, root broker **0.6.3**, protocol **12**.
 This patch identifies the pairing dialogue corrections, not a published release
-or a new FreePBX package. The preserved 0.6.3 archive predates the separate
-module-side web-only form correction.
+or a Windows version change for the new FreePBX test package. The rebuilt pending
+0.6.4 module archive includes the web-only form, listener diagnostics and
+background subprocess-loop corrections; the preserved 0.6.3 archive predates
+them. Keep the affected development broker stopped until replacement review.
+Live CPU, pairing and connectivity acceptance remain outstanding.
 
 The pairing dialogue groups **Request access** before **Complete pairing**:
 choose the workstation name and access before generating/copying the request,

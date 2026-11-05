@@ -2,12 +2,13 @@
 
 ## Windows 0.8.1 source review and package boundary
 
-Windows 0.8.1 is independently versioned; module 0.6.3, root broker 0.6.2 and
-protocol 12 are unchanged. The existing 0.6.3 archive **does not match current
+Windows 0.8.1 is independently versioned; module 0.6.4 and root broker 0.6.3
+retain protocol 12. The preserved 0.6.3 archive **does not match current
 module source**: it predates the later PHP web-only form correction and these
 documentation changes. Exact-source package validation is expected to reject
-that mismatch until an explicitly authorised new package is prepared. Do not
-rebuild or describe the correction as shipped implicitly.
+that historical mismatch. The authorised 0.6.4 local package includes the form
+and listener diagnostic corrections and must match current module source.
+Do not rebuild 0.6.3 or describe its corrections as retroactively shipped.
 
 Offline documentation and site validation, from the repository root:
 
@@ -23,18 +24,18 @@ pairing behaviour, startup smoke and portable Release checks, use the
 `desktop/windows/tests/WINDOWS-READINESS.md` reference in the source repository.
 Linux checks do not substitute for Windows execution.
 
-## 0.6.3 pairing transport and package validation
+## 0.6.4 pairing form, listener diagnostics and package validation
 
 Run the PHP/Node and gateway suites below, then run
 `PYTHONDONTWRITEBYTECODE=1 python3 teliphones/tests/package-validation.py`
-after building `TELIPHONES-0.6.3.tgz` using the root README procedure.
-The package validator checks exact module-source equality, module 0.6.3,
-root broker 0.6.2, compatibility declarations, protocol 12, Windows exclusion
+after building `TELIPHONES-0.6.4.tgz` using the root README procedure.
+The package validator checks exact module-source equality, module 0.6.4,
+root broker 0.6.3, compatibility declarations, protocol 12, Windows exclusion
 and preservation of available historical archives. PHP tests verify the
-metadata-derived `TELIPHONES 0.6.3` heading and reject broker 0.6.1 even when
+metadata-derived `TELIPHONES 0.6.4` heading and reject broker 0.6.2 even when
 it reports protocol 12.
 
-During this preparation the isolated real-nft namespace lab passed 10/10
+During the earlier 0.6.3 preparation the isolated real-nft namespace lab passed 10/10
 working-tree runs and 10/10 runs using the unchanged `2c67adc` broker source
 loaded in memory. Each run used a fresh network namespace; the host firewall
 was untouched. The previous investigation had one own-event-filtering assertion
@@ -79,8 +80,35 @@ the same PHP page and actual broker socket, verifies completed web-only pairing
 against modelled firewall/WireGuard state, and checks that malformed requests,
 ports and endpoints cannot mutate existing pairings. This is not a browser
 engine or live FreePBX test. The form correction changes module PHP/templates,
-not root broker 0.6.2; the existing 0.6.3 archive remains unchanged and does not
-contain these subsequent source edits until explicitly rebuilt.
+not the broker; the preserved 0.6.3 archive remains unchanged and does not
+contain these subsequent source edits. They are included in 0.6.4.
+
+The listener PHP regressions replay the observed UDP 51821/zone rule shape
+through the production predicate and test admission, removal, missing/differing
+rules, forbidden zones, ownership retention and sanitised timeout diagnostics.
+Concurrent broker tests use events and real threads to demonstrate that the
+background worker cannot acquire `wslock` during pairing cleanup. They verify
+Open/zero-peer rollback, subsequent reconciliation, no unauthorised peers,
+recovery and separate initiating/cleanup/restoration errors through the actual
+PHP socket path. FreePBX API and network operations remain modelled here;
+FreePBX's asynchronous generator is not exercised.
+Use the [live acceptance checklist](../README.md#064-development-server-acceptance)
+before asserting that pairing or connectivity is fixed.
+
+`gateway/tests/test_listener_scheduling.py` models FreePBX journal/kernel
+generation while executing the real broker and nft monitor event handling.
+The initial reproduction produced 241 listener commands over 240 idle ticks
+(one simulated hour). The corrected source expects just the initial command:
+zero further listener commands for stable periodic checks or repeated filter
+notifications. A simulated successful FreePBX command emits a filter event;
+the worker must reach quiescence rather than spawn another command. Tests also
+cover acknowledged own events, late owned events with full fail-closed
+reverification, stale/mismatched ownership, wrong rules/zones, dedicated port
+58490 admission failure and restoration to shared port 51821, and failures under
+notification storms. A mocked monotonic clock verifies retry delays of
+5/10/20/40/60 seconds, capped at 60, recovery and immediate explicit policy
+changes. No sleeps substitute for assertions, and no live FreePBX generator
+or single-vCPU CPU measurement is represented by these modelled counts.
 
 `gateway/tests/test_broker_socket.py` runs the real PHP client against real
 Unix sockets and the production broker request handler, with modelled network
@@ -214,9 +242,9 @@ with versions and build provenance recorded separately:
    screenshots are historical, not evidence of the current integrated console.
 4. **FreePBX workstation approval:** SSH opt-in with a deliberately selected
    test account, permission/lifetime controls, integration status and diagnostics.
-5. **FreePBX readiness/upgrade:** module 0.6.3 and separately refreshed broker
-   0.6.2/protocol 12. Record whether the trusted module build includes the later
-   form correction; an older capture does not establish that correction.
+5. **FreePBX readiness/upgrade:** module 0.6.4 and separately refreshed broker
+   0.6.3/protocol 12, including the form and listener diagnostic corrections;
+   an older capture does not establish those corrections.
 
 Use synthetic names and harmless commands. Redact keys, pairing strings,
 certificates, grants, credentials, customer names, usernames, hostnames,

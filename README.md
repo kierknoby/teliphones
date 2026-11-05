@@ -14,15 +14,16 @@ workflow for bounded support windows.
 
 | Component | Current version | Start here |
 |---|---|---|
-| FreePBX module / root broker | **0.6.3** / **0.6.2**, protocol 12 (local experimental package) | [Install](teliphones/README.md#installing-the-module) · [Upgrade](teliphones/README.md#updating-teliphones) |
+| FreePBX module / root broker | **0.6.4** / **0.6.3**, protocol 12 (local experimental package) | [Install](teliphones/README.md#installing-the-module) · [Upgrade](teliphones/README.md#updating-teliphones) |
 | Windows application | **0.8.1** (file version 0.8.1.0; unreleased development target) | [Download and requirements](desktop/windows/README.md#requirements-and-download) · [Pair a PBX](desktop/windows/README.md#pair-an-administrator-workstation) |
 | Reference gateway and Checker probe | Optional laboratory infrastructure | [Integration guide](teliphones/docs/INTEGRATION.md) · [Gateway](gateway/README.md) |
 
-FreePBX module **0.6.3**, root broker **0.6.2** and Windows **0.8.1** are
+FreePBX module **0.6.4**, root broker **0.6.3** and Windows **0.8.1** are
 independently versioned; the broker protocol remains 12. The module/broker
-update fixes pairing response timeouts with progress frames and a five-second
-inactivity deadline, returns sanitised JSON errors and preserves command timeout
-causes through cleanup. Progress is never pairing success; firewall verification
+update includes the web-only `ssh=0` form correction, field-specific validation
+and safe-value retention. Listener diagnostics distinguish admission/removal
+and preserve initiating errors through cleanup and policy restoration.
+Progress is never pairing success; firewall verification
 and single-dispatch behaviour remain unchanged. Upgrade the module in place and
 rerun the root bootstrap so the separately installed broker is refreshed;
 pairings and their identities are preserved.
@@ -33,10 +34,16 @@ SSH accounts are response-derived. It retains 0.8.0's password protection, PBX
 policy requests, listener migration and post-pair SSH elevation.
 The Windows application is not included in the Module Admin package.
 
-The preserved local `TELIPHONES-0.6.3.tgz` contains the pairing transport fixes
-and broker 0.6.2, **not** the later FreePBX web-only form correction. Current
-module source fixes the omitted `ssh=0` submission and retains safe values after
-failure. That source must be reviewed and packaged separately before distribution.
+The local `TELIPHONES-0.6.4.tgz` includes these corrections and broker 0.6.3.
+The preserved `TELIPHONES-0.6.3.tgz` and its checksum are unchanged; that archive
+contains broker 0.6.2 and predates the form and listener diagnostic corrections.
+The initiating live listener convergence failure remains unconfirmed. Regression
+tests do not establish successful Debian 12 / FreePBX 17 pairing or connectivity.
+The later operator-confirmed CPU overload came from repeated listener commands
+in installed broker 0.6.2. The rebuilt pending 0.6.3 broker gates background
+commands on owned kernel readback and adds bounded failure backoff. Keep the
+development broker stopped until this replacement is reviewed; use the
+[controlled startup/CPU and live acceptance procedure](teliphones/README.md#064-development-server-acceptance).
 No Windows 0.8.1 executable or public download has been established; check the
 exact build provenance, not the target version alone.
 
@@ -137,10 +144,10 @@ Remote Support uses `wg-teliphones`, separate from My PBXs' `tlp-admin`.
 1. **Check the platform:** FreePBX 17 on Debian 12, root console access, HTTPS,
    WireGuard kernel support, `wg`, `ip`, `nft`, iptables and systemd.
    See [PBX requirements](teliphones/README.md#requirements).
-2. **Verify and install** `TELIPHONES-0.6.3.tgz` through Module Admin:
+2. **Verify and install** `TELIPHONES-0.6.4.tgz` through Module Admin:
 
    ```bash
-   sha256sum -c TELIPHONES-0.6.3.tgz.sha256
+   sha256sum -c TELIPHONES-0.6.4.tgz.sha256
    ```
 
 3. **Complete the root bootstrap** using the
@@ -244,20 +251,20 @@ The [package validator](teliphones/tests/package-validation.py) checks exact
 archive/source equality. Documentation edits after packaging deliberately make
 that equality fail; they do not justify rewriting a preserved archive.
 
-Build the module-only 0.6.3 archive from the repository root using the existing
+Build the module-only 0.6.4 archive from the repository root using the existing
 package exclusions, then validate the exact contents and checksum:
 
 ```bash
 tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
   --mode='u+rwX,go+rX,go-w' --exclude='*/.*' --exclude='*/tests' \
   --exclude='*/__pycache__' --exclude='*.pyc' --exclude='*.pyo' \
-  -czf TELIPHONES-0.6.3.tgz teliphones
-sha256sum TELIPHONES-0.6.3.tgz > TELIPHONES-0.6.3.tgz.sha256
+  -czf TELIPHONES-0.6.4.tgz teliphones
+  sha256sum TELIPHONES-0.6.4.tgz > TELIPHONES-0.6.4.tgz.sha256
 PYTHONDONTWRITEBYTECODE=1 python3 teliphones/tests/package-validation.py
 ```
 
-Do not rebuild the preserved 0.6.2 or historical archives. The 0.6.3 package
-contains the 0.6.2 root broker and protocol 12; no Windows or gateway sources
+Do not rebuild the preserved 0.6.3 or historical archives. The 0.6.4 package
+contains the 0.6.3 root broker and protocol 12; no Windows or gateway sources
 are included.
 
 ## Contributing
