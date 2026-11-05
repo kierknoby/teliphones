@@ -316,7 +316,7 @@ class BuildLayoutTests(unittest.TestCase):
         self.assertIn("KeyPipe pipe(parsed.privateKey)", install)
         helper = wireguard.split("DWORD helperUp(", 1)[1].split("DWORD runElevated(", 1)[0]
         self.assertLess(helper.index("ValidateBootstrapTunnel(parsed)"), helper.index("WriteNewFile(configPath"))
-        self.assertLess(helper.index("waitForState(command.tunnelName, TunnelState::Running"), helper.index("activateKey("))
+        self.assertLess(helper.index("WaitForService(serviceName(command.tunnelName), true"), helper.index("activateKey("))
         self.assertIn("GetNamedPipeClientProcessId", wireguard)
         self.assertIn("client != GetProcessId(helper)", wireguard)
         self.assertIn("PIPE_REJECT_REMOTE_CLIENTS", wireguard)
@@ -324,6 +324,35 @@ class BuildLayoutTests(unittest.TestCase):
         self.assertIn("private_key=", wireguard)
         manage = (ROOT / "src/app/ConnectPasswordDlg.cpp").read_text().split("bool ManageConnectPassword", 1)[1]
         self.assertLess(manage.index("RemoveTunnel("), manage.index("SetConnectPassword("))
+
+    def test_tunnel_startup_waits_for_service_and_control_pipe_independently(self):
+        wireguard = (ROOT / "src/platform/WireGuard.cpp").read_text()
+        startup = (ROOT / "src/platform/TunnelStartup.h").read_text()
+        helper = wireguard.split("DWORD helperUp(", 1)[1].split("DWORD runElevated(", 1)[0]
+        self.assertIn("status.state == SERVICE_STOPPED && !StartServiceW", helper)
+        self.assertIn("WaitForService(serviceName(command.tunnelName), false, 20000)", helper)
+        self.assertIn("WaitForService(serviceName(command.tunnelName), true, 20000)", helper)
+        self.assertIn("QueryServiceStatusEx", startup)
+        self.assertIn("SERVICE_START_PENDING", startup)
+        self.assertIn("error != ERROR_FILE_NOT_FOUND", startup)
+        self.assertIn("error != ERROR_PATH_NOT_FOUND", startup)
+        self.assertIn("error != ERROR_PIPE_BUSY", startup)
+        self.assertIn("now >= deadline", startup)
+        self.assertIn("OpenControlPipe(name,", wireguard)
+        self.assertNotIn("Another VPN or a conflicting address", wireguard)
+        self.assertIn("kHelperControlPipeFailed", helper)
+        self.assertIn("kHelperKeyFailed", helper)
+        self.assertIn("!= kHelperOk) return kHelperRemoveFailed", helper)
+        self.assertNotIn("handshake", helper.lower())
+        native = (ROOT / "tests/tunnel_startup_native_tests.cpp").read_text()
+        for symbol in ("CreateServiceW", "StartServiceW", "CreateNamedPipeW", "SERVICE_START_PENDING",
+                       "delayedStartup", "stoppedService", "missingPipe", "stoppingService"):
+            self.assertIn(symbol, native)
+        cmake = (ROOT / "CMakeLists.txt").read_text()
+        self.assertIn("add_test(NAME tunnel_startup_native COMMAND tunnel_startup_native_tests)", cmake)
+        self.assertIn("TIMEOUT 60", cmake)
+        workflow = (ROOT.parents[1] / ".github/workflows/windows-build.yml").read_text()
+        self.assertIn("ctest --test-dir desktop/windows/build/ssh-native", workflow)
 
     @unittest.skipUnless(shutil.which("ssh-keygen") and shutil.which("ssh"),
                          "Local OpenSSH required; no download attempted")
@@ -787,6 +816,12 @@ class BuildLayoutTests(unittest.TestCase):
                  re.finditer(r"      - name: ([^\n]+)\n(.*?)(?=\n      - name: |\Z)", workflow, re.DOTALL)}
         ctest = steps["Run all portable CTests with complete diagnostics"]
         native = steps["Run native Windows OpenSSH integration independently"]
+        tunnel = steps["Run native tunnel service startup tests independently"]
+        self.assertIn("!cancelled() && steps.native_build.outcome == 'success'", tunnel)
+        self.assertNotIn("steps.openssh", tunnel)
+        self.assertIn("-R '^tunnel_startup_native$'", tunnel)
+        self.assertIn("--no-tests=error", tunnel)
+        self.assertIn("if ($LASTEXITCODE -ne 0) { throw", tunnel)
         for step in (ctest, native):
             self.assertIn("!cancelled()", step)
             self.assertIn("steps.native_build.outcome == 'success'", step)
@@ -838,7 +873,7 @@ class BuildLayoutTests(unittest.TestCase):
         self.assertEqual(len([name for name in dir(module.WindowsSshTests) if name.startswith("test_")]), 11)
 
     def test_ctest_platform_boundary_and_native_ssh_gate(self):
-        stubbed = ("project", "set_target_properties", "add_library", "add_executable",
+        stubbed = ("project", "set_target_properties", "set_tests_properties", "add_library", "add_executable",
                    "target_compile_options", "target_include_directories", "target_link_libraries",
                    "target_compile_definitions", "enable_testing")
         script = "\n".join(f"macro({name})\nendmacro()" for name in stubbed)
@@ -865,7 +900,7 @@ endfunction()
                                         capture_output=True, timeout=20)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 registered = re.findall(r"REGISTERED=(\w+)", result.stdout)
-                expected = portable | ({"broker_contract_check"} if platform == "Linux" else set())
+                expected = portable | ({"broker_contract_check"} if platform == "Linux" else {"tunnel_startup_native"})
                 self.assertEqual(set(registered), expected)
                 self.assertEqual(len(registered), len(expected))
         workflow = (ROOT.parents[1] / ".github/workflows/windows-build.yml").read_text(encoding="utf-8")
@@ -924,8 +959,8 @@ endfunction()
         base = ".".join(map(str, parts[:3]))
         product = base
         numeric = ".".join(map(str, parts))
-        self.assertEqual(product, "0.8.1")
-        self.assertEqual(numeric, "0.8.1.0")
+        self.assertEqual(product, "0.8.2")
+        self.assertEqual(numeric, "0.8.2.0")
         self.assertIn(f'"version-string": "{product}"', (ROOT / "vcpkg.json").read_text(encoding="utf-8"))
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
@@ -935,7 +970,7 @@ endfunction()
         self.assertIn(f"## {product} — Unreleased", changelog)
         self.assertEqual(re.findall(r"^## (\d+\.\d+\.\d+) ", changelog, re.MULTILINE)[0], product)
         self.assertIn(f"**{numeric}**", changelog)
-        self.assertIn("Windows 0.8.1 corrects the", readme)
+        self.assertIn(f"Windows {product} corrects the", readme)
         self.assertIn(
             "Windows 0.8.0 adds explicit pairing access selection",
             " ".join(changelog.split()),
@@ -999,7 +1034,7 @@ endfunction()
         module_version = ET.parse(ROOT.parents[1] / "teliphones/module.xml").getroot().findtext("version")
         self.assertRegex(module_version or "", r"^\d+\.\d+\.\d+$")
         for path, statement in (
-            (ROOT / "README.md", "TELIPHONES 0.8.1 for Windows is licensed under GPLv3."),
+            (ROOT / "README.md", "TELIPHONES 0.8.2 for Windows is licensed under GPLv3."),
             (ROOT.parents[1] / "teliphones/README.md",
              f"TELIPHONES {module_version} for FreePBX is licensed under GPLv3."),
         ):

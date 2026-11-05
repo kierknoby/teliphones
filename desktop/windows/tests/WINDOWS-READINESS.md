@@ -1,15 +1,25 @@
 # Windows developer builds, testing and readiness
 
-Targets: TELIPHONES for Windows **0.8.1**, TELIPHONES for FreePBX **0.6.4**.
+Targets: TELIPHONES for Windows **0.8.2**, TELIPHONES for FreePBX **0.6.4**.
 The FreePBX connection-state policy and Windows pairing/clipboard UX are
 independently versioned; neither entry declares a published release.
 
 Root broker is **0.6.3**, protocol **12**. Version.h derives Windows
-product 0.8.1 and file 0.8.1.0; executable resources, captions, About/licence and
+product 0.8.2 and file 0.8.2.0; executable resources, captions, About/licence and
 build provenance reuse it. The dependency manifest must match the product version.
 Current Release portable build/CTest and source contracts can run on Linux;
 native MFC pairing tests, executable metadata and startup smoke are registered
-in the Windows workflow. No current native 0.8.1 execution is claimed.
+in the Windows workflow. No current native 0.8.2 execution is claimed.
+The patch increment distinguishes this correction from the operator's installed
+0.8.1 executable; no FreePBX version or package changed. No 0.8.2 binary or
+application bundle has been produced.
+
+Native compilation, SCM/named-pipe execution and artefact creation are
+**blocked**: this workspace is Linux without MSVC/MFC or a Windows runtime.
+The existing Actions workflow checks out a committed ref, not this uncommitted
+working tree. The user selected source preparation with native work left
+blocked rather than committing/pushing or using the development workstation.
+Do not dispatch an older ref and present that result as validation of this code.
 
 Later operator reports confirm eleven native SSH integrations and first-run
 startup smoke passed for an earlier build. The historical investigations below
@@ -19,6 +29,60 @@ The local 0.6.4 module archive includes the PHP form and listener diagnostic
 corrections; the preserved 0.6.3 archive predates them. Live acceptance is pending.
 
 ## Current evidence
+
+### WireGuard startup regression
+
+Local history identifies `c8840f9` (Windows 0.8.0) as the introduction of the
+post-Running `activateKey` operation. Its predecessor (0.7.0) installed the
+enrolled key in the restricted config and returned success after the same
+20-second SCM Running wait. Reverting that plaintext-key behaviour would
+discard subsequent security improvements and is not the correction.
+
+The added activation used one `WaitNamedPipe(..., 10000)` call, which returns
+immediately if the named pipe has not been created. Every activation exception
+then called `/uninstalltunnelservice` and returned the same code as service
+startup timeout, losing the cause. The reported approximately 287 ms shutdown
+after `Startup complete` is consistent with that immediate cleanup branch,
+not the 20-second polling timeout. The operator's WireGuard log alone does
+**not** establish which pipe/transfer/UAPI error occurred, nor exclude an
+independent service exit. There were no later changes to this file before the
+current investigation.
+
+The pending correction waits for SCM service registration/Running and polls
+protected-pipe creation within bounded deadlines, allowing only absent/busy
+pipe retries while SCM remains Running/StartPending. Other errors and genuine
+service stops fail explicitly and trigger cleanup. Helper results distinguish
+service readiness, pipe availability and secure-key activation, with numeric
+Windows errors for service/query/pipe/transfer failures. UAPI rejection stays
+fail-closed; no payload, key, password or token is reported. No handshake is
+required to recognise successful service startup. Failed cleanup is not
+reported as successful removal.
+
+`tunnel_startup_native` is a Windows-only CTest using real, uniquely named,
+demand-start SCM services and local named pipes, not WireGuard or networking.
+It reproduces the old absent-pipe failure after Running, verifies bounded
+readiness with delayed pipe creation, StartPending/StopPending, no peer handshake, service
+failure, absent-pipe timeout, no premature stop and explicit service cleanup.
+It requires an elevated test runner; lack of access fails rather than skips.
+The Windows Release workflow runs it independently of OpenSSH provisioning
+and propagates nonzero exit status. **Not compiled or executed on Linux.**
+Linux validation passed: 49 build-layout/source-contract tests, optimized
+Release compilation with interprocedural optimization, all nine portable
+CTests, five documentation-link tests and `git diff --check`. The local
+OpenSSL 3.0.13 build verifies fail-closed behaviour without Argon2; it does not
+revalidate the supported-provider positive path described below.
+Portable source-contract/CTest results are not native runtime evidence.
+
+After review, native Release build and the complete CTest suite must pass on
+an isolated Windows test runner. Then a controlled workstation acceptance run
+must record build provenance, Connect time, SCM state/exit codes, WireGuard log
+and any new helper stage/error. Verify the service stays Running without an
+immediate handshake, enrolled-key activation enables the eventual handshake,
+approved PBX access works, disconnect/reconnect works, and genuine startup or
+activation failures leave no active tunnel. Inspect only non-secret properties
+of staging/installed configs to confirm enrolled keys remain absent. No
+workstation or PBX changes were performed for this investigation; the live
+initiating error and end-to-end correction remain unverified.
 
 ### Pairing Save-state notification regression
 
@@ -111,7 +175,7 @@ expiry, systemd/cgroup, reboot or recovery evidence. Real module 0.4.1 firewall
 watchdog validation, the full terminal/display matrix and production readiness
 remain outstanding. See the [evidence register](../../../docs/SECURITY.md#verification-evidence).
 
-The current source registers eight Windows CTests (nine on Linux) and eleven
+The current source registers nine Windows CTests (nine on Linux) and eleven
 native SSH integration methods. The operator report above predates the latest
 native console test; the current-source Windows build and test suite have not
 been run in this workspace.

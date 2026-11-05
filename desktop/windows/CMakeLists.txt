@@ -67,6 +67,10 @@ target_link_libraries(teliphones_ssh_crypto PUBLIC teliphones_core OpenSSL::Cryp
 add_executable(ssh_crypto_tool tests/ssh_crypto_tool.cpp)
 target_link_libraries(ssh_crypto_tool PRIVATE teliphones_ssh_crypto)
 if(WIN32)
+    add_executable(tunnel_startup_native_tests tests/tunnel_startup_native_tests.cpp)
+    target_compile_definitions(tunnel_startup_native_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00)
+    target_compile_options(tunnel_startup_native_tests PRIVATE ${TELIPHONES_WARNING_OPTIONS})
+    target_link_libraries(tunnel_startup_native_tests PRIVATE advapi32)
     # Only the loopback integration fixture accepts its reserved local source.
     # Production core/tests retain the deployed non-loopback route policy.
     add_library(teliphones_fixture_core STATIC ${TELIPHONES_CORE_SOURCES})
@@ -82,6 +86,10 @@ if(WIN32)
 endif()
 
 enable_testing()
+if(WIN32)
+    add_test(NAME tunnel_startup_native COMMAND tunnel_startup_native_tests)
+    set_tests_properties(tunnel_startup_native PROPERTIES TIMEOUT 60)
+endif()
 add_test(NAME connect_protection COMMAND connect_protection_tests)
 add_test(NAME terminal_emulator COMMAND terminal_emulator_tests)
 add_test(NAME core_tests COMMAND core_tests)

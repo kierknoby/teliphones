@@ -5,16 +5,32 @@ No Windows release is declared published by this document. Earlier development
 builds lacked embedded file/product versions and cannot be assigned reliable
 version numbers retrospectively.
 
-## 0.8.1 — Unreleased release candidate
+## 0.8.2 — Unreleased development target
 
-Windows file/product version: **0.8.1.0** / **0.8.1**. Compatible source targets:
+Windows file/product version: **0.8.2.0** / **0.8.2**. Compatible source targets:
 FreePBX module **0.6.4**, root broker **0.6.3**, protocol **12**.
-This patch identifies the pairing dialogue corrections, not a published release
-or a Windows version change for the new FreePBX test package. The rebuilt pending
-0.6.4 module archive includes the web-only form, listener diagnostics and
-background subprocess-loop corrections; the preserved 0.6.3 archive predates
-them. Keep the affected development broker stopped until replacement review.
-Live CPU, pairing and connectivity acceptance remain outstanding.
+Increment the Windows patch version because 0.8.1 is already installed on the
+development workstation. Resource metadata, captions, About and dependency
+manifest identify the correction independently of that executable. FreePBX
+versions and packages are unchanged. No native 0.8.2 build or application
+artefact exists yet; execution is blocked pending a Windows runner.
+
+Correct a Windows tunnel activation race introduced with the 0.8.0 memory-only
+key provisioning: `WaitNamedPipe` does not wait for a pipe that does not yet
+exist, even after SCM reports Running. Retry only transient pipe availability
+errors within a bounded deadline while checking service state. Preserve
+bootstrap-only configuration, protected IPC, PID-bound helper key delivery
+and removal on genuine failure. Distinguish service, control-pipe and
+key-activation failures instead of suggesting an unproven VPN/address conflict.
+Add a native SCM/named-pipe regression to the Windows Release CTests.
+Linux portable checks do not prove the observed workstation failure fixed;
+native and live WireGuard acceptance remain required.
+
+## 0.8.1 — Previous development target
+
+Windows file/product version: **0.8.1.0** / **0.8.1**.
+The operator confirms this version is installed on the development workstation;
+that does not declare a public release or validate the pending 0.8.2 correction.
 
 The pairing dialogue groups **Request access** before **Complete pairing**:
 choose the workstation name and access before generating/copying the request,

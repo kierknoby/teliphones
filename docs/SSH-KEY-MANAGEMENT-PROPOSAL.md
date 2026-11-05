@@ -1,6 +1,6 @@
 # My PBXs managed SSH: implementation and validation
 
-The current implementation targets **Windows 0.8.1**, **FreePBX 0.6.4**, **root
+The current implementation targets **Windows 0.8.2**, **FreePBX 0.6.4**, **root
 broker 0.6.3**, protocol **12**, independently versioned. The local 0.6.4 module
 archive includes form and listener diagnostic corrections; the preserved 0.6.3
 archive predates them. Historical reports and the

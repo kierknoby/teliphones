@@ -15,10 +15,10 @@ workflow for bounded support windows.
 | Component | Current version | Start here |
 |---|---|---|
 | FreePBX module / root broker | **0.6.4** / **0.6.3**, protocol 12 (local experimental package) | [Install](teliphones/README.md#installing-the-module) · [Upgrade](teliphones/README.md#updating-teliphones) |
-| Windows application | **0.8.1** (file version 0.8.1.0; unreleased development target) | [Download and requirements](desktop/windows/README.md#requirements-and-download) · [Pair a PBX](desktop/windows/README.md#pair-an-administrator-workstation) |
+| Windows application | **0.8.2** (file version 0.8.2.0; native build pending) | [Download and requirements](desktop/windows/README.md#requirements-and-download) · [Pair a PBX](desktop/windows/README.md#pair-an-administrator-workstation) |
 | Reference gateway and Checker probe | Optional laboratory infrastructure | [Integration guide](teliphones/docs/INTEGRATION.md) · [Gateway](gateway/README.md) |
 
-FreePBX module **0.6.4**, root broker **0.6.3** and Windows **0.8.1** are
+FreePBX module **0.6.4**, root broker **0.6.3** and Windows **0.8.2** are
 independently versioned; the broker protocol remains 12. The module/broker
 update includes the web-only `ssh=0` form correction, field-specific validation
 and safe-value retention. Listener diagnostics distinguish admission/removal
@@ -27,8 +27,10 @@ Progress is never pairing success; firewall verification
 and single-dispatch behaviour remain unchanged. Upgrade the module in place and
 rerun the root bootstrap so the separately installed broker is refreshed;
 pairings and their identities are preserved.
-Windows **0.8.1** is an unreleased release candidate correcting the pairing
-dialogue: select name/access, generate and copy the request, then validate and
+Windows **0.8.2** prepares the service/control-pipe readiness correction while
+preserving memory-only key activation; native build and live acceptance are
+pending. It is distinct from the installed development version 0.8.1 and retains
+its corrected pairing dialogue: select name/access, generate and copy the request, then validate and
 save FreePBX's response. Name/access changes invalidate stale requests; approved
 SSH accounts are response-derived. It retains 0.8.0's password protection, PBX
 policy requests, listener migration and post-pair SSH elevation.
@@ -44,8 +46,10 @@ in installed broker 0.6.2. The rebuilt pending 0.6.3 broker gates background
 commands on owned kernel readback and adds bounded failure backoff. Keep the
 development broker stopped until this replacement is reviewed; use the
 [controlled startup/CPU and live acceptance procedure](teliphones/README.md#064-development-server-acceptance).
-No Windows 0.8.1 executable or public download has been established; check the
-exact build provenance, not the target version alone.
+No Windows 0.8.2 executable has been built here or published. Native execution
+and artefact creation are blocked pending a Windows runner; check exact build
+provenance, not the target version alone. See the
+[controlled Windows upgrade procedure](desktop/windows/README.md#upgrade-the-development-workstation-after-native-validation).
 
 > [!WARNING]
 > **Experimental; not currently suitable for production PBXs.** Gateway,

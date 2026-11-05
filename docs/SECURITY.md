@@ -1,12 +1,12 @@
 # TELIPHONES security
 
 This document explains current source targets **FreePBX module 0.6.4**, **root
-broker 0.6.3**, **protocol 12** and **Windows 0.8.1**, evidence and limitations.
+broker 0.6.3**, **protocol 12** and **Windows 0.8.2**, evidence and limitations.
 
 > [!WARNING]
 > TELIPHONES remains experimental. The operator reports successful native
 > Windows tests and initial live authenticated SSH, not complete lifecycle
-> assurance. The latest 0.8.1 source still requires native Windows validation,
+> assurance. The latest 0.8.2 source still requires native Windows validation,
 > and current firewall/session recovery requires live-PBX acceptance.
 > Do not use TELIPHONES on a production PBX.
 
@@ -62,9 +62,9 @@ they are not the current native-test result.
 
 | Evidence source | Result and boundary |
 |---|---|
-| Current source review | Windows 0.8.1 pairing dialogue implemented; portable Release build and 9/9 CTests passed, including 48 build/layout contracts. Native compilation, MFC dialogue and application startup smoke are registered in Windows CI, not executed in this Linux workspace. |
+| Current source review | Windows 0.8.2 prepares the bounded SCM/protected-pipe readiness correction, retaining memory-only enrolled-key activation and 0.8.1 pairing corrections. Prior local correction validation passed optimized Release build, 9/9 portable CTests and 49 build/layout contracts. Native compilation, SCM/named-pipe regressions, MFC dialogue and startup smoke are registered in Windows CI, not executed in this Linux workspace. Native build and artefact creation remain blocked pending a Windows runner; no connectivity success is claimed. |
 | Pairing form source correction | Disabled SSH select omitted `ssh` from web-only POST. The module now submits explicit `ssh=0`, retains safe values and rejects missing/invalid choices. PHP/Node page-path tests passed; gateway suite 203 run, 202 passed, one skipped, includes actual PHP page/Unix-socket broker pairing with modelled network commands. This is not live PBX execution. |
-| Current and preserved packages | Local `TELIPHONES-0.6.4.tgz` includes form and listener diagnostic corrections with broker 0.6.3/protocol 12; exact module-source equality is checked during packaging, not proof of live connectivity. Preserved `TELIPHONES-0.6.3.tgz` contains broker 0.6.2 and predates these corrections; its checksum is unchanged. No Windows 0.8.1 binary/public release is established. |
+| Current and preserved packages | Local `TELIPHONES-0.6.4.tgz` includes form and listener diagnostic corrections with broker 0.6.3/protocol 12; exact module-source equality is checked during packaging, not proof of live connectivity. Preserved `TELIPHONES-0.6.3.tgz` contains broker 0.6.2 and predates these corrections; its checksum is unchanged. The operator confirms Windows 0.8.1 is installed; no Windows 0.8.2 binary or public release is established. FreePBX packages are unchanged by this Windows correction. |
 | nftables repeatability | At 0.6.3 preparation, 10/10 working-tree and 10/10 unchanged-baseline namespace runs passed after an earlier intermittent own-event-filtering failure. That failure remains undiagnosed; successful samples do not exclude recurrence. |
 | Later operator report | Earlier Windows Actions run: all eleven native SSH integrations passed; first-run GUI smoke subsequently reported successful. No matching 0.8.1 run or independently fetched evidence is supplied. |
 | Operator's latest report | Successful Windows GitHub Actions builds and **all ten native OpenSSH integration tests passing**. No run URL, commit/build hash or raw logs accompanied this update; no external service was queried to verify it. |

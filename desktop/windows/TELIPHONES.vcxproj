@@ -138,6 +138,7 @@
     <ClInclude Include="src\core\WireGuardSetup.h" />
     <ClInclude Include="src\platform\Win.h" />
     <ClInclude Include="src\platform\WireGuard.h" />
+    <ClInclude Include="src\platform\TunnelStartup.h" />
     <ClInclude Include="src\platform\Services.h" />
     <ClInclude Include="src\platform\Ssh.h" />
     <ClInclude Include="src\platform\Applications.h" />

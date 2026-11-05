@@ -1,18 +1,19 @@
-# TELIPHONES 0.8.1 for Windows (experimental)
+# TELIPHONES 0.8.2 for Windows (experimental)
 
 **TELIPHONES is a UK registered trademark.**
 
-**TELIPHONES 0.8.1 for Windows is licensed under GPLv3.**
+**TELIPHONES 0.8.2 for Windows is licensed under GPLv3.**
 
 Reach your PBX privately, open FreePBX in your preferred browser and start an
 approved SSH session without distributing permanent administrator SSH credentials.
 This guide covers installing and using the Windows application. The
 [FreePBX administration guide](../../teliphones/README.md) covers server setup.
 
-Windows **0.8.1** (file version **0.8.1.0**) is independent of FreePBX module
-**0.6.3**, root broker **0.6.2**, protocol **12**. Windows 0.8.1 corrects the
-pairing dialogue order, stale-request handling, Copy/Save availability and
-response-derived approved SSH account display. It retains the 0.8.0 source
+Windows **0.8.2** (file version **0.8.2.0**) is independent of FreePBX module
+**0.6.4**, root broker **0.6.3**, protocol **12**. Windows 0.8.2 corrects the
+service/control-pipe readiness race while preserving memory-only key activation.
+It retains 0.8.1's pairing dialogue order, stale-request handling, Copy/Save
+availability and response-derived approved SSH account display, and the 0.8.0 source
 features: password protection, listener migration, PBX policy/status, Allowed
 List and unlock requests, post-pair SSH elevation and the experimental built-in
 SSH console. It is an unreleased release candidate, not a published download.
@@ -27,7 +28,7 @@ defines the application version.
 > owned terminal when TELIPHONES disconnects. Complete server-side revocation,
 > authorisation expiry, systemd/cgroup lifecycle, reconnection and failure
 > recovery still need live validation. These supplied reports do not validate
-> the current 0.8.1 dialogue or establish a matching binary. See
+> the current 0.8.2 source or establish a matching binary. See
 > [verification status](#verification-status).
 
 ## Choose your workflow
@@ -85,6 +86,10 @@ risk. See the [current security limitations](#security).
 
 ### Download an existing build
 
+**0.8.2 source is prepared, but its native build and application artefact are
+blocked pending an isolated Windows runner. No 0.8.2 executable is supplied.**
+Do not substitute an older successful run for current-source validation.
+
 Download **TELIPHONES-Windows-x64** from an existing successful Windows build
 run in GitHub Actions. Retention is 14 days; expired artefacts may be unavailable.
 Extract the ZIP and keep **`TELIPHONES.exe` and `TELIPHONES-SSH.exe` together**.
@@ -98,6 +103,38 @@ expected for the static Release build. Windows system components remain required
 Test executables are unsigned and may trigger SmartScreen; verify their trusted
 source rather than disabling Windows protections. For source builds, see
 [developer builds and testing](tests/WINDOWS-READINESS.md#developer-builds-and-testing).
+
+### Upgrade the development workstation after native validation
+
+Only proceed after the exact 0.8.2 build passes native Release compilation,
+the complete CTests (including `tunnel_startup_native`), application tests and
+startup smoke. The existing build produces a portable application bundle, not
+an MSI installer. The workflow's bundle directory is `desktop/windows/build/artifact`;
+its Actions artefact name is **TELIPHONES-Windows-x64**. No bundle has been
+produced for this pending source.
+
+1. Disconnect in 0.8.1 and close TELIPHONES and its owned SSH console. Retain
+   the old application directory for rollback; do not delete profiles,
+   Credential Manager entries or application data.
+2. Extract the validated bundle into a separate **TELIPHONES-0.8.2** directory.
+   Keep both executables, licences and `build-info.json` together.
+3. Before launch, in PowerShell in that directory, check:
+
+   ```powershell
+   $info = Get-Content .\build-info.json -Raw | ConvertFrom-Json
+   $version = [Diagnostics.FileVersionInfo]::GetVersionInfo((Resolve-Path .\TELIPHONES.exe).Path)
+   if ($version.ProductVersion -ne '0.8.2' -or $version.FileVersion -ne '0.8.2.0') { throw 'Wrong executable version' }
+   if ($info.productVersion -ne '0.8.2' -or $info.fileVersion -ne '0.8.2.0') { throw 'Wrong build metadata' }
+   if ((Get-FileHash .\TELIPHONES.exe -Algorithm SHA256).Hash -ine $info.sha256) { throw 'Application hash mismatch' }
+   if ((Get-FileHash .\TELIPHONES-SSH.exe -Algorithm SHA256).Hash -ine $info.sshHelperSha256) { throw 'SSH helper hash mismatch' }
+   ```
+
+4. Launch the new executable, confirm **0.8.2** in About and reuse the saved
+   profile without re-pairing. Perform one controlled Connect and retain the
+   WireGuard log plus any stage-specific error. Confirm sustained service
+   operation, eventual handshake, approved PBX access and disconnect/reconnect.
+   A Running service alone is not proof of connectivity. If activation fails,
+   confirm cleanup and stop; do not repeat connection attempts blindly.
 
 ## Secure connectivity and WireGuard installation
 
@@ -169,6 +206,15 @@ its provenance. SSH session certificates are separately signature-verified.
 
 After saving, select the profile and **Connect**, approving tunnel setup. Wait
    for Connection Health to confirm that the PBX is reachable.
+Tunnel setup separately confirms the Windows service and waits, within bounded
+deadlines, for WireGuard's protected control pipe before activating the
+memory-only enrolled key. A missing initial pipe is not a failed service or a
+failed peer handshake. Actual startup, pipe or key-activation failure still
+removes the tunnel; the error identifies the stage and available Windows error
+number, without including key material. No VPN/address conflict is inferred.
+The native startup regression and live WireGuard validation remain outstanding;
+see [Windows readiness](tests/WINDOWS-READINESS.md#wireguard-startup-regression).
+
 Select **Open FreePBX** and sign in with normal FreePBX credentials.
    The browser opens the approved HTTP/HTTPS management URL (including a custom
    port, when configured) on the PBX tunnel address inside the encrypted
@@ -479,7 +525,7 @@ identity-bound migration parsing and the Argon2id positive-path provider tests
 when available. This is not a native Windows build: this Linux environment
 cannot compile or exercise the MFC application, Windows Credential Manager,
 DPAPI, UAC, service/helper lifecycle, or actual WireGuard reconnect path.
-Historical operator reports for 0.7.0 are not evidence for the current 0.8.1
+Historical operator reports for 0.7.0 are not evidence for the current 0.8.2
 changes.
 
 Live FreePBX session admission, listener migration, source restrictions,

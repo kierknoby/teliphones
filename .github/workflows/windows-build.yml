@@ -226,6 +226,13 @@ jobs:
           & desktop/windows/build/ssh-native/Release/ssh_native_host.exe --preflight
           if ($LASTEXITCODE -ne 0) { throw 'Native DPAPI/locked-memory/named-pipe/Job preflight failed.' }
 
+      - name: Run native tunnel service startup tests independently
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          ctest --test-dir desktop/windows/build/ssh-native -C Release -R '^tunnel_startup_native$' --verbose --output-on-failure --no-tests=error
+          if ($LASTEXITCODE -ne 0) { throw 'Native SCM and delayed WireGuard control-pipe readiness regression failed.' }
+
       - name: Run all portable CTests with complete diagnostics
         if: ${{ !cancelled() && steps.native_build.outcome == 'success' && steps.openssh.outcome == 'success' }}
         run: |
