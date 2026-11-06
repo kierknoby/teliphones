@@ -339,9 +339,15 @@ lifecycle::HelperResult removeOwnedTunnel(const WireGuardInstallation& wireguard
             return outcome;
         }
         const auto adapter = awaitAdapterRelease(tunnelName);
-        if (adapter != lifecycle::AdapterPresence::Absent) {
+        status = tunnel_startup::ReadStatus(service);
+        if (!tunnel_startup::Absent(status)) {
+            outcome.cleanupIncomplete = true;
+            outcome.residual = residualFor(status);
+            outcome.error = status.error;
+        } else if (adapter != lifecycle::AdapterPresence::Absent) {
             outcome.cleanupIncomplete = true;
             outcome.residual = adapterResidual(adapter);
+            if (adapter == lifecycle::AdapterPresence::Active) outcome.error = ERROR_TIMEOUT;
         }
         if (!DeleteFileW(configPath.c_str()) && GetLastError() != ERROR_FILE_NOT_FOUND && GetLastError() != ERROR_PATH_NOT_FOUND) {
             outcome.cleanupIncomplete = true;
@@ -351,6 +357,7 @@ lifecycle::HelperResult removeOwnedTunnel(const WireGuardInstallation& wireguard
         outcome.cleanupIncomplete = true;
         outcome.residual = lifecycle::Residual::Unknown;
     }
+    if (!outcome.cleanupIncomplete) return {};
     return outcome;
 }
 
@@ -587,41 +594,60 @@ bool InstallTunnel(const std::string& tunnelName, const std::string& configText)
 }
 
 void RemoveTunnel(const std::string& tunnelName) {
-    const auto staging = KnownFolder(FOLDERID_LocalAppData) + L"\\TELIPHONES\\Staging\\" + Widen(tunnelName) + L".conf";
-    if (!DeleteFileW(staging.c_str()) && GetLastError() != ERROR_FILE_NOT_FOUND && GetLastError() != ERROR_PATH_NOT_FOUND)
-        ThrowLastError("Unable to remove the staged tunnel configuration");
-    bool removed = false;
-    {
-        ServiceHandle manager(OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT));
-        ServiceHandle service(manager ? OpenServiceW(manager.get(), serviceName(tunnelName).c_str(), SERVICE_STOP | SERVICE_QUERY_STATUS | DELETE) : nullptr);
-        if (manager && !service && GetLastError() == ERROR_SERVICE_DOES_NOT_EXIST) {
-            removed = true;
-        } else if (service) {
-            SERVICE_STATUS status{};
-            // START_PENDING rejects SERVICE_CONTROL_STOP (Windows error 1052), so waiting here cannot succeed;
-            // only the elevated helper can verify and end a stuck service process.
-            if (QueryServiceStatus(service.get(), &status) && status.dwCurrentState != SERVICE_START_PENDING) {
-                ControlService(service.get(), SERVICE_CONTROL_STOP, &status);
-                ULONGLONG deadline = GetTickCount64() + 15000;
-                while (QueryServiceStatus(service.get(), &status) && status.dwCurrentState != SERVICE_STOPPED && GetTickCount64() < deadline) Sleep(250);
-                removed = status.dwCurrentState == SERVICE_STOPPED && (DeleteService(service.get()) || GetLastError() == ERROR_SERVICE_MARKED_FOR_DELETE);
+    std::unique_ptr<tunnel_startup::HelperLock> lock;
+    try {
+        lock = std::make_unique<tunnel_startup::HelperLock>(tunnel_startup::HelperLockName(Widen(tunnelName)));
+    } catch (const tunnel_startup::Failure& failure) {
+        // An existing administrator-only lock must be acquired by the elevated helper, not bypassed.
+        if (failure.code != ERROR_ACCESS_DENIED) throw;
+    }
+    if (lock && !lock->owned()) throw Error(lifecycle::HelperMessage(helperCode(Stage::Busy)));
+    if (lock) {
+        const auto staging = KnownFolder(FOLDERID_LocalAppData) + L"\\TELIPHONES\\Staging\\" + Widen(tunnelName) + L".conf";
+        if (!DeleteFileW(staging.c_str()) && GetLastError() != ERROR_FILE_NOT_FOUND && GetLastError() != ERROR_PATH_NOT_FOUND)
+            ThrowLastError("Unable to remove the staged tunnel configuration");
+        bool removed = false;
+        {
+            ServiceHandle manager(OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT));
+            ServiceHandle service(manager ? OpenServiceW(manager.get(), serviceName(tunnelName).c_str(), SERVICE_STOP | SERVICE_QUERY_STATUS | DELETE) : nullptr);
+            if (manager && !service && GetLastError() == ERROR_SERVICE_DOES_NOT_EXIST) {
+                removed = true;
+            } else if (service) {
+                SERVICE_STATUS status{};
+                // START_PENDING rejects SERVICE_CONTROL_STOP (Windows error 1052), so waiting here cannot succeed;
+                // only the elevated helper can verify and end a stuck service process.
+                if (QueryServiceStatus(service.get(), &status) && status.dwCurrentState != SERVICE_START_PENDING) {
+                    ControlService(service.get(), SERVICE_CONTROL_STOP, &status);
+                    ULONGLONG deadline = GetTickCount64() + 15000;
+                    while (QueryServiceStatus(service.get(), &status) && status.dwCurrentState != SERVICE_STOPPED && GetTickCount64() < deadline) Sleep(250);
+                    removed = status.dwCurrentState == SERVICE_STOPPED && (DeleteService(service.get()) || GetLastError() == ERROR_SERVICE_MARKED_FOR_DELETE);
+                }
+            }
+        }
+        if (removed)
+            removed = tunnel_startup::Absent(tunnel_startup::AwaitAbsent(serviceName(tunnelName), budget::kDeletionWaitMs));
+        if (removed) {
+            if (DeleteFileW((tunnelFolder() + L"\\" + Widen(tunnelName) + L".conf").c_str()) || GetLastError() == ERROR_FILE_NOT_FOUND ||
+                GetLastError() == ERROR_PATH_NOT_FOUND) {
+                // A disconnect is complete only once the adapter is released too; the next connection depends on it.
+                const auto adapter = awaitAdapterRelease(tunnelName);
+                const auto current = tunnel_startup::ReadStatus(serviceName(tunnelName));
+                if (tunnel_startup::Absent(current) && adapter == lifecycle::AdapterPresence::Absent) return;
+                lifecycle::HelperResult result;
+                result.stage = Stage::RemoveFailed;
+                result.cleanupIncomplete = true;
+                if (!tunnel_startup::Absent(current)) {
+                    result.residual = residualFor(current);
+                    result.error = current.error;
+                } else {
+                    result.residual = adapterResidual(adapter);
+                    if (adapter == lifecycle::AdapterPresence::Active) result.error = ERROR_TIMEOUT;
+                }
+                throw Error(lifecycle::HelperMessage(lifecycle::EncodeHelperResult(result)));
             }
         }
     }
-    if (removed) {
-        if (DeleteFileW((tunnelFolder() + L"\\" + Widen(tunnelName) + L".conf").c_str()) || GetLastError() == ERROR_FILE_NOT_FOUND ||
-            GetLastError() == ERROR_PATH_NOT_FOUND) {
-            // A disconnect is complete only once the adapter is released too; the next connection depends on it.
-            const auto adapter = awaitAdapterRelease(tunnelName);
-            if (adapter == lifecycle::AdapterPresence::Absent) return;
-            // The elevated helper cannot remove an adapter the official service owns, so do not request elevation.
-            lifecycle::HelperResult result;
-            result.stage = Stage::RemoveFailed;
-            result.cleanupIncomplete = true;
-            result.residual = adapterResidual(adapter);
-            throw Error(lifecycle::HelperMessage(lifecycle::EncodeHelperResult(result)));
-        }
-    }
+    lock.reset();
     DWORD code = runElevated(HelperArguments(HelperCommand{HelperCommand::Verb::TunnelDown, tunnelName, "", "", ""}));
     if (code == ERROR_CANCELLED) throw Error("The tunnel is still connected because administrative approval was declined. Disconnect again, or stop it in WireGuard for Windows.");
     if (code != kHelperOk) throw Error(lifecycle::HelperMessage(code));
@@ -692,7 +718,9 @@ std::vector<std::string> ResidualTeliphonesTunnels(const std::vector<std::string
     }
     std::vector<lifecycle::InterfaceRow> adapters;
     PMIB_IF_TABLE2 table = nullptr;
-    if (GetIfTable2(&table) == NO_ERROR) {
+    const DWORD enumeration = GetIfTable2(&table);
+    if (enumeration != NO_ERROR) ThrowLastError("Unable to enumerate residual TELIPHONES tunnel adapters", enumeration);
+    {
         const std::unique_ptr<MIB_IF_TABLE2, decltype(&FreeMibTable)> owned(table, &FreeMibTable);
         for (ULONG i = 0; i < table->NumEntries; ++i) {
             const std::string alias = Narrow(table->Table[i].Alias);

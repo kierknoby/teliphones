@@ -427,6 +427,24 @@ class BuildLayoutTests(unittest.TestCase):
         self.assertIn("tunnel.remove();", reconnect)
         self.assertIn("AdapterPresence::Absent", native.split("void remove()", 1)[1].split("std::wstring configPath()", 1)[0])
 
+    def test_disconnect_serialises_removal_and_rechecks_service_after_adapter_wait(self):
+        wireguard = (ROOT / "src/platform/WireGuard.cpp").read_text()
+        remove = wireguard.split("void RemoveTunnel(", 1)[1].split("lifecycle::AdapterPresence TunnelAdapterPresence(", 1)[0]
+        self.assertLess(remove.index("HelperLockName("), remove.index("DeleteFileW(staging"))
+        self.assertLess(remove.index("lock->owned()"), remove.index("OpenServiceW("))
+        self.assertLess(remove.index("lock.reset()"), remove.index("runElevated("))
+        final = remove.split("const auto adapter = awaitAdapterRelease(tunnelName);", 1)[1]
+        self.assertLess(final.index("ReadStatus("), final.index("return;"))
+        self.assertIn("tunnel_startup::Absent(current)", final)
+        self.assertIn("tunnel_startup::AwaitAbsent(serviceName(tunnelName), budget::kDeletionWaitMs)", remove)
+        elevated = wireguard.split("lifecycle::HelperResult removeOwnedTunnel(", 1)[1].split("DWORD helperUp(", 1)[0]
+        final = elevated.split("const auto adapter = awaitAdapterRelease(tunnelName);", 1)[1]
+        self.assertIn("ReadStatus(service)", final)
+        self.assertIn("tunnel_startup::Absent(status)", final)
+        self.assertIn("if (!outcome.cleanupIncomplete) return {};", final)
+        residual = wireguard.split("std::vector<std::string> ResidualTeliphonesTunnels(", 1)[1].split("bool IsHelperInvocation(", 1)[0]
+        self.assertIn('ThrowLastError("Unable to enumerate residual TELIPHONES tunnel adapters", enumeration)', residual)
+
     def test_startup_notices_are_visible_and_second_launch_activates_existing_window(self):
         main = (ROOT / "src/app/MainDlg.cpp").read_text()
         show_error = main.split("void ShowError(const std::string& text) {", 1)[1].split("\n}\n", 1)[0]

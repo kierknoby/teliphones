@@ -280,6 +280,13 @@ void integrationTests() {
                 "Reconnection must apply the enrolled key to the new adapter");
     }
     tunnel.remove();
+    for (int cycle = 0; cycle < 2; ++cycle) {
+        require(InstallTunnel(tunnel.name, RenderTunnel(config)), "Repeated reconnection was cancelled");
+        require(QueryTunnel(tunnel.name) == TunnelState::Running, "Repeated reconnection must start the service");
+        require(TunnelAdapterPresence(tunnel.name) == tunnel_lifecycle::AdapterPresence::Active,
+                "Repeated reconnection must have a present adapter");
+        tunnel.remove();
+    }
     {
         HiddenDependency negativeControl;
         bool rejected = false;

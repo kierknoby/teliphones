@@ -92,7 +92,8 @@ std::string cleanupText(const HelperResult& result) {
         text += " TELIPHONES did not force it to stop because the service could not be verified as this TELIPHONES "
                 "tunnel. Check it with sc.exe qc before removing it.";
     } else if (result.residual == Residual::AdapterOnly) {
-        text += " Restart Windows to release the adapter, then connect again.";
+        text += " Adapter release did not complete within the cleanup timeout. Try Disconnect or Connect again; "
+                "TELIPHONES rechecks the service and adapter before starting a new tunnel.";
     } else {
         text += " Disconnect again; if the tunnel remains, restart Windows before connecting again.";
     }

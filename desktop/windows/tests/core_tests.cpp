@@ -1409,8 +1409,9 @@ void testTunnelLifecycle() {
     check(contains(residualMessage, "no new tunnel was started") && contains(residualMessage, "network adapter"),
           "retry refuses to reuse a partially removed tunnel");
 
-    check(contains(residualMessage, "an active network adapter") && contains(residualMessage, "Restart Windows"),
-          "an active residual adapter is reported as active");
+    check(contains(residualMessage, "an active network adapter") && contains(residualMessage, "cleanup timeout") &&
+              !contains(residualMessage, "Restart Windows"),
+          "a present residual adapter reports the timeout and allows a fresh cleanup attempt");
 
     // A disconnected tunnel can leave a non-present interface row with its alias; that row carries no traffic.
     const std::string tunnel = "TELIPHONES-1df533523b61";
@@ -1472,6 +1473,20 @@ void testTunnelLifecycle() {
     check(transient.await(5000) == P::Absent, "a transient enumeration failure is resolved by a later snapshot");
     FakeWindows unaligned{{P::Active}};
     check(unaligned.await(250) == P::Active && unaligned.clock == 250, "the final pause never overruns the budget");
+    retained.observations = {P::Absent};
+    check(retained.await(5000) == P::Absent && retained.clock == 5000,
+          "a previous cleanup timeout is not cached when the adapter is now absent");
+    for (int cycle = 0; cycle < 3; ++cycle) {
+        FakeWindows reconnect{{P::Active, P::Absent}};
+        check(reconnect.await(5000) == P::Absent && reconnect.probes == 2,
+              "each disconnect and reconnect uses fresh adapter observations");
+    }
+    FakeWindows notPresentRow{{lc::ClassifyTunnelAdapter(true, {{tunnel, notPresent}}, tunnel)}};
+    check(notPresentRow.await(5000) == P::Absent && notPresentRow.paused == 0,
+          "NotPresent finishes teardown without reporting an active adapter or waiting");
+    FakeWindows lostVisibility{{P::Active, P::Unverified}};
+    check(lostVisibility.await(5000) == P::Unverified,
+          "enumeration failure at the deadline is unknown, not a cached active adapter");
 
     lc::HelperResult unverified;
     unverified.stage = lc::Stage::RemoveFailed;
@@ -1482,7 +1497,8 @@ void testTunnelLifecycle() {
           "an unverified adapter residual round-trips");
     const auto unverifiedMessage = lc::HelperMessage(lc::EncodeHelperResult(unverified));
     check(contains(unverifiedMessage, "could not report whether its network adapter was released") &&
-              contains(unverifiedMessage, "Cleanup is incomplete") && contains(unverifiedMessage, "Other WireGuard tunnels were not changed"),
+              contains(unverifiedMessage, "Cleanup is incomplete") && contains(unverifiedMessage, "Other WireGuard tunnels were not changed") &&
+              !contains(unverifiedMessage, "an active network adapter"),
           "an unverified adapter is reported, not treated as success");
     check(!lc::DecodeHelperResult(lc::EncodeHelperResult(lc::HelperResult{lc::Stage::RemoveFailed}) | (8u << 12), decoded),
           "unknown residual kinds are rejected");
