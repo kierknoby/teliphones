@@ -150,6 +150,13 @@ void tests(const fs::path& root) {
     check(store.Read(admin).find("Unable to access interface: Access is denied") != std::string::npos &&
           store.Read(admin).find("WireGuard admin interface permission") != std::string::npos,
           "telemetry denial reason and permission requirement survive view/export");
+    const std::string admission = "The PBX session controller could not be reached (Windows error 12002). "
+                                  "The WireGuard handshake with pbx.example:51821 last completed 240 seconds ago.";
+    store.Write(admin, "", "admission_failed", "warning", admission);
+    store.Write(admin, "", "admission_recovered", "info", "The PBX session controller answered and admitted this workstation.");
+    check(store.Read(admin).find("last completed 240 seconds ago") != std::string::npos &&
+          store.Read(admin).find("admission_recovered") != std::string::npos,
+          "admission failure classification and recovery survive view/export");
     store.Write(admin, "", "session_summary", "info", "Stable; latency 12.5 ms; received 2000 bytes; retry unavailable.");
     check(store.Read(admin).find("Stable; latency 12.5 ms; received 2000 bytes") != std::string::npos,
           "correlated summary preserves useful sanitized detail");

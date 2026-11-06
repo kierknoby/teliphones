@@ -66,7 +66,11 @@ std::string residualText(const HelperResult& result) {
         case Residual::Running: return " The WireGuard tunnel service is still running.";
         case Residual::Stopped: return " The WireGuard tunnel service is stopped but could not be deleted.";
         case Residual::AdapterOnly:
-            return " The WireGuard tunnel service was removed, but a network adapter with the tunnel's name still exists.";
+            return " The WireGuard tunnel service was removed, but an active network adapter with the tunnel's name "
+                   "still exists.";
+        case Residual::AdapterUnverified:
+            return " The WireGuard tunnel service was removed, but Windows could not report whether its network "
+                   "adapter was released.";
         case Residual::Unknown: return " The state of the WireGuard tunnel service could not be read.";
         case Residual::None: break;
     }
@@ -97,6 +101,14 @@ char foldAscii(char value) { return value >= 'A' && value <= 'Z' ? static_cast<c
 
 }  // namespace
 
+AdapterPresence ClassifyTunnelAdapter(bool enumerated, const std::vector<InterfaceRow>& rows, const std::string& tunnelName) {
+    if (!enumerated) return AdapterPresence::Unverified;
+    for (const auto& row : rows) {
+        if (row.alias == tunnelName && row.operStatus != kInterfaceOperStatusNotPresent) return AdapterPresence::Active;
+    }
+    return AdapterPresence::Absent;
+}
+
 std::uint32_t EncodeHelperResult(const HelperResult& result) {
     std::uint32_t code = static_cast<std::uint32_t>(result.stage) & 0xffu;
     if (result.cleanupIncomplete) code |= kCleanupIncomplete;
@@ -112,7 +124,7 @@ bool DecodeHelperResult(std::uint32_t code, HelperResult& result) {
     if (code & 0xc0000000u) return false;
     const std::uint32_t stage = code & 0xffu;
     const std::uint32_t residual = (code >> 12) & 0xfu;
-    if (!knownStage(stage) || residual > static_cast<std::uint32_t>(Residual::AdapterOnly)) return false;
+    if (!knownStage(stage) || residual > static_cast<std::uint32_t>(Residual::AdapterUnverified)) return false;
     result = HelperResult{};
     result.stage = static_cast<Stage>(stage);
     result.cleanupIncomplete = (code & kCleanupIncomplete) != 0;

@@ -2,6 +2,8 @@
 // the pinned official WireGuardNT API DLL for in-memory adapter configuration.
 #pragma once
 
+#include "../core/TunnelLifecycle.h"
+
 #include <string>
 #include <vector>
 
@@ -29,7 +31,10 @@ TunnelState QueryTunnel(const std::string& tunnelName);
 // cannot authenticate as this workstation. Returns false if the user declined the UAC prompt.
 bool InstallTunnel(const std::string& tunnelName, const std::string& configText);
 // Stops and removes the tunnel service. Uses the rights granted at installation; falls back to an elevated helper.
+// Returns only after the service, its bootstrap configuration and its active network adapter are gone.
 void RemoveTunnel(const std::string& tunnelName);
+// Whether an active network adapter with this tunnel's exact name exists (read-only interface table snapshot).
+tunnel_lifecycle::AdapterPresence TunnelAdapterPresence(const std::string& tunnelName);
 
 // Entry point when the executable is started elevated with /tunnel-up or /tunnel-down. Returns the process exit code.
 int RunTunnelHelper(const std::vector<std::string>& arguments);

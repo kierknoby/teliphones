@@ -29,6 +29,7 @@ protected:
     DECLARE_MESSAGE_MAP()
 
 private:
+    BOOL InitializeConsole();
     void StopConsole();
     void ResizeTerminal();
 

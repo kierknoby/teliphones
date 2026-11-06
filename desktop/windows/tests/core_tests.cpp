@@ -2,11 +2,14 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <functional>
 #include <iterator>
 #include <string>
 #include <vector>
 
+#include "../src/core/Admission.h"
 #include "../src/core/CommandLine.h"
 #include "../src/core/ConnectionHealth.h"
 #include "../src/core/DesktopLayout.h"
@@ -17,6 +20,7 @@
 #include "../src/core/Pairing.h"
 #include "../src/core/Profiles.h"
 #include "../src/core/Rendezvous.h"
+#include "../src/core/SshRuntime.h"
 #include "../src/core/TunnelConfig.h"
 #include "../src/core/TunnelLifecycle.h"
 #include "../src/core/Validation.h"
@@ -1405,6 +1409,68 @@ void testTunnelLifecycle() {
     check(contains(residualMessage, "no new tunnel was started") && contains(residualMessage, "network adapter"),
           "retry refuses to reuse a partially removed tunnel");
 
+    check(contains(residualMessage, "an active network adapter") && contains(residualMessage, "Restart Windows"),
+          "an active residual adapter is reported as active");
+
+    // A disconnected tunnel can leave a non-present interface row with its alias; that row carries no traffic.
+    const std::string tunnel = "TELIPHONES-1df533523b61";
+    const std::uint32_t up = 1, down = 2, notPresent = lc::kInterfaceOperStatusNotPresent;
+    check(lc::ClassifyTunnelAdapter(true, {}, tunnel) == lc::AdapterPresence::Absent, "no interface row means no adapter");
+    check(lc::ClassifyTunnelAdapter(true, {{tunnel, notPresent}}, tunnel) == lc::AdapterPresence::Absent,
+          "a released adapter's non-present row does not block reconnection");
+    check(lc::ClassifyTunnelAdapter(true, {{tunnel, up}}, tunnel) == lc::AdapterPresence::Active, "an up adapter is active");
+    check(lc::ClassifyTunnelAdapter(true, {{tunnel, down}}, tunnel) == lc::AdapterPresence::Active,
+          "a down but present adapter is still active");
+    check(lc::ClassifyTunnelAdapter(true, {{tunnel, notPresent}, {tunnel, up}}, tunnel) == lc::AdapterPresence::Active,
+          "a stale row cannot hide a present adapter");
+    check(lc::ClassifyTunnelAdapter(true, {{tunnel + "0", up}, {"teliphones-1df533523b61", up}, {"wg0", up}}, tunnel) ==
+              lc::AdapterPresence::Absent,
+          "other WireGuard adapters and near-miss names are ignored");
+    check(lc::ClassifyTunnelAdapter(false, {}, tunnel) == lc::AdapterPresence::Unverified,
+          "a failed interface enumeration never counts as released");
+
+    struct FakeWindows {
+        std::vector<lc::AdapterPresence> observations;
+        std::size_t probes = 0;
+        unsigned long long clock = 0;
+        std::uint32_t paused = 0;
+        lc::AdapterPresence await(std::uint32_t budget) {
+            return lc::AwaitAdapterRelease(
+                [this] { return observations[std::min(probes++, observations.size() - 1)]; }, [this] { return clock; },
+                [this](std::uint32_t ms) { clock += ms; paused += ms; }, budget);
+        }
+    };
+    using P = lc::AdapterPresence;
+    FakeWindows delayed{{P::Active, P::Active, P::Active, P::Absent}};
+    check(delayed.await(5000) == P::Absent && delayed.probes == 4 && delayed.paused == 300,
+          "delayed adapter disappearance is awaited, then reconnection proceeds");
+    FakeWindows released{{P::Absent}};
+    check(released.await(5000) == P::Absent && released.probes == 1 && released.paused == 0,
+          "an immediately released adapter does not delay reconnection");
+    FakeWindows retained{{P::Active}};
+    check(retained.await(5000) == P::Active && retained.clock == 5000 && retained.probes == 51,
+          "a retained adapter is reported after the fixed budget, not reused");
+    FakeWindows blind{{P::Unverified}};
+    check(blind.await(5000) == P::Unverified && blind.clock == 5000, "persistent enumeration failure fails closed");
+    FakeWindows transient{{P::Unverified, P::Absent}};
+    check(transient.await(5000) == P::Absent, "a transient enumeration failure is resolved by a later snapshot");
+    FakeWindows unaligned{{P::Active}};
+    check(unaligned.await(250) == P::Active && unaligned.clock == 250, "the final pause never overruns the budget");
+
+    lc::HelperResult unverified;
+    unverified.stage = lc::Stage::RemoveFailed;
+    unverified.cleanupIncomplete = true;
+    unverified.residual = lc::Residual::AdapterUnverified;
+    check(lc::DecodeHelperResult(lc::EncodeHelperResult(unverified), decoded) && decoded.residual == lc::Residual::AdapterUnverified &&
+              decoded.stage == lc::Stage::RemoveFailed && decoded.cleanupIncomplete,
+          "an unverified adapter residual round-trips");
+    const auto unverifiedMessage = lc::HelperMessage(lc::EncodeHelperResult(unverified));
+    check(contains(unverifiedMessage, "could not report whether its network adapter was released") &&
+              contains(unverifiedMessage, "Cleanup is incomplete") && contains(unverifiedMessage, "Other WireGuard tunnels were not changed"),
+          "an unverified adapter is reported, not treated as success");
+    check(!lc::DecodeHelperResult(lc::EncodeHelperResult(lc::HelperResult{lc::Stage::RemoveFailed}) | (8u << 12), decoded),
+          "unknown residual kinds are rejected");
+
     check(contains(lc::HelperMessage(lc::EncodeHelperResult(lc::HelperResult{lc::Stage::Busy})), "still in progress"),
           "overlapping helper is reported as busy");
     check(lc::EncodeHelperResult(lc::HelperResult{}) == 0, "success remains exit code zero");
@@ -1448,6 +1514,220 @@ void testTunnelLifecycle() {
           "caller never abandons a helper that is still within its bounded steps");
 }
 
+tlp::SshRuntimeFilesystem realFilesystem() {
+    namespace fs = std::filesystem;
+    tlp::SshRuntimeFilesystem ops;
+    ops.separator = "/";
+    ops.kind = [](const std::string& path) {
+        const auto status = fs::symlink_status(path);
+        if (!fs::exists(status)) return tlp::SshRuntimeFilesystem::Kind::Missing;
+        if (fs::is_directory(status)) return tlp::SshRuntimeFilesystem::Kind::PlainDirectory;
+        if (fs::is_regular_file(status)) return tlp::SshRuntimeFilesystem::Kind::PlainFile;
+        return tlp::SshRuntimeFilesystem::Kind::Other;
+    };
+    ops.list = [](const std::string& directory) {
+        std::vector<std::string> names;
+        for (const auto& entry : fs::directory_iterator(directory)) names.push_back(entry.path().filename().string());
+        std::sort(names.begin(), names.end());
+        return names;
+    };
+    ops.removeFile = [](const std::string& path) {
+        if (!fs::remove(path)) throw tlp::SshRuntimeResidual("Unable to remove an SSH runtime file (" + path + ").");
+    };
+    ops.removeEmptyDirectory = [](const std::string& directory) {
+        if (!fs::is_empty(directory)) return false;
+        fs::remove(directory);
+        return true;
+    };
+    return ops;
+}
+
+void writeBytes(const std::filesystem::path& path, std::size_t size) {
+    std::ofstream file(path, std::ios::binary);
+    file << std::string(size, 'd');
+}
+
+// Reported 0.8.4 state: %LOCALAPPDATA%\TELIPHONES\SSH\10ce6b5994ef8d66\5fb8cfced3b2ce24\ssh.log (4,209 bytes),
+// with the permanent identity SSH\10ce6b5994ef8d66.dpapi beside the profile directory.
+void testSshRuntimeReportedTree() {
+    namespace fs = std::filesystem;
+    const auto base = fs::temp_directory_path() / ("teliphones-runtime-" + std::to_string(std::rand()));
+    const auto ssh = base / "TELIPHONES" / "SSH";
+    const auto profile = ssh / "10ce6b5994ef8d66";
+    const auto attempt = profile / "5fb8cfced3b2ce24";
+    const auto identity = ssh / "10ce6b5994ef8d66.dpapi";
+    auto build = [&] {
+        fs::remove_all(base);
+        fs::create_directories(attempt);
+        writeBytes(attempt / "ssh.log", 4209);
+        writeBytes(identity, 512);
+    };
+    const auto ops = realFilesystem();
+
+    // Reproduction: the 0.8.4 file set cannot remove an attempt that holds only ssh.log.
+    build();
+    std::string failure;
+    try {
+        tlp::RemoveSshRuntimeTree(ops, profile.string(), tlp::kSshRuntimeFiles084);
+    } catch (const tlp::SshRuntimeResidual& error) {
+        failure = error.what();
+    }
+    check(failure.find(attempt.string()) != std::string::npos, "0.8.4 file set reproduces the non-empty attempt directory");
+    check(fs::file_size(attempt / "ssh.log") == 4209 && fs::exists(identity), "the failed cleanup kept ssh.log and the identity");
+
+    // Correction: the complete file set removes exactly the abandoned runtime and keeps the identity.
+    build();
+    tlp::RemoveSshRuntimeTree(ops, profile.string());
+    check(!fs::exists(profile), "abandoned attempt holding only ssh.log is removed with its profile runtime directory");
+    check(fs::file_size(identity) == 512, "permanent DPAPI identity beside the runtime directory is untouched");
+    tlp::RemoveSshRuntimeTree(ops, profile.string());
+    check(!fs::exists(profile), "cleanup of an already removed runtime is a no-op");
+
+    // Every crash leftover a production attempt writes, across several attempts.
+    build();
+    fs::create_directories(profile / "aaaaaaaaaaaaaaaa");
+    for (const char* name : tlp::kSshRuntimeFiles) writeBytes(profile / "aaaaaaaaaaaaaaaa" / name, 16);
+    tlp::RemoveSshRuntimeTree(ops, profile.string());
+    check(!fs::exists(profile) && fs::exists(identity), "every known attempt file is removed; identity kept");
+
+    // An unknown file blocks only its own attempt; other attempts are still removed and nothing unknown is deleted.
+    build();
+    fs::create_directories(profile / "bbbbbbbbbbbbbbbb");
+    writeBytes(profile / "bbbbbbbbbbbbbbbb" / "notes.txt", 3);
+    writeBytes(profile / "10ce6b5994ef8d66.dpapi", 7);
+    failure.clear();
+    try {
+        tlp::RemoveSshRuntimeTree(ops, profile.string());
+    } catch (const tlp::SshRuntimeResidual& error) {
+        failure = error.what();
+    }
+    check(!failure.empty() && !fs::exists(attempt), "a foreign file does not keep other abandoned attempts on disk");
+    check(fs::exists(profile / "bbbbbbbbbbbbbbbb" / "notes.txt") && fs::file_size(profile / "10ce6b5994ef8d66.dpapi") == 7,
+          "files TELIPHONES did not create, including a stray identity, are never deleted");
+
+    // A link in place of an attempt directory is refused, not followed.
+    build();
+    fs::create_directories(base / "outside");
+    writeBytes(base / "outside" / "ssh.log", 5);
+    fs::remove_all(attempt);
+    fs::create_directory_symlink(base / "outside", attempt);
+    failure.clear();
+    try {
+        tlp::RemoveSshRuntimeTree(ops, profile.string());
+    } catch (const tlp::SshRuntimeResidual& error) {
+        failure = error.what();
+    }
+    check(failure.find("not a plain owned directory") != std::string::npos && fs::exists(base / "outside" / "ssh.log"),
+          "a linked attempt directory is not followed");
+    fs::remove_all(base);
+}
+
+void testSshRuntime() {
+    for (const char* name : {"identity", "identity.pub", "identity.sig", "certificate.pub", "config", "known_hosts", "ssh.log"})
+        check(tlp::IsSshRuntimeFile(name), "every file a managed SSH attempt writes, including ssh.log, is known");
+    for (const char* name : {"", "ssh.log.bak", "SSH.LOG", "notes.txt", "..", "identity.dpapi", "x.dpapi"})
+        check(!tlp::IsSshRuntimeFile(name), "unknown names are never deleted by runtime cleanup");
+
+    auto make = [](const std::string& name, tlp::ProfileKind kind, const std::string& sshKey) {
+        tlp::Profile profile;
+        profile.id = name;
+        profile.name = name;
+        profile.kind = kind;
+        profile.pairing.sshPublicKey = sshKey;
+        return profile;
+    };
+    const std::vector<tlp::Profile> profiles{make("locked", tlp::ProfileKind::Administrator, "ssh-ed25519 A"),
+                                             make("support", tlp::ProfileKind::Support, "ssh-ed25519 B"),
+                                             make("gui-only", tlp::ProfileKind::Administrator, ""),
+                                             make("closing", tlp::ProfileKind::Administrator, "ssh-ed25519 C"),
+                                             make("healthy", tlp::ProfileKind::Administrator, "ssh-ed25519 D")};
+    const auto before = profiles;
+    std::vector<std::string> cleaned;
+    const auto failures = tlp::CleanSshRuntimes(profiles, [&](const tlp::Profile& profile) {
+        cleaned.push_back(profile.id);
+        if (profile.id == "locked") throw tlp::SshRuntimeResidual("ssh.log is in use");
+        if (profile.id == "closing") throw tlp::Error("SSH session could not be verified closed");
+    });
+    check((cleaned == std::vector<std::string>{"locked", "gui-only", "closing", "healthy"}),
+          "one failed cleanup does not skip later profiles; administrator profiles whose SSH was revoked are still cleaned");
+    check(failures.size() == 2 && failures[0].profileName == "locked" && failures[1].profileName == "closing",
+          "every failed profile is reported by name");
+    check(profiles.size() == before.size() && profiles[0].id == before[0].id && profiles[4].pairing.sshPublicKey == "ssh-ed25519 D",
+          "cleanup failures leave the loaded profiles intact");
+    const auto text = tlp::DescribeSshRuntimeCleanupFailures(failures);
+    check(text.find("locked: ssh.log is in use") != std::string::npos &&
+              text.find("closing: SSH session could not be verified closed") != std::string::npos,
+          "failure description identifies each remaining resource");
+    check(text.find("no private keys") != std::string::npos && text.find("try again") != std::string::npos,
+          "failure description states the risk and the recovery path");
+    check(tlp::CleanSshRuntimes(profiles, [](const tlp::Profile&) {}).empty(), "successful cleanup reports nothing");
+    bool residualIsError = false;
+    try { throw tlp::SshRuntimeResidual("x"); } catch (const tlp::Error&) { residualIsError = true; }
+    check(residualIsError, "runtime residual remains a reportable error");
+}
+
+void testAdmissionFailureClassification() {
+    using tlp::AdmissionFailure;
+    using tlp::AdmissionStage;
+    const std::int64_t now = 1760000000;
+    const std::string endpoint = "my-02401002.freepbxhosting.uk:51821";
+    const std::string controller = "100.84.115.1:8766";
+    const auto classify = [&](AdmissionStage stage, std::optional<std::int64_t> handshake) {
+        return tlp::ClassifyAdmissionFailure(stage, handshake, now);
+    };
+    const auto describe = [&](AdmissionStage stage, std::optional<std::int64_t> handshake) {
+        return tlp::DescribeAdmissionFailure(tlp::AdmissionTransportError(stage, 12002, "timeout"), handshake, now,
+                                             endpoint, controller);
+    };
+    const std::int64_t stale = tlp::ConnectionHealthMonitor::kStaleHandshakeSeconds;
+
+    // Network change during an active session: handshakes stop renewing on the new path.
+    check(classify(AdmissionStage::Reach, now - 30) == AdmissionFailure::ControllerUnreached,
+          "fresh handshake plus unreachable controller is a PBX-side failure");
+    check(classify(AdmissionStage::Reach, now - stale) == AdmissionFailure::ControllerUnreached,
+          "handshake exactly at the freshness threshold still proves authentication");
+    check(classify(AdmissionStage::Reach, now - stale - 1) == AdmissionFailure::NoHandshake,
+          "handshake older than the freshness threshold is an outer-path failure after a network change");
+    check(classify(AdmissionStage::Response, now - stale - 600) == AdmissionFailure::NoHandshake,
+          "a stale handshake outranks the HTTP stage");
+    // Network change before reconnection: the new tunnel never completes a handshake.
+    check(classify(AdmissionStage::Reach, 0) == AdmissionFailure::NoHandshake,
+          "no handshake since tunnel start is not reported as authenticated");
+    check(classify(AdmissionStage::Reach, std::nullopt) == AdmissionFailure::HandshakeUnknown,
+          "unreadable handshake telemetry is not reported as authenticated");
+    // Roaming recovered: WireGuard re-handshakes from the new address; remaining failures are the PBX's.
+    check(classify(AdmissionStage::Response, now - 2) == AdmissionFailure::ControllerSilent,
+          "fresh handshake plus accepted-but-silent controller is a stalled PBX broker");
+
+    const std::string noHandshake = describe(AdmissionStage::Reach, now - 240);
+    check(noHandshake.find("authenticated (") == std::string::npos &&
+          noHandshake.find("tunnel is not authenticated from this network") != std::string::npos &&
+          noHandshake.find("last completed 240 seconds ago") != std::string::npos &&
+          noHandshake.find("outbound UDP to " + endpoint) != std::string::npos &&
+          noHandshake.find("Windows error 12002") != std::string::npos &&
+          noHandshake.find("not a PBX admission decision") != std::string::npos,
+          "stale handshake message names the outer path, age, endpoint and Windows error without claiming authentication");
+    const std::string never = describe(AdmissionStage::Reach, 0);
+    check(never.find("has not completed since this tunnel started") != std::string::npos &&
+          never.find("authenticated (") == std::string::npos, "missing handshake is described as never completed");
+    const std::string unknown = describe(AdmissionStage::Response, std::nullopt);
+    check(unknown.find("could not be read") != std::string::npos && unknown.find("authenticated (") == std::string::npos,
+          "unknown handshake is not described as authenticated");
+    const std::string unreached = describe(AdmissionStage::Reach, now - 30);
+    check(unreached.find("authenticated (handshake 30 seconds ago)") != std::string::npos &&
+          unreached.find(controller) != std::string::npos &&
+          unreached.find("this network is not the cause") != std::string::npos,
+          "fresh handshake message blames the PBX controller listener or firewall");
+    const std::string silent = describe(AdmissionStage::Response, now - 5);
+    check(silent.find("accepted the request, but did not answer in time") != std::string::npos,
+          "accepted-but-silent controller message names the stalled broker");
+    for (const auto& text : {noHandshake, never, unknown, unreached, silent})
+        check(text.find("keeps retrying while connected") != std::string::npos, "every classification states the recovery path");
+    check(std::string(tlp::AdmissionFailureName(AdmissionFailure::NoHandshake)) == "no-handshake" &&
+          std::string(tlp::AdmissionFailureName(AdmissionFailure::ControllerSilent)) == "controller-silent",
+          "classification names are stable diagnostic keys");
+}
+
 int main() {
     const unsigned versionParts[] = {TELIPHONES_VERSION_NUMERIC};
     std::string versionBase = std::to_string(versionParts[0]) + "." + std::to_string(versionParts[1]) + "." + std::to_string(versionParts[2]);
@@ -1464,11 +1744,14 @@ int main() {
     testWorkstationHeartbeatSshUpdates();
     testTunnels();
     testTunnelLifecycle();
+    testSshRuntime();
+    testSshRuntimeReportedTree();
     testGrants();
     testProfiles();
     testCommandLine();
     testMonitor();
     testConnectionHealth();
+    testAdmissionFailureClassification();
     testLaunchers();
     testWireGuardSetup();
     testAppearance();

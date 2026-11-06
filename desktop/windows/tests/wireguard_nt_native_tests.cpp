@@ -1,8 +1,14 @@
+#include <winsock2.h>
+#include <ws2tcpip.h>
+
 #include "../src/platform/WireGuardNt.h"
 #include "../src/platform/WireGuard.h"
 #include "../src/platform/Win.h"
 #include "../src/core/Json.h"
 #include "../src/core/TunnelConfig.h"
+
+#include <iphlpapi.h>
+#include <netioapi.h>
 
 #include <algorithm>
 #include <cstring>
@@ -118,6 +124,25 @@ public:
     }
 };
 
+// Evidence for the integration log: every interface row Windows still reports under the tunnel's alias.
+void logAdapterRows(const std::string& name, const char* when) {
+    PMIB_IF_TABLE2 table = nullptr;
+    require(GetIfTable2(&table) == NO_ERROR, "Cannot enumerate network interfaces");
+    const auto alias = Widen(name);
+    int rows = 0;
+    for (ULONG i = 0; i < table->NumEntries; ++i) {
+        const auto& row = table->Table[i];
+        if (alias != row.Alias) continue;
+        ++rows;
+        std::cout << "adapter row " << when << ": OperStatus=" << row.OperStatus << " MediaConnectState=" << row.MediaConnectState
+                  << " HardwareInterface=" << static_cast<int>(row.InterfaceAndOperStatusFlags.HardwareInterface)
+                  << " ConnectorPresent=" << static_cast<int>(row.InterfaceAndOperStatusFlags.ConnectorPresent)
+                  << " NotMediaConnected=" << static_cast<int>(row.InterfaceAndOperStatusFlags.NotMediaConnected) << "\n";
+    }
+    FreeMibTable(table);
+    std::cout << "adapter rows " << when << ": " << rows << "\n";
+}
+
 class Tunnel {
 public:
     const std::string name = "TELIPHONES-NT-" + std::to_string(GetCurrentProcessId());
@@ -129,6 +154,9 @@ public:
     void remove() {
         RemoveTunnel(name);
         require(QueryTunnel(name) == TunnelState::Absent, "Cleanup must remove the actual service");
+        logAdapterRows(name, "after disconnect");
+        require(TunnelAdapterPresence(name) == tunnel_lifecycle::AdapterPresence::Absent,
+                "A successful disconnect must release the tunnel's network adapter");
         require(GetFileAttributesW(configPath().c_str()) == INVALID_FILE_ATTRIBUTES && GetLastError() == ERROR_FILE_NOT_FOUND,
                 "Cleanup must delete the bootstrap disk config");
     }
@@ -234,6 +262,23 @@ void integrationTests() {
                 "Service must remain running beyond the reported 287ms regression after API/adapter close");
         Sleep(50);
     } while (GetTickCount64() < deadline);
+    tunnel.remove();
+    // Reported 0.8.4 regression: reconnecting the same pairing immediately after a normal disconnect was refused
+    // because the released adapter still had an interface row with the tunnel's name.
+    require(InstallTunnel(tunnel.name, RenderTunnel(config)), "Immediate reconnection was cancelled");
+    require(QueryTunnel(tunnel.name) == TunnelState::Running, "Immediate reconnection must start the real service");
+    require(TunnelAdapterPresence(tunnel.name) == tunnel_lifecycle::AdapterPresence::Active,
+            "A running tunnel's adapter must be reported as active");
+    logAdapterRows(tunnel.name, "while reconnected");
+    {
+        nt::Api api(nt::PrepareLibrary());
+        Adapter adapter(api, Widen(tunnel.name));
+        Snapshot reconnected(api, adapter.handle);
+        nt::PrivateKeyUpdate expected;
+        expected.decode(config.privateKey);
+        require(std::memcmp(reconnected.config()->PrivateKey, expected.value.PrivateKey, WIREGUARD_KEY_LENGTH) == 0,
+                "Reconnection must apply the enrolled key to the new adapter");
+    }
     tunnel.remove();
     {
         HiddenDependency negativeControl;

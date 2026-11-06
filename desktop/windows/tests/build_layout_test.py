@@ -402,6 +402,109 @@ class BuildLayoutTests(unittest.TestCase):
             }
             self.assertIn("src/core/TunnelLifecycle.cpp", sources, name)
 
+    def test_disconnect_releases_adapter_and_reconnect_ignores_only_non_present_rows(self):
+        wireguard = (ROOT / "src/platform/WireGuard.cpp").read_text()
+        presence = wireguard.split("lifecycle::AdapterPresence TunnelAdapterPresence(", 1)[1].split("bool IsHelperInvocation(", 1)[0]
+        # Interface status decides, and a failed enumeration is never treated as a released adapter.
+        self.assertIn("OperStatus", presence)
+        self.assertIn("ClassifyTunnelAdapter(false", presence)
+        self.assertNotIn("return false", presence)
+        self.assertIn("IfOperStatusNotPresent) == lifecycle::kInterfaceOperStatusNotPresent", wireguard)
+        # Normal disconnect verifies adapter release instead of leaving the next connection to discover it.
+        remove = wireguard.split("void RemoveTunnel(", 1)[1].split("lifecycle::AdapterPresence TunnelAdapterPresence(", 1)[0]
+        removed = remove.split("if (removed) {", 1)[1].split("runElevated(", 1)[0]
+        self.assertLess(removed.index("DeleteFileW("), removed.index("awaitAdapterRelease(tunnelName)"))
+        self.assertIn("Stage::RemoveFailed", removed)
+        self.assertIn("adapterResidual(adapter)", removed)
+        # The fixed release budget is unchanged; the fix is classification, not a longer wait.
+        lifecycle = (ROOT / "src/core/TunnelLifecycle.h").read_text()
+        self.assertIn("kAdapterReleaseMs = 5000", lifecycle)
+        native = (ROOT / "tests/wireguard_nt_native_tests.cpp").read_text()
+        integration = native.split("void integrationTests()", 1)[1]
+        reconnect = integration.split("tunnel.remove();", 1)[1].split("HiddenDependency negativeControl;", 1)[0]
+        self.assertIn("InstallTunnel(tunnel.name", reconnect)
+        self.assertIn("AdapterPresence::Active", reconnect)
+        self.assertIn("tunnel.remove();", reconnect)
+        self.assertIn("AdapterPresence::Absent", native.split("void remove()", 1)[1].split("std::wstring configPath()", 1)[0])
+
+    def test_startup_notices_are_visible_and_second_launch_activates_existing_window(self):
+        main = (ROOT / "src/app/MainDlg.cpp").read_text()
+        show_error = main.split("void ShowError(const std::string& text) {", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("!main->IsWindowVisible()", show_error)
+        self.assertIn("PostMessage(WM_APP_STARTUP_NOTICES)", show_error)
+        notices = main.split("LRESULT CMainDlg::OnStartupNotices(WPARAM, LPARAM) {", 1)[1].split("\n}\n", 1)[0]
+        self.assertLess(notices.index("ShowWindow(SW_SHOWNORMAL)"), notices.index("tlp::ui::ShowMessage"))
+        self.assertIn("ON_MESSAGE(WM_APP_STARTUP_NOTICES, &CMainDlg::OnStartupNotices)", main)
+        app = (ROOT / "src/app/TeliphonesApp.cpp").read_text()
+        self.assertIn("ActivateExistingInstance();", app.split("ERROR_ALREADY_EXISTS", 1)[1].split("return FALSE;", 1)[0])
+        self.assertIn("QueryFullProcessImageNameW", app)
+        self.assertIn("SetForegroundWindow", app)
+        self.assertIn("has no open window", app)
+        for terminate in ("TerminateProcess", "PROCESS_TERMINATE"):
+            self.assertNotIn(terminate, app)
+
+    def test_admission_failure_is_classified_by_handshake_and_keeps_health_telemetry(self):
+        services = (ROOT / "src/platform/Services.cpp").read_text()
+        request = services.split("WorkstationSessionStatus MaintainWorkstationSession(", 1)[1].split("WinHttpQueryHeaders", 1)[0]
+        self.assertIn("transportFailure(AdmissionStage::Reach)", request)
+        self.assertIn("transportFailure(AdmissionStage::Response)", request)
+        self.assertIn("WinHttpSetTimeouts(session.value, 3000, 3000, 5000, 5000)", request)
+        main = (ROOT / "src/app/MainDlg.cpp").read_text()
+        self.assertIn("catch (const tlp::AdmissionTransportError& e)", main)
+        self.assertIn("if (collectTelemetry || transportFailure)", main)
+        self.assertIn("tlp::DescribeAdmissionFailure(", main)
+        done = main.split("LRESULT CMainDlg::OnProbeDone(", 1)[1].split("LRESULT CMainDlg::OnOperationDone(", 1)[0]
+        failure = done.split("if (result->sessionAdmissionRequired && !result->sessionAdmissionError.empty()) {", 1)[1]
+        failure = failure.split("return 0;", 1)[0]
+        self.assertLess(failure.index("recordHealth();"), failure.index('"Admission unavailable"'))
+        self.assertIn('LogEvent("admission_failed"', failure)
+        self.assertIn('LogEvent("admission_recovered"', done)
+        self.assertEqual(done.count("active_->health->AddSample(result->sample);"), 1)
+        diagnostics = (ROOT / "src/core/SessionDiagnostics.cpp").read_text()
+        self.assertIn('"admission_failed", "admission_recovered"', diagnostics)
+        # Recovery stays on the existing monitor tick; no extra retry loop or longer timeout is introduced.
+        self.assertNotIn("Sleep(", (ROOT / "src/core/Admission.h").read_text())
+
+    def test_ssh_runtime_cleanup_cannot_block_startup_and_exit_tears_down_everything(self):
+        main = (ROOT / "src/app/MainDlg.cpp").read_text()
+        startup = main.split("profiles_ = tlp::win::LoadProfiles();", 1)[1].split("RefreshList();", 1)
+        # Loading is its own step; per-profile cleanup runs afterwards and cannot report a load failure.
+        self.assertNotIn("RemoveSshRuntime", startup[0])
+        self.assertIn("tlp::CleanSshRuntimes(profiles_", startup[1].split("void ", 1)[0])
+        # Every file an attempt writes is known to both the writer and the cleanup; nothing is deleted recursively.
+        ssh = (ROOT / "src/platform/Ssh.cpp").read_text()
+        session = (ROOT / "src/platform/SshSession.cpp").read_text()
+        self.assertIn('"ssh.log"', (ROOT / "src/core/SshRuntime.h").read_text())
+        self.assertIn("RemoveSshRuntimeTree(fs,", ssh)
+        self.assertIn("FILE_ATTRIBUTE_REPARSE_POINT", ssh)
+        self.assertIn("kSshRuntimeFiles", session)
+        self.assertNotIn("remove_all", ssh)
+        self.assertNotIn("legacy", ssh.lower())
+        self.assertIn("SshRuntimeResidual", ssh)
+        # Disconnect succeeds once the tunnel is removed and leftovers are reported, not fatal.
+        self.assertIn("catch (const tlp::SshRuntimeResidual& residual)", main)
+        exit_path = main.split("void CMainDlg::OnCancel()", 1)[1].split("CDialogEx::OnCancel();", 1)[0]
+        self.assertIn("tlp::win::CloseAllManagedSsh();", exit_path)
+        self.assertIn("tlp::win::RemoveTunnel(active_->tunnelName);", exit_path)
+        self.assertIn("tlp::CleanSshRuntimes(profiles_", exit_path)
+        self.assertIn("Exit TELIPHONES anyway?", exit_path)
+        self.assertIn("void CloseAllManagedSsh()", session)
+        # Console failures stay inside the window procedure and the session is verified closed afterwards.
+        console = main.split("CSshTerminalDlg terminal(", 1)[1].split("break;", 1)[0]
+        self.assertIn("catch (const std::exception& error)", console)
+        self.assertIn("tlp::win::CloseManagedSsh(sshProfileId);", console)
+        terminal = (ROOT / "src/app/SshTerminalDlg.cpp").read_text()
+        init = terminal.split("BOOL CSshTerminalDlg::OnInitDialog()", 1)[1].split("BOOL CSshTerminalDlg::InitializeConsole()", 1)[0]
+        self.assertIn("return InitializeConsole();", init)
+        self.assertIn("EndDialog(IDABORT);", init)
+        stop = terminal.split("void CSshTerminalDlg::StopConsole()", 1)[1].split("void CSshTerminalDlg::OnDisconnect()", 1)[0]
+        self.assertIn("catch (const std::exception& error)", stop)
+        self.assertIn("try {\n            RecalculateGrid(width, height);", terminal)
+        native = (ROOT / "tests/ssh_native_check.py").read_text()
+        self.assertIn("def test_production_console_crash_leaves_no_session_and_next_start_recovers_runtime", native)
+        self.assertIn('"--recover-runtime"', native)
+        self.assertIn('"--recover-runtime"', (ROOT / "tests/ssh_native_host.cpp").read_text())
+
     def test_wireguard_nt_dependency_and_private_only_update_are_pinned(self):
         manifest = json.loads((ROOT / "wireguard-nt.json").read_text())
         self.assertEqual(manifest["version"], "1.1")
@@ -1050,7 +1153,7 @@ function Get-FileHash { throw 'Regression: verifier must not depend on Get-FileH
         self.assertIn('run(["schtasks.exe", "/Create", "/TN", cls.task, "/XML", xml, "/RU", "SYSTEM"])', fixture)
         self.assertLess(fixture.index('security_state("Task", cls.task, cls.sid)'),
                         fixture.index('run(["schtasks.exe", "/Run", "/TN", cls.task])'))
-        self.assertEqual(len([name for name in dir(module.WindowsSshTests) if name.startswith("test_")]), 11)
+        self.assertEqual(len([name for name in dir(module.WindowsSshTests) if name.startswith("test_")]), 12)
 
     def test_ctest_platform_boundary_and_native_ssh_gate(self):
         stubbed = ("project", "set_target_properties", "set_tests_properties", "add_library", "add_executable",

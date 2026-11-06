@@ -181,7 +181,14 @@ protected:
     afx_msg BOOL OnEraseBkgnd(CDC*) { return TRUE; }
     afx_msg void OnSize(UINT type, int width, int height) {
         CWnd::OnSize(type, width, height);
-        RecalculateGrid(width, height);
+        // Exceptions must not leave a window procedure: MFC would terminate TELIPHONES.
+        try {
+            RecalculateGrid(width, height);
+        } catch (const std::exception& error) {
+            if (CWnd* parent = GetParent())
+                parent->SetDlgItemText(IDC_SSH_TERMINAL_STATUS,
+                                       tlp::win::Widen(std::string("SSH console display error: ") + error.what()).c_str());
+        }
     }
     afx_msg void OnVScroll(UINT code, UINT position, CScrollBar* scrollbar) {
         const int maximum = static_cast<int>(terminal_.ScrollbackRows());
@@ -435,6 +442,19 @@ CSshTerminalDlg::~CSshTerminalDlg() = default;
 
 BOOL CSshTerminalDlg::OnInitDialog() {
     CAppearanceDialog::OnInitDialog();
+    try {
+        return InitializeConsole();
+    } catch (const std::exception& error) {
+        // Exceptions must not leave a window procedure; the caller verifies SSH teardown after the dialog closes.
+        StopConsole();
+        tlp::ui::ShowMessage(tlp::win::Widen(std::string("The SSH console could not be opened: ") + error.what()).c_str(),
+                             MB_ICONERROR);
+        EndDialog(IDABORT);
+        return FALSE;
+    }
+}
+
+BOOL CSshTerminalDlg::InitializeConsole() {
     const std::string account = profile_.sshUser.empty() ? profile_.pairing.sshUser : profile_.sshUser;
     if (account.empty()) throw tlp::Error("The PBX has not approved an SSH account for this workstation.");
     SetWindowTextW(tlp::win::Widen("TELIPHONES SSH Console — " + account + "@" + profile_.pairing.pbxAddress).c_str());
@@ -562,7 +582,15 @@ void CSshTerminalDlg::OnReconnect() {
 }
 
 void CSshTerminalDlg::StopConsole() {
-    if (console_) console_->Disconnect();
+    if (!console_) return;
+    try {
+        console_->Disconnect();
+    } catch (const std::exception& error) {
+        // Closing continues; CMainDlg verifies with CloseManagedSsh and reports a session that did not end.
+        if (GetSafeHwnd())
+            SetDlgItemText(IDC_SSH_TERMINAL_STATUS,
+                           tlp::win::Widen(std::string("SSH disconnect error: ") + error.what()).c_str());
+    }
 }
 
 void CSshTerminalDlg::OnDisconnect() {

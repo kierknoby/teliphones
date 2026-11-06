@@ -53,6 +53,7 @@ protected:
     afx_msg LRESULT OnOperationDone(WPARAM, LPARAM result);
     afx_msg LRESULT OnProbeDone(WPARAM generation, LPARAM result);
     afx_msg LRESULT OnFirstRun(WPARAM, LPARAM);
+    afx_msg LRESULT OnStartupNotices(WPARAM, LPARAM);
     DECLARE_MESSAGE_MAP()
 
 private:
@@ -68,6 +69,7 @@ private:
         std::string attemptId;
         std::string lastTelemetryReason;
         std::string lastMeasurementError;
+        std::string lastAdmissionFailure;  // classification logged most recently; empty when admitted
         std::optional<bool> lastHandshakeStale;
         tlp::HealthState lastHealthState = tlp::HealthState::Unknown;
         std::optional<bool> lastProbeSucceeded;

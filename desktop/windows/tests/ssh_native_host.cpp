@@ -180,6 +180,21 @@ int runMain(int argc, char** argv) {
         if (argc > 1 && (std::string(argv[1]) == "/ssh-console" || std::string(argv[1]) == "/ssh-auth"))
             return tlp::win::RunSshConsole(std::vector<std::string>(argv + 1, argv + argc));
         tlp::win::ProtectSshProcess(GetCurrentProcess());
+        if (argc == 3 && std::string(argv[1]) == "--recover-runtime") {
+            // Next-launch recovery exactly as CMainDlg runs it after a crash.
+            tlp::Profile profile;
+            profile.id = argv[2];
+            profile.name = argv[2];
+            profile.kind = tlp::ProfileKind::Administrator;
+            profile.pairing.sshPublicKey = "ssh-ed25519 recovery";
+            const auto failures = tlp::CleanSshRuntimes({profile}, [](const tlp::Profile& item) { tlp::win::RemoveSshRuntime(item); });
+            if (failures.empty()) {
+                std::cout << "RUNTIME_REMOVED" << std::endl;
+                return 0;
+            }
+            std::cout << "RUNTIME_RESIDUAL=" << failures.front().error << std::endl;
+            return 3;
+        }
         const bool embeddedConsole = argc == 3 && std::string(argv[1]) == "--production-console";
         if (argc == 3 && (embeddedConsole || std::string(argv[1]) == "--production")) {
             tlp::Profile profile;

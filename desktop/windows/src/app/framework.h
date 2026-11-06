@@ -20,3 +20,4 @@
 #define WM_APP_FIRST_RUN      (WM_APP + 3)
 #define WM_APP_SETUP_PROGRESS (WM_APP + 4)
 #define WM_APP_SETUP_DONE     (WM_APP + 5)
+#define WM_APP_STARTUP_NOTICES (WM_APP + 6)

@@ -15,6 +15,7 @@
 #include <memory>
 #include <sstream>
 
+#include "../core/Admission.h"
 #include "../core/ConnectionHealth.h"
 #include "../core/ConnectProtection.h"
 #include "../core/Json.h"
@@ -273,11 +274,16 @@ WorkstationSessionStatus MaintainWorkstationSession(const std::string& pbxAddres
     if (!sshPublicKey.empty()) requestBody["ssh_public_key"] = sshPublicKey;
     if (!allowedSources.empty()) requestBody["sources"] = allowedSources;
     const std::string body = json::Serialize(json::Value(requestBody));
+    const auto transportFailure = [](AdmissionStage stage) {
+        const DWORD code = GetLastError();
+        throw AdmissionTransportError(stage, code,
+            "The PBX workstation session controller did not respond through WireGuard: " + Narrow(ErrorText(code)) + ".");
+    };
     if (!WinHttpSendRequest(request.value, L"Content-Type: application/json\r\n", static_cast<DWORD>(-1L),
                             const_cast<char*>(body.data()), static_cast<DWORD>(body.size()),
-                            static_cast<DWORD>(body.size()), 0) ||
-        !WinHttpReceiveResponse(request.value, nullptr))
-        ThrowLastError("The PBX workstation session controller did not respond through WireGuard");
+                            static_cast<DWORD>(body.size()), 0))
+        transportFailure(AdmissionStage::Reach);
+    if (!WinHttpReceiveResponse(request.value, nullptr)) transportFailure(AdmissionStage::Response);
     DWORD status = 0, size = sizeof(status);
     if (!WinHttpQueryHeaders(request.value, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
                              WINHTTP_HEADER_NAME_BY_INDEX, &status, &size, WINHTTP_NO_HEADER_INDEX))

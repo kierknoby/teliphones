@@ -331,8 +331,8 @@ def fixture_task_state(task):
     return security_state("TaskState", task)
 
 
-def process_in_snapshot(pid):
-    """PID inventory does not request rights on a SYSTEM process object."""
+def process_snapshot():
+    """PID inventory does not request rights on a SYSTEM process object. Returns (pid, parent pid) pairs."""
     from ctypes import wintypes
 
     class ProcessEntry(ctypes.Structure):
@@ -351,19 +351,32 @@ def process_in_snapshot(pid):
     if snapshot == ctypes.c_void_p(-1).value:
         raise ctypes.WinError(ctypes.get_last_error())
     try:
+        entries = []
         entry = ProcessEntry()
         entry.dwSize = ctypes.sizeof(entry)
         found = kernel.Process32FirstW(snapshot, ctypes.byref(entry))
         while found:
-            if entry.th32ProcessID == pid:
-                return True
+            entries.append((entry.th32ProcessID, entry.th32ParentProcessID))
             found = kernel.Process32NextW(snapshot, ctypes.byref(entry))
         error = ctypes.get_last_error()
         if error != 18:  # ERROR_NO_MORE_FILES is the only successful enumeration end.
             raise ctypes.WinError(error)
-        return False
+        return entries
     finally:
         kernel.CloseHandle(snapshot)
+
+
+def process_in_snapshot(pid):
+    return any(entry == pid for entry, _ in process_snapshot())
+
+
+def descendants(root):
+    found, frontier = set(), {root}
+    entries = process_snapshot()
+    while frontier:
+        frontier = {pid for pid, parent in entries if parent in frontier and pid not in found and pid != root}
+        found |= frontier
+    return found
 
 
 def wait_server_exit(pid_file):
@@ -842,7 +855,14 @@ class WindowsSshTests(unittest.TestCase):
     def test_production_embedded_console_pty_input_resize_and_disconnect(self):
         self.production(console=True)
 
-    def production(self, denied=False, expiring=False, console=False):
+    def test_production_console_crash_leaves_no_session_and_next_start_recovers_runtime(self):
+        self.production(console=True, crash=True)
+
+    def recover_runtime(self, profile):
+        result = subprocess.run([str(HOST), "--recover-runtime", profile], capture_output=True, text=True, timeout=30)
+        return result.returncode, result.stdout + result.stderr
+
+    def production(self, denied=False, expiring=False, console=False, crash=False):
         log_offset = (self.root / "sshd-test.log").stat().st_size
         profile = secrets.token_hex(8)
         identity_path = Path(os.environ["LOCALAPPDATA"]) / "TELIPHONES/SSH" / (profile + ".dpapi")
@@ -951,6 +971,10 @@ class WindowsSshTests(unittest.TestCase):
                     config = configs[0].read_text(encoding="utf-8")
                     self.assertIn("PermitLocalCommand yes\n", config)
                     self.assertIn("/ssh-auth ", config)
+                    if crash:
+                        attempt = configs[0].parent
+                        # Production writes ssh.log here; the test build redirects it, so model that file.
+                        (attempt / "ssh.log").write_text("debug1: leftover client log\n", encoding="utf-8")
                 except (AssertionError, OSError, RuntimeError, TimeoutError) as error:
                     self.stop(host)
                     self.fail(f"{error}\nClient diagnostic:\n{ssh_client_log_summary(client_log)}"
@@ -969,6 +993,9 @@ class WindowsSshTests(unittest.TestCase):
                           "Client diagnostic tail:\n" + ssh_client_log_summary(client_log) +
                           "\nServer diagnostic tail:\n" + server_log_tail(self.root / "sshd-test.log"))
             self.assertTrue(observed, errors)
+            if crash:
+                self.crash_and_recover(host, profile, identity_path, runtime, attempt)
+                return
             encrypted = identity_path.read_bytes()
             self.assertNotIn(b"PRIVATE KEY", encrypted)
             for file in runtime.rglob("*"):
@@ -1001,6 +1028,37 @@ class WindowsSshTests(unittest.TestCase):
             endpoint.server_close()
             worker.join(timeout=10)
             (self.root / "principals").write_text(self.principal + "\n")
+
+
+    def crash_and_recover(self, host, profile, identity_path, runtime, attempt):
+        owned = descendants(host.pid)
+        self.assertTrue(owned, "The active console had no owned SSH processes to verify.")
+        host.kill()
+        host.wait(timeout=10)
+        for _ in range(100):
+            if not any(process_in_snapshot(pid) for pid in owned):
+                break
+            time.sleep(0.05)
+        survivors = {pid for pid in owned if process_in_snapshot(pid)}
+        self.assertFalse(survivors, f"Crashed TELIPHONES host orphaned owned SSH processes: {sorted(survivors)}")
+        self.assertTrue((attempt / "ssh.log").is_file(), "Crash left no runtime file to model the reported failure.")
+        self.assertTrue(identity_path.is_file())
+        for file in attempt.iterdir():
+            self.assertNotIn(b"PRIVATE KEY", file.read_bytes(), file)
+        # Another process holding ssh.log open without delete sharing models a locked leftover file.
+        with open(attempt / "ssh.log", "rb"):
+            code, output = self.recover_runtime(profile)
+            self.assertEqual(code, 3, output)
+            self.assertIn("RUNTIME_RESIDUAL=", output)
+            self.assertIn("ssh.log", output)
+            self.assertNotIn("legacy", output.lower())
+        self.assertTrue(identity_path.is_file(), "Failed runtime cleanup touched the permanent identity.")
+        self.assertTrue(attempt.is_dir(), "Locked runtime directory was removed despite the reported failure.")
+        code, output = self.recover_runtime(profile)
+        self.assertEqual(code, 0, output)
+        self.assertIn("RUNTIME_REMOVED", output)
+        self.assertFalse(runtime.exists(), "Released runtime directory survived recovery.")
+        self.assertTrue(identity_path.is_file(), "Runtime recovery removed the permanent identity.")
 
 
 def fixture_preflight():

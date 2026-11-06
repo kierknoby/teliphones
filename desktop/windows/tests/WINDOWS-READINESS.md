@@ -239,7 +239,7 @@ expiry, systemd/cgroup, reboot or recovery evidence. Real module 0.4.1 firewall
 watchdog validation, the full terminal/display matrix and production readiness
 remain outstanding. See the [evidence register](../../../docs/SECURITY.md#verification-evidence).
 
-The current source registers nine Windows CTests (nine on Linux) and eleven
+The current source registers nine Windows CTests (nine on Linux) and twelve
 native SSH integration methods. The operator report above predates the latest
 native console test; the current-source Windows build and test suite have not
 been run in this workspace.
@@ -380,12 +380,14 @@ operations doubled. The broker imports Linux-only `fcntl` and `pwd`; it is not
 loaded in Windows tests. Python is required by CMake so these checks cannot
 silently disappear.
 
-After CTest, Windows runs all eleven tests in `ssh_native_check.py`: actual
+After CTest, Windows runs all twelve tests in `ssh_native_check.py`: actual
 OpenSSH login/key destruction/public-only runtime files, unrelated-process agent
 denial, process-memory/handle restrictions, concurrent-session isolation and wrong
 certificates, expiry/wrong host/tampering, controller crash, SSH crash, production
-DPAPI/certificate API/console/disconnect, certificate refusal and local
-authorisation expiry. The workflow fails on native test failure; it does not
+DPAPI/certificate API/console/disconnect, certificate refusal, local
+authorisation expiry, and a console crash whose owned SSH processes must end
+while next-start recovery reports a locked `ssh.log` (retaining the identity)
+and then removes the released runtime. The workflow fails on native test failure; it does not
 replace those checks with the portable suite. Real FreePBX/systemd and reboot
 validation remain separate outstanding requirements.
 

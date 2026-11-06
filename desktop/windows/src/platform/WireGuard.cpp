@@ -30,6 +30,8 @@ namespace {
 namespace lifecycle = tunnel_lifecycle;
 namespace budget = tunnel_lifecycle::budget;
 using lifecycle::Stage;
+static_assert(static_cast<std::uint32_t>(IfOperStatusNotPresent) == lifecycle::kInterfaceOperStatusNotPresent,
+              "Portable adapter classification must match the Windows interface status");
 
 constexpr DWORD kHelperOk = 0;
 
@@ -287,25 +289,14 @@ lifecycle::Residual residualFor(const tunnel_startup::Status& status) {
     }
 }
 
-// The WireGuardNT adapter carries the tunnel's exact name as its interface alias.
-bool adapterPresent(const std::string& tunnelName) {
-    PMIB_IF_TABLE2 table = nullptr;
-    if (GetIfTable2(&table) != NO_ERROR) return false;
-    const std::unique_ptr<MIB_IF_TABLE2, decltype(&FreeMibTable)> owned(table, &FreeMibTable);
-    const auto alias = Widen(tunnelName);
-    for (ULONG i = 0; i < table->NumEntries; ++i) {
-        if (alias == table->Table[i].Alias) return true;
-    }
-    return false;
+lifecycle::AdapterPresence awaitAdapterRelease(const std::string& tunnelName) {
+    return lifecycle::AwaitAdapterRelease([&] { return TunnelAdapterPresence(tunnelName); }, [] { return GetTickCount64(); },
+                                          [](std::uint32_t ms) { Sleep(ms); }, budget::kAdapterReleaseMs);
 }
 
-bool awaitAdapterRelease(const std::string& tunnelName) {
-    const ULONGLONG deadline = GetTickCount64() + budget::kAdapterReleaseMs;
-    while (adapterPresent(tunnelName)) {
-        if (GetTickCount64() >= deadline) return false;
-        Sleep(100);
-    }
-    return true;
+lifecycle::Residual adapterResidual(lifecycle::AdapterPresence presence) {
+    return presence == lifecycle::AdapterPresence::Active ? lifecycle::Residual::AdapterOnly
+                                                          : lifecycle::Residual::AdapterUnverified;
 }
 
 // Removes only this TELIPHONES tunnel: its official WireGuard service, its adapter and its bootstrap file.
@@ -347,9 +338,10 @@ lifecycle::HelperResult removeOwnedTunnel(const WireGuardInstallation& wireguard
             outcome.residual = residualFor(status);
             return outcome;
         }
-        if (!awaitAdapterRelease(tunnelName)) {
+        const auto adapter = awaitAdapterRelease(tunnelName);
+        if (adapter != lifecycle::AdapterPresence::Absent) {
             outcome.cleanupIncomplete = true;
-            outcome.residual = lifecycle::Residual::AdapterOnly;
+            outcome.residual = adapterResidual(adapter);
         }
         if (!DeleteFileW(configPath.c_str()) && GetLastError() != ERROR_FILE_NOT_FOUND && GetLastError() != ERROR_PATH_NOT_FOUND) {
             outcome.cleanupIncomplete = true;
@@ -618,11 +610,34 @@ void RemoveTunnel(const std::string& tunnelName) {
     }
     if (removed) {
         if (DeleteFileW((tunnelFolder() + L"\\" + Widen(tunnelName) + L".conf").c_str()) || GetLastError() == ERROR_FILE_NOT_FOUND ||
-            GetLastError() == ERROR_PATH_NOT_FOUND) return;
+            GetLastError() == ERROR_PATH_NOT_FOUND) {
+            // A disconnect is complete only once the adapter is released too; the next connection depends on it.
+            const auto adapter = awaitAdapterRelease(tunnelName);
+            if (adapter == lifecycle::AdapterPresence::Absent) return;
+            // The elevated helper cannot remove an adapter the official service owns, so do not request elevation.
+            lifecycle::HelperResult result;
+            result.stage = Stage::RemoveFailed;
+            result.cleanupIncomplete = true;
+            result.residual = adapterResidual(adapter);
+            throw Error(lifecycle::HelperMessage(lifecycle::EncodeHelperResult(result)));
+        }
     }
     DWORD code = runElevated(HelperArguments(HelperCommand{HelperCommand::Verb::TunnelDown, tunnelName, "", "", ""}));
     if (code == ERROR_CANCELLED) throw Error("The tunnel is still connected because administrative approval was declined. Disconnect again, or stop it in WireGuard for Windows.");
     if (code != kHelperOk) throw Error(lifecycle::HelperMessage(code));
+}
+
+lifecycle::AdapterPresence TunnelAdapterPresence(const std::string& tunnelName) {
+    PMIB_IF_TABLE2 table = nullptr;
+    if (GetIfTable2(&table) != NO_ERROR) return lifecycle::ClassifyTunnelAdapter(false, {}, tunnelName);
+    const std::unique_ptr<MIB_IF_TABLE2, decltype(&FreeMibTable)> owned(table, &FreeMibTable);
+    // The WireGuardNT adapter carries the tunnel's exact name as its interface alias.
+    const auto alias = Widen(tunnelName);
+    std::vector<lifecycle::InterfaceRow> rows;
+    for (ULONG i = 0; i < table->NumEntries; ++i) {
+        if (alias == table->Table[i].Alias) rows.push_back({tunnelName, static_cast<std::uint32_t>(table->Table[i].OperStatus)});
+    }
+    return lifecycle::ClassifyTunnelAdapter(true, rows, tunnelName);
 }
 
 bool IsHelperInvocation(const std::vector<std::string>& arguments) {

@@ -34,7 +34,8 @@ enum class Residual : std::uint32_t {
     StopPending = 3,
     Running = 4,
     Unknown = 5,
-    AdapterOnly = 6,  // the service is gone but a network adapter with the tunnel's exact alias still exists
+    AdapterOnly = 6,        // the service is gone but an active adapter with the tunnel's exact alias still exists
+    AdapterUnverified = 7,  // the service is gone but Windows could not enumerate network interfaces
 };
 
 struct HelperResult {
@@ -62,6 +63,33 @@ std::vector<std::string> SplitServiceCommandLine(const std::string& commandLine)
 bool IsOwnedTunnelServiceCommand(const std::string& commandLine, const std::string& wireguardExe,
                                  const std::string& configPath);
 bool SameWindowsPath(const std::string& left, const std::string& right);
+
+// Whether this tunnel's WireGuardNT adapter still exists, from Windows' interface table (GetIfTable2).
+// The table can also hold a row for a device that is no longer present, reported with operational status
+// IfOperStatusNotPresent. Such a row carries no traffic, holds no handle and cannot be reused, so it is not a
+// remaining adapter. Any other row with the exact alias is. A failed enumeration is never taken as absence.
+constexpr std::uint32_t kInterfaceOperStatusNotPresent = 6;  // IF_OPER_STATUS::IfOperStatusNotPresent
+struct InterfaceRow {
+    std::string alias;
+    std::uint32_t operStatus = 0;
+};
+enum class AdapterPresence { Absent, Active, Unverified };
+AdapterPresence ClassifyTunnelAdapter(bool enumerated, const std::vector<InterfaceRow>& rows, const std::string& tunnelName);
+
+// Polls until the adapter is absent or the budget ends, returning the last observation. Windows may finish
+// removing the device shortly after its service stops; an adapter that stays active is reported, never ignored.
+template <class Probe, class Now, class Pause>
+AdapterPresence AwaitAdapterRelease(Probe probe, Now now, Pause pause, std::uint32_t budgetMs) {
+    const auto deadline = now() + budgetMs;
+    for (;;) {
+        const AdapterPresence presence = probe();
+        if (presence == AdapterPresence::Absent) return presence;
+        const auto current = now();
+        if (current >= deadline) return presence;
+        const auto remaining = deadline - current;
+        pause(static_cast<std::uint32_t>(remaining < 100 ? remaining : 100));
+    }
+}
 
 // Every bounded wait the elevated helper performs. The interactive caller waits longer than the helper's
 // worst case so it never abandons a helper that is still changing Windows state.

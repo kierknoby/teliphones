@@ -42,6 +42,52 @@ required. Adds portable result/ownership/budget tests and native SCM tests for
 a real stuck `START_PENDING` service and per-tunnel locking. Native compilation
 and these native tests have not run in the Linux workspace.
 
+Further corrections before release (version unchanged):
+
+- Reconnect after a normal disconnect no longer reports a residual adapter.
+  The 0.8.4 adapter check matched any interface row with the tunnel's name,
+  including rows Windows had already marked not present, and treated a failed
+  interface enumeration as absent. Adapter state is now classified by
+  interface status (an enumeration failure is unverified, never absent), and
+  Disconnect itself verifies that the active adapter was released.
+- Saved connections always load. Startup previously removed SSH runtime files
+  inside the profile-loading step, so one leftover directory reported "Saved
+  connections could not be loaded". Cleanup now runs per profile after loading
+  and reports failures without blocking the application.
+- SSH runtime cleanup knows every file an attempt writes, including the client
+  diagnostic `ssh.log` that a crashed session leaves behind. It still deletes
+  only known names, never recursively, and names any remaining path. Session
+  teardown that cannot be verified remains a failure.
+- Disconnect no longer fails after the tunnel is removed merely because
+  temporary SSH files remain; they are reported and retried at the next start.
+- Console exceptions (dialog initialisation, font creation, disconnect) no
+  longer escape window procedures and terminate TELIPHONES. After the console
+  closes, its owned SSH session is verified closed.
+- Closing TELIPHONES tears down every owned resource independently: the managed
+  SSH sessions of all profiles, the active tunnel and SSH runtime files. Any
+  remaining resource is named, and the user chooses whether to exit or keep
+  TELIPHONES open and retry.
+- Startup errors are shown after the main window appears. They were previously
+  owned by the still-hidden main window, with no taskbar button, so the process
+  could appear to run without a usable window.
+- Starting TELIPHONES while it is already running brings the existing window
+  forward. If that process has no window, the message gives its process ID and
+  the recovery steps. TELIPHONES never ends the other process.
+- "Admission unavailable" is classified by the WireGuard handshake read in the
+  same check. It no longer claims the tunnel is authenticated when no
+  handshake has completed within 180 seconds; the message then names the
+  outer UDP path and the PBX endpoint. With a recent handshake, it
+  distinguishes a controller that cannot be reached from one that accepted
+  the request but did not answer. Connection Health, the handshake age and
+  traffic counters keep updating while admission fails. Admission failures and
+  recoveries are recorded in the session log. The existing monitor continues
+  retrying admission; no new retry loop or longer timeout was added.
+
+Adds portable classification, adapter-release and runtime-cleanup tests, a
+native disconnect/immediate-reconnect integration check and a native console
+crash/locked-file recovery test. The specific trigger of the reported console
+crash is not confirmed from code; Windows Error Reporting data is required.
+
 ## 0.8.3 — Previous development target
 
 Windows file/product version: **0.8.3.0** / **0.8.3**. Independent source targets:

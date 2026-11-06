@@ -4,6 +4,7 @@
 #include "Services.h"
 #include "Win.h"
 #include "../core/SshCrypto.h"
+#include "../core/SshRuntime.h"
 #include "../core/Validation.h"
 
 #include <wincrypt.h>
@@ -12,6 +13,7 @@
 #include <cstddef>
 #include <cstdlib>
 #include <filesystem>
+#include <functional>
 #include <algorithm>
 #include <atomic>
 #include <memory>
@@ -317,8 +319,8 @@ struct Session final : ManagedSshConsole {
     }
     void removePublicArtifacts() {
         if (directory.empty()) return;
-        for (const auto* name : {L"identity.pub", L"certificate.pub", L"config", L"known_hosts", L"ssh.log"}) {
-            const auto path = directory + L"\\" + name;
+        for (const char* name : kSshRuntimeFiles) {
+            const auto path = directory + L"\\" + Widen(name);
             if (!DeleteFileW(path.c_str()) && GetLastError() != ERROR_FILE_NOT_FOUND)
                 ThrowLastError("Unable to remove a public SSH runtime file");
         }
@@ -365,12 +367,13 @@ std::string GenerateWorkstationSshIdentity(const Profile& profile) {
     return identity.publicKey();
 }
 
-void CloseManagedSsh(const std::string& profile) {
+namespace {
+void closeManagedSessions(const std::function<bool(const std::string&)>& selected) {
     auto& registry = sessionRegistry();
     std::vector<std::shared_ptr<Session>> closing;
     {
         std::lock_guard<std::mutex> guard(registry.mutex);
-        for (const auto& session : registry.sessions) if (session->profile == profile) {
+        for (const auto& session : registry.sessions) if (selected(session->profile)) {
             SetEvent(session->stop.get());
             if (!TerminateJobObject(session->job.get(), 1)) ThrowLastError("Unable to terminate the owned SSH session");
             closing.push_back(session);
@@ -379,6 +382,15 @@ void CloseManagedSsh(const std::string& profile) {
     for (const auto& session : closing)
         if (WaitForSingleObject(session->finished.get(), 30000) != WAIT_OBJECT_0)
             throw Error("Owned SSH credential teardown could not be verified.");
+}
+}  // namespace
+
+void CloseManagedSsh(const std::string& profile) {
+    closeManagedSessions([&profile](const std::string& owner) { return owner == profile; });
+}
+
+void CloseAllManagedSsh() {
+    closeManagedSessions([](const std::string&) { return true; });
 }
 
 #ifdef TELIPHONES_SSH_TESTING
