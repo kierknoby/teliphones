@@ -1643,18 +1643,18 @@ void testSshRuntime() {
                                              make("healthy", tlp::ProfileKind::Administrator, "ssh-ed25519 D")};
     const auto before = profiles;
     std::vector<std::string> cleaned;
-    const auto failures = tlp::CleanSshRuntimes(profiles, [&](const tlp::Profile& profile) {
+    const auto cleanupFailures = tlp::CleanSshRuntimes(profiles, [&](const tlp::Profile& profile) {
         cleaned.push_back(profile.id);
         if (profile.id == "locked") throw tlp::SshRuntimeResidual("ssh.log is in use");
         if (profile.id == "closing") throw tlp::Error("SSH session could not be verified closed");
     });
     check((cleaned == std::vector<std::string>{"locked", "gui-only", "closing", "healthy"}),
           "one failed cleanup does not skip later profiles; administrator profiles whose SSH was revoked are still cleaned");
-    check(failures.size() == 2 && failures[0].profileName == "locked" && failures[1].profileName == "closing",
+    check(cleanupFailures.size() == 2 && cleanupFailures[0].profileName == "locked" && cleanupFailures[1].profileName == "closing",
           "every failed profile is reported by name");
     check(profiles.size() == before.size() && profiles[0].id == before[0].id && profiles[4].pairing.sshPublicKey == "ssh-ed25519 D",
           "cleanup failures leave the loaded profiles intact");
-    const auto text = tlp::DescribeSshRuntimeCleanupFailures(failures);
+    const auto text = tlp::DescribeSshRuntimeCleanupFailures(cleanupFailures);
     check(text.find("locked: ssh.log is in use") != std::string::npos &&
               text.find("closing: SSH session could not be verified closed") != std::string::npos,
           "failure description identifies each remaining resource");
