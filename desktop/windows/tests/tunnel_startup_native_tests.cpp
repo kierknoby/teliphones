@@ -15,10 +15,6 @@ void require(bool condition, const char* message) {
     if (!condition) throw std::runtime_error(message);
 }
 
-std::wstring pipeName(const std::wstring& name) {
-    return L"\\\\.\\pipe\\" + name;
-}
-
 void report(DWORD state, DWORD error = ERROR_SUCCESS) {
     SERVICE_STATUS status{};
     status.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
@@ -50,20 +46,7 @@ void WINAPI serviceMain(DWORD, LPWSTR*) {
         return;
     }
     report(SERVICE_RUNNING);
-    // SCM running deliberately precedes control-pipe creation; no network or peer exists.
-    if (fixtureMode == L"delayed-pipe") {
-        if (WaitForSingleObject(stopEvent, 1000) == WAIT_TIMEOUT) {
-            HANDLE pipe = CreateNamedPipeW(pipeName(fixtureName).c_str(),
-                PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED, PIPE_TYPE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
-                1, 128, 128, 0, nullptr);
-            if (pipe != INVALID_HANDLE_VALUE) {
-                WaitForSingleObject(stopEvent, 30000);
-                CloseHandle(pipe);
-            }
-        }
-    } else {
-        WaitForSingleObject(stopEvent, 30000);
-    }
+    WaitForSingleObject(stopEvent, 30000);
     if (fixtureMode == L"delayed-stop") Sleep(1000);
     report(SERVICE_STOPPED);
     CloseHandle(stopEvent);
@@ -125,22 +108,11 @@ public:
 };
 
 void delayedStartup() {
-    Fixture fixture(L"delayed-pipe");
+    Fixture fixture(L"no-pipe");
     fixture.start();
     require(startup::ReadStatus(fixture.name).state == SERVICE_START_PENDING,
             "Fixture must exercise an actual SCM transitional state");
     startup::WaitForService(fixture.name, true, 5000);
-    const auto started = GetTickCount64();
-    const BOOL legacyReady = WaitNamedPipeW(pipeName(fixture.name).c_str(), 5000);
-    const DWORD legacyError = legacyReady ? ERROR_SUCCESS : GetLastError();
-    require(!legacyReady && legacyError == ERROR_FILE_NOT_FOUND,
-            "Legacy WaitNamedPipe must reproduce immediate absent-pipe failure despite Running service");
-    require(GetTickCount64() - started < 1000,
-            "Legacy creation wait must return before its requested timeout");
-    HANDLE pipe = startup::OpenControlPipe(pipeName(fixture.name), fixture.name, 5000);
-    require(pipe != INVALID_HANDLE_VALUE, "Delayed pipe must become ready");
-    CloseHandle(pipe);
-    require(GetTickCount64() - started >= 200, "Pipe readiness must wait beyond SCM Running");
     require(startup::ReadStatus(fixture.name).state == SERVICE_RUNNING,
             "Successful startup without a peer handshake must not stop the service");
     fixture.remove();
@@ -157,8 +129,7 @@ void stoppingService() {
             "Fixture must exercise an actual StopPending transition");
     bool rejected = false;
     try {
-        HANDLE pipe = startup::OpenControlPipe(pipeName(fixture.name), fixture.name, 5000);
-        CloseHandle(pipe);
+        startup::WaitForService(fixture.name, true, 5000);
     } catch (const startup::Failure& error) { rejected = error.code == ERROR_SERVICE_NOT_ACTIVE; }
     require(rejected, "External service shutdown must fail readiness rather than retry until timeout");
     fixture.remove();
@@ -175,19 +146,17 @@ void stoppedService() {
     fixture.remove();
 }
 
-void missingPipe() {
+void boundedStartup() {
     Fixture fixture(L"no-pipe");
     fixture.start();
-    startup::WaitForService(fixture.name, true, 5000);
     const auto started = GetTickCount64();
     bool timedOut = false;
     try {
-        HANDLE pipe = startup::OpenControlPipe(pipeName(fixture.name), fixture.name, 300);
-        CloseHandle(pipe);
+        startup::WaitForService(fixture.name, true, 300);
     } catch (const startup::Failure& error) { timedOut = error.code == ERROR_TIMEOUT; }
-    require(timedOut && GetTickCount64() - started >= 300, "Absent pipe must wait to the bounded deadline");
-    require(startup::ReadStatus(fixture.name).state == SERVICE_RUNNING,
-            "Polling must not remove a service before the caller decides cleanup");
+    require(timedOut && GetTickCount64() - started >= 300, "StartPending must obey bounded deadline");
+    startup::WaitForService(fixture.name, true, 5000);
+    require(startup::ReadStatus(fixture.name).state == SERVICE_RUNNING, "Readiness must not remove the service");
     fixture.remove();
 }
 }  // namespace
@@ -202,9 +171,9 @@ int wmain(int argc, wchar_t** argv) {
     try {
         delayedStartup();
         stoppedService();
-        missingPipe();
+        boundedStartup();
         stoppingService();
-        std::cout << "Native tunnel startup tests: PASS (real SCM, delayed pipe, no peer, failure, bounded wait)\n";
+        std::cout << "Native tunnel startup tests: PASS (real SCM transitions, no pipe or peer, failure, bounded wait)\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "Native tunnel startup tests: FAIL: " << error.what() << "\n";

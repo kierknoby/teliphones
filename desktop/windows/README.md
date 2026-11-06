@@ -1,17 +1,18 @@
-# TELIPHONES 0.8.2 for Windows (experimental)
+# TELIPHONES 0.8.3 for Windows (experimental)
 
 **TELIPHONES is a UK registered trademark.**
 
-**TELIPHONES 0.8.2 for Windows is licensed under GPLv3.**
+**TELIPHONES 0.8.3 for Windows is licensed under GPLv3.**
 
 Reach your PBX privately, open FreePBX in your preferred browser and start an
 approved SSH session without distributing permanent administrator SSH credentials.
 This guide covers installing and using the Windows application. The
 [FreePBX administration guide](../../teliphones/README.md) covers server setup.
 
-Windows **0.8.2** (file version **0.8.2.0**) is independent of FreePBX module
-**0.6.4**, root broker **0.6.3**, protocol **12**. Windows 0.8.2 corrects the
-service/control-pipe readiness race while preserving memory-only key activation.
+Windows **0.8.3** (file version **0.8.3.0**) is independent of FreePBX module
+**0.6.4**, root broker **0.6.3**, protocol **12**. Windows 0.8.3 corrects the
+incompatible text-UAPI activation introduced in 0.8.0, using the official
+WireGuardNT 1.1 adapter API while preserving memory-only key activation.
 It retains 0.8.1's pairing dialogue order, stale-request handling, Copy/Save
 availability and response-derived approved SSH account display, and the 0.8.0 source
 features: password protection, listener migration, PBX policy/status, Allowed
@@ -28,7 +29,7 @@ defines the application version.
 > owned terminal when TELIPHONES disconnects. Complete server-side revocation,
 > authorisation expiry, systemd/cgroup lifecycle, reconnection and failure
 > recovery still need live validation. These supplied reports do not validate
-> the current 0.8.2 source or establish a matching binary. See
+> the current 0.8.3 source or establish a matching binary. See
 > [verification status](#verification-status).
 
 ## Choose your workflow
@@ -40,8 +41,10 @@ defines the application version.
   an operator-issued grant. This is a customer-authorised support window, not
   workstation pairing, and still needs end-to-end validation.
 
-Both use WireGuard for Windows. TELIPHONES does not create SSH accounts, bundle
-WireGuard, supply hosted support infrastructure or provide a relay.
+Both use separately installed WireGuard for Windows tunnel services.
+TELIPHONES bundles the pinned official WireGuardNT API DLL, not the WireGuard
+application or installer. It does not create SSH accounts, supply hosted support
+infrastructure or provide a relay.
 
 ## In this guide
 
@@ -86,13 +89,14 @@ risk. See the [current security limitations](#security).
 
 ### Download an existing build
 
-**0.8.2 source is prepared, but its native build and application artefact are
-blocked pending an isolated Windows runner. No 0.8.2 executable is supplied.**
+**0.8.3 source is prepared, but its native build and application artefact are
+blocked pending an isolated Windows runner. No 0.8.3 executable is supplied.**
 Do not substitute an older successful run for current-source validation.
 
 Download **TELIPHONES-Windows-x64** from an existing successful Windows build
 run in GitHub Actions. Retention is 14 days; expired artefacts may be unavailable.
-Extract the ZIP and keep **`TELIPHONES.exe` and `TELIPHONES-SSH.exe` together**.
+Extract the ZIP and keep **`TELIPHONES.exe`, `TELIPHONES-SSH.exe` and
+`wireguard.dll` together**.
 It also contains this guide, the changelog, licences and `build-info.json`,
 which records source/run provenance and executable hashes, not user data.
 Technical links in the bundled guide refer to the source checkout; developer
@@ -106,30 +110,32 @@ source rather than disabling Windows protections. For source builds, see
 
 ### Upgrade the development workstation after native validation
 
-Only proceed after the exact 0.8.2 build passes native Release compilation,
-the complete CTests (including `tunnel_startup_native`), application tests and
+Only proceed after the exact 0.8.3 build passes native Release compilation,
+the complete CTests (including `tunnel_startup_native` and `wireguard_nt_unit`),
+the actual official service/driver integration gate, application tests and
 startup smoke. The existing build produces a portable application bundle, not
 an MSI installer. The workflow's bundle directory is `desktop/windows/build/artifact`;
 its Actions artefact name is **TELIPHONES-Windows-x64**. No bundle has been
 produced for this pending source.
 
-1. Disconnect in 0.8.1 and close TELIPHONES and its owned SSH console. Retain
+1. Disconnect in 0.8.2 and close TELIPHONES and its owned SSH console. Retain
    the old application directory for rollback; do not delete profiles,
    Credential Manager entries or application data.
-2. Extract the validated bundle into a separate **TELIPHONES-0.8.2** directory.
-   Keep both executables, licences and `build-info.json` together.
+2. Extract the validated bundle into a separate **TELIPHONES-0.8.3** directory.
+   Keep both executables, `wireguard.dll`, licences and `build-info.json` together.
 3. Before launch, in PowerShell in that directory, check:
 
    ```powershell
    $info = Get-Content .\build-info.json -Raw | ConvertFrom-Json
    $version = [Diagnostics.FileVersionInfo]::GetVersionInfo((Resolve-Path .\TELIPHONES.exe).Path)
-   if ($version.ProductVersion -ne '0.8.2' -or $version.FileVersion -ne '0.8.2.0') { throw 'Wrong executable version' }
-   if ($info.productVersion -ne '0.8.2' -or $info.fileVersion -ne '0.8.2.0') { throw 'Wrong build metadata' }
+   if ($version.ProductVersion -ne '0.8.3' -or $version.FileVersion -ne '0.8.3.0') { throw 'Wrong executable version' }
+   if ($info.productVersion -ne '0.8.3' -or $info.fileVersion -ne '0.8.3.0') { throw 'Wrong build metadata' }
    if ((Get-FileHash .\TELIPHONES.exe -Algorithm SHA256).Hash -ine $info.sha256) { throw 'Application hash mismatch' }
    if ((Get-FileHash .\TELIPHONES-SSH.exe -Algorithm SHA256).Hash -ine $info.sshHelperSha256) { throw 'SSH helper hash mismatch' }
+   if ((Get-FileHash .\wireguard.dll -Algorithm SHA256).Hash -ine $info.wireGuardNtSha256) { throw 'WireGuardNT hash mismatch' }
    ```
 
-4. Launch the new executable, confirm **0.8.2** in About and reuse the saved
+4. Launch the new executable, confirm **0.8.3** in About and reuse the saved
    profile without re-pairing. Perform one controlled Connect and retain the
    WireGuard log plus any stage-specific error. Confirm sustained service
    operation, eventual handshake, approved PBX access and disconnect/reconnect.
@@ -206,10 +212,11 @@ its provenance. SSH session certificates are separately signature-verified.
 
 After saving, select the profile and **Connect**, approving tunnel setup. Wait
    for Connection Health to confirm that the PBX is reachable.
-Tunnel setup separately confirms the Windows service and waits, within bounded
-deadlines, for WireGuard's protected control pipe before activating the
-memory-only enrolled key. A missing initial pipe is not a failed service or a
-failed peer handshake. Actual startup, pipe or key-activation failure still
+Tunnel setup confirms the Windows service within a bounded deadline, then
+opens its existing WireGuardNT adapter and applies only the memory-only
+enrolled private key. The official service does not expose a text-UAPI pipe;
+0.8.0-0.8.2 incorrectly required one. No handshake is required for startup.
+Actual service, dependency, adapter-access or key-activation failure still
 removes the tunnel; the error identifies the stage and available Windows error
 number, without including key material. No VPN/address conflict is inferred.
 The native startup regression and live WireGuard validation remain outstanding;
@@ -464,7 +471,7 @@ cleanup failure prevents enabling. New staging and installed `.conf` files
 contain only a **public, non-enrolled bootstrap identity**, never the enrolled
 private key. The UAC helper rejects old plaintext-key configs. After startup,
 the real key passes through a random, local-only, helper-PID-bound pipe and
-WireGuard's administrator-only UAPI pipe, only in memory. Restarting a stored
+the official WireGuardNT adapter configuration API, only in memory. Restarting a stored
 configuration cannot restore the enrolled identity, including after a crash.
 This lifecycle applies in DPAPI-only mode too.
 
@@ -484,7 +491,7 @@ revoke the old peer in FreePBX, then pair a new identity.
 Portable tests cover successful authenticated decryption, independent
 Argon2id/AES interoperability, wrong-password and tampering rejection,
 missing-provider refusal and secret-free bootstrap rendering. Native MFC,
-Credential Manager, DPAPI, UAC, Windows service and WireGuard UAPI behaviour
+Credential Manager, DPAPI, UAC, Windows service and WireGuardNT API behaviour
 still need Windows validation; portable success is not that evidence.
 
 ### Storage
@@ -525,7 +532,7 @@ identity-bound migration parsing and the Argon2id positive-path provider tests
 when available. This is not a native Windows build: this Linux environment
 cannot compile or exercise the MFC application, Windows Credential Manager,
 DPAPI, UAC, service/helper lifecycle, or actual WireGuard reconnect path.
-Historical operator reports for 0.7.0 are not evidence for the current 0.8.2
+Historical operator reports for 0.7.0 are not evidence for the current 0.8.3
 changes.
 
 Live FreePBX session admission, listener migration, source restrictions,
@@ -545,6 +552,21 @@ The Windows app statically builds the vendored libvterm 0.3.3 sources from
 there. The portable `terminal_emulator` CTest target exercises the screen
 model and keyboard protocol without requiring a Windows SDK or remote PBX.
 
+The declared [WireGuardNT dependency](wireguard-nt.json) pins the official 1.1
+archive used by WireGuard for Windows 1.1.1, including hashes for its AMD64 DLL,
+matching header and licence. Run `./restore-wireguard-nt.ps1` before native
+MSBuild/CMake (also called by `build.ps1` and CI); `-ArchivePath` accepts a
+previously downloaded archive, and `-CheckOnly` never downloads.
+Only the documented DLL API is used. The helper verifies the bundled DLL's
+compiled-in hash before copying it into the protected
+`%ProgramFiles%\TELIPHONES\WireGuardNT-1.1` directory. It locks and verifies
+that copy before loading by absolute path with system-only dependency lookup.
+No PATH/current-directory DLL search or extraction from `wireguard.exe` is used.
+The installed official service still creates/owns the adapter; TELIPHONES only
+opens it. Closing that opened handle does not remove the service's adapter.
+The zeroed 80-byte interface update sets only `HAS_PRIVATE_KEY`, with zero
+peers and no replacement/listen-port flags. Temporary key structures are wiped.
+
 ## Licence
 
 The software grant is **GPL version 3 or, at your option, any later version
@@ -553,4 +575,6 @@ ZIP. The footer's "licensed under GPLv3" statement is shorthand, not a narrower
 grant. Software licensing does not grant trademark rights. The main window
 shows the product and trademark statements in its fixed footer; full wording
 is also in **Settings > About**. Narrow windows may show an ellipsis.
-The Windows ZIP includes the OpenSSL and vendored libvterm licences.
+The Windows ZIP includes the OpenSSL, vendored libvterm and official prebuilt
+WireGuardNT licences. The WireGuardNT DLL is distributed unmodified under its
+own included binary licence, not under TELIPHONES' software grant.

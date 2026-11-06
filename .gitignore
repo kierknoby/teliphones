@@ -54,3 +54,4 @@ __pycache__/
 
 # Restored native dependencies
 desktop/windows/vcpkg_installed/
+desktop/windows/dependencies/

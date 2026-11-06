@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemDefinitionGroup>
+    <ClCompile><AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)dependencies\wireguard-nt\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories></ClCompile>
+  </ItemDefinitionGroup>
+  <Target Name="VerifyWireGuardNT" BeforeTargets="PrepareForBuild">
+    <Exec Command="powershell.exe -NoProfile -NonInteractive -File &quot;$(MSBuildThisFileDirectory)restore-wireguard-nt.ps1&quot; -CheckOnly" />
+  </Target>
+  <Target Name="CopyWireGuardNT" AfterTargets="Build">
+    <Copy SourceFiles="$(MSBuildThisFileDirectory)dependencies\wireguard-nt\bin\amd64\wireguard.dll" DestinationFolder="$(OutDir)" />
+    <Copy SourceFiles="$(MSBuildThisFileDirectory)dependencies\wireguard-nt\LICENSE.txt" DestinationFiles="$(OutDir)WireGuardNT-LICENSE.txt" />
+  </Target>
+</Project>

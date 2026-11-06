@@ -139,6 +139,21 @@ jobs:
         if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
         run: ./desktop/windows/tests/provision_openssh.ps1
 
+      - name: Restore pinned official WireGuardNT API dependency
+        id: wireguard_nt
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
+        run: |
+          ./desktop/windows/restore-wireguard-nt.ps1
+          ./desktop/windows/restore-wireguard-nt.ps1 -CheckOnly
+          $dll = 'desktop/windows/dependencies/wireguard-nt/bin/amd64/wireguard.dll'
+          $signature = Get-AuthenticodeSignature -LiteralPath $dll
+          if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.GetNameInfo([Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false) -ne 'WireGuard LLC') {
+            throw 'Pinned WireGuardNT DLL native signature/publisher verification failed.'
+          }
+          & $env:DUMPBIN_EXE /headers /exports /dependents $dll
+          if ($LASTEXITCODE -ne 0) { throw 'WireGuardNT PE/export inspection failed.' }
+          Get-FileHash -LiteralPath $dll -Algorithm SHA256 | Format-List
+
       - name: Restore declared static OpenSSL dependency
         id: crypto
         if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
@@ -163,7 +178,7 @@ jobs:
 
       - name: Build TELIPHONES solution (Release x64)
         id: application_build
-        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' && steps.crypto.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' && steps.crypto.outcome == 'success' && steps.wireguard_nt.outcome == 'success' }}
         run: |
           $ErrorActionPreference = 'Stop'
           $source = Join-Path $env:GITHUB_WORKSPACE 'desktop\windows\src\app\ConnectionHealthDlg.cpp'
@@ -204,7 +219,7 @@ jobs:
 
       - name: Build native memory-backed SSH test tools
         id: native_build
-        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' && steps.crypto.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' && steps.crypto.outcome == 'success' && steps.wireguard_nt.outcome == 'success' }}
         run: |
           $ErrorActionPreference = 'Stop'
           $vcpkg = $env:VCPKG_INSTALLATION_ROOT
@@ -231,7 +246,22 @@ jobs:
         run: |
           $PSNativeCommandUseErrorActionPreference = $false
           ctest --test-dir desktop/windows/build/ssh-native -C Release -R '^tunnel_startup_native$' --verbose --output-on-failure --no-tests=error
-          if ($LASTEXITCODE -ne 0) { throw 'Native SCM and delayed WireGuard control-pipe readiness regression failed.' }
+          if ($LASTEXITCODE -ne 0) { throw 'Native SCM startup-state regression failed.' }
+
+      - name: Provision official WireGuard service on isolated CI runner
+        id: wireguard_fixture
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
+        run: ./desktop/windows/tests/provision_wireguard.ps1
+
+      - name: Validate actual WireGuardNT service and memory-only key activation
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' && steps.wireguard_fixture.outcome == 'success' }}
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          $exe = 'desktop/windows/build/ssh-native/Release/wireguard_nt_native_tests.exe'
+          & $exe --unit
+          if ($LASTEXITCODE -ne 0) { throw 'WireGuardNT ABI, failure handling or secure wipe regression failed.' }
+          & $exe --integration 2>&1 | Tee-Object -FilePath (Join-Path $env:STARTUP_DIAGNOSTICS 'wireguard-nt-integration.log')
+          if ($LASTEXITCODE -ne 0) { throw 'Actual official WireGuard service/driver key activation, preservation or cleanup failed.' }
 
       - name: Run all portable CTests with complete diagnostics
         if: ${{ !cancelled() && steps.native_build.outcome == 'success' && steps.openssh.outcome == 'success' }}
@@ -483,6 +513,8 @@ jobs:
           New-Item -ItemType Directory -Path 'desktop/windows/build/artifact' | Out-Null
           Copy-Item -LiteralPath 'desktop/windows/build/Release/TELIPHONES.exe' -Destination 'desktop/windows/build/artifact/TELIPHONES.exe'
           Copy-Item -LiteralPath 'desktop/windows/build/Release/TELIPHONES-SSH.exe' -Destination 'desktop/windows/build/artifact/TELIPHONES-SSH.exe'
+          Copy-Item -LiteralPath 'desktop/windows/build/Release/wireguard.dll' -Destination 'desktop/windows/build/artifact/wireguard.dll'
+          Copy-Item -LiteralPath 'desktop/windows/build/Release/WireGuardNT-LICENSE.txt' -Destination 'desktop/windows/build/artifact/WireGuardNT-LICENSE.txt'
           Copy-Item -LiteralPath 'desktop/windows/vcpkg_installed/x64-windows-static/share/openssl/copyright' -Destination 'desktop/windows/build/artifact/OpenSSL-LICENSE.txt'
           Copy-Item -LiteralPath 'desktop/windows/third_party/libvterm/LICENSE' -Destination 'desktop/windows/build/artifact/libvterm-LICENSE.txt'
           Copy-Item -LiteralPath 'desktop/windows/README.md' -Destination 'desktop/windows/build/artifact/README.md'
@@ -498,6 +530,8 @@ jobs:
             runAttempt = $env:GITHUB_RUN_ATTEMPT
             sha256 = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant()
             sshHelperSha256 = (Get-FileHash -LiteralPath 'desktop/windows/build/Release/TELIPHONES-SSH.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
+            wireGuardNtVersion = '1.1'
+            wireGuardNtSha256 = (Get-FileHash -LiteralPath 'desktop/windows/build/Release/wireguard.dll' -Algorithm SHA256).Hash.ToLowerInvariant()
           } | ConvertTo-Json | Set-Content -LiteralPath 'desktop/windows/build/artifact/build-info.json' -Encoding utf8
 
       - name: Upload Windows application
@@ -507,6 +541,8 @@ jobs:
           path: |
             desktop/windows/build/artifact/TELIPHONES.exe
             desktop/windows/build/artifact/TELIPHONES-SSH.exe
+            desktop/windows/build/artifact/wireguard.dll
+            desktop/windows/build/artifact/WireGuardNT-LICENSE.txt
             desktop/windows/build/artifact/OpenSSL-LICENSE.txt
             desktop/windows/build/artifact/libvterm-LICENSE.txt
             desktop/windows/build/artifact/README.md

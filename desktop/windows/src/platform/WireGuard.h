@@ -1,5 +1,5 @@
-// WireGuard for Windows integration. TELIPHONES does not ship a WireGuard driver; it drives the official,
-// separately installed WireGuard for Windows (wireguard.exe tunnel services and wg.exe key tools).
+// Uses separately installed official WireGuard tunnel services and key tools, plus
+// the pinned official WireGuardNT API DLL for in-memory adapter configuration.
 #pragma once
 
 #include <string>
@@ -25,7 +25,7 @@ enum class TunnelState { Absent, Stopped, Starting, Running, Stopping, Unknown }
 TunnelState QueryTunnel(const std::string& tunnelName);
 
 // Only a public bootstrap identity goes to disk. The enrolled private key passes over a PID-bound pipe
-// to the UAC helper, then into WireGuard's administrator-only control pipe. A restarted stored config
+// to the UAC helper, then into the existing WireGuardNT adapter through its native API. A restarted stored config
 // cannot authenticate as this workstation. Returns false if the user declined the UAC prompt.
 bool InstallTunnel(const std::string& tunnelName, const std::string& configText);
 // Stops and removes the tunnel service. Uses the rights granted at installation; falls back to an elevated helper.

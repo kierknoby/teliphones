@@ -5,7 +5,41 @@ No Windows release is declared published by this document. Earlier development
 builds lacked embedded file/product versions and cannot be assigned reliable
 version numbers retrospectively.
 
-## 0.8.2 — Unreleased development target
+## 0.8.3 — Unreleased development target
+
+Windows file/product version: **0.8.3.0** / **0.8.3**. Independent source targets:
+FreePBX module **0.6.4**, root broker **0.6.3**, protocol **12** (unchanged).
+Increment Windows only because 0.8.2 is already tested on the workstation and
+still fails; this correction must be distinguishable from that executable.
+
+Official WireGuard for Windows 1.1.1 source confirms that the WireGuardNT
+tunnel service does not create the protected text-UAPI pipe introduced by
+`c8840f9` in 0.8.0. The 0.8.2 pipe-readiness retries could not fix this
+architecture mismatch. Remove that path and its simulated-pipe tests.
+
+Use the published WireGuardNT 1.1 DLL/header pinned by the official 1.1.1 build.
+Restore and package the unmodified AMD64 DLL and binary licence. Before loading,
+verify the compiled-in DLL hash, copy to a restrictive Program Files directory,
+then lock/reverify and load the absolute path with system-only dependency search.
+Open the existing service-owned adapter, set only `HAS_PRIVATE_KEY`, preserve
+peers/interface settings, close the opened handle and wipe the temporary structure.
+Retain bootstrap-only disk configuration, PID-bound local key delivery, SCM
+readiness and cleanup on genuine failure. Report dependency, adapter or update
+failures distinctly; a missing peer handshake is not a startup failure.
+
+Add native ABI/wipe/failure tests and an isolated CI gate using the official
+1.1.1 tunnel service and real driver. It checks enrolled-key readback, peer/
+endpoint/allowed-IP/listen-port preservation, no initial handshake or text pipe,
+continued service operation and failed-activation cleanup. Native compilation
+and this real integration are not executable in the Linux workspace. Live
+workstation handshake and approved PBX access remain required before claiming
+connectivity restored. No binary has been built or deployed here.
+
+## 0.8.2 — Previous development target
+
+Subsequent operator testing confirmed error 1460: this pipe-based correction
+did not restore connectivity. The historical implementation description below
+is superseded by the verified 0.8.3 architecture correction.
 
 Windows file/product version: **0.8.2.0** / **0.8.2**. Compatible source targets:
 FreePBX module **0.6.4**, root broker **0.6.3**, protocol **12**.

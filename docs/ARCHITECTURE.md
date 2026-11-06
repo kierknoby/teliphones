@@ -1,7 +1,7 @@
 # TELIPHONES architecture
 
 This document describes **FreePBX module 0.6.4**, **root broker 0.6.3**,
-**broker protocol 12** and **Windows 0.8.2** source:
+**broker protocol 12** and **Windows 0.8.3** source:
 components, trust boundaries, interfaces, firewall layers and stored state.
 Architecture describes the implementation, not proof of production behaviour.
 See [Security and verification evidence](SECURITY.md#verification-evidence)
@@ -257,7 +257,7 @@ The Windows application is a native C++17 Win32/MFC executable for Windows 10/11
 
 - **Keys:** WireGuard private keys are stored in Credential Manager/DPAPI; optional Connect Password Protection uses Argon2id/AES-256-GCM inside DPAPI. Profiles never contain private keys.
 - **Profiles:** Public pairing and grant data are stored in the user's roaming application-data directory.
-- **Tunnels:** Staging/installed configs contain a public bootstrap identity, not the enrolled key. After UAC and validation, a PID-bound local-only named pipe supplies the credential to the elevated helper, which configures WireGuard through its administrator-only control pipe. Restarting the stored configuration cannot authenticate as the enrolled identity. Restrictive ACLs and owned-process controls remain.
+- **Tunnels:** Staging/installed configs contain a public bootstrap identity, not the enrolled key. After UAC and validation, a PID-bound local-only named pipe supplies the credential to the elevated helper. It opens the official service's existing WireGuardNT adapter and applies only the private-key field through the published API, without replacing peers. The pinned official DLL/header are restored from the version-matched archive; only hash-verified code in an administrator-controlled directory is loaded. Restarting the stored configuration cannot authenticate as the enrolled identity. Restrictive ACLs and owned-process controls remain.
 - **SSH:** Managed My PBXs opens the built-in libvterm/ConPTY console using the protected authentication event, isolated agent and owned process job. The separate Remote Support workflow retains supported external terminal launchers. Native 0.8.1 validation remains outstanding.
 - **WireGuard:** The application uses genuine WireGuard for Windows, checking its Authenticode signature. It reuses existing installations or, only after explicit user approval, downloads a reviewed official x64 MSI, verifies its pinned hash and Authenticode publisher, and invokes Windows Installer through UAC. No WireGuard binaries are bundled. The installer does not change TELIPHONES profiles or tunnel configurations. See [installation verification and limitations](../desktop/windows/README.md#secure-connectivity-and-wireguard-installation); native installation is not yet Windows-validated.
 - **Monitoring:** Only one connection is active at a time. Reachability is polled through the tunnel; there is no server-pushed revocation channel.

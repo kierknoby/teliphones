@@ -2,7 +2,7 @@
 
 This is the historical 0.4.0/0.4.1 incident and read-only evidence runbook,
 not current installation instructions or archive availability. Current targets
-are module 0.6.4, root broker 0.6.3, protocol 12 and Windows 0.8.2. Use the
+are module 0.6.4, root broker 0.6.3, protocol 12 and Windows 0.8.3. Use the
 [current upgrade guide](../teliphones/README.md#updating-teliphones) for bootstrap;
 account for dedicated Locked interfaces and configured management ports when
 interpreting the shared-interface/default-port examples below. The preserved

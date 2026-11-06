@@ -5,6 +5,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+& (Join-Path $PSScriptRoot 'restore-wireguard-nt.ps1')
 if (-not $env:VCPKG_INSTALLATION_ROOT) {
     throw "Set VCPKG_INSTALLATION_ROOT to an existing vcpkg installation to restore the declared OpenSSL dependency."
 }

@@ -67,6 +67,21 @@ target_link_libraries(teliphones_ssh_crypto PUBLIC teliphones_core OpenSSL::Cryp
 add_executable(ssh_crypto_tool tests/ssh_crypto_tool.cpp)
 target_link_libraries(ssh_crypto_tool PRIVATE teliphones_ssh_crypto)
 if(WIN32)
+    set(WIREGUARD_NT "${CMAKE_CURRENT_SOURCE_DIR}/dependencies/wireguard-nt")
+    add_custom_target(verify_wireguard_nt
+        COMMAND powershell.exe -NoProfile -NonInteractive
+            -File "${CMAKE_CURRENT_SOURCE_DIR}/restore-wireguard-nt.ps1" -CheckOnly)
+    add_executable(wireguard_nt_native_tests tests/wireguard_nt_native_tests.cpp
+        src/platform/WireGuardNt.cpp src/platform/WireGuard.cpp src/platform/Win.cpp)
+    add_dependencies(wireguard_nt_native_tests verify_wireguard_nt)
+    target_include_directories(wireguard_nt_native_tests PRIVATE "${WIREGUARD_NT}/include")
+    target_compile_definitions(wireguard_nt_native_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00)
+    target_compile_options(wireguard_nt_native_tests PRIVATE ${TELIPHONES_WARNING_OPTIONS})
+    target_link_libraries(wireguard_nt_native_tests PRIVATE teliphones_core
+        advapi32 bcrypt crypt32 shell32 ole32 wintrust uuid)
+    add_custom_command(TARGET wireguard_nt_native_tests POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${WIREGUARD_NT}/bin/amd64/wireguard.dll"
+                "$<TARGET_FILE_DIR:wireguard_nt_native_tests>/wireguard.dll")
     add_executable(tunnel_startup_native_tests tests/tunnel_startup_native_tests.cpp)
     target_compile_definitions(tunnel_startup_native_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00)
     target_compile_options(tunnel_startup_native_tests PRIVATE ${TELIPHONES_WARNING_OPTIONS})
@@ -89,6 +104,9 @@ enable_testing()
 if(WIN32)
     add_test(NAME tunnel_startup_native COMMAND tunnel_startup_native_tests)
     set_tests_properties(tunnel_startup_native PROPERTIES TIMEOUT 60)
+    add_test(NAME wireguard_nt_unit COMMAND wireguard_nt_native_tests --unit)
+    # Real driver/service test is an explicit CI gate, not a portable mock or silent skip.
+    # Do not run this privileged fixture on a development workstation.
 endif()
 add_test(NAME connect_protection COMMAND connect_protection_tests)
 add_test(NAME terminal_emulator COMMAND terminal_emulator_tests)

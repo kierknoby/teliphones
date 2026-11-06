@@ -1,20 +1,20 @@
 # Windows developer builds, testing and readiness
 
-Targets: TELIPHONES for Windows **0.8.2**, TELIPHONES for FreePBX **0.6.4**.
+Targets: TELIPHONES for Windows **0.8.3**, TELIPHONES for FreePBX **0.6.4**.
 The FreePBX connection-state policy and Windows pairing/clipboard UX are
 independently versioned; neither entry declares a published release.
 
 Root broker is **0.6.3**, protocol **12**. Version.h derives Windows
-product 0.8.2 and file 0.8.2.0; executable resources, captions, About/licence and
+product 0.8.3 and file 0.8.3.0; executable resources, captions, About/licence and
 build provenance reuse it. The dependency manifest must match the product version.
 Current Release portable build/CTest and source contracts can run on Linux;
 native MFC pairing tests, executable metadata and startup smoke are registered
-in the Windows workflow. No current native 0.8.2 execution is claimed.
+in the Windows workflow. No current native 0.8.3 execution is claimed.
 The patch increment distinguishes this correction from the operator's installed
-0.8.1 executable; no FreePBX version or package changed. No 0.8.2 binary or
+0.8.2 executable; no FreePBX version or package changed. No 0.8.3 binary or
 application bundle has been produced.
 
-Native compilation, SCM/named-pipe execution and artefact creation are
+Native compilation, SCM/WireGuardNT execution and artefact creation are
 **blocked**: this workspace is Linux without MSVC/MFC or a Windows runtime.
 The existing Actions workflow checks out a committed ref, not this uncommitted
 working tree. The user selected source preparation with native work left
@@ -38,40 +38,57 @@ enrolled key in the restricted config and returned success after the same
 20-second SCM Running wait. Reverting that plaintext-key behaviour would
 discard subsequent security improvements and is not the correction.
 
-The added activation used one `WaitNamedPipe(..., 10000)` call, which returns
-immediately if the named pipe has not been created. Every activation exception
-then called `/uninstalltunnelservice` and returned the same code as service
-startup timeout, losing the cause. The reported approximately 287 ms shutdown
-after `Startup complete` is consistent with that immediate cleanup branch,
-not the 20-second polling timeout. The operator's WireGuard log alone does
-**not** establish which pipe/transfer/UAPI error occurred, nor exclude an
-independent service exit. There were no later changes to this file before the
-current investigation.
+Approved official v1.1.1 service/driver/build source now establishes the actual
+cause: the official WireGuardNT service never creates that userspace text-UAPI
+pipe. The reported 0.8.1 shutdown is consistent with TELIPHONES' activation-error
+uninstall branch; the later 0.8.2 error 1460 explicitly identifies that branch
+after bounded pipe retries. `5250285` addressed timing but not the incompatible
+interface. Earlier synthetic pipe tests were not evidence of official integration.
 
-The pending correction waits for SCM service registration/Running and polls
-protected-pipe creation within bounded deadlines, allowing only absent/busy
-pipe retries while SCM remains Running/StartPending. Other errors and genuine
-service stops fail explicitly and trigger cleanup. Helper results distinguish
-service readiness, pipe availability and secure-key activation, with numeric
-Windows errors for service/query/pipe/transfer failures. UAPI rejection stays
-fail-closed; no payload, key, password or token is reported. No handshake is
-required to recognise successful service startup. Failed cleanup is not
-reported as successful removal.
+0.8.3 retains bounded SCM registration/Running checks and replaces the text
+protocol with `WireGuardOpenAdapter` / `WireGuardSetConfiguration`. The zeroed,
+official 80-byte interface structure sets only `HAS_PRIVATE_KEY`; no peer or
+listen-port fields are marked, and peers are not replaced. The helper closes
+the opened (not created) handle and wipes the key structure even on failure.
+Bootstrap-only disk configuration and PID-bound protected key delivery remain.
+Dependency trust/load, adapter access and key-update failures are separate
+diagnostic stages and trigger verified tunnel cleanup, not a handshake timeout.
 
-`tunnel_startup_native` is a Windows-only CTest using real, uniquely named,
-demand-start SCM services and local named pipes, not WireGuard or networking.
-It reproduces the old absent-pipe failure after Running, verifies bounded
-readiness with delayed pipe creation, StartPending/StopPending, no peer handshake, service
-failure, absent-pipe timeout, no premature stop and explicit service cleanup.
-It requires an elevated test runner; lack of access fails rather than skips.
-The Windows Release workflow runs it independently of OpenSSH provisioning
-and propagates nonzero exit status. **Not compiled or executed on Linux.**
-Linux validation passed: 49 build-layout/source-contract tests, optimized
-Release compilation with interprocedural optimization, all nine portable
-CTests, five documentation-link tests and `git diff --check`. The local
-OpenSSL 3.0.13 build verifies fail-closed behaviour without Argon2; it does not
-revalidate the supported-provider positive path described below.
-Portable source-contract/CTest results are not native runtime evidence.
+Dependency evidence: the official v1.1.1 build embeds the WireGuardNT DLL; it
+does not establish an installed standalone DLL. Its build script pins the
+official 1.1 ZIP with SHA-256
+`dceb30a9bc4be48cce0f74160fc88a585a2c2627366e8f846fc6658f9038dace`.
+That approved archive was retrieved and hash-verified. Its AMD64 DLL exports
+the required API and imports only `KERNEL32.dll` / `ntdll.dll`; its certificate
+table contains a WireGuard LLC certificate (not a Windows trust-chain validation
+on Linux). The matching header and permitted binary redistribution licence were
+inspected. [wireguard-nt.json](../wireguard-nt.json) pins archive/input hashes.
+Restore via `../restore-wireguard-nt.ps1` before native compilation; direct
+MSBuild uses check-only validation, never implicit downloads. The DLL/licence
+are packaged beside the application. The elevated helper verifies bundled bytes,
+copies them to a protected application-owned Program Files directory, locks and
+rehashes the DLL, then loads by absolute path with system-only dependency lookup.
+
+`tunnel_startup_native` retains real isolated SCM transition, deadline, stopped
+service and cleanup tests; obsolete mock control-pipe readiness tests are gone.
+`wireguard_nt_unit` uses the real header/ABI with injected API callbacks to cover
+exact flags/size, adapter access errors, update errors, handle closure and wipe.
+The separate real integration gate provisions the production-pinned official
+WireGuard for Windows 1.1.1 MSI **only on an ephemeral GitHub-hosted CI runner**.
+It exercises production bootstrap installation, PID-bound helper IPC, native
+key update/readback, unchanged peers/listen port/endpoints/allowed IPs, no peer
+handshake/text pipe, continued service operation beyond the observed shutdown
+interval and cleanup after a missing-DLL negative control. Its endpoint is
+loopback and its addresses are TEST-NET; no PBX or workstation is contacted.
+All missing prerequisites/nonzero statuses fail the gates, not silently skip.
+The DLL's Windows Authenticode publisher check is also a CI gate.
+**No current native compilation or execution is claimed on Linux.**
+
+Current Linux validation passed optimized Release/LTO compilation, all nine
+portable CTests, 50 build-layout/source contracts, five documentation tests
+and five offline website tests. The linked OpenSSL 3.0.13 lacks Argon2id;
+connect-protection tests exercised bootstrap rendering and missing-provider
+fail-closed handling, not the supported-provider positive path.
 
 After review, native Release build and the complete CTest suite must pass on
 an isolated Windows test runner. Then a controlled workstation acceptance run
@@ -82,7 +99,7 @@ approved PBX access works, disconnect/reconnect works, and genuine startup or
 activation failures leave no active tunnel. Inspect only non-secret properties
 of staging/installed configs to confirm enrolled keys remain absent. No
 workstation or PBX changes were performed for this investigation; the live
-initiating error and end-to-end correction remain unverified.
+end-to-end correction remains unverified until sustained workstation connectivity.
 
 ### Pairing Save-state notification regression
 
@@ -298,11 +315,11 @@ Alt+F4, reconnect, disconnect, password protection and revocation.
 
 The [Windows build workflow](../../../.github/workflows/windows-build.yml) builds the existing Visual Studio solution in **Release x64** on a GitHub-hosted `windows-2022` runner. It runs automatically when changes under `desktop/windows/` or the workflow itself are pushed. It can also be run from **Actions > Windows build > Run workflow** once the workflow is available on the repository's default branch.
 
-The workflow discovers Visual Studio 2022 with `vswhere`, verifies the installed x64 MSVC tools, static Unicode MFC libraries and Windows SDK, and reports the selected versions. If anything is missing, it fails with the missing component or file path; it does not install Visual Studio components, drivers or other dependencies.
+The workflow discovers Visual Studio 2022 with `vswhere`, verifies the installed x64 MSVC tools, static Unicode MFC libraries and Windows SDK, and reports the selected versions. If toolchain components are missing it fails rather than installing them. Declared OpenSSL/WireGuardNT dependencies and the isolated official WireGuard/OpenSSH fixtures are provisioned explicitly by separate steps.
 
 The workflow runs standard-library Python project/resource layout checks, explicitly provisions missing official Windows OpenSSH Client and Server capabilities using Windows servicing, restores static OpenSSL, and builds the application and its `TELIPHONES-SSH.exe` console helper. Capability state is re-queried, reboot requirements rejected and actual executable loading checked; versions/hashes and servicing failures are reported. The Windows OpenSSH directory is placed first on PATH. No alternate package is downloaded if servicing fails.
 
-It also builds the production cryptographic/agent/session code with CMake, performs native DPAPI/locked-memory/pipe/Job preflight and runs real OpenSSH tests. The loopback-only server uses a unique temporary SYSTEM scheduled task and kill-on-close Job for Windows logon-token support, not the global sshd service. Generated test keys/configuration and all owned processes are cleaned up, including an always-run interrupted-fixture recovery step. A separate test-only core permits exactly the loopback fixture source; the application and production core tests retain their non-loopback policy. Successful native credential-provider/OpenSSH validation is still required; portable success alone is insufficient. Existing core, diagnostics, PE/manifest and malformed tunnel-helper checks remain. This is not an interactive GUI or WireGuard integration test. See the [complete execution-order and sixteen-test readiness audit](#historical-investigations) for dependencies, cleanup and remaining native/systemd validation.
+It also builds the production cryptographic/agent/session code with CMake, performs native DPAPI/locked-memory/pipe/Job preflight and runs real OpenSSH tests. The loopback-only server uses a unique temporary SYSTEM scheduled task and kill-on-close Job for Windows logon-token support, not the global sshd service. Generated test keys/configuration and all owned processes are cleaned up, including an always-run interrupted-fixture recovery step. A separate test-only core permits exactly the loopback fixture source; the application and production core tests retain their non-loopback policy. Successful native credential-provider/OpenSSH validation is still required; portable success alone is insufficient. Existing core, diagnostics, PE/manifest and malformed tunnel-helper checks remain. This SSH gate is not an interactive GUI or WireGuard integration test. See the [complete execution-order and sixteen-test readiness audit](#historical-investigations) for dependencies, cleanup and remaining native/systemd validation.
 
 Windows CTest runs `connect_protection`, `terminal_emulator`, `core_tests`,
 `session_diagnostics`, `build_layout`, `contract_check`, `managed_ssh_check`
@@ -348,7 +365,7 @@ The x64 manifest uses explicit `amd64` application and Common Controls version 6
 
 If startup fails with an incorrect side-by-side configuration, the workflow prints the `sxstrace` activation trace and recent Windows Application **SideBySide** events. Download **TELIPHONES-Windows-startup-diagnostics** from that failed run for the extracted manifest, DLL import list, startup error and available trace/event files. Diagnostic-tool failures are reported and do not bypass the executable startup test. The application artefact is uploaded only after all validation succeeds. A manifest correction is not Windows-validated until a new run passes the real smoke test.
 
-Download **TELIPHONES-Windows-x64** only from a successful run. It contains `TELIPHONES.exe`, the required adjacent `TELIPHONES-SSH.exe`, this README, the changelog, `LICENSE`, `OpenSSL-LICENSE.txt` and `build-info.json`; no keys, profiles or runtime configurations are included. Keep both executables together. OpenSSL is statically linked, not a separately installed DLL. Build information records the source/Actions provenance and hashes of both executables. Existing embedded-version/prerelease checks remain. Artefacts are retained for 14 days; the workflow creates no release and deploys nothing. No new native artefact has been validated locally.
+Download **TELIPHONES-Windows-x64** only from a successful run. It contains `TELIPHONES.exe`, the required adjacent `TELIPHONES-SSH.exe`, `wireguard.dll`, this README, the changelog, `LICENSE`, `OpenSSL-LICENSE.txt`, `libvterm-LICENSE.txt`, `WireGuardNT-LICENSE.txt` and `build-info.json`; no keys, profiles or runtime configurations are included. Keep both executables and the API DLL together. OpenSSL is statically linked, not a separately installed DLL. Build information records source/Actions provenance, both executable hashes and the WireGuardNT version/hash. Existing embedded-version/prerelease checks remain. Artefacts are retained for 14 days; the workflow creates no release and deploys nothing. No new native artefact has been validated locally.
 
 Extract the artefact and run `TELIPHONES.exe` on Windows 10/11 x64. Release builds statically link MFC and the MSVC C/C++ runtime (`/MT`), so no separate Visual C++ Redistributable or MFC DLL is expected; Windows system DLLs remain required. No .NET runtime is used. The application offers [WireGuard installation](../README.md#secure-connectivity-and-wireguard-installation) if needed. OpenSSH-backed terminals require the Windows system OpenSSH Client; only Remote Support supports PuTTY. Unsigned test executables may trigger Windows SmartScreen; the workflow does not code-sign them.
 

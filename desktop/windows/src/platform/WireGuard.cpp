@@ -1,5 +1,6 @@
 #include "WireGuard.h"
 
+#include "WireGuardNt.h"
 #include "Win.h"
 #include "TunnelStartup.h"
 
@@ -27,8 +28,9 @@ constexpr DWORD kHelperPermissionsFailed = 6;
 constexpr DWORD kHelperNotElevated = 7;
 constexpr DWORD kHelperStartFailed = 8;
 constexpr DWORD kHelperRemoveFailed = 9;
-constexpr DWORD kHelperControlPipeFailed = 10;
+constexpr DWORD kHelperDependencyFailed = 10;
 constexpr DWORD kHelperKeyFailed = 11;
+constexpr DWORD kHelperAdapterFailed = 12;
 
 const wchar_t kTunnelFolderSddl[] = L"D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)";
 
@@ -183,26 +185,6 @@ std::string receiveKey(const std::string& token) {
         throw;
     }
     return key;
-}
-
-void activateKey(const std::string& tunnelName, const std::string& privateKey) {
-    const auto name = L"\\\\.\\pipe\\ProtectedPrefix\\Administrators\\WireGuard\\" + Widen(tunnelName);
-    Handle pipe(tunnel_startup::OpenControlPipe(name, L"WireGuardTunnel$" + Widen(tunnelName), 10000));
-    Bytes raw = Base64Decode(privateKey);
-    std::string hex = HexEncode(raw);
-    SecureZeroMemory(raw.data(), raw.size());
-    WipeString hexWiper(hex);
-    std::string request = "set=1\nprivate_key=" + hex + "\n\n";
-    WipeString requestWiper(request);
-    pipeTransfer(pipe.get(), request.data(), static_cast<DWORD>(request.size()), true);
-    std::string response;
-    for (unsigned i = 0; i < 128; ++i) {
-        char byte = 0;
-        pipeTransfer(pipe.get(), &byte, 1, false);
-        response += byte;
-        if (response.size() >= 2 && response.compare(response.size() - 2, 2, "\n\n") == 0) break;
-    }
-    if (response != "errno=0\n\n") throw Error("WireGuard rejected the unlocked tunnel key.");
 }
 
 std::wstring serviceName(const std::string& tunnelName) { return L"WireGuardTunnel$" + Widen(tunnelName); }
@@ -376,16 +358,16 @@ DWORD helperUp(const HelperCommand& command) {
         return kHelperStartFailed | (std::min<DWORD>(error.code, 0xffff) << 16);
     }
     try {
-        activateKey(command.tunnelName, privateKey);
-    } catch (const tunnel_startup::Failure& error) {
+        wireguard_nt::Api api(wireguard_nt::PrepareLibrary());
+        api.activateKey(Widen(command.tunnelName), privateKey);
+    } catch (const wireguard_nt::Failure& error) {
         if (elevatedUninstall(wireguard, command.tunnelName) != kHelperOk) return kHelperRemoveFailed;
-        return kHelperControlPipeFailed | (std::min<DWORD>(error.code, 0xffff) << 16);
-    } catch (const PipeTransferFailure& error) {
+        const auto stage = error.stage == wireguard_nt::Stage::Dependency ? kHelperDependencyFailed :
+                           error.stage == wireguard_nt::Stage::Adapter ? kHelperAdapterFailed : kHelperKeyFailed;
+        return stage | (std::min<DWORD>(error.code, 0xffff) << 16);
+    } catch (const Error&) {
         if (elevatedUninstall(wireguard, command.tunnelName) != kHelperOk) return kHelperRemoveFailed;
-        return kHelperKeyFailed | (std::min<DWORD>(error.code, 0xffff) << 16);
-    } catch (const std::exception&) {
-        if (elevatedUninstall(wireguard, command.tunnelName) != kHelperOk) return kHelperRemoveFailed;
-        return kHelperKeyFailed;
+        return kHelperDependencyFailed;
     }
     return kHelperOk;
 }
@@ -438,10 +420,12 @@ std::string helperMessage(DWORD code) {
         case kHelperNotElevated: return "Administrative approval is required to start a WireGuard tunnel.";
         case kHelperStartFailed: return "The WireGuard tunnel service did not reach Running or stopped during startup. TELIPHONES removed it." + detail +
             " Check the WireGuard diagnostic log and Windows Service Control Manager events.";
-        case kHelperControlPipeFailed: return "WireGuard service startup completed, but its administrator control pipe could not become ready. TELIPHONES removed the tunnel." + detail;
-        case kHelperKeyFailed: return "WireGuard service startup completed, but secure key activation failed. TELIPHONES removed the tunnel." + detail +
+        case kHelperDependencyFailed: return "The pinned WireGuardNT API DLL is missing, modified, or could not be loaded from its protected location. "
+            "Keep wireguard.dll from this exact TELIPHONES bundle beside the application. TELIPHONES removed the tunnel." + detail;
+        case kHelperAdapterFailed: return "WireGuard service startup completed, but its existing WireGuardNT adapter could not be opened. TELIPHONES removed the tunnel." + detail;
+        case kHelperKeyFailed: return "WireGuard service startup completed, but the WireGuardNT in-memory private-key update failed. TELIPHONES removed the tunnel." + detail +
             " Check the WireGuard diagnostic log; this is not a peer-handshake timeout.";
-        case kHelperRemoveFailed: return "An earlier TELIPHONES tunnel could not be removed. Remove it in WireGuard for Windows, then try again.";
+        case kHelperRemoveFailed: return "A TELIPHONES tunnel or its configuration could not be removed safely. Check WireGuard for Windows and the tunnel permissions before retrying.";
         default: return "The TELIPHONES tunnel helper failed (code " + std::to_string(code) + ").";
     }
 }

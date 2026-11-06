@@ -3,6 +3,7 @@
 from pathlib import Path, PureWindowsPath
 import importlib.util
 import copy
+import json
 import os
 import re
 import shutil
@@ -321,11 +322,11 @@ class BuildLayoutTests(unittest.TestCase):
         self.assertIn("client != GetProcessId(helper)", wireguard)
         self.assertIn("PIPE_REJECT_REMOTE_CLIENTS", wireguard)
         self.assertIn("FILE_FLAG_FIRST_PIPE_INSTANCE", wireguard)
-        self.assertIn("private_key=", wireguard)
+        self.assertNotIn("private_key=", wireguard)
         manage = (ROOT / "src/app/ConnectPasswordDlg.cpp").read_text().split("bool ManageConnectPassword", 1)[1]
         self.assertLess(manage.index("RemoveTunnel("), manage.index("SetConnectPassword("))
 
-    def test_tunnel_startup_waits_for_service_and_control_pipe_independently(self):
+    def test_tunnel_startup_uses_scm_then_official_wireguard_nt_not_text_uapi(self):
         wireguard = (ROOT / "src/platform/WireGuard.cpp").read_text()
         startup = (ROOT / "src/platform/TunnelStartup.h").read_text()
         helper = wireguard.split("DWORD helperUp(", 1)[1].split("DWORD runElevated(", 1)[0]
@@ -333,26 +334,69 @@ class BuildLayoutTests(unittest.TestCase):
         self.assertIn("WaitForService(serviceName(command.tunnelName), false, 20000)", helper)
         self.assertIn("WaitForService(serviceName(command.tunnelName), true, 20000)", helper)
         self.assertIn("QueryServiceStatusEx", startup)
-        self.assertIn("SERVICE_START_PENDING", startup)
-        self.assertIn("error != ERROR_FILE_NOT_FOUND", startup)
-        self.assertIn("error != ERROR_PATH_NOT_FOUND", startup)
-        self.assertIn("error != ERROR_PIPE_BUSY", startup)
+        self.assertIn("SERVICE_STOP_PENDING", startup)
         self.assertIn("now >= deadline", startup)
-        self.assertIn("OpenControlPipe(name,", wireguard)
+        self.assertNotIn("OpenControlPipe", startup + wireguard)
+        self.assertNotIn("ProtectedPrefix", wireguard)
         self.assertNotIn("Another VPN or a conflicting address", wireguard)
-        self.assertIn("kHelperControlPipeFailed", helper)
+        self.assertIn("wireguard_nt::Api api(wireguard_nt::PrepareLibrary())", helper)
+        self.assertIn("kHelperDependencyFailed", helper)
+        self.assertIn("kHelperAdapterFailed", helper)
         self.assertIn("kHelperKeyFailed", helper)
         self.assertIn("!= kHelperOk) return kHelperRemoveFailed", helper)
         self.assertNotIn("handshake", helper.lower())
         native = (ROOT / "tests/tunnel_startup_native_tests.cpp").read_text()
-        for symbol in ("CreateServiceW", "StartServiceW", "CreateNamedPipeW", "SERVICE_START_PENDING",
-                       "delayedStartup", "stoppedService", "missingPipe", "stoppingService"):
+        for symbol in ("CreateServiceW", "StartServiceW", "SERVICE_START_PENDING",
+                       "delayedStartup", "stoppedService", "boundedStartup", "stoppingService"):
             self.assertIn(symbol, native)
+        self.assertNotIn("CreateNamedPipeW", native)
         cmake = (ROOT / "CMakeLists.txt").read_text()
         self.assertIn("add_test(NAME tunnel_startup_native COMMAND tunnel_startup_native_tests)", cmake)
         self.assertIn("TIMEOUT 60", cmake)
         workflow = (ROOT.parents[1] / ".github/workflows/windows-build.yml").read_text()
         self.assertIn("ctest --test-dir desktop/windows/build/ssh-native", workflow)
+
+    def test_wireguard_nt_dependency_and_private_only_update_are_pinned(self):
+        manifest = json.loads((ROOT / "wireguard-nt.json").read_text())
+        self.assertEqual(manifest["version"], "1.1")
+        self.assertEqual(manifest["url"], "https://download.wireguard.com/wireguard-nt/wireguard-nt-1.1.zip")
+        self.assertEqual(manifest["sha256"], "dceb30a9bc4be48cce0f74160fc88a585a2c2627366e8f846fc6658f9038dace")
+        header = (ROOT / "src/platform/WireGuardNt.h").read_text()
+        implementation = (ROOT / "src/platform/WireGuardNt.cpp").read_text()
+        self.assertIn(manifest["files"]["bin/amd64/wireguard.dll"], header)
+        self.assertIn("#include <wireguard.h>", header)
+        self.assertIn("sizeof(WIREGUARD_INTERFACE) == 80", header)
+        self.assertIn("SecureZeroMemory(&value, sizeof(value))", header)
+        self.assertIn("value.Flags = WIREGUARD_INTERFACE_HAS_PRIVATE_KEY", implementation)
+        self.assertNotIn("WIREGUARD_INTERFACE_REPLACE_PEERS", implementation)
+        self.assertNotIn("WireGuardCreateAdapter", implementation)
+        self.assertIn("CryptStringToBinaryA", implementation)
+        self.assertNotIn("Base64Decode", implementation)
+        self.assertIn("GENERIC_READ, FILE_SHARE_READ", implementation)
+        self.assertIn("FILE_FLAG_OPEN_REPARSE_POINT", implementation)
+        self.assertIn("LOAD_LIBRARY_SEARCH_SYSTEM32", implementation)
+        for export in ("WireGuardOpenAdapter", "WireGuardCloseAdapter", "WireGuardSetConfiguration"):
+            self.assertIn('"' + export + '"', implementation)
+        self.assertIn("closeAdapter(adapter)", implementation)
+        restore = (ROOT / "restore-wireguard-nt.ps1").read_text()
+        for contract in ("AllowAutoRedirect = $false", "Get-FileHash", "$manifest.sha256",
+                         "WireGuardNT extracted input SHA-256 mismatch", "$CheckOnly"):
+            self.assertIn(contract, restore)
+        props = (ROOT / "WireGuardNT.props").read_text()
+        self.assertIn("-CheckOnly", props)
+        self.assertIn("WireGuardNT-LICENSE.txt", props)
+        self.assertIn('Import Project="WireGuardNT.props"', (ROOT / "TELIPHONES.vcxproj").read_text())
+        native = (ROOT / "tests/wireguard_nt_native_tests.cpp").read_text()
+        for contract in ("InstallTunnel(", "before.peer()", "LastHandshake == 0", "HiddenDependency",
+                         "~PrivateKeyUpdate()", "ERROR_ACCESS_DENIED", "ERROR_INVALID_PARAMETER",
+                         "QueryTunnel(tunnel.name) == TunnelState::Running", "IsBootstrapTunnel(stored)"):
+            self.assertIn(contract, native)
+        workflow = (ROOT.parents[1] / ".github/workflows/windows-build.yml").read_text()
+        self.assertIn("& $exe --integration", workflow)
+        self.assertIn("steps.wireguard_fixture.outcome == 'success'", workflow)
+        self.assertIn("wireGuardNtSha256", workflow)
+        self.assertIn("build/artifact/wireguard.dll", workflow)
+        self.assertIn("build/artifact/WireGuardNT-LICENSE.txt", workflow)
 
     @unittest.skipUnless(shutil.which("ssh-keygen") and shutil.which("ssh"),
                          "Local OpenSSH required; no download attempted")
@@ -875,7 +919,8 @@ class BuildLayoutTests(unittest.TestCase):
     def test_ctest_platform_boundary_and_native_ssh_gate(self):
         stubbed = ("project", "set_target_properties", "set_tests_properties", "add_library", "add_executable",
                    "target_compile_options", "target_include_directories", "target_link_libraries",
-                   "target_compile_definitions", "enable_testing")
+                   "target_compile_definitions", "enable_testing", "add_custom_command",
+                   "add_custom_target", "add_dependencies")
         script = "\n".join(f"macro({name})\nendmacro()" for name in stubbed)
         script += """
 macro(find_package)
@@ -900,7 +945,8 @@ endfunction()
                                         capture_output=True, timeout=20)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 registered = re.findall(r"REGISTERED=(\w+)", result.stdout)
-                expected = portable | ({"broker_contract_check"} if platform == "Linux" else {"tunnel_startup_native"})
+                expected = portable | ({"broker_contract_check"} if platform == "Linux" else
+                                       {"tunnel_startup_native", "wireguard_nt_unit"})
                 self.assertEqual(set(registered), expected)
                 self.assertEqual(len(registered), len(expected))
         workflow = (ROOT.parents[1] / ".github/workflows/windows-build.yml").read_text(encoding="utf-8")
@@ -959,8 +1005,8 @@ endfunction()
         base = ".".join(map(str, parts[:3]))
         product = base
         numeric = ".".join(map(str, parts))
-        self.assertEqual(product, "0.8.2")
-        self.assertEqual(numeric, "0.8.2.0")
+        self.assertEqual(product, "0.8.3")
+        self.assertEqual(numeric, "0.8.3.0")
         self.assertIn(f'"version-string": "{product}"', (ROOT / "vcpkg.json").read_text(encoding="utf-8"))
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
@@ -1034,7 +1080,7 @@ endfunction()
         module_version = ET.parse(ROOT.parents[1] / "teliphones/module.xml").getroot().findtext("version")
         self.assertRegex(module_version or "", r"^\d+\.\d+\.\d+$")
         for path, statement in (
-            (ROOT / "README.md", "TELIPHONES 0.8.2 for Windows is licensed under GPLv3."),
+            (ROOT / "README.md", "TELIPHONES 0.8.3 for Windows is licensed under GPLv3."),
             (ROOT.parents[1] / "teliphones/README.md",
              f"TELIPHONES {module_version} for FreePBX is licensed under GPLv3."),
         ):
