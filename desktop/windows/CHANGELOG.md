@@ -58,6 +58,11 @@ Further corrections before release (version unchanged):
   diagnostic `ssh.log` that a crashed session leaves behind. It still deletes
   only known names, never recursively, and names any remaining path. Session
   teardown that cannot be verified remains a failure.
+- The runtime-cleanup regression fixture now uses native path separators, so
+  its exact-path assertions also work on Windows. Locked-log coverage verifies
+  that loaded profiles and the adjacent DPAPI identity survive a failed cleanup.
+  Cleanup warnings are accepted by the diagnostics event allowlist instead of
+  generating an additional startup error.
 - Disconnect no longer fails after the tunnel is removed merely because
   temporary SSH files remain; they are reported and retried at the next start.
 - Console exceptions (dialog initialisation, font creation, disconnect) no

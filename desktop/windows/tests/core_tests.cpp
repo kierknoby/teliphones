@@ -1517,7 +1517,7 @@ void testTunnelLifecycle() {
 tlp::SshRuntimeFilesystem realFilesystem() {
     namespace fs = std::filesystem;
     tlp::SshRuntimeFilesystem ops;
-    ops.separator = "/";
+    ops.separator = fs::path("/").make_preferred().string();
     ops.kind = [](const std::string& path) {
         const auto status = fs::symlink_status(path);
         if (!fs::exists(status)) return tlp::SshRuntimeFilesystem::Kind::Missing;
@@ -1589,6 +1589,29 @@ void testSshRuntimeReportedTree() {
     for (const char* name : tlp::kSshRuntimeFiles) writeBytes(profile / "aaaaaaaaaaaaaaaa" / name, 16);
     tlp::RemoveSshRuntimeTree(ops, profile.string());
     check(!fs::exists(profile) && fs::exists(identity), "every known attempt file is removed; identity kept");
+
+    // A locked log is reported without escaping the per-profile startup cleanup.
+    build();
+    auto lockedOps = ops;
+    lockedOps.removeFile = [](const std::string& path) {
+        throw tlp::SshRuntimeResidual("Windows error 32: SSH runtime file is in use (" + path + ").");
+    };
+    tlp::Profile saved;
+    saved.id = profile.filename().string();
+    saved.name = "Existing pairing";
+    saved.kind = tlp::ProfileKind::Administrator;
+    const std::vector<tlp::Profile> loaded{saved};
+    const auto cleanupFailures = tlp::CleanSshRuntimes(loaded, [&](const tlp::Profile&) {
+        tlp::RemoveSshRuntimeTree(lockedOps, profile.string());
+    });
+    check(cleanupFailures.size() == 1 && cleanupFailures[0].error.find((attempt / "ssh.log").string()) != std::string::npos,
+          "locked log cleanup reports the exact native file path without blocking loaded profiles");
+    check(loaded.size() == 1 && loaded[0].id == saved.id && loaded[0].name == saved.name &&
+              fs::file_size(attempt / "ssh.log") == 4209 && fs::file_size(identity) == 512,
+          "failed runtime cleanup preserves the log, loaded profile and permanent identity");
+    tlp::RemoveSshRuntimeTree(ops, profile.string());
+    check(!fs::exists(profile) && fs::file_size(identity) == 512,
+          "cleanup after the log is released removes the abandoned attempt but keeps the identity");
 
     // An unknown file blocks only its own attempt; other attempts are still removed and nothing unknown is deleted.
     build();

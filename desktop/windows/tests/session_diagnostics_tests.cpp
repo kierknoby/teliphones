@@ -121,6 +121,12 @@ void tests(const fs::path& root) {
     check(throws([&] { store.Write(admin, "", "arbitrary", "info", ""); }), "reject unlisted event");
     check(throws([&] { store.Write(admin, "", "startup", "debug", ""); }), "reject unlisted severity");
 
+    store.Write("application", "", "ssh_runtime_cleanup_incomplete", "warning",
+                "Saved connections were loaded. Temporary SSH files could not be removed: ssh.log is in use.");
+    check(store.Read("application").find("ssh_runtime_cleanup_incomplete") != std::string::npos &&
+          store.Read("application").find("Saved connections were loaded.") != std::string::npos,
+          "startup cleanup warning is accepted without triggering a second diagnostics error");
+
     const std::string key(43, 'A');
     const std::string secret = "password=short-secret; {\"token\":\"short-token\"}; grant abcdef; pair-code-abcd; " +
         key + "=; -----BEGIN PRIVATE KEY-----\nPEMSECRET\n-----END PRIVATE KEY-----; "
