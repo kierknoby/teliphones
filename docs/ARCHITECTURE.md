@@ -1,7 +1,7 @@
 # TELIPHONES architecture
 
 This document describes **FreePBX module 0.6.6**, **root broker 0.6.6**,
-**broker protocol 12** and **Windows 0.8.3** source:
+**broker protocol 12** and **Windows 0.8.4** source:
 components, trust boundaries, interfaces, firewall layers and stored state.
 Architecture describes the implementation, not proof of production behaviour.
 See [Security and verification evidence](SECURITY.md#verification-evidence)

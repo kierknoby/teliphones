@@ -1541,11 +1541,17 @@ void CMainDlg::OnCancel() {
             if (profile && profile->kind == ProfileKind::Administrator && !profile->pairing.sshPublicKey.empty()) tlp::win::RemoveSshRuntime(*profile);
         } catch (const std::exception& e) {
             LogEvent("disconnect_failed", "error", e.what());
-            ShowError(std::string("The tunnel could not be removed: ") + e.what() + " Remove it in WireGuard for Windows.");
-            return;
+            // A service stuck inside Windows cannot be fixed by keeping TELIPHONES open; the next start detects it.
+            const std::string prompt = std::string("The tunnel could not be removed: ") + e.what() +
+                                       "\n\nExit TELIPHONES anyway? The next start will detect the remaining tunnel and offer cleanup.";
+            if (tlp::ui::ShowMessage(Widen(prompt).c_str(), MB_ICONERROR | MB_YESNO | MB_DEFBUTTON2) != IDYES) return;
+            LogEvent("shutdown_with_residual_tunnel", "warning", "Application closed while a TELIPHONES tunnel remained installed.");
+            active_.reset();
         }
-        LogEvent("tunnel_removed", "info", "Tunnel removed during application shutdown.");
-        active_.reset();
+        if (active_) {
+            LogEvent("tunnel_removed", "info", "Tunnel removed during application shutdown.");
+            active_.reset();
+        }
     }
     healthDialog_.PersistWindowState();
     KillTimer(kMonitorTimer);

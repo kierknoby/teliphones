@@ -333,8 +333,8 @@ class BuildLayoutTests(unittest.TestCase):
         startup = (ROOT / "src/platform/TunnelStartup.h").read_text()
         helper = wireguard.split("DWORD helperUp(", 1)[1].split("DWORD runElevated(", 1)[0]
         self.assertIn("status.state == SERVICE_STOPPED && !StartServiceW", helper)
-        self.assertIn("WaitForService(serviceName(command.tunnelName), false, 20000)", helper)
-        self.assertIn("WaitForService(serviceName(command.tunnelName), true, 20000)", helper)
+        self.assertIn("WaitForService(serviceName(command.tunnelName), false, budget::kServiceRegisteredMs)", helper)
+        self.assertIn("WaitForService(serviceName(command.tunnelName), true, budget::kServiceRunningMs)", helper)
         self.assertIn("QueryServiceStatusEx", startup)
         self.assertIn("SERVICE_STOP_PENDING", startup)
         self.assertIn("now >= deadline", startup)
@@ -342,14 +342,14 @@ class BuildLayoutTests(unittest.TestCase):
         self.assertNotIn("ProtectedPrefix", wireguard)
         self.assertNotIn("Another VPN or a conflicting address", wireguard)
         self.assertIn("wireguard_nt::Api api(wireguard_nt::PrepareLibrary())", helper)
-        self.assertIn("kHelperDependencyFailed", helper)
-        self.assertIn("kHelperAdapterFailed", helper)
-        self.assertIn("kHelperKeyFailed", helper)
-        self.assertIn("!= kHelperOk) return kHelperRemoveFailed", helper)
+        self.assertIn("Stage::DependencyFailed", helper)
+        self.assertIn("Stage::AdapterFailed", helper)
+        self.assertIn("Stage::KeyFailed", helper)
         self.assertNotIn("handshake", helper.lower())
         native = (ROOT / "tests/tunnel_startup_native_tests.cpp").read_text()
         for symbol in ("CreateServiceW", "StartServiceW", "SERVICE_START_PENDING",
-                       "delayedStartup", "stoppedService", "boundedStartup", "stoppingService"):
+                       "delayedStartup", "stoppedService", "boundedStartup", "stoppingService",
+                       "stuckStartPending", "helperLockExclusion"):
             self.assertIn(symbol, native)
         self.assertNotIn("CreateNamedPipeW", native)
         cmake = (ROOT / "CMakeLists.txt").read_text()
@@ -357,6 +357,50 @@ class BuildLayoutTests(unittest.TestCase):
         self.assertIn("TIMEOUT 60", cmake)
         workflow = (ROOT.parents[1] / ".github/workflows/windows-build.yml").read_text()
         self.assertIn("ctest --test-dir desktop/windows/build/ssh-native", workflow)
+
+    def test_tunnel_lifecycle_preserves_failures_and_removes_only_owned_stuck_services(self):
+        wireguard = (ROOT / "src/platform/WireGuard.cpp").read_text()
+        startup = (ROOT / "src/platform/TunnelStartup.h").read_text()
+        helper = wireguard.split("DWORD helperUp(", 1)[1].split("DWORD runElevated(", 1)[0]
+        removal = wireguard.split("lifecycle::HelperResult removeOwnedTunnel(", 1)[1].split("DWORD helperUp(", 1)[0]
+        # One mechanism: the official service is installed and removed by wireguard.exe; WireGuardNT only
+        # updates the key on the adapter that service already owns.
+        self.assertEqual(wireguard.count('"/installtunnelservice"'), 1)
+        self.assertNotIn("WireGuardCreateAdapter", wireguard)
+        # Overlapping helpers for one tunnel are excluded machine-wide before any state changes.
+        self.assertLess(helper.index("HelperLock lock("), helper.index("removeOwnedTunnel("))
+        self.assertLess(helper.index("lock.owned()"), helper.index('"/installtunnelservice"'))
+        self.assertIn("Stage::ResidualTunnel", helper)
+        # Cleanup outcome is reported with, not instead of, the original stage and Windows error.
+        self.assertNotIn("return kHelperRemoveFailed", wireguard)
+        self.assertIn("result.stage = stage;", helper)
+        self.assertIn("result.error = error;", helper)
+        # Forced termination only after SCM binary path and process image prove ownership.
+        self.assertIn("IsOwnedTunnelServiceCommand(", removal)
+        self.assertIn("SameWindowsPath(Narrow(image), expectedExe)", removal)
+        self.assertLess(removal.index('"/uninstalltunnelservice"'), removal.index("TerminateOwnedServiceProcess("))
+        self.assertLess(startup.index("if (!owned("), startup.index("TerminateProcess(process"))
+        self.assertLess(startup.index("after.dwProcessId != before.dwProcessId"), startup.index("TerminateProcess(process"))
+        self.assertIn("awaitAdapterRelease(tunnelName)", removal)
+        # The caller never abandons a running helper or starts competing cleanup.
+        run = wireguard.split("DWORD runElevated(", 1)[1].split("TunnelState QueryTunnel(", 1)[0]
+        wait = run.split("budget::kHelperWaitMs", 1)[1].split("return exitCode;", 1)[0]
+        self.assertNotIn("TerminateProcess", wait)
+        install = wireguard.split("bool InstallTunnel(", 1)[1].split("void RemoveTunnel(", 1)[0]
+        self.assertLess(install.index("catch (const HelperStillRunning&)"), install.index("RemoveTunnel(tunnelName)"))
+        remove = wireguard.split("void RemoveTunnel(", 1)[1].split("bool IsHelperInvocation(", 1)[0]
+        self.assertIn("status.dwCurrentState != SERVICE_START_PENDING", remove)
+        main = (ROOT / "src/app/MainDlg.cpp").read_text()
+        shutdown = main.split("void CMainDlg::OnCancel()", 1)[1]
+        self.assertIn("shutdown_with_residual_tunnel", shutdown)
+        cmake = (ROOT / "CMakeLists.txt").read_text()
+        self.assertIn("src/core/TunnelLifecycle.cpp", cmake)
+        for name in ("TELIPHONES.vcxproj", "TeliphonesCoreTests.vcxproj"):
+            sources = {
+                item.get("Include", "").replace("\\", "/")
+                for item in project(name).findall("ms:ItemGroup/ms:ClCompile", NS)
+            }
+            self.assertIn("src/core/TunnelLifecycle.cpp", sources, name)
 
     def test_wireguard_nt_dependency_and_private_only_update_are_pinned(self):
         manifest = json.loads((ROOT / "wireguard-nt.json").read_text())
@@ -1097,8 +1141,8 @@ endfunction()
         base = ".".join(map(str, parts[:3]))
         product = base
         numeric = ".".join(map(str, parts))
-        self.assertEqual(product, "0.8.3")
-        self.assertEqual(numeric, "0.8.3.0")
+        self.assertEqual(product, "0.8.4")
+        self.assertEqual(numeric, "0.8.4.0")
         self.assertIn(f'"version-string": "{product}"', (ROOT / "vcpkg.json").read_text(encoding="utf-8"))
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
@@ -1172,7 +1216,7 @@ endfunction()
         module_version = ET.parse(ROOT.parents[1] / "teliphones/module.xml").getroot().findtext("version")
         self.assertRegex(module_version or "", r"^\d+\.\d+\.\d+$")
         for path, statement in (
-            (ROOT / "README.md", "TELIPHONES 0.8.3 for Windows is licensed under GPLv3."),
+            (ROOT / "README.md", "TELIPHONES 0.8.4 for Windows is licensed under GPLv3."),
             (ROOT.parents[1] / "teliphones/README.md",
              f"TELIPHONES {module_version} for FreePBX is licensed under GPLv3."),
         ):

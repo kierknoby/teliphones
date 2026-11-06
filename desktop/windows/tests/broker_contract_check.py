@@ -61,11 +61,14 @@ def main():
             instance.audit = lambda *args: None
             instance.save_workstations({"subnet": None, "listen_port": None, "web": broker.DEFAULT_WEB,
                                         "connection_state": "open", "workstations": []})
-            instance.ssh.reconcile = lambda *args: None
+            instance.ssh.reconcile = lambda *args, **kwargs: None
+            revoked = []
             for mode, ssh in (("temporary", "1"), ("persistent", "0")):
-                pairing_request = request
+                # Revocation is durable: each pairing below uses a distinct identity, as a reinstalled workstation would.
+                ws_key = key if not revoked else base64.b64encode(hashlib.sha256(mode.encode()).digest()).decode()
+                pairing_request = request if ws_key == key else tool("request", "ADMIN-PC (Office)", ws_key, nonce)[1]
                 if ssh == "1":
-                    status, pairing_request = tool("request2", "ADMIN-PC (Office)", key, nonce, ssh_key)
+                    status, pairing_request = tool("request2", "ADMIN-PC (Office)", ws_key, nonce, ssh_key)
                     if status != 0:
                         failures.append("C++ core could not create an SSH-capable pairing request: %s" % pairing_request)
                         continue
@@ -82,11 +85,11 @@ def main():
                 expected = "%s %s %s pbx.example.net:51821 %s %s %s" % (
                     response["workstation_id"], response["address"], response["pbx_address"], mode,
                     response["expires_at"] or 0, "ssh" if ssh == "1" else "nossh")
-                status, output = tool("response", code, nonce, key, *([ssh_key] if ssh == "1" else []))
+                status, output = tool("response", code, nonce, ws_key, *([ssh_key] if ssh == "1" else []))
                 if status != 0 or output != expected:
                     failures.append("C++ core rejected real %s broker response: %s (response %s)" %
                                     (mode, output, json.dumps(response, sort_keys=True)))
-                status, rendered = tool("administrator", code, nonce, key,
+                status, rendered = tool("administrator", code, nonce, ws_key,
                                         *([ssh_key] if ssh == "1" else []), private)
                 expected_config = ("[Interface]\nPrivateKey = %s\nAddress = %s\n\n[Peer]\nPublicKey = %s\nEndpoint = %s\n"
                                    "AllowedIPs = %s/32\nPersistentKeepalive = 25" %
@@ -94,10 +97,10 @@ def main():
                 if status != 0 or rendered.replace("\r\n", "\n") != expected_config:
                     failures.append("C++ saved profile/tunnel differs from actual broker admission: %s" % rendered)
                 state_now, _ = instance.workstation_state()
-                if network.peers.get(key) != response["address"] or not broker.policy_equal(
+                if network.peers.get(ws_key) != response["address"] or not broker.policy_equal(
                         network.table, instance.expected_policy(state_now)):
                     failures.append("Broker peer/firewall differs from the returned pairing permissions")
-                if tool("response", code, broker.b64url_encode(os.urandom(16)), key)[0] == 0:
+                if tool("response", code, broker.b64url_encode(os.urandom(16)), ws_key)[0] == 0:
                     failures.append("C++ core accepted a response bound to another nonce")
                 if tool("response", code, nonce, pbx_key)[0] == 0:
                     failures.append("C++ core accepted a response bound to another workstation key")
@@ -106,6 +109,14 @@ def main():
                 if network.peers or not network.link or not broker.policy_equal(
                         network.table, instance.expected_policy(state_now)):
                     failures.append("Open-mode revocation did not retain an empty listener with the expected policy")
+                revoked.append(pairing_request)
+            try:
+                instance.dispatch({"action": "pair", "request": revoked[0], "endpoint_host": "PBX.Example.NET",
+                                   "listen_port": "51821", "mode": "persistent", "minutes": "60", "ssh": "0"}, 1000)
+                failures.append("Broker re-admitted a revoked workstation identity")
+            except broker.BrokerError as error:
+                if "revoked" not in str(error):
+                    failures.append("Revoked identity was refused for an unexpected reason: %s" % error)
 
     for public in (key, pbx_key):
         if tool("fingerprint", public)[1] != broker.key_fingerprint(public):

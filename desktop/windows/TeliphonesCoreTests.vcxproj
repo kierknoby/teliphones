@@ -33,6 +33,7 @@
     <ClCompile Include="src\core\Pairing.cpp" />
     <ClCompile Include="src\core\Profiles.cpp" />
     <ClCompile Include="src\core\TunnelConfig.cpp" />
+    <ClCompile Include="src\core\TunnelLifecycle.cpp" />
     <ClCompile Include="src\core\Validation.cpp" />
     <ClCompile Include="src\core\WireGuardSetup.cpp" />
     <ClCompile Include="src\core\WorkstationHeartbeat.cpp" />

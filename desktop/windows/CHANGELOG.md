@@ -5,7 +5,44 @@ No Windows release is declared published by this document. Earlier development
 builds lacked embedded file/product versions and cannot be assigned reliable
 version numbers retrospectively.
 
-## 0.8.3 — Unreleased development target
+## 0.8.4 — Unreleased development target
+
+Windows file/product version: **0.8.4.0** / **0.8.4**. Independent source targets:
+FreePBX module **0.6.6**, root broker **0.6.6**, protocol **12** (unchanged).
+Patch increment: corrects the tunnel lifecycle of the 0.8.3 workstation build,
+which left `WireGuardTunnel$TELIPHONES-*` stuck in `START_PENDING` (stop refused
+with Windows error 1052, `wireguard.exe` surviving termination) until reboot.
+
+The tunnel mechanism is unchanged: the official WireGuard service owns the
+adapter and WireGuardNT only applies the key after that service is Running, so
+the stall preceded any TELIPHONES activation. Its underlying cause remains
+unconfirmed and requires native diagnostics. Corrected lifecycle defects:
+
+- Failures report their original stage and Windows error together with the
+  cleanup outcome, instead of a generic "could not be removed safely".
+- Cleanup checks the official uninstall and waits for the service to be absent.
+  A service stuck in `START_PENDING` is recovered by terminating its own
+  process only after its SCM binary path (`wireguard.exe /tunnelservice` and
+  this tunnel's configuration) and process image prove ownership; the PID is
+  re-read to exclude reuse. Other WireGuard tunnels are never changed.
+- The adapter must be released and the bootstrap configuration deleted before
+  cleanup is reported complete; any residual service state, surviving process,
+  unverified ownership, adapter or file is reported specifically.
+- A machine-wide per-tunnel lock prevents overlapping elevated connect and
+  cleanup operations. Each connection first removes and verifies any earlier
+  instance; a residual instance blocks reuse instead of conflicting with it.
+- The application waits longer than the helper's worst case (compile-time
+  checked) and never terminates a running helper or starts competing cleanup.
+- Non-elevated removal escalates immediately for `START_PENDING`.
+- Closing TELIPHONES after a failed removal offers an explicit, logged exit.
+
+A process that survives termination (a thread blocked in kernel mode) cannot be
+recovered from user mode; TELIPHONES reports it and a Windows restart remains
+required. Adds portable result/ownership/budget tests and native SCM tests for
+a real stuck `START_PENDING` service and per-tunnel locking. Native compilation
+and these native tests have not run in the Linux workspace.
+
+## 0.8.3 — Previous development target
 
 Windows file/product version: **0.8.3.0** / **0.8.3**. Independent source targets:
 FreePBX module **0.6.6**, root broker **0.6.6**, protocol **12**.

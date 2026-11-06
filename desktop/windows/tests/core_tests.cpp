@@ -18,6 +18,7 @@
 #include "../src/core/Profiles.h"
 #include "../src/core/Rendezvous.h"
 #include "../src/core/TunnelConfig.h"
+#include "../src/core/TunnelLifecycle.h"
 #include "../src/core/Validation.h"
 #include "../src/core/WireGuardSetup.h"
 #include "../src/core/WorkstationHeartbeat.h"
@@ -1352,6 +1353,101 @@ void testAppearance() {
 
 }  // namespace
 
+void testTunnelLifecycle() {
+    namespace lc = tlp::tunnel_lifecycle;
+    auto contains = [](const std::string& text, const char* part) { return text.find(part) != std::string::npos; };
+
+    // The reported failure: startup stalled in START_PENDING, the official uninstall could not stop it and its
+    // wireguard.exe process ignored termination. The original stage and every cleanup fact must survive.
+    lc::HelperResult stuck;
+    stuck.stage = lc::Stage::StartFailed;
+    stuck.error = 1460;  // ERROR_TIMEOUT from the readiness wait
+    stuck.cleanupIncomplete = true;
+    stuck.processSurvived = true;
+    stuck.residual = lc::Residual::StartPending;
+    const auto code = lc::EncodeHelperResult(stuck);
+    lc::HelperResult decoded;
+    check(lc::DecodeHelperResult(code, decoded), "helper result round-trips");
+    check(decoded.stage == lc::Stage::StartFailed && decoded.error == 1460 && decoded.cleanupIncomplete &&
+              decoded.processSurvived && !decoded.ownershipUnverified && !decoded.configRemains &&
+              decoded.residual == lc::Residual::StartPending,
+          "every helper result field survives encoding");
+    const auto message = lc::HelperMessage(code);
+    check(contains(message, "did not reach Running") && contains(message, "Windows error 1460"),
+          "original startup failure is not replaced by the cleanup failure");
+    check(contains(message, "START_PENDING") && contains(message, "1052") && contains(message, "restart Windows") &&
+              contains(message, "Other WireGuard tunnels were not changed"),
+          "stuck service recovery state is reported precisely");
+    check(!contains(message, "TELIPHONES removed the tunnel"), "incomplete cleanup is never reported as removal");
+    check(!contains(message, "could not be removed safely"), "generic removal message no longer masks failures");
+
+    lc::HelperResult cleaned;
+    cleaned.stage = lc::Stage::KeyFailed;
+    cleaned.error = 87;
+    const auto cleanedMessage = lc::HelperMessage(lc::EncodeHelperResult(cleaned));
+    check(contains(cleanedMessage, "private-key update failed") && contains(cleanedMessage, "Windows error 87") &&
+              contains(cleanedMessage, "TELIPHONES removed the tunnel"),
+          "completed cleanup after activation failure is confirmed");
+
+    lc::HelperResult refused;
+    refused.stage = lc::Stage::RemoveFailed;
+    refused.cleanupIncomplete = true;
+    refused.ownershipUnverified = true;
+    refused.residual = lc::Residual::StartPending;
+    check(contains(lc::HelperMessage(lc::EncodeHelperResult(refused)), "could not be verified as this TELIPHONES tunnel"),
+          "forced termination refusal is explained");
+
+    lc::HelperResult residual;
+    residual.stage = lc::Stage::ResidualTunnel;
+    residual.cleanupIncomplete = true;
+    residual.residual = lc::Residual::AdapterOnly;
+    const auto residualMessage = lc::HelperMessage(lc::EncodeHelperResult(residual));
+    check(contains(residualMessage, "no new tunnel was started") && contains(residualMessage, "network adapter"),
+          "retry refuses to reuse a partially removed tunnel");
+
+    check(contains(lc::HelperMessage(lc::EncodeHelperResult(lc::HelperResult{lc::Stage::Busy})), "still in progress"),
+          "overlapping helper is reported as busy");
+    check(lc::EncodeHelperResult(lc::HelperResult{}) == 0, "success remains exit code zero");
+    lc::HelperResult large;
+    large.stage = lc::Stage::KeyFailed;
+    large.error = 0xffffffffu;
+    check((lc::EncodeHelperResult(large) & 0xc0000000u) == 0, "large errors never set the reserved bits");
+    check(!lc::DecodeHelperResult(0xc0000005u, decoded) && contains(lc::HelperMessage(0xc0000005u), "ended abnormally"),
+          "crash exit codes are not misreported as helper stages");
+    check(!lc::DecodeHelperResult(1223, decoded), "ERROR_CANCELLED cannot collide with a helper result");
+    check(!lc::DecodeHelperResult(0x63, decoded), "unknown stages are rejected");
+
+    const std::string exe = "C:\\Program Files\\WireGuard\\wireguard.exe";
+    const std::string conf = "C:\\Program Files\\TELIPHONES\\Tunnels\\TELIPHONES-1df533523b61.conf";
+    // Form produced by the official installer (Go syscall.EscapeArg).
+    const std::string official = "\"" + exe + "\" /tunnelservice \"" + conf + "\"";
+    check(lc::IsOwnedTunnelServiceCommand(official, exe, conf), "official service command is recognised");
+    check(lc::IsOwnedTunnelServiceCommand(tlp::JoinCommandLine({exe, "/tunnelservice", conf}), exe, conf),
+          "Windows-quoted service command is recognised");
+    check(lc::IsOwnedTunnelServiceCommand("\"c:\\program files\\wireguard\\WIREGUARD.EXE\" /tunnelservice \"C:\\PROGRAM FILES\\TELIPHONES\\Tunnels\\teliphones-1df533523b61.conf\"",
+                                          exe, conf),
+          "Windows paths compare case-insensitively");
+    check(!lc::IsOwnedTunnelServiceCommand("\"" + exe + "\" /tunnelservice \"C:\\Program Files\\WireGuard\\Data\\Configurations\\office.conf.dpapi\"", exe, conf),
+          "an unrelated WireGuard tunnel is never treated as TELIPHONES-owned");
+    check(!lc::IsOwnedTunnelServiceCommand("\"" + exe + "\" /tunnelservice \"C:\\Program Files\\TELIPHONES\\Tunnels\\TELIPHONES-000000000000.conf\"", exe, conf),
+          "another TELIPHONES tunnel is not this tunnel");
+    check(!lc::IsOwnedTunnelServiceCommand("\"C:\\Temp\\wireguard.exe\" /tunnelservice \"" + conf + "\"", exe, conf),
+          "a different executable is rejected");
+    check(!lc::IsOwnedTunnelServiceCommand("\"" + exe + "\" /managerservice", exe, conf), "the WireGuard manager is rejected");
+    check(!lc::IsOwnedTunnelServiceCommand(official + " extra", exe, conf), "extra arguments are rejected");
+    check(!lc::IsOwnedTunnelServiceCommand(exe + " /tunnelservice \"" + conf + "\"", exe, conf),
+          "an unquoted program path with spaces is rejected");
+    check(!lc::IsOwnedTunnelServiceCommand("\"" + exe + "\" /tunnelservice \"" + conf + "\"\" x\"", exe, conf),
+          "quote tricks cannot extend the configuration argument");
+    const std::vector<std::string> tricky{exe, "a \"b\" c\\", "d\\\\\"e", ""};
+    check(lc::SplitServiceCommandLine(tlp::JoinCommandLine(tricky)) == tricky, "service command split inverts Windows quoting");
+
+    namespace b = lc::budget;
+    check(b::RemovalWorstCaseMs() == 65000, "removal bound covers uninstall, stop, termination, deletion and adapter release");
+    check(b::kHelperWaitMs >= b::HelperUpWorstCaseMs() + b::kCallerMarginMs,
+          "caller never abandons a helper that is still within its bounded steps");
+}
+
 int main() {
     const unsigned versionParts[] = {TELIPHONES_VERSION_NUMERIC};
     std::string versionBase = std::to_string(versionParts[0]) + "." + std::to_string(versionParts[1]) + "." + std::to_string(versionParts[2]);
@@ -1359,14 +1455,15 @@ int main() {
     for (unsigned part : versionParts) check(part <= 65535, "Windows version component fits the resource WORD");
     check(TELIPHONES_VERSION_FILE_STRING == versionBase + "." + std::to_string(versionParts[3]), "file version expands consistently");
     check(TELIPHONES_VERSION_STRING == versionBase, "product version expands without a development suffix");
-    check(std::string(TELIPHONES_VERSION_STRING) == "0.8.3", "Windows application version is independent of the module");
-    check(std::string(TELIPHONES_VERSION_FILE_STRING) == "0.8.3.0", "Windows file version is 0.8.3.0");
+    check(std::string(TELIPHONES_VERSION_STRING) == "0.8.4", "Windows application version is independent of the module");
+    check(std::string(TELIPHONES_VERSION_FILE_STRING) == "0.8.4.0", "Windows file version is 0.8.4.0");
     testEncoding();
     testJson();
     testValidation();
     testPairing();
     testWorkstationHeartbeatSshUpdates();
     testTunnels();
+    testTunnelLifecycle();
     testGrants();
     testProfiles();
     testCommandLine();

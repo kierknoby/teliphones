@@ -51,7 +51,7 @@ test('all site pages have valid local links, assets and unique fragment targets'
 test('current product and installation copy matches independent source versions', () => {
   assert.equal(moduleVersion, '0.6.6');
   assert.equal(brokerVersion, '0.6.6');
-  assert.equal(version, '0.8.3');
+  assert.equal(version, '0.8.4');
   for (const name of ['index.html', 'windows/index.html', 'downloads/index.html',
     'freepbx/index.html', 'faq/index.html', 'about/index.html', 'roadmap/index.html']) {
     const html = contents.get(path.join(site, name));

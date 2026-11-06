@@ -16,6 +16,7 @@ set(TELIPHONES_CORE_SOURCES
     src/core/Profiles.cpp
     src/core/SessionDiagnostics.cpp
     src/core/TunnelConfig.cpp
+    src/core/TunnelLifecycle.cpp
     src/core/Validation.cpp
     src/core/WireGuardSetup.cpp
     src/core/WorkstationHeartbeat.cpp)
@@ -78,7 +79,7 @@ if(WIN32)
     target_compile_definitions(wireguard_nt_native_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00)
     target_compile_options(wireguard_nt_native_tests PRIVATE ${TELIPHONES_WARNING_OPTIONS})
     target_link_libraries(wireguard_nt_native_tests PRIVATE teliphones_core
-        advapi32 bcrypt crypt32 shell32 ole32 wintrust uuid)
+        advapi32 bcrypt crypt32 iphlpapi shell32 ole32 wintrust uuid)
     add_custom_command(TARGET wireguard_nt_native_tests POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different "${WIREGUARD_NT}/bin/amd64/wireguard.dll"
                 "$<TARGET_FILE_DIR:wireguard_nt_native_tests>/wireguard.dll")

@@ -1,12 +1,12 @@
 # TELIPHONES security
 
 This document explains current source targets **FreePBX module 0.6.6**, **root
-broker 0.6.6**, **protocol 12** and **Windows 0.8.3**, evidence and limitations.
+broker 0.6.6**, **protocol 12** and **Windows 0.8.4**, evidence and limitations.
 
 > [!WARNING]
 > TELIPHONES remains experimental. The operator reports successful native
 > Windows tests and initial live authenticated SSH, not complete lifecycle
-> assurance. The latest 0.8.3 source still requires native Windows validation,
+> assurance. The latest 0.8.4 source still requires native Windows validation,
 > and current firewall/session recovery requires live-PBX acceptance.
 > Do not use TELIPHONES on a production PBX.
 
@@ -62,9 +62,9 @@ they are not the current native-test result.
 
 | Evidence source | Result and boundary |
 |---|---|
-| Current source review | Windows 0.8.3 replaces the incompatible text-UAPI pipe introduced in 0.8.0 with the official WireGuardNT adapter API. The official 1.1 archive/DLL/header hashes and AMD64 exports/imports were inspected locally. The private-only update preserves peers; PID-bound delivery, bootstrap-only disk configuration and fail-closed cleanup remain. Native compilation, SCM regressions, actual official service/driver activation, MFC dialogue and startup smoke are CI gates, not executed in this Linux workspace. Native build and artefact creation remain pending; no connectivity success is claimed. |
+| Current source review | Windows 0.8.4 corrects the tunnel lifecycle: verified cleanup, per-tunnel exclusion of elevated helpers, original-error reporting and termination of a stuck `START_PENDING` service's own `wireguard.exe` only after SCM binary path and process image prove ownership (PID reuse excluded); other WireGuard tunnels are never changed, and a process blocked in kernel mode still requires a Windows restart. It retains 0.8.3's replacement of the incompatible text-UAPI pipe introduced in 0.8.0 with the official WireGuardNT adapter API. The official 1.1 archive/DLL/header hashes and AMD64 exports/imports were inspected locally. The private-only update preserves peers; PID-bound delivery, bootstrap-only disk configuration and fail-closed cleanup remain. Native compilation, SCM regressions, actual official service/driver activation, MFC dialogue and startup smoke are CI gates, not executed in this Linux workspace. Native build and artefact creation remain pending; no connectivity success is claimed. |
 | Pairing form source correction | Disabled SSH select omitted `ssh` from web-only POST. The module now submits explicit `ssh=0`, retains safe values and rejects missing/invalid choices. PHP/Node page-path tests passed; gateway suite 203 run, 202 passed, one skipped, includes actual PHP page/Unix-socket broker pairing with modelled network commands. This is not live PBX execution. |
-| Current and preserved packages | Module/broker 0.6.6 source corrects the nftables feedback loop that blocked session admission, retaining 0.6.5 durable workstation revocation, verified enforcement and retrievable outcomes; the local 0.6.6 archive and checksum include current source; no release or deployment is claimed. The superseded 0.6.5 archive was removed; historical archives lack these new security fixes. Exact archive/source equality is a local packaging check, not proof of live connectivity. Windows remains independently 0.8.3. |
+| Current and preserved packages | Module/broker 0.6.6 source corrects the nftables feedback loop that blocked session admission, retaining 0.6.5 durable workstation revocation, verified enforcement and retrievable outcomes; the local 0.6.6 archive and checksum include current source; no release or deployment is claimed. The superseded 0.6.5 archive was removed; historical archives lack these new security fixes. Exact archive/source equality is a local packaging check, not proof of live connectivity. Windows is independently 0.8.4. |
 | nftables repeatability | At 0.6.3 preparation, 10/10 working-tree and 10/10 unchanged-baseline namespace runs passed after an earlier intermittent own-event-filtering failure. That failure remains undiagnosed; successful samples do not exclude recurrence. |
 | Later operator report | Earlier Windows Actions run: all eleven native SSH integrations passed; first-run GUI smoke subsequently reported successful. No matching 0.8.1 run or independently fetched evidence is supplied. |
 | Operator's latest report | Successful Windows GitHub Actions builds and **all ten native OpenSSH integration tests passing**. No run URL, commit/build hash or raw logs accompanied this update; no external service was queried to verify it. |

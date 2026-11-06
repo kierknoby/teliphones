@@ -1,18 +1,18 @@
 # Windows developer builds, testing and readiness
 
-Targets: TELIPHONES for Windows **0.8.3**, TELIPHONES for FreePBX **0.6.6**.
+Targets: TELIPHONES for Windows **0.8.4**, TELIPHONES for FreePBX **0.6.6**.
 The FreePBX connection-state policy and Windows pairing/clipboard UX are
 independently versioned; neither entry declares a published release.
 
 Root broker is **0.6.6**, protocol **12**. Version.h derives Windows
-product 0.8.3 and file 0.8.3.0; executable resources, captions, About/licence and
+product 0.8.4 and file 0.8.4.0; executable resources, captions, About/licence and
 build provenance reuse it. The dependency manifest must match the product version.
 Current Release portable build/CTest and source contracts can run on Linux;
 native MFC pairing tests, executable metadata and startup smoke are registered
-in the Windows workflow. No current native 0.8.3 execution is claimed.
-The patch increment distinguishes this correction from the operator's installed
-0.8.2 executable. The subsequent PBX security update targets module/broker
-0.6.6 without changing Windows functionality or existing packages. No 0.8.3 binary or
+in the Windows workflow. No current native 0.8.4 execution is claimed.
+The patch increment distinguishes the tunnel lifecycle correction from the
+operator's installed 0.8.3 executable. The subsequent PBX security update targets module/broker
+0.6.6 without changing Windows functionality or existing packages. No 0.8.4 binary or
 application bundle has been produced.
 
 Native compilation, SCM/WireGuardNT execution and artefact creation are
@@ -31,6 +31,31 @@ revocation security corrections. The superseded root-level 0.6.5 archive/checksu
 were removed. Live acceptance is pending; Windows functionality is unchanged.
 
 ## Current evidence
+
+### Tunnel lifecycle (0.8.4)
+
+The 0.8.3 workstation left `WireGuardTunnel$TELIPHONES-*` in `START_PENDING`
+(checkpoint 0, wait hint 0) with its adapter Up; stop returned 1052 and
+`wireguard.exe` survived termination until reboot. Source shows one mechanism:
+the official service owns the adapter and the WireGuardNT key update runs only
+after Running, so the stall precedes TELIPHONES activation. Its cause (driver,
+competing VPN/filter or stale adapter) is unconfirmed.
+
+0.8.4 corrects confirmed defects: masked original errors, unchecked uninstall,
+no `START_PENDING` handling, a caller timeout shorter than the helper and
+helper termination followed by concurrent cleanup, no cross-process exclusion,
+and blocked shutdown after removal failure. Portable `core_tests` cover result
+encoding, messages, ownership parsing and the compile-time time budget.
+`tunnel_startup_native` adds a real stuck `START_PENDING` SCM service (stop
+refusal, deletion marking alone insufficient, refused termination on ownership
+mismatch, verified termination and removal without reboot, idempotent repeat)
+and per-tunnel lock exclusion/abandonment. These native cases, MSVC
+compilation and the official-service integration gate have not run here.
+
+Still requires native evidence: the official installer's exact service binary
+path (unexpected formats fail safe as unverified ownership), and actual
+recovery of a stuck official service. A process blocked in kernel mode cannot
+be terminated from user mode; that case is reported and requires a restart.
 
 ### WireGuard startup regression
 

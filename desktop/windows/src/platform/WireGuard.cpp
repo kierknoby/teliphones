@@ -1,36 +1,50 @@
 #include "WireGuard.h"
 
+#include <winsock2.h>
+#include <ws2tcpip.h>
+
 #include "WireGuardNt.h"
 #include "Win.h"
 #include "TunnelStartup.h"
 
 #include <aclapi.h>
+#include <iphlpapi.h>
+#include <netioapi.h>
 #include <sddl.h>
 #include <shellapi.h>
 #include <softpub.h>
 #include <wintrust.h>
 
+#include <memory>
+
 #include "../core/CommandLine.h"
 #include "../core/Json.h"
 #include "../core/TunnelConfig.h"
+#include "../core/TunnelLifecycle.h"
 #include "../core/Validation.h"
 
 namespace tlp {
 namespace win {
 namespace {
 
+namespace lifecycle = tunnel_lifecycle;
+namespace budget = tunnel_lifecycle::budget;
+using lifecycle::Stage;
+
 constexpr DWORD kHelperOk = 0;
-constexpr DWORD kHelperArguments = 2;
-constexpr DWORD kHelperConfigRejected = 3;
-constexpr DWORD kHelperWireGuardUnavailable = 4;
-constexpr DWORD kHelperInstallFailed = 5;
-constexpr DWORD kHelperPermissionsFailed = 6;
-constexpr DWORD kHelperNotElevated = 7;
-constexpr DWORD kHelperStartFailed = 8;
-constexpr DWORD kHelperRemoveFailed = 9;
-constexpr DWORD kHelperDependencyFailed = 10;
-constexpr DWORD kHelperKeyFailed = 11;
-constexpr DWORD kHelperAdapterFailed = 12;
+
+DWORD helperCode(Stage stage, DWORD error = 0) {
+    lifecycle::HelperResult result;
+    result.stage = stage;
+    result.error = error;
+    return lifecycle::EncodeHelperResult(result);
+}
+
+// The caller stopped waiting for a helper that is still running. Its outcome is unknown, so the caller must
+// not start a competing cleanup helper for the same tunnel.
+struct HelperStillRunning : Error {
+    explicit HelperStillRunning(const std::string& message) : Error(message) {}
+};
 
 const wchar_t kTunnelFolderSddl[] = L"D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)";
 
@@ -138,7 +152,8 @@ public:
     ~KeyPipe() { CloseHandle(pipe_); }
     KeyPipe(const KeyPipe&) = delete;
     KeyPipe& operator=(const KeyPipe&) = delete;
-    void deliver(HANDLE helper) {
+    // Returns false when the helper exited before connecting; it changed nothing and its exit code explains why.
+    bool deliver(HANDLE helper) {
         Handle event(CreateEventW(nullptr, TRUE, FALSE, nullptr));
         if (!event.get()) ThrowLastError("Unable to create tunnel IPC event");
         OVERLAPPED operation{};
@@ -152,6 +167,7 @@ public:
                 CancelIoEx(pipe_, &operation);
                 DWORD count = 0;
                 GetOverlappedResult(pipe_, &operation, &count, TRUE);
+                if (result == WAIT_OBJECT_0 + 1) return false;
                 throw Error("The tunnel helper did not request the unlocked key.");
             }
             DWORD count = 0;
@@ -164,6 +180,7 @@ public:
             WaitForSingleObject(helper, 0) != WAIT_TIMEOUT)
             throw Error("Tunnel key IPC client was not the approved elevated helper.");
         pipeTransfer(pipe_, const_cast<char*>(key_.data()), static_cast<DWORD>(key_.size()), true);
+        return true;
     }
 private:
     HANDLE pipe_ = INVALID_HANDLE_VALUE;
@@ -234,15 +251,6 @@ bool isElevated() {
     return ok && elevation.TokenIsElevated;
 }
 
-bool waitForState(const std::string& tunnelName, TunnelState wanted, DWORD timeoutMs) {
-    ULONGLONG deadline = GetTickCount64() + timeoutMs;
-    while (GetTickCount64() < deadline) {
-        if (QueryTunnel(tunnelName) == wanted) return true;
-        Sleep(250);
-    }
-    return QueryTunnel(tunnelName) == wanted;
-}
-
 void grantUserControl(SC_HANDLE service, const std::string& userSid) {
     PSID sid = nullptr;
     if (!ConvertStringSidToSidW(Widen(userSid).c_str(), &sid)) ThrowLastError("Invalid Windows user identity");
@@ -267,19 +275,96 @@ void grantUserControl(SC_HANDLE service, const std::string& userSid) {
     if (status != ERROR_SUCCESS) ThrowLastError("Unable to delegate tunnel disconnection", status);
 }
 
-DWORD elevatedUninstall(const WireGuardInstallation& wireguard, const std::string& tunnelName) {
-    if (QueryTunnel(tunnelName) != TunnelState::Absent) {
-        RunProcess(wireguard.wireguardExe, {"/uninstalltunnelservice", tunnelName}, "", 30000);
-        if (!waitForState(tunnelName, TunnelState::Absent, 15000)) return kHelperRemoveFailed;
+std::wstring tunnelConfigPath(const std::string& tunnelName) { return tunnelFolder() + L"\\" + Widen(tunnelName) + L".conf"; }
+
+lifecycle::Residual residualFor(const tunnel_startup::Status& status) {
+    switch (status.state) {
+        case SERVICE_STOPPED: return lifecycle::Residual::Stopped;
+        case SERVICE_START_PENDING: return lifecycle::Residual::StartPending;
+        case SERVICE_STOP_PENDING: return lifecycle::Residual::StopPending;
+        case SERVICE_RUNNING: return lifecycle::Residual::Running;
+        default: return tunnel_startup::Absent(status) ? lifecycle::Residual::None : lifecycle::Residual::Unknown;
     }
-    if (!DeleteFileW((tunnelFolder() + L"\\" + Widen(tunnelName) + L".conf").c_str()) && GetLastError() != ERROR_FILE_NOT_FOUND &&
-        GetLastError() != ERROR_PATH_NOT_FOUND) return kHelperRemoveFailed;
-    return kHelperOk;
+}
+
+// The WireGuardNT adapter carries the tunnel's exact name as its interface alias.
+bool adapterPresent(const std::string& tunnelName) {
+    PMIB_IF_TABLE2 table = nullptr;
+    if (GetIfTable2(&table) != NO_ERROR) return false;
+    const std::unique_ptr<MIB_IF_TABLE2, decltype(&FreeMibTable)> owned(table, &FreeMibTable);
+    const auto alias = Widen(tunnelName);
+    for (ULONG i = 0; i < table->NumEntries; ++i) {
+        if (alias == table->Table[i].Alias) return true;
+    }
+    return false;
+}
+
+bool awaitAdapterRelease(const std::string& tunnelName) {
+    const ULONGLONG deadline = GetTickCount64() + budget::kAdapterReleaseMs;
+    while (adapterPresent(tunnelName)) {
+        if (GetTickCount64() >= deadline) return false;
+        Sleep(100);
+    }
+    return true;
+}
+
+// Removes only this TELIPHONES tunnel: its official WireGuard service, its adapter and its bootstrap file.
+// A service stuck in START_PENDING cannot be stopped through the SCM, so its own wireguard.exe process is
+// terminated, but only after the SCM binary path and process image prove it is this tunnel's service.
+lifecycle::HelperResult removeOwnedTunnel(const WireGuardInstallation& wireguard, const std::string& tunnelName) {
+    lifecycle::HelperResult outcome;
+    try {
+        const auto service = serviceName(tunnelName);
+        const auto configPath = tunnelConfigPath(tunnelName);
+        auto status = tunnel_startup::ReadStatus(service);
+        if (!tunnel_startup::Absent(status)) {
+            try {
+                RunProcess(wireguard.wireguardExe, {"/uninstalltunnelservice", tunnelName}, "", budget::kUninstallToolMs);
+            } catch (const Error&) {
+                // The SCM state below decides the outcome; a stuck service can also stall the official tool.
+            }
+            tunnel_startup::RequestRemoval(service);
+            status = tunnel_startup::AwaitAbsent(service, budget::kRemovalWaitMs);
+        }
+        if (!tunnel_startup::Absent(status) && status.processId != 0) {
+            const auto expectedExe = Narrow(wireguard.wireguardExe);
+            const auto expectedConfig = Narrow(configPath);
+            const auto termination = tunnel_startup::TerminateOwnedServiceProcess(
+                service,
+                [&](const std::wstring& binaryPath, const std::wstring& image) {
+                    return lifecycle::IsOwnedTunnelServiceCommand(Narrow(binaryPath), expectedExe, expectedConfig) &&
+                           lifecycle::SameWindowsPath(Narrow(image), expectedExe);
+                },
+                budget::kProcessExitMs);
+            outcome.ownershipUnverified = termination.outcome == tunnel_startup::Termination::NotOwned;
+            outcome.processSurvived = termination.outcome == tunnel_startup::Termination::Survived;
+            if (termination.outcome == tunnel_startup::Termination::Failed) outcome.error = termination.error;
+            tunnel_startup::RequestRemoval(service);
+            status = tunnel_startup::AwaitAbsent(service, budget::kDeletionWaitMs);
+        }
+        if (!tunnel_startup::Absent(status)) {
+            outcome.cleanupIncomplete = true;
+            outcome.residual = residualFor(status);
+            return outcome;
+        }
+        if (!awaitAdapterRelease(tunnelName)) {
+            outcome.cleanupIncomplete = true;
+            outcome.residual = lifecycle::Residual::AdapterOnly;
+        }
+        if (!DeleteFileW(configPath.c_str()) && GetLastError() != ERROR_FILE_NOT_FOUND && GetLastError() != ERROR_PATH_NOT_FOUND) {
+            outcome.cleanupIncomplete = true;
+            outcome.configRemains = true;
+        }
+    } catch (const std::exception&) {
+        outcome.cleanupIncomplete = true;
+        outcome.residual = lifecycle::Residual::Unknown;
+    }
+    return outcome;
 }
 
 DWORD helperUp(const HelperCommand& command) {
     WireGuardInstallation wireguard = FindWireGuard();
-    if (!wireguard.installed || !wireguard.trusted) return kHelperWireGuardUnavailable;
+    if (!wireguard.installed || !wireguard.trusted) return helperCode(Stage::WireGuardUnavailable);
     std::string privateKey = receiveKey(command.keyPipe);
     WipeString privateKeyWiper(privateKey);
     std::wstring staging = Widen(command.stagingPath);
@@ -294,14 +379,26 @@ DWORD helperUp(const HelperCommand& command) {
         canonical = RenderTunnel(parsed);
     } catch (const Error&) {
         DeleteFileW(staging.c_str());
-        return kHelperConfigRejected;
+        return helperCode(Stage::ConfigRejected);
     }
     WipeString canonicalWiper(canonical);
     DeleteFileW(staging.c_str());
 
-    if (elevatedUninstall(wireguard, command.tunnelName) != kHelperOk) {
-        return kHelperRemoveFailed;
+    tunnel_startup::HelperLock lock(tunnel_startup::HelperLockName(Widen(command.tunnelName)));
+    if (!lock.owned()) return helperCode(Stage::Busy);
+    // An earlier instance (including one stuck in START_PENDING) must be gone, with its adapter, before reuse.
+    auto earlier = removeOwnedTunnel(wireguard, command.tunnelName);
+    if (earlier.cleanupIncomplete) {
+        earlier.stage = Stage::ResidualTunnel;
+        return lifecycle::EncodeHelperResult(earlier);
     }
+    // Every later failure reports its own stage and Windows error together with the cleanup outcome.
+    auto fail = [&](Stage stage, DWORD error) {
+        auto result = removeOwnedTunnel(wireguard, command.tunnelName);
+        result.stage = stage;
+        result.error = error;
+        return lifecycle::EncodeHelperResult(result);
+    };
     std::wstring configPath;
     try {
         EnsureDirectory(KnownFolder(FOLDERID_ProgramFiles) + L"\\TELIPHONES", L"D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)");
@@ -309,25 +406,20 @@ DWORD helperUp(const HelperCommand& command) {
         std::wstring fileSddl = L"D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;SD;;;" + Widen(command.userSid) + L")";
         WriteNewFile(configPath, canonical, fileSddl.c_str());
     } catch (const Error&) {
-        return kHelperInstallFailed;
+        return fail(Stage::InstallFailed, 0);
     }
 
     ProcessResult installed;
     try {
-        installed = RunProcess(wireguard.wireguardExe, {"/installtunnelservice", Narrow(configPath)}, "", 60000);
+        installed = RunProcess(wireguard.wireguardExe, {"/installtunnelservice", Narrow(configPath)}, "", budget::kInstallToolMs);
     } catch (const Error&) {
-        if (elevatedUninstall(wireguard, command.tunnelName) != kHelperOk) return kHelperRemoveFailed;
-        return kHelperInstallFailed;
+        return fail(Stage::InstallFailed, 0);
     }
-    if (installed.exitCode != 0) {
-        if (elevatedUninstall(wireguard, command.tunnelName) != kHelperOk) return kHelperRemoveFailed;
-        return kHelperInstallFailed;
-    }
+    if (installed.exitCode != 0) return fail(Stage::InstallFailed, 0);
     try {
-        tunnel_startup::WaitForService(serviceName(command.tunnelName), false, 20000);
+        tunnel_startup::WaitForService(serviceName(command.tunnelName), false, budget::kServiceRegisteredMs);
     } catch (const tunnel_startup::Failure& error) {
-        if (elevatedUninstall(wireguard, command.tunnelName) != kHelperOk) return kHelperRemoveFailed;
-        return kHelperStartFailed | (std::min<DWORD>(error.code, 0xffff) << 16);
+        return fail(Stage::StartFailed, error.code);
     }
     try {
         ServiceHandle manager(OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT));
@@ -348,26 +440,22 @@ DWORD helperUp(const HelperCommand& command) {
             ThrowLastError("Unable to start the tunnel service");
         }
     } catch (const Error&) {
-        if (elevatedUninstall(wireguard, command.tunnelName) != kHelperOk) return kHelperRemoveFailed;
-        return kHelperPermissionsFailed;
+        return fail(Stage::PermissionsFailed, 0);
     }
     try {
-        tunnel_startup::WaitForService(serviceName(command.tunnelName), true, 20000);
+        tunnel_startup::WaitForService(serviceName(command.tunnelName), true, budget::kServiceRunningMs);
     } catch (const tunnel_startup::Failure& error) {
-        if (elevatedUninstall(wireguard, command.tunnelName) != kHelperOk) return kHelperRemoveFailed;
-        return kHelperStartFailed | (std::min<DWORD>(error.code, 0xffff) << 16);
+        return fail(Stage::StartFailed, error.code);
     }
     try {
         wireguard_nt::Api api(wireguard_nt::PrepareLibrary());
         api.activateKey(Widen(command.tunnelName), privateKey);
     } catch (const wireguard_nt::Failure& error) {
-        if (elevatedUninstall(wireguard, command.tunnelName) != kHelperOk) return kHelperRemoveFailed;
-        const auto stage = error.stage == wireguard_nt::Stage::Dependency ? kHelperDependencyFailed :
-                           error.stage == wireguard_nt::Stage::Adapter ? kHelperAdapterFailed : kHelperKeyFailed;
-        return stage | (std::min<DWORD>(error.code, 0xffff) << 16);
+        const auto stage = error.stage == wireguard_nt::Stage::Dependency ? Stage::DependencyFailed :
+                           error.stage == wireguard_nt::Stage::Adapter ? Stage::AdapterFailed : Stage::KeyFailed;
+        return fail(stage, error.code);
     } catch (const Error&) {
-        if (elevatedUninstall(wireguard, command.tunnelName) != kHelperOk) return kHelperRemoveFailed;
-        return kHelperDependencyFailed;
+        return fail(Stage::DependencyFailed, 0);
     }
     return kHelperOk;
 }
@@ -392,42 +480,25 @@ DWORD runElevated(const std::vector<std::string>& arguments, KeyPipe* keyPipe = 
     if (!execute.hProcess) throw Error("Windows did not start the TELIPHONES tunnel helper.");
     Handle process(execute.hProcess);
     try {
+        // A helper that exits before requesting the key has changed nothing; its own exit code explains why.
         if (keyPipe) keyPipe->deliver(process.get());
     } catch (...) {
-        TerminateProcess(process.get(), kHelperStartFailed);
+        // The helper has not yet taken the tunnel lock or changed any tunnel state.
+        TerminateProcess(process.get(), helperCode(Stage::InstallFailed));
         WaitForSingleObject(process.get(), 10000);
         throw;
     }
-    DWORD wait = WaitForSingleObject(execute.hProcess, 180000);
+    if (WaitForSingleObject(process.get(), budget::kHelperWaitMs) != WAIT_OBJECT_0) {
+        // Every helper step is bounded within this wait. Interrupting it now could orphan wireguard.exe or
+        // leave a half-configured service, so it is left to finish and no competing cleanup is started.
+        throw HelperStillRunning("The TELIPHONES tunnel helper is still running after " +
+                                 std::to_string(budget::kHelperWaitMs / 60000) +
+                                 " minutes, so the tunnel state is unknown. TELIPHONES did not interrupt it. "
+                                 "Restart TELIPHONES after it finishes to check for a remaining tunnel.");
+    }
     DWORD exitCode = 1;
-    GetExitCodeProcess(execute.hProcess, &exitCode);
-    if (wait != WAIT_OBJECT_0) {
-        TerminateProcess(process.get(), kHelperStartFailed);
-        WaitForSingleObject(process.get(), 10000);
-        throw Error("The TELIPHONES tunnel helper did not finish in time.");
-    }
+    if (!GetExitCodeProcess(process.get(), &exitCode)) ThrowLastError("Cannot read the TELIPHONES tunnel helper result");
     return exitCode;
-}
-
-std::string helperMessage(DWORD code) {
-    const DWORD error = code >> 16;
-    const auto detail = error ? " Windows error " + std::to_string(error) + "." : std::string();
-    switch (code & 0xffff) {
-        case kHelperConfigRejected: return "The tunnel helper rejected the connection settings. Nothing was installed.";
-        case kHelperWireGuardUnavailable: return "WireGuard for Windows is not installed or its signature could not be verified.";
-        case kHelperInstallFailed: return "WireGuard for Windows could not install the tunnel. Check that WireGuard for Windows is up to date.";
-        case kHelperPermissionsFailed: return "The tunnel could not be configured safely and was removed.";
-        case kHelperNotElevated: return "Administrative approval is required to start a WireGuard tunnel.";
-        case kHelperStartFailed: return "The WireGuard tunnel service did not reach Running or stopped during startup. TELIPHONES removed it." + detail +
-            " Check the WireGuard diagnostic log and Windows Service Control Manager events.";
-        case kHelperDependencyFailed: return "The pinned WireGuardNT API DLL is missing, modified, or could not be loaded from its protected location. "
-            "Keep wireguard.dll from this exact TELIPHONES bundle beside the application. TELIPHONES removed the tunnel." + detail;
-        case kHelperAdapterFailed: return "WireGuard service startup completed, but its existing WireGuardNT adapter could not be opened. TELIPHONES removed the tunnel." + detail;
-        case kHelperKeyFailed: return "WireGuard service startup completed, but the WireGuardNT in-memory private-key update failed. TELIPHONES removed the tunnel." + detail +
-            " Check the WireGuard diagnostic log; this is not a peer-handshake timeout.";
-        case kHelperRemoveFailed: return "A TELIPHONES tunnel or its configuration could not be removed safely. Check WireGuard for Windows and the tunnel permissions before retrying.";
-        default: return "The TELIPHONES tunnel helper failed (code " + std::to_string(code) + ").";
-    }
 }
 
 }  // namespace
@@ -503,14 +574,23 @@ bool InstallTunnel(const std::string& tunnelName, const std::string& configText)
         KeyPipe pipe(parsed.privateKey);
         HelperCommand command{HelperCommand::Verb::TunnelUp, tunnelName, Narrow(path), CurrentUserSid(), pipe.token};
         code = runElevated(HelperArguments(command), &pipe);
-    } catch (...) {
+    } catch (const HelperStillRunning&) {
         DeleteFileW(path.c_str());
-        RemoveTunnel(tunnelName);
+        throw;
+    } catch (const std::exception& error) {
+        DeleteFileW(path.c_str());
+        // Report the original failure; a cleanup failure is appended rather than replacing it.
+        const std::string original = error.what();
+        try {
+            RemoveTunnel(tunnelName);
+        } catch (const std::exception& cleanup) {
+            throw Error(original + " Removing the partially started tunnel also failed: " + cleanup.what());
+        }
         throw;
     }
     DeleteFileW(path.c_str());
     if (code == ERROR_CANCELLED) return false;
-    if (code != kHelperOk) throw Error(helperMessage(code));
+    if (code != kHelperOk) throw Error(lifecycle::HelperMessage(code));
     return true;
 }
 
@@ -526,10 +606,14 @@ void RemoveTunnel(const std::string& tunnelName) {
             removed = true;
         } else if (service) {
             SERVICE_STATUS status{};
-            ControlService(service.get(), SERVICE_CONTROL_STOP, &status);
-            ULONGLONG deadline = GetTickCount64() + 15000;
-            while (QueryServiceStatus(service.get(), &status) && status.dwCurrentState != SERVICE_STOPPED && GetTickCount64() < deadline) Sleep(250);
-            removed = status.dwCurrentState == SERVICE_STOPPED && (DeleteService(service.get()) || GetLastError() == ERROR_SERVICE_MARKED_FOR_DELETE);
+            // START_PENDING rejects SERVICE_CONTROL_STOP (Windows error 1052), so waiting here cannot succeed;
+            // only the elevated helper can verify and end a stuck service process.
+            if (QueryServiceStatus(service.get(), &status) && status.dwCurrentState != SERVICE_START_PENDING) {
+                ControlService(service.get(), SERVICE_CONTROL_STOP, &status);
+                ULONGLONG deadline = GetTickCount64() + 15000;
+                while (QueryServiceStatus(service.get(), &status) && status.dwCurrentState != SERVICE_STOPPED && GetTickCount64() < deadline) Sleep(250);
+                removed = status.dwCurrentState == SERVICE_STOPPED && (DeleteService(service.get()) || GetLastError() == ERROR_SERVICE_MARKED_FOR_DELETE);
+            }
         }
     }
     if (removed) {
@@ -538,7 +622,7 @@ void RemoveTunnel(const std::string& tunnelName) {
     }
     DWORD code = runElevated(HelperArguments(HelperCommand{HelperCommand::Verb::TunnelDown, tunnelName, "", "", ""}));
     if (code == ERROR_CANCELLED) throw Error("The tunnel is still connected because administrative approval was declined. Disconnect again, or stop it in WireGuard for Windows.");
-    if (code != kHelperOk) throw Error(helperMessage(code));
+    if (code != kHelperOk) throw Error(lifecycle::HelperMessage(code));
 }
 
 bool IsHelperInvocation(const std::vector<std::string>& arguments) {
@@ -550,19 +634,24 @@ int RunTunnelHelper(const std::vector<std::string>& arguments) {
     try {
         command = ParseHelperArguments(arguments);
     } catch (const Error&) {
-        return static_cast<int>(kHelperArguments);
+        return static_cast<int>(helperCode(Stage::Arguments));
     }
-    if (!isElevated()) return static_cast<int>(kHelperNotElevated);
+    if (!isElevated()) return static_cast<int>(helperCode(Stage::NotElevated));
     DWORD code = kHelperOk;
     try {
         if (command.verb == HelperCommand::Verb::TunnelUp) {
             code = helperUp(command);
         } else {
             WireGuardInstallation wireguard = FindWireGuard();
-            code = !wireguard.installed || !wireguard.trusted ? kHelperWireGuardUnavailable : elevatedUninstall(wireguard, command.tunnelName);
+            if (!wireguard.installed || !wireguard.trusted) return static_cast<int>(helperCode(Stage::WireGuardUnavailable));
+            tunnel_startup::HelperLock lock(tunnel_startup::HelperLockName(Widen(command.tunnelName)));
+            if (!lock.owned()) return static_cast<int>(helperCode(Stage::Busy));
+            auto removal = removeOwnedTunnel(wireguard, command.tunnelName);
+            if (removal.cleanupIncomplete) removal.stage = Stage::RemoveFailed;
+            code = lifecycle::EncodeHelperResult(removal);
         }
-    } catch (const Error&) {
-        code = command.verb == HelperCommand::Verb::TunnelUp ? kHelperInstallFailed : kHelperRemoveFailed;
+    } catch (const std::exception&) {
+        code = helperCode(command.verb == HelperCommand::Verb::TunnelUp ? Stage::InstallFailed : Stage::RemoveFailed);
     }
     return static_cast<int>(code);
 }

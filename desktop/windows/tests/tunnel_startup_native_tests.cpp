@@ -2,6 +2,7 @@
 
 #include <iostream>
 #include <string>
+#include <thread>
 
 namespace startup = tlp::win::tunnel_startup;
 
@@ -16,13 +17,15 @@ void require(bool condition, const char* message) {
 }
 
 void report(DWORD state, DWORD error = ERROR_SUCCESS) {
+    // "stuck-start" mirrors the reported official service: START_PENDING, checkpoint 0, wait hint 0, no controls.
+    const bool stuck = fixtureMode == L"stuck-start";
     SERVICE_STATUS status{};
     status.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
     status.dwCurrentState = state;
     status.dwControlsAccepted = state == SERVICE_RUNNING ? SERVICE_ACCEPT_STOP : 0;
     status.dwWin32ExitCode = error;
-    status.dwCheckPoint = state == SERVICE_START_PENDING ? 1 : 0;
-    status.dwWaitHint = state == SERVICE_START_PENDING ? 5000 : 0;
+    status.dwCheckPoint = state == SERVICE_START_PENDING && !stuck ? 1 : 0;
+    status.dwWaitHint = state == SERVICE_START_PENDING && !stuck ? 5000 : 0;
     SetServiceStatus(statusHandle, &status);
 }
 
@@ -39,6 +42,10 @@ void WINAPI serviceMain(DWORD, LPWSTR*) {
     statusHandle = RegisterServiceCtrlHandlerExW(fixtureName.c_str(), control, nullptr);
     if (!stopEvent || !statusHandle) return;
     report(SERVICE_START_PENDING);
+    if (fixtureMode == L"stuck-start") {
+        // Startup never completes, as when a tunnel service blocks after bringing its interface up.
+        Sleep(INFINITE);
+    }
     Sleep(1000);
     if (fixtureMode == L"fail") {
         report(SERVICE_STOPPED, ERROR_PROCESS_ABORTED);
@@ -52,19 +59,24 @@ void WINAPI serviceMain(DWORD, LPWSTR*) {
     CloseHandle(stopEvent);
 }
 
+std::wstring selfPath() {
+    wchar_t executable[MAX_PATH]{};
+    const DWORD length = GetModuleFileNameW(nullptr, executable, MAX_PATH);
+    require(length != 0 && length < MAX_PATH, "Cannot locate native fixture");
+    return std::wstring(executable, length);
+}
+
 class Fixture {
 public:
     std::wstring name;
+    std::wstring command;
     SC_HANDLE manager = nullptr;
     SC_HANDLE service = nullptr;
 
     explicit Fixture(const std::wstring& mode) {
         name = L"TELIPHONES-TunnelStartupTests-" + std::to_wstring(GetCurrentProcessId()) +
                L"-" + std::to_wstring(GetTickCount64());
-        wchar_t executable[MAX_PATH]{};
-        const DWORD length = GetModuleFileNameW(nullptr, executable, MAX_PATH);
-        require(length != 0 && length < MAX_PATH, "Cannot locate native fixture");
-        const std::wstring command = L"\"" + std::wstring(executable) + L"\" --service " + name + L" " + mode;
+        command = L"\"" + selfPath() + L"\" --service " + name + L" " + mode;
         manager = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT | SC_MANAGER_CREATE_SERVICE);
         require(manager != nullptr, "Native SCM fixture requires an elevated test runner; no service was installed");
         service = CreateServiceW(manager, name.c_str(), name.c_str(), SERVICE_ALL_ACCESS,
@@ -76,7 +88,14 @@ public:
         }
     }
     ~Fixture() {
-        if (!service) return;
+        // Never leave a stuck fixture process behind, but only ever end this fixture's own process.
+        startup::TerminateOwnedServiceProcess(name, [this](const std::wstring& binary, const std::wstring&) {
+            return binary == command;
+        }, 5000);
+        if (!service) {
+            startup::RequestRemoval(name);
+            return;
+        }
         SERVICE_STATUS status{};
         ControlService(service, SERVICE_CONTROL_STOP, &status);
         const auto deadline = GetTickCount64() + 5000;
@@ -86,6 +105,13 @@ public:
         CloseServiceHandle(manager);
     }
     void start() { require(StartServiceW(service, 0, nullptr) != FALSE, "Cannot start isolated SCM fixture"); }
+    // The SCM completes deletion of a marked service only after every handle, including ours, is closed.
+    void releaseHandles() {
+        CloseServiceHandle(service);
+        service = nullptr;
+        CloseServiceHandle(manager);
+        manager = nullptr;
+    }
     void remove() {
         SERVICE_STATUS status{};
         const auto deadline = GetTickCount64() + 5000;
@@ -159,6 +185,91 @@ void boundedStartup() {
     require(startup::ReadStatus(fixture.name).state == SERVICE_RUNNING, "Readiness must not remove the service");
     fixture.remove();
 }
+bool processAlive(DWORD processId) {
+    HANDLE process = OpenProcess(SYNCHRONIZE, FALSE, processId);
+    if (!process) return false;
+    const bool alive = WaitForSingleObject(process, 0) == WAIT_TIMEOUT;
+    CloseHandle(process);
+    return alive;
+}
+
+// Reproduces the reported failure: a service stuck in START_PENDING rejects stop with Windows error 1052, and
+// deleting it only marks it for deletion. It is removed only after its own verified process ends, and an
+// ownership mismatch must never terminate anything.
+void stuckStartPending() {
+    Fixture fixture(L"stuck-start");
+    fixture.start();
+    const auto stuck = startup::ReadStatus(fixture.name);
+    require(stuck.state == SERVICE_START_PENDING && stuck.processId != 0, "Fixture must be stuck in actual START_PENDING");
+    SERVICE_STATUS control{};
+    const BOOL stopped = ControlService(fixture.service, SERVICE_CONTROL_STOP, &control);
+    const DWORD stopError = stopped ? ERROR_SUCCESS : GetLastError();
+    // sc.exe reported 1052 for the real service; the SCM may report 1061 for a pending state. Both are refusals.
+    require(!stopped && (stopError == ERROR_INVALID_SERVICE_CONTROL || stopError == ERROR_SERVICE_CANNOT_ACCEPT_CTRL),
+            "START_PENDING must reject stop, as observed");
+    require(DeleteService(fixture.service) != FALSE, "Stuck service must accept deletion marking");
+    fixture.releaseHandles();
+    const auto marked = startup::AwaitAbsent(fixture.name, 1000);
+    require(marked.state == SERVICE_START_PENDING, "Marking for deletion alone cannot remove a stuck service");
+    bool consulted = false;
+    const auto refused = startup::TerminateOwnedServiceProcess(fixture.name,
+        [&](const std::wstring&, const std::wstring&) { consulted = true; return false; }, 2000);
+    require(consulted && refused.outcome == startup::Termination::NotOwned, "Unverified ownership must refuse termination");
+    require(processAlive(stuck.processId) && startup::ReadStatus(fixture.name).processId == stuck.processId,
+            "Refused termination must leave the process untouched");
+    const auto executable = selfPath();
+    const auto ended = startup::TerminateOwnedServiceProcess(fixture.name,
+        [&](const std::wstring& binary, const std::wstring& image) {
+            return binary == fixture.command &&
+                   CompareStringOrdinal(image.c_str(), -1, executable.c_str(), -1, TRUE) == CSTR_EQUAL;
+        }, 5000);
+    require(ended.outcome == startup::Termination::Exited, "Verified stuck service process must end");
+    require(startup::Absent(startup::AwaitAbsent(fixture.name, 5000)),
+            "Stuck service must be removed without a reboot once its own process has ended");
+    require(startup::TerminateOwnedServiceProcess(fixture.name, [](const std::wstring&, const std::wstring&) { return true; },
+                                                  1000).outcome == startup::Termination::NotRunning,
+            "Repeated cleanup must be a no-op once the service is gone");
+}
+
+// Two helpers for one tunnel cannot overlap; a released or abandoned lock is reusable.
+void helperLockExclusion() {
+    const auto name = startup::HelperLockName(L"TELIPHONES-LockTest-" + std::to_wstring(GetCurrentProcessId()) + L"-" +
+                                              std::to_wstring(GetTickCount64()));
+    HANDLE ready = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    HANDLE release = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    require(ready && release, "Cannot create lock test events");
+    bool firstOwned = false;
+    std::thread holder([&] {
+        startup::HelperLock lock(name);
+        firstOwned = lock.owned();
+        SetEvent(ready);
+        WaitForSingleObject(release, 10000);
+    });
+    WaitForSingleObject(ready, 10000);
+    bool overlapped = true;
+    {
+        startup::HelperLock second(name);
+        overlapped = second.owned();
+    }
+    SetEvent(release);
+    holder.join();
+    CloseHandle(ready);
+    CloseHandle(release);
+    require(firstOwned && !overlapped, "An overlapping helper for the same tunnel must be refused");
+    {
+        startup::HelperLock third(name);
+        require(third.owned() && !third.abandoned(), "A released tunnel lock must be reusable");
+    }
+    HANDLE abandonedMutex = nullptr;
+    std::thread crashed([&] { abandonedMutex = CreateMutexW(nullptr, TRUE, name.c_str()); });
+    crashed.join();
+    require(abandonedMutex != nullptr, "Cannot simulate an interrupted helper");
+    {
+        startup::HelperLock recovered(name);
+        require(recovered.owned() && recovered.abandoned(), "A lock abandoned by an interrupted helper must be recoverable");
+    }
+    CloseHandle(abandonedMutex);
+}
 }  // namespace
 
 int wmain(int argc, wchar_t** argv) {
@@ -173,7 +284,10 @@ int wmain(int argc, wchar_t** argv) {
         stoppedService();
         boundedStartup();
         stoppingService();
-        std::cout << "Native tunnel startup tests: PASS (real SCM transitions, no pipe or peer, failure, bounded wait)\n";
+        stuckStartPending();
+        helperLockExclusion();
+        std::cout << "Native tunnel startup tests: PASS (real SCM transitions, no pipe or peer, failure, bounded wait, "
+                     "stuck START_PENDING removal, helper exclusion)\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "Native tunnel startup tests: FAIL: " << error.what() << "\n";

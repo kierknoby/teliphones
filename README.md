@@ -15,10 +15,10 @@ workflow for bounded support windows.
 | Component | Current version | Start here |
 |---|---|---|
 | FreePBX module / root broker | **0.6.6** / **0.6.6**, protocol 12 (unreleased source) | [Install](teliphones/README.md#installing-the-module) · [Upgrade](teliphones/README.md#updating-teliphones) |
-| Windows application | **0.8.3** (file version 0.8.3.0; native build pending) | [Download and requirements](desktop/windows/README.md#requirements-and-download) · [Pair a PBX](desktop/windows/README.md#pair-an-administrator-workstation) |
+| Windows application | **0.8.4** (file version 0.8.4.0; native build pending) | [Download and requirements](desktop/windows/README.md#requirements-and-download) · [Pair a PBX](desktop/windows/README.md#pair-an-administrator-workstation) |
 | Reference gateway and Checker probe | Optional laboratory infrastructure | [Integration guide](teliphones/docs/INTEGRATION.md) · [Gateway](gateway/README.md) |
 
-FreePBX module **0.6.6**, root broker **0.6.6** and Windows **0.8.3** are
+FreePBX module **0.6.6**, root broker **0.6.6** and Windows **0.8.4** are
 independently versioned; the broker protocol remains 12. The module/broker
 update adds durable workstation revocation, verified access removal, fail-closed
 containment and retrievable revocation outcomes. It retains the web-only `ssh=0` form correction, field-specific validation
@@ -28,10 +28,12 @@ Progress is never pairing success; firewall verification
 and single-dispatch behaviour remain unchanged. Upgrade the module in place and
 rerun the root bootstrap so the separately installed broker is refreshed;
 pairings and their identities are preserved.
-Windows **0.8.3** replaces the incompatible text-UAPI activation with the
-official WireGuardNT adapter API, preserving memory-only keys; native build
-and live acceptance are pending. It is distinct from the failing development
-version 0.8.2 and retains
+Windows **0.8.4** corrects the tunnel lifecycle after a 0.8.3 tunnel service
+remained stuck in `START_PENDING` until reboot: cleanup is verified, a stuck
+service's own `wireguard.exe` is ended only after ownership is proven, overlapping
+tunnel operations are excluded and failures keep their original Windows error.
+It retains 0.8.3's official WireGuardNT adapter-API activation with memory-only
+keys; native build and live acceptance are pending. It retains
 its corrected pairing dialogue: select name/access, generate and copy the request, then validate and
 save FreePBX's response. Name/access changes invalidate stale requests; approved
 SSH accounts are response-derived. It retains 0.8.0's password protection, PBX
@@ -51,7 +53,7 @@ in installed broker 0.6.2. Current broker 0.6.6 source gates background
 commands on owned kernel readback and adds bounded failure backoff. Keep the
 development broker stopped until this replacement is reviewed; use the
 [controlled startup/CPU and live acceptance procedure](teliphones/README.md#064-development-server-acceptance).
-No Windows 0.8.3 executable has been built here or published. Native execution
+No Windows 0.8.4 executable has been built here or published. Native execution
 and artefact creation are blocked pending a Windows runner; check exact build
 provenance, not the target version alone. See the
 [controlled Windows upgrade procedure](desktop/windows/README.md#upgrade-the-development-workstation-after-native-validation).
