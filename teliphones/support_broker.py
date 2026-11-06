@@ -37,7 +37,7 @@ SOCKET = "/run/teliphones/control.sock"
 # Protocol 11 adds PBX-enforced workstation session leases and management gating.
 # Protocol 12 adds post-pair workstation policy management.
 PROTOCOL = 12
-VERSION = "0.6.5"
+VERSION = "0.6.6"
 SESSION_CONTROL_PORT = 8766
 SESSION_LEASE_SECONDS = 30
 FWCONSOLE = "/usr/sbin/fwconsole"
@@ -1940,7 +1940,10 @@ class Broker:
             return
         self.start_monitor()
         expected = self.expected_policy(state)
-        self.mutate_policy(expected, self.owned_table())
+        existing = self.owned_table()
+        if existing is not None and policy_equal(existing, expected):
+            return
+        self.mutate_policy(expected, existing)
         if not policy_equal(self.owned_table(), expected):
             raise BrokerError("TELIPHONES listener policy did not reconcile to the complete expected firewall state.")
 
@@ -2625,6 +2628,12 @@ class Broker:
                 raise BrokerError("Workstation table identity handle could not be verified; refusing deletion.")
             # Delete the inspected kernel object, not a possibly-replaced namesake.
             commands.append({"delete": {"table": {"family": "inet", "handle": handle}}})
+            # The kernel reports each inspected rule and chain deletion before the table deletion;
+            # anything else deleted with it (an addition since inspection) remains an external change.
+            for entry in existing["nftables"]:
+                kind, value = next(iter(entry.items()))
+                if kind in ("rule", "chain"):
+                    events.append(NftMonitor.signature("delete", kind, value))
             events.append(NftMonitor.signature("delete", "table", identity))
         if expected is not None:
             for entry in expected["nftables"]:

@@ -8,7 +8,30 @@ repository. Portable Linux validation is current for the broker, FreePBX module 
 Windows core. Native Windows compilation/UI integration and live FreePBX
 session, migration, firewall and SSH acceptance remain outstanding.
 
-## 0.6.5, durable workstation revocation and reliability (unreleased source)
+## 0.6.6, firewall reconciliation feedback-loop correction (unreleased source)
+
+- Advance the FreePBX module and root broker to **0.6.6**, retaining protocol
+  **12** and independently versioned Windows **0.8.3**. Brokers through 0.6.5
+  are reported as outdated because the correction is in the root broker.
+- Fix workstation session admission timing out (Windows error 12002) and
+  sustained broker CPU use. Replacing the owned nft table cascades kernel rule
+  and chain deletion events that were misread as external tampering, so each
+  heartbeat restarted a self-sustaining loop of interface shutdown and policy
+  replacement while holding the workstation lock. The inspected rules and
+  chains are now acknowledged as part of the broker's own transaction, and an
+  already-exact policy is not rewritten on lease renewal. Unpredicted changes
+  still trigger enforcement.
+- Model the kernel deletion cascade in the network fake and add regressions for
+  unrestricted GUI-only admission, own-table replacement versus external
+  changes, and bounded read-only work under repeated firewall events. The
+  isolated real-nft namespace lab asserts that the broker's own table
+  replacement and teardown do not trigger enforcement.
+- Build the local module-only 0.6.6 archive and SHA-256 sidecar from current
+  source, replacing the superseded root-level 0.6.5 pair. Live FreePBX 17 /
+  Debian 12 session-admission and idle-CPU acceptance remain outstanding; no
+  publication, release, live installation or deployment is claimed.
+
+## 0.6.5, durable workstation revocation and reliability (superseded local test package, not published)
 
 - Advance the FreePBX module and root broker to **0.6.5**, retaining protocol
   **12** and independently versioned Windows **0.8.3**. Module metadata drives

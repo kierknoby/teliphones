@@ -8,7 +8,7 @@ version numbers retrospectively.
 ## 0.8.3 — Unreleased development target
 
 Windows file/product version: **0.8.3.0** / **0.8.3**. Independent source targets:
-FreePBX module **0.6.5**, root broker **0.6.5**, protocol **12**.
+FreePBX module **0.6.6**, root broker **0.6.6**, protocol **12**.
 The PBX security version update does not change Windows 0.8.3 functionality.
 Increment Windows only because 0.8.2 is already tested on the workstation and
 still fails; this correction must be distinguishable from that executable.

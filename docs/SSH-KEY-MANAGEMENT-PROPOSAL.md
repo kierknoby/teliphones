@@ -1,9 +1,10 @@
 # My PBXs managed SSH: implementation and validation
 
-The current implementation targets **Windows 0.8.3**, **FreePBX 0.6.5**, **root
-broker 0.6.5**, protocol **12**, independently versioned. Current source adds
-durable workstation revocation and verified removal. The local 0.6.5 archive and checksum include current source;
-the obsolete 0.6.4 archive was removed; historical archives lack those new security corrections. Historical reports and the
+The current implementation targets **Windows 0.8.3**, **FreePBX 0.6.6**, **root
+broker 0.6.6**, protocol **12**, independently versioned. Current source retains
+0.6.5 durable workstation revocation and verified removal and adds the 0.6.6
+nftables feedback-loop correction. The local 0.6.6 archive and checksum include current source;
+the superseded 0.6.5 archive was removed; historical archives lack those new security corrections. Historical reports and the
 proposal below retain their original versions; they do not validate current source.
 
 ## Current status: native integration and initial live SSH reported successful

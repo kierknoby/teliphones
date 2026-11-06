@@ -47,9 +47,12 @@ with tempfile.TemporaryDirectory(prefix=".workstation-lab-", dir=ROOT) as direct
         instance.enforcement_event.clear()
         instance.mutate_policy(expected, instance.owned_table())
         assert broker.policy_equal(instance.owned_table(), expected)
+        assert not instance.monitor.pending, "table replacement left unacknowledged events"
+        assert not instance.enforcement_event.is_set(), "own table replacement (cascaded rule/chain deletes) triggered enforcement"
         instance.reconcile_listener = lambda port: None  # No FreePBX service API in this nft-only namespace.
         instance.teardown_workstations()
         assert instance.link_state() is None and instance.owned_table() is None
+        assert not instance.enforcement_event.is_set(), "own teardown triggered enforcement"
         assert nft("-j", "list", "table", "inet", "teliphones_lab_foreign") == foreign
 
         # Banned and Allowed List listener rules must be acknowledged and read back exactly as the kernel reports them.
@@ -59,7 +62,6 @@ with tempfile.TemporaryDirectory(prefix=".workstation-lab-", dir=ROOT) as direct
             [{"interface": "tlpwabcdef01234", "pbx_address": "100.70.2.1", "source": "100.70.2.2", "ssh_port": 2223}],
             [{"port": 51821, "source": "192.0.2.9"}, {"port": 52001, "source": "2001:db8:1::/48"}],
             admitted_sources={"100.70.2.2"}, control_sources={"100.70.2.2"})
-        instance.enforcement_event.clear()  # Teardown's rule/chain delete events precede its acknowledged table delete.
         instance.mutate_policy(listeners, None)
         assert broker.policy_equal(instance.owned_table(), listeners), "listener policy differs from kernel state"
         assert not instance.monitor.pending, "listener transaction left unacknowledged events"

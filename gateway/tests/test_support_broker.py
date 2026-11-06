@@ -253,7 +253,7 @@ class SupportBrokerTests(unittest.TestCase):
 
     def test_status_reports_live_monitoring_protocol_matching_gui(self):
         status = self.broker.status()
-        self.assertEqual(status["component_version"], "0.6.5")
+        self.assertEqual(status["component_version"], "0.6.6")
         self.assertEqual(status["protocol"], 12)
         self.assertEqual(status["protocol"], broker_module.PROTOCOL)
         self.assertIn("operation", status)
@@ -492,6 +492,10 @@ class FakeNetwork:
                 kind, value = next(iter(entry.items()))
                 if action == "delete":
                     if self.table:
+                        # As the kernel reports a table deletion: every rule, then every chain, then the table.
+                        for removed in ("rule", "chain"):
+                            notifications.extend({"delete": {removed: item[removed]}}
+                                                 for item in self.table["nftables"] if removed in item)
                         notifications.append({"delete": {"table": self.table["nftables"][0]["table"]}})
                     self.table, self.ruleset = None, None
                 else:
@@ -1112,6 +1116,97 @@ class WorkstationPairingTests(unittest.TestCase):
             self.broker.workstation_session("heartbeat", item["address"].split("/")[0])
         self.assertEqual(self.broker.active_sessions(), {})
 
+    def mutating_calls(self, calls):
+        return [call for call in calls
+                if (call[0] == "nft" and call[1][:2] == ("-j", "-f"))
+                or (call[0] == "ip" and call[1][:2] in (("link", "set"), ("link", "del"), ("link", "add")))
+                or (call[0] == "wg" and call[1][:1] == ("set",))]
+
+    def test_unrestricted_gui_only_workstation_is_admitted_and_broker_stays_idle(self):
+        _, response = self.pair()
+        self.assertNotIn("sources", self.broker.workstation_state()[0]["workstations"][0])
+        source = response["address"].split("/")[0]
+        broker_module.time.sleep(0.1)
+        self.broker.enforcement_event.clear()
+        self.broker.wake.clear()
+
+        admitted = self.open_session(response)
+        broker_module.time.sleep(0.1)
+        self.assertTrue(admitted["active"])
+        self.assertFalse(admitted["policy"]["locked"])
+        rules = [entry["rule"] for entry in self.net.table["nftables"] if "rule" in entry]
+        for port in (broker_module.SESSION_CONTROL_PORT, 80, 443):
+            self.assertTrue(any({"accept": None} in rule["expr"]
+                                and {"match": {"op": "==", "left": {"payload": {"protocol": "ip", "field": "saddr"}},
+                                               "right": source}} in rule["expr"]
+                                and {"match": {"op": "==", "left": {"payload": {"protocol": "tcp", "field": "dport"}},
+                                               "right": port}} in rule["expr"] for rule in rules), port)
+        # The admission transaction is the broker's own; it must not be mistaken for tampering.
+        self.assertFalse(self.broker.enforcement_event.is_set())
+        self.assertTrue(self.net.up)
+
+        calls = len(self.net.calls)
+        renewed = self.open_session(response)
+        self.assertTrue(renewed["active"])
+        self.assertEqual(self.mutating_calls(self.net.calls[calls:]), [], "a lease renewal rewrote unchanged policy")
+
+        calls = len(self.net.calls)
+        for _ in range(3):
+            self.broker.expire_workstations()
+        broker_module.time.sleep(0.1)
+        self.assertEqual(self.mutating_calls(self.net.calls[calls:]), [])
+        self.assertFalse(self.broker.enforcement_event.is_set())
+        self.assertFalse(self.broker.wake.is_set(), "the background worker re-woke itself")
+        self.assertTrue(self.net.up)
+        self.assertEqual(self.broker.workstation_error, "")
+
+    def test_own_table_replacement_is_acknowledged_but_external_changes_still_enforce(self):
+        self.pair()
+        _, second = self.pair(public_key="B" * 42 + "E=", nonce="m" * 22)
+        broker_module.time.sleep(0.1)
+        # Replacing a populated table (second pairing) cascades kernel rule/chain deletions.
+        self.assertFalse(self.broker.enforcement_event.is_set())
+        self.assertEqual(self.broker.monitor.pending, [])
+
+        inspected = self.broker.owned_table()
+        expected = self.broker.expected_policy(self.broker.workstation_state()[0])
+        input_rule = next(entry for entry in self.net.table["nftables"] if "rule" in entry)
+        # Added after inspection: the transaction still deletes it, but that deletion is not predicted.
+        self.net.table["nftables"].append({"rule": {**input_rule["rule"], "handle": 9999}})
+        self.broker.mutate_policy(expected, inspected)
+        broker_module.time.sleep(0.1)
+        self.assertTrue(self.broker.enforcement_event.is_set())
+
+        self.broker.enforcement_event.clear()
+        removed = next(entry for entry in self.net.table["nftables"] if "rule" in entry)
+        self.net.table["nftables"].remove(removed)
+        self.net.emit([{"delete": {"rule": removed["rule"]}}])
+        self.assertTrue(self.broker.enforcement_event.wait(2), "external rule deletion was not observed")
+        calls = len(self.net.calls)
+        self.broker.expire_workstations()
+        self.assertTrue(any(call[0] == "nft" and call[1][:2] == ("-j", "-f") for call in self.net.calls[calls:]))
+        self.assertTrue(broker_module.policy_equal(self.broker.owned_table(), expected))
+        self.assertTrue(self.net.up)
+        self.open_session(second)
+
+    def test_repeated_firewall_events_cause_bounded_read_only_work(self):
+        _, response = self.pair()
+        self.open_session(response)
+        broker_module.time.sleep(0.1)
+        self.broker.wake.clear()
+        calls = len(self.net.calls)
+        for _ in range(20):
+            # FreePBX Firewall (iptables-nft) churn wakes the worker, once per event at most.
+            self.net.emit([{"add": {"rule": {"family": "ip", "table": "filter", "chain": "fpbxfirewall"}}}])
+            self.assertTrue(self.broker.wake.wait(2))
+            self.broker.wake.clear()
+            self.broker.expire_workstations()
+        broker_module.time.sleep(0.1)
+        self.assertEqual(self.mutating_calls(self.net.calls[calls:]), [])
+        self.assertFalse(self.broker.enforcement_event.is_set())
+        self.assertFalse(self.broker.wake.is_set())
+        self.assertTrue(self.open_session(response)["active"])
+
     def test_http_session_controller_authenticates_kernel_source_and_enforces_capacity(self):
         state = {"connection_state": "open", "subnet": "127.0.0.0/24", "max_sessions": 1,
                  "workstations": [{"id": "a" * 16, "address": "127.0.0.2/32"},
@@ -1445,7 +1540,7 @@ class WorkstationPairingTests(unittest.TestCase):
         self.assertNotIn("disconnected", json.dumps(events).lower())
         self.assertEqual({item["diagnostic_id"] for item in events}, {diagnostic_id})
         exported = self.broker.dispatch({"action": "diagnostics", "diagnostic_id": diagnostic_id}, 1000)
-        self.assertEqual(exported["component_version"], "0.6.5")
+        self.assertEqual(exported["component_version"], "0.6.6")
         self.assertEqual(exported["diagnostic_id"], diagnostic_id)
         self.assertFalse(any("public_key" in item or "token" in json.dumps(item).lower() for item in exported["events"]))
 
@@ -1459,7 +1554,7 @@ class WorkstationPairingTests(unittest.TestCase):
         self.assertIn("interface.established", names)
         self.assertIn("peer.admitted", names)
         self.assertIn("peer.observation", names)
-        self.assertTrue(all(event["source"] == "pbx" and event["component_version"] == "0.6.5" for event in events))
+        self.assertTrue(all(event["source"] == "pbx" and event["component_version"] == "0.6.6" for event in events))
         self.broker.dispatch({"action": "unpair", "workstation_id": response["workstation_id"]}, 1000)
         events = self.broker.diagnostics.read(diagnostic_id)
         self.assertEqual(events[-1]["event"], "pairing.revoked")

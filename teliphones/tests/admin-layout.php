@@ -14,7 +14,7 @@ $item = ['id' => '0123456789abcdef', 'name' => '<Admin PC>', 'address' => '100.7
     'session_active' => true, 'session_expires_at' => $now + 60,
     'ssh_request_pending' => true, 'unlock_request_pending' => true, 'sources_request_pending' => true,
     'requested_sources' => ['2001:db8::/48']];
-$fixture = ['ok' => true, 'status' => ['protocol' => 12, 'component_version' => '0.6.5', 'enabled' => true, 'phase' => 'Ready',
+$fixture = ['ok' => true, 'status' => ['protocol' => 12, 'component_version' => '0.6.6', 'enabled' => true, 'phase' => 'Ready',
     'readiness' => ['WireGuard wg' => true, 'Temporary SSH server' => true,
         'Gateway enrollment' => true, 'Checker trusted public key' => true],
     'workstations' => ['ready' => true, 'requirements' => ['wg' => true, 'ip' => true, 'nft' => true],
@@ -70,7 +70,7 @@ foreach (['System Readiness', 'Remote Support', 'Windows Workstation Access', 'P
     'Security & Access Restrictions'] as $heading) {
     $assert($xpath->query('//section/h3[text()="' . $heading . '"]')->length === 1, 'Missing dedicated panel: ' . $heading);
 }
-$assert($xpath->query('//h2[text()="TELIPHONES 0.6.5"]')->length === 1,
+$assert($xpath->query('//h2[text()="TELIPHONES 0.6.6"]')->length === 1,
     'The administration heading must use the authoritative module version.');
 foreach (WebSupport::BROKER_ACTIONS as $action) {
     $buttons = $xpath->query('//button[@name="action" and @value="' . $action . '"]');

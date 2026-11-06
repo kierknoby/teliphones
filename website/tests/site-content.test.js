@@ -49,8 +49,8 @@ test('all site pages have valid local links, assets and unique fragment targets'
 });
 
 test('current product and installation copy matches independent source versions', () => {
-  assert.equal(moduleVersion, '0.6.5');
-  assert.equal(brokerVersion, '0.6.5');
+  assert.equal(moduleVersion, '0.6.6');
+  assert.equal(brokerVersion, '0.6.6');
   assert.equal(version, '0.8.3');
   for (const name of ['index.html', 'windows/index.html', 'downloads/index.html',
     'freepbx/index.html', 'faq/index.html', 'about/index.html', 'roadmap/index.html']) {
@@ -65,7 +65,7 @@ test('current product and installation copy matches independent source versions'
     assert.match(html, /protocol (?:<strong>)?12/, name);
   }
   for (const [file, html] of contents) {
-    assert.doesNotMatch(html, /0\.8\.0|0\.6\.0|protocol 7|broker 0\.6\.4/, file);
+    assert.doesNotMatch(html, /0\.8\.0|0\.6\.0|protocol 7|broker 0\.6\.[45]/, file);
   }
 });
 
@@ -75,11 +75,11 @@ test('pairing guide distinguishes approval, current package and obsolete archive
   assert.equal((pairing.match(/<li>/g) || []).length, 8);
   for (const phrase of ['Request access', 'Complete pairing', 'Generate request', 'Copy request',
     'Save connection', 'Changing name/access', 'read-only', 'not independently signed',
-    'local 0.6.5 archive', 'durable revocation', 'obsolete 0.6.4 archive was removed']) {
+    'local 0.6.6 archive', 'durable revocation', 'superseded 0.6.5 archive was removed']) {
     assert.ok(pairing.includes(phrase), `Missing pairing guidance: ${phrase}`);
   }
-  assert.match(contents.get(path.join(site, 'downloads/index.html')), /0\.6\.5 archive includes the web-only form correction, listener diagnostics and latest revocation security corrections/);
-  assert.match(contents.get(path.join(site, 'downloads/index.html')), /obsolete root-level 0\.6\.4 archive and checksum were removed/);
+  assert.match(contents.get(path.join(site, 'downloads/index.html')), /0\.6\.6 archive includes the web-only form correction, listener diagnostics, revocation security corrections and the session-admission feedback-loop correction/);
+  assert.match(contents.get(path.join(site, 'downloads/index.html')), /superseded root-level 0\.6\.5 archive and checksum were removed/);
   assert.match(contents.get(path.join(site, 'downloads/index.html')), /website ZIP and its checksum are unchanged/);
   assert.match(contents.get(path.join(site, 'downloads/index.html')), /Durable revocation/);
   assert.match(contents.get(path.join(site, 'about/index.html')), /localStorage/);
