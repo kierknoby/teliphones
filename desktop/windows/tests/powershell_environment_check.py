@@ -18,18 +18,26 @@ $ErrorActionPreference = 'Stop'
 Write-Output ("PSHOME=" + $PSHOME)
 Write-Output ("PSModulePath=" + $env:PSModulePath)
 Write-Output ("Edition=" + $PSVersionTable.PSEdition + "; version=" + $PSVersionTable.PSVersion)
-try {
-    Get-Module -ListAvailable Microsoft.PowerShell.Security |
-        Select-Object Name, Version, Path | Format-List | Out-String | Write-Output
-    Import-Module Microsoft.PowerShell.Security -ErrorAction Stop
-    $command = Get-Command Get-Acl -ErrorAction Stop
-    Write-Output ("Resolved Get-Acl: " + $command.Source)
-    exit 0
-} catch {
-    Write-Output ("ErrorId=" + $_.FullyQualifiedErrorId)
-    Write-Output $_.Exception.ToString()
-    exit 1
+$failed = $false
+foreach ($probe in @(
+    @{ Module = 'Microsoft.PowerShell.Security'; Command = 'Get-Acl' },
+    @{ Module = 'Microsoft.PowerShell.Utility'; Command = 'Get-FileHash' }
+)) {
+    try {
+        Write-Output ("Probing " + $probe.Module + "/" + $probe.Command)
+        Get-Module -ListAvailable $probe.Module |
+            Select-Object Name, Version, Path | Format-List | Out-String | Write-Output
+        Import-Module $probe.Module -ErrorAction Stop
+        $command = Get-Command $probe.Command -ErrorAction Stop
+        Write-Output ("Resolved " + $probe.Command + ": " + $command.Source)
+    } catch {
+        $failed = $true
+        Write-Output ("ErrorId=" + $_.FullyQualifiedErrorId)
+        Write-Output $_.Exception.ToString()
+    }
 }
+if ($failed) { exit 1 }
+exit 0
 """
     results = {}
     for mode in ("inherited", "discovery-reset"):

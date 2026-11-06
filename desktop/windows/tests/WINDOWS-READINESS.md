@@ -69,6 +69,26 @@ are packaged beside the application. The elevated helper verifies bundled bytes,
 copies them to a protected application-owned Program Files directory, locks and
 rehashes the DLL, then loads by absolute path with system-only dependency lookup.
 
+The MSBuild and native CMake dependency checks explicitly launch Windows
+PowerShell 5.1 (`powershell.exe -NoProfile -NonInteractive`) from CI's `pwsh`
+parent. `-NoProfile` does not reset inherited module-discovery variables.
+The reported `Get-FileHash` resolution failure occurs in these child checks,
+not necessarily in the parent restore step, and does not establish that the
+runner lacks the command. The exact failing loader/module path still requires
+runner evidence. The existing diagnostic probe now checks
+`Microsoft.PowerShell.Utility` / `Get-FileHash` independently of the Security
+module, with inherited and reset discovery environments.
+The verifier uses .NET `SHA256.ComputeHash` over a literal-path file stream
+instead of requiring that cmdlet. Stream/hash resources are disposed on all
+paths; archive and extracted-input pins, check-only failure, and no-download
+behaviour remain unchanged. The build-layout suite includes a Windows-only
+5.1 execution regression using local synthetic archives, both normal command
+discovery and disabled autoloading with an unusable `Get-FileHash`. It covers
+successful restore/check-only, missing files/archive, modified files, rejected
+archive hashes before extraction, and rejected extracted-input hashes.
+This runtime regression is skipped explicitly on Linux; it must pass in the
+existing CI layout step before either native build.
+
 `tunnel_startup_native` retains real isolated SCM transition, deadline, stopped
 service and cleanup tests; obsolete mock control-pipe readiness tests are gone.
 `wireguard_nt_unit` uses the real header/ABI with injected API callbacks to cover

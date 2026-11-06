@@ -7,11 +7,24 @@ $ErrorActionPreference = 'Stop'
 $manifest = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'wireguard-nt.json') -Raw | ConvertFrom-Json
 $destination = Join-Path $PSScriptRoot 'dependencies/wireguard-nt'
 
+function Get-Sha256 {
+    param([string]$Path)
+
+    $resolved = (Resolve-Path -LiteralPath $Path -ErrorAction Stop).ProviderPath
+    $algorithm = [Security.Cryptography.SHA256]::Create()
+    try {
+        $stream = [IO.File]::OpenRead($resolved)
+        try {
+            return [BitConverter]::ToString($algorithm.ComputeHash($stream)).Replace('-', '')
+        } finally { $stream.Dispose() }
+    } finally { $algorithm.Dispose() }
+}
+
 function Test-Inputs {
     foreach ($entry in $manifest.files.PSObject.Properties) {
         $file = Join-Path $destination $entry.Name
         if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { return $false }
-        if ((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash -ine $entry.Value) { return $false }
+        if ((Get-Sha256 -Path $file) -ine $entry.Value) { return $false }
     }
     return $true
 }
@@ -37,7 +50,7 @@ try {
         } finally { $client.Dispose(); $handler.Dispose() }
         $ArchivePath = $temporary
     }
-    if ((Get-FileHash -LiteralPath $ArchivePath -Algorithm SHA256).Hash -ine $manifest.sha256) {
+    if ((Get-Sha256 -Path $ArchivePath) -ine $manifest.sha256) {
         throw 'Official WireGuardNT archive SHA-256 mismatch; nothing will be extracted.'
     }
     Add-Type -AssemblyName System.IO.Compression.FileSystem

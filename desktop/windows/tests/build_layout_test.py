@@ -3,6 +3,7 @@
 from pathlib import Path, PureWindowsPath
 import importlib.util
 import copy
+import hashlib
 import json
 import os
 import re
@@ -11,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 from unittest.mock import MagicMock, patch
 import xml.etree.ElementTree as ET
 
@@ -379,9 +381,14 @@ class BuildLayoutTests(unittest.TestCase):
             self.assertIn('"' + export + '"', implementation)
         self.assertIn("closeAdapter(adapter)", implementation)
         restore = (ROOT / "restore-wireguard-nt.ps1").read_text()
-        for contract in ("AllowAutoRedirect = $false", "Get-FileHash", "$manifest.sha256",
+        for contract in ("AllowAutoRedirect = $false", "[Security.Cryptography.SHA256]::Create()", "$manifest.sha256",
                          "WireGuardNT extracted input SHA-256 mismatch", "$CheckOnly"):
             self.assertIn(contract, restore)
+        self.assertNotIn("Get-FileHash", restore)
+        self.assertIn("ComputeHash($stream)", restore)
+        self.assertIn("finally { $stream.Dispose() }", restore)
+        self.assertIn("finally { $algorithm.Dispose() }", restore)
+        self.assertEqual(restore.count("(Get-Sha256 -Path "), 2)
         props = (ROOT / "WireGuardNT.props").read_text()
         self.assertIn("-CheckOnly", props)
         self.assertIn("WireGuardNT-LICENSE.txt", props)
@@ -397,6 +404,89 @@ class BuildLayoutTests(unittest.TestCase):
         self.assertIn("wireGuardNtSha256", workflow)
         self.assertIn("build/artifact/wireguard.dll", workflow)
         self.assertIn("build/artifact/WireGuardNT-LICENSE.txt", workflow)
+
+    @unittest.skipUnless(os.name == "nt", "Requires actual Windows PowerShell 5.1; no runtime downloaded")
+    def test_wireguard_nt_restore_verifies_hashes_without_hash_cmdlet(self):
+        executable = Path(os.environ["SystemRoot"]) / "System32/WindowsPowerShell/v1.0/powershell.exe"
+        self.assertTrue(executable.is_file(), "Windows PowerShell must exist for native restore regression")
+        with tempfile.TemporaryDirectory(prefix="wireguard nt [hash] ") as temporary:
+            root = Path(temporary)
+            script = root / "restore-wireguard-nt.ps1"
+            shutil.copyfile(ROOT / script.name, script)
+            archive = root / "fixture [archive].zip"
+            inputs = {
+                "bin/amd64/wireguard.dll": b"local fixture DLL bytes\x00\xff",
+                "include/wireguard.h": b"local fixture header\r\n",
+                "LICENSE.txt": b"",
+            }
+            with zipfile.ZipFile(archive, "w") as package:
+                for name, data in inputs.items():
+                    package.writestr("wireguard-nt/" + name, data)
+            manifest = {
+                "url": "https://invalid.invalid/no-network-permitted",
+                "sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
+                "files": {name: hashlib.sha256(data).hexdigest() for name, data in inputs.items()},
+            }
+            manifest_path = root / "wireguard-nt.json"
+            destination = root / "dependencies/wireguard-nt"
+            quoted_script = str(script).replace("'", "''")
+            quoted_archive = str(archive).replace("'", "''")
+            for restricted in (False, True):
+                with self.subTest(hash_cmdlet_unavailable=restricted):
+                    bootstrap = "$ErrorActionPreference = 'Stop'; "
+                    if restricted:
+                        bootstrap += r"""
+Import-Module (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Management\Microsoft.PowerShell.Management.psd1')
+Import-Module (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1')
+$env:PSModulePath = ''
+$PSModuleAutoLoadingPreference = 'None'
+function Get-FileHash { throw 'Regression: verifier must not depend on Get-FileHash' }
+"""
+
+                    def run(arguments, accepted, message=None):
+                        result = subprocess.run(
+                            [str(executable), "-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
+                             bootstrap + f"& '{quoted_script}' {arguments}"],
+                            capture_output=True, text=True, timeout=30, errors="replace")
+                        output = result.stdout + result.stderr
+                        self.assertEqual(result.returncode == 0, accepted, output)
+                        if message:
+                            self.assertIn(message, output)
+
+                    if destination.exists():
+                        shutil.rmtree(destination)
+                    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+                    run("-CheckOnly", False, "inputs missing or modified")
+                    self.assertFalse(destination.exists())
+                    run(f"-ArchivePath '{quoted_archive}'", True)
+                    for name, data in inputs.items():
+                        self.assertEqual((destination / name).read_bytes(), data)
+                    run("-CheckOnly", True)
+                    dll = destination / "bin/amd64/wireguard.dll"
+                    dll.write_bytes(b"modified")
+                    run("-CheckOnly", False, "inputs missing or modified")
+                    dll.unlink()
+                    run("-CheckOnly", False, "inputs missing or modified")
+                    run(f"-ArchivePath '{quoted_archive}'", True)
+                    shutil.rmtree(destination)
+                    bad_archive = dict(manifest, sha256="0" * 64)
+                    manifest_path.write_text(json.dumps(bad_archive), encoding="utf-8")
+                    run(f"-ArchivePath '{quoted_archive}'", False, "archive SHA-256 mismatch")
+                    self.assertFalse(destination.exists(), "Archive mismatch must fail before extraction")
+                    bad_input = copy.deepcopy(manifest)
+                    bad_input["files"]["LICENSE.txt"] = "0" * 64
+                    manifest_path.write_text(json.dumps(bad_input), encoding="utf-8")
+                    run(f"-ArchivePath '{quoted_archive}'", False, "extracted input SHA-256 mismatch")
+                    run("-CheckOnly", False, "inputs missing or modified")
+                    shutil.rmtree(destination)
+                    archive.unlink()
+                    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+                    run(f"-ArchivePath '{quoted_archive}'", False)
+                    self.assertFalse(destination.exists())
+                    with zipfile.ZipFile(archive, "w") as package:
+                        for name, data in inputs.items():
+                            package.writestr("wireguard-nt/" + name, data)
+                    manifest["sha256"] = hashlib.sha256(archive.read_bytes()).hexdigest()
 
     @unittest.skipUnless(shutil.which("ssh-keygen") and shutil.which("ssh"),
                          "Local OpenSSH required; no download attempted")
@@ -826,6 +916,8 @@ class BuildLayoutTests(unittest.TestCase):
                     self.assertEqual(environment, expected_parent)
                     self.assertIn("System32\\WindowsPowerShell\\v1.0\\powershell.exe", first.args[0][0])
                     self.assertEqual(first.args[0], second.args[0])
+                    self.assertIn("Microsoft.PowerShell.Utility", first.args[0][-1])
+                    self.assertIn("Command = 'Get-FileHash'", first.args[0][-1])
                     self.assertTrue(any("loader exception details" in str(call) for call in output.call_args_list))
 
     def test_contract_stdout_rejects_windows_double_translation(self):
