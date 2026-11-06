@@ -193,7 +193,7 @@ class EnforcementTests(unittest.TestCase):
         restarted.run = self.net.run
         restarted.tool = lambda name: name
         restarted.iptables_tool = self.broker.iptables_tool
-        restarted.ssh.reconcile = lambda *args: None
+        restarted.ssh.reconcile = lambda *args, **kwargs: None
         restarted.restore_workstations()
         self.assertTrue(self.net.up)
         self.assertTrue(broker.policy_equal(self.net.table, restarted.expected_policy(

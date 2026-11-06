@@ -2,12 +2,13 @@
 
 This is the historical 0.4.0/0.4.1 incident and read-only evidence runbook,
 not current installation instructions or archive availability. Current targets
-are module 0.6.4, root broker 0.6.3, protocol 12 and Windows 0.8.3. Use the
+are module 0.6.5, root broker 0.6.5, protocol 12 and Windows 0.8.3. Use the
 [current upgrade guide](../teliphones/README.md#updating-teliphones) for bootstrap;
 account for dedicated Locked interfaces and configured management ports when
 interpreting the shared-interface/default-port examples below. The preserved
 0.6.3 archive predates the subsequent module-side web-only form correction
-and listener diagnostics, both included in the new local 0.6.4 test package.
+and listener diagnostics included in 0.6.4. Current 0.6.5 source additionally
+contains durable revocation and verified removal; the local 0.6.5 archive and checksum include current source.
 
 ## Current evidence and scope
 
@@ -18,7 +19,7 @@ The listener verifier now includes the owned chain, requested UDP port (or
 UDP ACCEPT rules, differing service-rule counts and missing or remaining zone
 jumps. It does not echo raw rules, comments, keys or pairing material. The
 verification predicate, retry deadline and fail-closed cleanup are unchanged.
-This diagnostic improvement is included in the local 0.6.4 test package, not a
+This diagnostic improvement remains in current 0.6.5 source, not a
 demonstrated correction of the operator's live pairing failure. Follow the
 [development-server acceptance checklist](../teliphones/README.md#064-development-server-acceptance)
 after the in-place module upgrade and root broker refresh.
@@ -40,7 +41,7 @@ notification stream and whether any individual command failed were not captured;
 neither asynchronous rejection nor nft transaction failure is required to
 produce the unnecessary subprocesses.
 
-The pending broker 0.6.3 now checks desired ports against the root-owned listener
+The pending broker 0.6.5 now checks desired ports against the root-owned listener
 journal and exact generated IPv4 service/zone rules before background helper
 invocation. It does not cache success without checking kernel state or bypass
 explicit pairing/cleanup verification. Failed background transactions use
@@ -54,8 +55,8 @@ The observed `51821,58490` versus `51821` is consistent with a Locked workstatio
 attempt followed by rollback to the authoritative Open/zero-peer shared policy.
 A regression covers that sequence without continued port oscillation. The
 historical live attempt's exact requested source-lock policy remains unproven.
-This fix is included in the rebuilt pending 0.6.4 test archive; prior 0.6.3
-archives are unchanged. Review it before any controlled installation. Successful
+This fix is included in the local 0.6.5 package; the obsolete root-level
+0.6.4 archive/checksum were removed. Review before any controlled installation. Successful
 local regressions are not demonstrated end-to-end pairing or live CPU acceptance.
 
 The operator-supplied FreePBX Firewall 17.0.1.35 snapshots contained one UDP

@@ -10,7 +10,7 @@ This guide covers installing and using the Windows application. The
 [FreePBX administration guide](../../teliphones/README.md) covers server setup.
 
 Windows **0.8.3** (file version **0.8.3.0**) is independent of FreePBX module
-**0.6.4**, root broker **0.6.3**, protocol **12**. Windows 0.8.3 corrects the
+**0.6.5**, root broker **0.6.5**, protocol **12**. Windows 0.8.3 corrects the
 incompatible text-UAPI activation introduced in 0.8.0, using the official
 WireGuardNT 1.1 adapter API while preserving memory-only key activation.
 It retains 0.8.1's pairing dialogue order, stale-request handling, Copy/Save

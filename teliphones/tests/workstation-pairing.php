@@ -11,7 +11,7 @@ $recorder = new class extends WebSupport {
     public array $reply = ['ok' => true, 'message' => 'paired', 'pairing_response' => 'TELIPHONES-PAIR-RESPONSE-1:eyJzY2hlbWEiOiJ0ZWxpcGhvbmVzIn0'];
     public function request(array $request): array
     {
-        if ($request['action'] === 'status') return ['ok' => true, 'status' => ['protocol' => 4, 'component_version' => '0.6.3', 'phase' => 'Ready',
+        if ($request['action'] === 'status') return ['ok' => true, 'status' => ['protocol' => 4, 'component_version' => '0.6.5', 'phase' => 'Ready',
             'workstations' => ['ready' => true, 'requirements' => ['wg' => true, 'ip' => true, 'nft' => true], 'items' => []]]];
         $this->sent[] = $request;
         return $this->reply;
@@ -96,7 +96,7 @@ $assert($result['dispatched'], 'Missing SSH prerequisites must not disable web-o
 $result = WebSupport::handleAction($recorder, ['ssh' => '1'] + $post, 'known', $modern, $https);
 $assert(!$result['dispatched'] && strpos($result['notice']['error'], 'did not include SSH capability') !== false,
     'A version-1 web-only request must never receive SSH permission.');
-$policyStatus = ['ok' => true, 'status' => ['protocol' => 8, 'component_version' => '0.6.3', 'workstations' => [
+$policyStatus = ['ok' => true, 'status' => ['protocol' => 8, 'component_version' => '0.6.5', 'workstations' => [
     'ready' => true, 'items' => [], 'requirements' => ['wg' => true, 'ip' => true, 'nft' => true],
     'connection_state' => 'closed']]];
 $assert(WebSupport::supportsWorkstationPolicy($policyStatus), 'Protocol 8 must expose connection-state controls.');
@@ -105,7 +105,7 @@ $recorder->sent = [];
 $result = WebSupport::handleAction($recorder, $policyPost, 'known', $policyStatus, $https);
 $assert($result['dispatched'] && $recorder->sent[0] === ['action' => 'workstation-policy', 'state' => 'frozen'],
     'Connection-state changes must forward only the selected state.');
-$sessionStatus = ['ok' => true, 'status' => ['protocol' => 11, 'component_version' => '0.6.3', 'workstations' => [
+$sessionStatus = ['ok' => true, 'status' => ['protocol' => 11, 'component_version' => '0.6.5', 'workstations' => [
     'ready' => true, 'items' => [], 'requirements' => ['wg' => true, 'ip' => true, 'nft' => true],
     'max_sessions' => 1, 'connected_workstations' => 1]]];
 $assert(WebSupport::supportsWorkstationSessions($sessionStatus), 'Protocol 11 must report enforced workstation session capacity.');
@@ -151,6 +151,15 @@ $assert(WebSupport::validPairingResponse('TELIPHONES-PAIR-RESPONSE-2:' . str_rep
 $recorder->sent = [];
 $result = WebSupport::handleAction($recorder, ['token' => 'known', 'action' => 'unpair', 'workstation_id' => '0123456789abcdef', 'request' => 'x'], 'known', $operational, $https);
 $assert($recorder->sent === [['action' => 'unpair', 'workstation_id' => '0123456789abcdef']], 'Revocation must forward only the workstation identifier.');
+$assert($result['notice']['action'] === 'unpair', 'Revocation must not be relabelled as source management.');
+$revocation = ['id' => str_repeat('a', 32), 'action' => 'unpair', 'state' => 'failed', 'outcome' => 'unconfirmed',
+    'message' => 'Revocation is durably recorded, but effective access removal remains unconfirmed.',
+    'stage' => '', 'public_key' => 'PRIVATE-FIXTURE', 'sources' => ['SECRET-FIXTURE']];
+$revocationStatus = WebSupport::publicStatus(['status' => ['workstation_revocation' => $revocation]], ['available' => true]);
+$assert($revocationStatus['workstation_revocation']['label'] === 'Revoke workstation access', 'The persisted revocation label must be explicit.');
+$assert(!isset($revocationStatus['workstation_revocation']['public_key'], $revocationStatus['workstation_revocation']['sources']),
+    'Revocation status must not export identities or cleanup details.');
+$assert($revocationStatus['workstation_revocation']['outcome'] === 'unconfirmed', 'Unconfirmed enforcement must remain explicit.');
 
 $recorder->sent = [];
 foreach ([['HTTPS' => 'off', 'SERVER_PORT' => '80'], []] as $server) {
@@ -246,7 +255,7 @@ $item = ['id' => '0123456789abcdef', 'name' => 'ADMIN-PC', 'address' => '100.70.
     'created_at' => 1, 'expires_at' => 2000000000, 'last_handshake' => 0,
     'verified_endpoint' => ['address' => '2001:db8::24', 'port' => 51821],
     'fingerprint' => 'SHA256:abcdefghijklmnop', 'public_key' => 'LEAKED-PUBLIC-KEY'];
-$status = ['ok' => true, 'status' => ['protocol' => 4, 'component_version' => '0.6.3', 'phase' => 'Ready', 'workstations' => ['ready' => true, 'requirements' => ['wg' => true, 'ip' => true, 'nft' => true],
+$status = ['ok' => true, 'status' => ['protocol' => 4, 'component_version' => '0.6.5', 'phase' => 'Ready', 'workstations' => ['ready' => true, 'requirements' => ['wg' => true, 'ip' => true, 'nft' => true],
     'error' => '', 'listen_port' => 51821, 'pbx_address' => '100.70.1.1', 'items' => [$item, ['id' => '../../x', 'name' => 'bad']]]]];
 $workstations = WebSupport::workstations($status);
 $assert($workstations['supported'] && $workstations['ready'] && count($workstations['items']) === 1 && !isset($workstations['items'][0]['public_key']), 'Workstation status must be allowlisted.');
@@ -289,6 +298,14 @@ $buttonDisabled = static function (string $html, string $action): bool {
 };
 $status['status']['readiness'] = ['WireGuard wg' => true];
 $html = $render($status);
+$withRevocation = $status;
+$withRevocation['status']['workstation_revocation'] = $revocation;
+$revocationHtml = $render($withRevocation);
+$assert(strpos($revocationHtml, '<strong>Revoke workstation access</strong>: Revocation is durably recorded') !== false
+    && strpos($revocationHtml, 'effective access removal remains unconfirmed.') !== false,
+    'Refreshed pages must display the durable revocation outcome with the correct action label.');
+$assert(strpos($revocationHtml, 'PRIVATE-FIXTURE') === false && strpos($revocationHtml, 'SECRET-FIXTURE') === false,
+    'Persisted revocation details must remain outside the page and live status JSON.');
 $assert(strpos($html, '<code>nft</code> CLI') !== false && strpos($html, '<code>nftables.service</code> does not need to be enabled or running') !== false
     && strpos($html, 'this page does not install nftables') !== false && strpos($html, 'not zero-exposure or truly fail-closed') !== false,
     'GUI must explain essential nft userspace tools, unnecessary service activation, administrator repair and external-flush exposure limits.');

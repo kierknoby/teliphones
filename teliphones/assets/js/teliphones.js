@@ -49,7 +49,8 @@
     }
 
     function needsMonitoring(status) {
-        return isRunning(status) || isBackgroundCleanup(status);
+        return isRunning(status) || isBackgroundCleanup(status) ||
+            !!(status && status.workstation_revocation && status.workstation_revocation.outcome !== 'complete');
     }
 
     function hasSession(status) {
@@ -570,6 +571,17 @@
                 }
                 if (!status.available) {
                     return;
+                }
+                var revocationPanel = find('#teliphones-workstation-revocation');
+                if (revocationPanel) {
+                    var revocation = status.workstation_revocation;
+                    revocationPanel.hidden = !revocation;
+                    if (revocation) {
+                        revocationPanel.className = 'alert ' + (revocation.outcome === 'complete' ? 'alert-info' : 'alert-warning');
+                        revocationPanel.textContent = 'Revoke workstation access: ' + revocation.message +
+                            (revocation.state === 'running' && revocation.stage ? ' ' + revocation.stage + '.' : '') +
+                            ' Operation ' + revocation.id;
+                    }
                 }
                 setText('[data-teliphones="phase"]', status.phase || 'Not configured');
                 findAll('[data-teliphones-component]').forEach(function (cell) {

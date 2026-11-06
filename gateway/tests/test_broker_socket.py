@@ -363,6 +363,105 @@ class BrokerSocketTests(unittest.TestCase):
         self.assertIn("Rerun Complete Installation", response["error"])
         self.assertEqual(self.net.peers, {})
 
+    def test_revocation_crosses_five_seconds_and_persists_retrievable_outcome(self):
+        response = self.broker.dispatch(self.request(), os.getuid())
+        identifier = helpers.decode_response(response["pairing_response"])["workstation_id"]
+        original = self.broker.reconcile_listener
+
+        def delayed(ports):
+            operation = self.broker.revocation_status()
+            self.assertEqual(operation["state"], "running")
+            self.assertTrue(operation["stage"])
+            threading.Event().wait(6)
+            return original(ports)
+
+        with patch.object(self.broker, "reconcile_listener", side_effect=delayed):
+            response = self.php({"action": "unpair", "workstation_id": identifier})
+        self.assertTrue(response["ok"], response)
+        self.assertEqual(response["outcome"], "complete")
+        self.assertEqual(self.net.peers, {})
+        with patch.object(self.broker, "workstation_status", return_value={}):
+            status = self.php({"action": "status"})["status"]["workstation_revocation"]
+        self.assertEqual(status["id"], response["operation_id"])
+        self.assertEqual(status["outcome"], "complete")
+
+    def test_revocation_progress_while_waiting_for_workstation_lock(self):
+        self.broker.dispatch(self.request(), os.getuid())
+        held = threading.Event()
+        release = threading.Event()
+
+        def lock():
+            with self.broker.wslock:
+                held.set()
+                release.wait(10)
+
+        worker = threading.Thread(target=lock)
+        worker.start()
+        self.assertTrue(held.wait(5))
+        client, server = socket.socketpair()
+        thread = threading.Thread(target=broker.handle_connection, args=(self.broker, server, os.getuid()))
+        try:
+            with client:
+                client.settimeout(4)
+                client.sendall(b'{"action":"unpair","workstation_id":"all","progress":true}\n')
+                thread.start()
+                frame = json.loads(client.recv(4096))
+                self.assertEqual(frame, {"progress": "Waiting for workstation policy lock"})
+                release.set()
+                data = bytearray()
+                while True:
+                    chunk = client.recv(4096)
+                    if not chunk:
+                        break
+                    data.extend(chunk)
+                self.assertTrue(json.loads(data.splitlines()[-1])["ok"])
+        finally:
+            release.set()
+            worker.join(5)
+            if thread.ident:
+                thread.join(5)
+        self.assertFalse(worker.is_alive())
+        self.assertFalse(thread.is_alive())
+
+    def test_browser_disconnect_does_not_cancel_revocation_and_status_recovers_result(self):
+        self.broker.dispatch(self.request(), os.getuid())
+        entered, release, completed = threading.Event(), threading.Event(), threading.Event()
+        original = self.broker.unpair
+
+        def delayed(request, uid):
+            entered.set()
+            self.assertTrue(release.wait(10))
+            try:
+                return original(request, uid)
+            finally:
+                completed.set()
+
+        client, server = socket.socketpair()
+        thread = threading.Thread(target=broker.handle_connection, args=(self.broker, server, os.getuid()))
+        with patch.object(self.broker, "unpair", side_effect=delayed):
+            try:
+                client.sendall(b'{"action":"unpair","workstation_id":"all","progress":true}\n')
+                thread.start()
+                self.assertTrue(entered.wait(5))
+                client.close()
+                thread.join(4)
+                self.assertFalse(thread.is_alive(), "Transport may exit while the accepted operation continues")
+                release.set()
+                self.assertTrue(completed.wait(5))
+                with self.broker.wslock:
+                    pass
+            finally:
+                release.set()
+                client.close()
+                if thread.ident:
+                    thread.join(5)
+        with patch.object(self.broker, "workstation_status", return_value={}):
+            status = self.php({"action": "status"})["status"]["workstation_revocation"]
+        self.assertEqual(status["action"], "unpair")
+        self.assertEqual(status["state"], "succeeded")
+        self.assertEqual(status["outcome"], "complete")
+        self.assertEqual(self.net.peers, {})
+
     def test_process_timeout_unexpected_exception_and_serialization_failure_return_safe_json(self):
         for error in [subprocess.TimeoutExpired(["wg", "PRIVATE-KEY-FIXTURE"], 20, stderr="SECRET"),
                       TypeError("PRIVATE-KEY-FIXTURE"), broker.ssh.SshError("PRIVATE-KEY-FIXTURE"),

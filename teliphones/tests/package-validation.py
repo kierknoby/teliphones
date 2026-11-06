@@ -23,16 +23,22 @@ def included(path):
     return not any(part.startswith(".") or part in ("tests", "__pycache__") for part in parts) and path.suffix not in (".pyc", ".pyo")
 
 
-class PackageTests(unittest.TestCase):
-    def test_authoritative_versions_and_archive_checksum(self):
-        self.assertEqual(VERSION, "0.6.4")
+class SourceVersionTests(unittest.TestCase):
+    def test_authoritative_versions(self):
+        self.assertEqual(VERSION, "0.6.5")
         tree = ast.parse((MODULE / "support_broker.py").read_text())
         versions = [ast.literal_eval(node.value) for node in tree.body if isinstance(node, ast.Assign)
                     and any(isinstance(target, ast.Name) and target.id == "VERSION" for target in node.targets)]
-        self.assertEqual(versions, ["0.6.3"], "The broker patch version identifies the listener diagnostic corrections")
+        self.assertEqual(versions, ["0.6.5"], "The broker patch version identifies the revocation security corrections")
         self.assertIn("BROKER_VERSION = '%s';" % versions[0], (MODULE / "WebSupport.php").read_text())
-        self.assertIn("TELIPHONES 0.6.4 requires broker version 0.6.3, broker protocol 12",
+        self.assertIn("TELIPHONES 0.6.5 requires broker version 0.6.5, broker protocol 12",
                       (MODULE / "BrokerBootstrap.php").read_text())
+        self.assertIn("## 0.6.5, durable workstation revocation", (MODULE / "docs/CHANGELOG.md").read_text())
+        self.assertIn("durable workstation revocation", (MODULE / "BrokerBootstrap.php").read_text())
+
+
+class PackageTests(unittest.TestCase):
+    def test_archive_checksum(self):
         self.assertTrue(PACKAGE.exists(), "Build the current installation archive before package validation")
         digest = hashlib.sha256(PACKAGE.read_bytes()).hexdigest()
         self.assertEqual(Path(str(PACKAGE) + ".sha256").read_text(), "%s  %s\n" % (digest, PACKAGE.name))
@@ -107,6 +113,8 @@ class PackageTests(unittest.TestCase):
             self.assertIn('VERSION = "0.6.1"', source)
             self.assertIn("PROTOCOL = 12", source)
 
+    @unittest.skipUnless((ROOT / "TELIPHONES-0.6.3.tgz").exists(),
+                         "The historical 0.6.3 archive is not present in the repository")
     def test_previous_0_6_3_package_remains_unchanged(self):
         previous = ROOT / "TELIPHONES-0.6.3.tgz"
         digest = hashlib.sha256(previous.read_bytes()).hexdigest()
@@ -184,6 +192,8 @@ class PackageTests(unittest.TestCase):
                 self.assertEqual(metadata.findtext("version"), VERSION)
                 self.assertEqual(metadata.findtext("rawname"), "teliphones")
                 self.assertEqual(metadata.findtext("category"), "Connectivity")
+                self.assertEqual(metadata.findtext("depends/version"), "17.0.1")
+                self.assertEqual(metadata.findtext("supported/version"), "17.0")
                 for name in ("WebSupport.php", "views/support.php", "views/disclaimer.php", "support_broker.py", "ssh_authority.py", "assets/js/teliphones.js", "install.php"):
                     self.assertIn("teliphones/" + name, expected)
                 self.assertIn("def pair(", (Path(directory) / "teliphones/support_broker.py").read_text())
@@ -193,9 +203,11 @@ class PackageTests(unittest.TestCase):
                                 "def start_monitor(", "def uninstall_workstations(", "def policy_equal(",
                                 "TELIPHONES workstation integration v1", 'FREEPBX_HOOK = "fpbxfirewall"',
                                 'FAIL2BAN_PREFIXES = ("fail2ban-", "f2b-")', "def reconcile_integration(",
-                                "class DiagnosticLog", "PROTOCOL = 12", "def reconcile_listener(", "def parse_web("):
+                                "class DiagnosticLog", "PROTOCOL = 12", "def reconcile_listener(", "def parse_web(",
+                                "workstation-revocations.json", "def reconcile_revocations(",
+                                "def revocation_status(", "revocation_persistence_failed"):
                     self.assertIn(feature, broker)
-                self.assertIn('VERSION = "0.6.3"', broker)
+                self.assertIn('VERSION = "0.6.5"', broker)
                 for feature in ("def listener_failure_output(", "listener_operation", "Initiating failure:",
                                 "listener_failure_output(result.stderr)", "def listener_rules_current(",
                                 "background_listener_check", "workstation_retry_at",
@@ -213,7 +225,8 @@ class PackageTests(unittest.TestCase):
                     self.assertIn(feature, broker)
                 web = (Path(directory) / "teliphones/WebSupport.php").read_text()
                 self.assertIn("stream_set_timeout($socket, 5)", web)
-                self.assertIn("if ($pairing) $request['progress'] = true;", web)
+                self.assertIn("$streaming = in_array($request['action'] ?? null, ['pair', 'unpair'], true);", web)
+                self.assertIn("if ($streaming) $request['progress'] = true;", web)
                 bootstrap = (Path(directory) / "teliphones/BrokerBootstrap.php").read_text()
                 self.assertIn("copy($moduleDir . '/support_broker.py', $brokerFile)", bootstrap)
                 self.assertIn("'restart teliphones-broker.service'", bootstrap)

@@ -37,7 +37,7 @@ SOCKET = "/run/teliphones/control.sock"
 # Protocol 11 adds PBX-enforced workstation session leases and management gating.
 # Protocol 12 adds post-pair workstation policy management.
 PROTOCOL = 12
-VERSION = "0.6.3"
+VERSION = "0.6.5"
 SESSION_CONTROL_PORT = 8766
 SESSION_LEASE_SECONDS = 30
 FWCONSOLE = "/usr/sbin/fwconsole"
@@ -120,7 +120,7 @@ def read_json(path):
         raise BrokerError("TELIPHONES state is inaccessible or invalid; inspect quarantine.") from error
 
 
-def atomic(path, value, mode=0o600):
+def atomic(path, value, mode=0o600, durable=False):
     fd, name = tempfile.mkstemp(prefix=path.name + ".broker-tmp-", dir=path.parent)
     temporary = Path(name)
     try:
@@ -130,6 +130,12 @@ def atomic(path, value, mode=0o600):
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, path)
+        if durable:
+            directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
     finally:
         if temporary.exists():
             temporary.unlink()
@@ -1085,8 +1091,8 @@ def handle_connection(broker, connection, web_uid):
             # Optional IPC framing only; legacy protocol-12 clients still receive one final response.
             streaming = isinstance(request, dict) and "progress" in request
             if streaming:
-                if request.get("action") != "pair" or request.pop("progress") is not True:
-                    raise BrokerError("Progress framing is available only for workstation pairing.")
+                if request.get("action") not in ("pair", "unpair") or request.pop("progress") is not True:
+                    raise BrokerError("Progress framing is available only for workstation pairing or revocation.")
             validate(request)
         except (BrokerError, ValueError, OSError) as error:
             response = {"ok": False, "error": str(error) if isinstance(error, BrokerError) else "Invalid TELIPHONES socket request."}
@@ -1095,7 +1101,8 @@ def handle_connection(broker, connection, web_uid):
             except OSError:
                 LOGGER.error("TELIPHONES socket closed before request rejection could be delivered")
             return
-        progress = {"stage": "Validating pairing request"}
+        progress = {"stage": "Waiting for workstation policy lock" if request["action"] == "unpair"
+                    else "Validating pairing request"}
         if not streaming:
             response = socket_response(broker, request, uid, progress)
         else:
@@ -1111,11 +1118,11 @@ def handle_connection(broker, connection, web_uid):
             threading.Thread(target=dispatch, daemon=True).start()
             try:
                 # Liveness is not success: keep PHP's five-second inactivity limit while
-                # bounded firewall commands finish, without releasing the pairing lock early.
+                # bounded firewall commands finish, without releasing the workstation lock early.
                 while not done.wait(1):
                     connection.sendall(json.dumps({"progress": progress["stage"]}).encode() + b"\n")
             except OSError:
-                LOGGER.error("TELIPHONES pairing socket closed during %s; operation outcome must be checked",
+                LOGGER.error("TELIPHONES workstation socket closed during %s; operation outcome must be checked",
                              progress["stage"])
                 return
             response = result[0]
@@ -1152,6 +1159,8 @@ class Broker:
         self.workstation_retry_policy = None
         self.workstation_retry_at = 0.0
         self.workstation_retry_delay = 0
+        self.revocation_persistence_failed = False
+        self.revocation_progress = None
         self.diagnostics = DiagnosticLog(STATE / "diagnostics")
         self.diagnostic_active_peers = set()
         self.diagnostic_interface_up = False
@@ -1267,6 +1276,7 @@ class Broker:
                 fingerprint = "Invalid gateway SSH identity"
         return {"protocol": PROTOCOL, "component_version": VERSION, "phase": phase, "readiness": readiness, "enabled": enabled,
                 "operation": dict(self.operation) if self.operation else None, "server_time": int(time.time()),
+                "workstation_revocation": self.revocation_status(),
                 "can_authorise": all(readiness.values()) and enabled and not session and not quarantine and not self.running and not self.revoking,
                 "session": {key: session[key] for key in ("session_id", "state", "expires_at") if key in session},
                 "access_verified": phase == "Connected",
@@ -1327,10 +1337,15 @@ class Broker:
     def workstation_state(self):
         """Load the pairing state and drop expired temporary pairings. Returns (state, changed)."""
         stored = read_json(STATE / "workstations.json")
+        revoked = self.revocations()["records"]
         items = stored.get("workstations") if isinstance(stored.get("workstations"), list) else []
         now = int(time.time())
         valid = []
         for item in items:
+            if isinstance(item, dict) and any(
+                    item.get("id") == identifier or item.get("public_key") == record["public_key"]
+                    for identifier, record in revoked.items()):
+                continue
             if (not isinstance(item, dict) or not WG_PUBLIC_KEY.fullmatch(str(item.get("public_key", "")))
                     or (item.get("mode") != "persistent"
                         and not (isinstance(item.get("expires_at"), int) and item["expires_at"] > now))):
@@ -1442,7 +1457,207 @@ class Broker:
         return state, changed
 
     def save_workstations(self, state):
+        revoked = self.revocations()["records"]
+        if any(item["id"] in revoked or any(item["public_key"] == record["public_key"]
+                                           for record in revoked.values()) for item in state["workstations"]):
+            raise BrokerError("Refusing to persist revoked workstation authority.")
         atomic(STATE / "workstations.json", json.dumps(state, indent=2, sort_keys=True))
+
+    def revocations(self):
+        path = STATE / "workstation-revocations.json"
+        journal = read_json(path)
+        if not journal:
+            if path.exists():
+                raise BrokerError("Empty workstation revocation journal; access remains unavailable.")
+            return {"records": {}}
+        records = journal.get("records")
+        if not isinstance(records, dict):
+            raise BrokerError("Invalid workstation revocation journal; access remains unavailable.")
+        operation = journal.get("operation")
+        if (not isinstance(operation, dict) or operation.get("action") != "unpair"
+                or not isinstance(operation.get("id"), str)
+                or re.fullmatch(r"[a-f0-9]{32}", operation["id"]) is None
+                or operation.get("state") not in ("running", "failed", "succeeded")
+                or operation.get("outcome") not in ("unconfirmed", "housekeeping", "complete")
+                or type(operation.get("started_at")) is not int
+                or (operation.get("finished_at") is not None and type(operation["finished_at"]) is not int)
+                or not isinstance(operation.get("message"), str) or not isinstance(operation.get("stage"), str)):
+            raise BrokerError("Invalid workstation revocation operation; access remains unavailable.")
+        for identifier, record in records.items():
+            if (not isinstance(identifier, str) or re.fullmatch(r"[a-f0-9]{16}", identifier) is None
+                    or not isinstance(record, dict)
+                    or not WG_PUBLIC_KEY.fullmatch(str(record.get("public_key", "")))
+                    or type(record.get("dedicated")) is not bool
+                    or type(record.get("revoked_at")) is not int or record["revoked_at"] <= 0
+                    or type(record.get("administrator_uid")) is not int or record["administrator_uid"] < 0
+                    or record.get("outcome") not in ("unconfirmed", "housekeeping", "complete")):
+                raise BrokerError("Invalid workstation revocation record; access remains unavailable.")
+        return journal
+
+    def save_revocations(self, journal):
+        atomic(STATE / "workstation-revocations.json", json.dumps(journal, sort_keys=True), durable=True)
+
+    def revocation_status(self):
+        operation = self.revocations().get("operation")
+        if operation and self.revocation_progress and self.revocation_progress[0] == operation["id"]:
+            operation = dict(operation, state="running", stage=self.revocation_progress[1]["stage"])
+        if operation and self.revocation_persistence_failed:
+            operation = dict(operation, state="failed", outcome="unconfirmed", stage="",
+                             message="Revocation persistence could not be confirmed; effective removal requires verified recovery.")
+        return operation
+
+    def revocation_stage(self, stage):
+        progress = getattr(self.request_context, "progress", None)
+        if progress is not None:
+            progress["stage"] = stage
+        if self.revocation_progress is not None:
+            self.revocation_progress[1]["stage"] = stage
+
+    def contain_workstations(self):
+        failures = []
+        for cleanup in (self.disable_workstations, lambda: self.ssh.reconcile({"workstations": []})):
+            try:
+                cleanup()
+            except (BrokerError, ssh.SshError, OSError, ValueError, subprocess.SubprocessError) as error:
+                LOGGER.error("TELIPHONES revocation containment failed: %s", type(error).__name__)
+                failures.append(type(error).__name__)
+        return not failures
+
+    def reconcile_revocations(self, force=False):
+        """The journal is authority; cleanup never restores a revoked identity."""
+        journal = self.revocations()
+        pending = {key: value for key, value in journal["records"].items() if value["outcome"] != "complete"}
+        if not pending and not force and journal.get("operation", {}).get("outcome") == "complete":
+            return None
+        if not journal["records"] and not journal.get("operation") and not force:
+            return None
+        progress = getattr(self.request_context, "progress", None)
+        self.revocation_progress = (journal["operation"]["id"],
+                                    progress if progress is not None else {"stage": "Verifying workstation revocation"})
+        errors = []
+        try:
+            state, _ = self.workstation_state()
+        except (BrokerError, OSError) as error:
+            self.contain_workstations()
+            message = "Revocation is durably recorded, but effective access removal remains unconfirmed; saved policy cannot be read. Immediate root recovery is required."
+            journal["operation"].update(state="failed", outcome="unconfirmed", stage="", message=message,
+                                        finished_at=int(time.time()))
+            self.save_revocations(journal)
+            self.revocation_progress = None
+            self.workstation_error = message
+            raise BrokerError(message) from error
+
+        def verify(label, operation):
+            try:
+                operation()
+            except (BrokerError, ssh.SshError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+                LOGGER.error("TELIPHONES revocation %s verification failed: %s", label, type(error).__name__)
+                errors.append(label)
+
+        def remove_authority():
+            self.save_workstations(state)
+            self.save_active_sessions({key: value for key, value in self.active_sessions().items()
+                                       if key not in journal["records"]})
+
+        verify("saved authority", remove_authority)
+        self.revocation_stage("Terminating revoked workstation SSH")
+        verify("SSH termination", lambda: self.ssh.reconcile(state, start=False))
+        self.revocation_stage("Removing revoked workstation peers")
+
+        def remove_peers():
+            links = json.loads(self.run([self.tool("ip"), "-j", "link", "show"]))
+            if not isinstance(links, list) or any(
+                    not isinstance(link, dict) or not isinstance(link.get("ifname"), str) for link in links):
+                raise BrokerError("Workstation interface inventory could not be verified during revocation.")
+            interfaces = {link["ifname"] for link in links if isinstance(link, dict)
+                          and (link.get("ifname") == WORKSTATION_IFACE
+                               or re.fullmatch(r"tlpw[a-f0-9]{11}", str(link.get("ifname", ""))))}
+            retired = {self.locked_interface({"id": key}) for key, value in pending.items() if value["dedicated"]}
+            wanted = {self.locked_interface(item) for item in state["workstations"]
+                      if item.get("locked") or item.get("migration", {}).get("locked")}
+            for interface in interfaces:
+                if interface in retired - wanted:
+                    self.run([self.tool("ip"), "link", "del", "dev", interface])
+                    if self.link_state(interface) is not None:
+                        raise BrokerError("Revoked dedicated interface removal is unconfirmed.")
+                    continue
+                peers = self.run([self.tool("wg"), "show", interface, "peers"]).split()
+                wanted_keys = {item["public_key"] for item in state["workstations"]
+                               if (interface == WORKSTATION_IFACE and
+                                   (not item.get("locked") or (item.get("migration") and not item["migration"]["locked"])))
+                               or (interface == self.locked_interface(item) and
+                                   (item.get("locked") or item.get("migration", {}).get("locked")))}
+                for key in peers:
+                    if key not in wanted_keys:
+                        self.run([self.tool("wg"), "set", interface, "peer", key, "remove"], check=False)
+                peers = self.run([self.tool("wg"), "show", interface, "peers"]).split()
+                if set(peers) - wanted_keys:
+                    raise BrokerError("Revoked WireGuard peer removal is unconfirmed.")
+
+        verify("WireGuard peer removal", remove_peers)
+        self.revocation_stage("Verifying revoked workstation enforcement")
+
+        def remove_policy():
+            if state["subnet"] is None:
+                self.disable_workstations()
+                if self.owned_table() is not None:
+                    raise BrokerError("Workstation policy ownership requires recovery before revocation can be confirmed.")
+            elif state["connection_state"] == "closed" or (STATE / "disabled").exists():
+                self.disable_workstations()
+            else:
+                self.reconcile_policy_only(state)
+            self.reconcile_session_servers(state)
+
+        verify("nft/session enforcement", remove_policy)
+        outcome = "unconfirmed" if errors else "complete"
+        if errors:
+            contained = self.contain_workstations()
+            message = ("Revocation is durably recorded, but effective access removal remains unconfirmed. "
+                       + ("Workstation interfaces are disabled and managed SSH stopped; cleanup requires retry."
+                          if contained else "Fail-closed containment is also unconfirmed; immediate root intervention is required.")
+                       + " Failed checks: " + ", ".join(errors) + ".")
+        else:
+            self.revocation_stage("Cleaning revoked workstation resources")
+            try:
+                for identifier in pending:
+                    self.ssh.remove_configuration(identifier)
+                self.reconcile_integration(state)
+                if self.integration.get("state") == "error":
+                    raise BrokerError("TELIPHONES integration cleanup requires retry.")
+                ports = ([] if state["connection_state"] == "closed" or (STATE / "disabled").exists()
+                         else ([state["listen_port"]] if type(state["listen_port"]) is int else [])
+                         + [item["listener_port"] for item in state["workstations"] if item.get("locked")])
+                # An unchanged shared listener is not part of revoking an identity.
+                if not self.listener_rules_current(ports):
+                    self.reconcile_listener(ports)
+            except (BrokerError, ssh.SshError, OSError, ValueError, subprocess.SubprocessError) as error:
+                LOGGER.warning("TELIPHONES revoked workstation housekeeping pending: %s", type(error).__name__)
+                outcome = "housekeeping"
+            message = ("Workstation access removal confirmed; non-security housekeeping remains pending."
+                       if outcome == "housekeeping" else "Workstation revocation and cleanup fully complete.")
+        for record in pending.values():
+            record["outcome"] = outcome
+        operation = journal.get("operation", {})
+        operation.update(state="failed" if outcome == "unconfirmed" else "succeeded", outcome=outcome,
+                         stage="", message=message, finished_at=int(time.time()))
+        journal["operation"] = operation
+        try:
+            self.save_revocations(journal)
+            self.revocation_persistence_failed = False
+            self.revocation_progress = None
+        except (BrokerError, OSError) as error:
+            self.revocation_persistence_failed = True
+            self.contain_workstations()
+            raise BrokerError("Revocation outcome persistence failed; effective removal must be reverified. Refresh status and retry.") from error
+        self.workstation_error = message if outcome == "unconfirmed" else ""
+        if outcome != "complete":
+            self.workstation_retry_delay = min(60, max(5, self.workstation_retry_delay * 2))
+            self.workstation_retry_at = time.monotonic() + self.workstation_retry_delay
+        else:
+            self.workstation_retry_at = 0.0
+            self.workstation_retry_delay = 0
+        return {"ok": outcome != "unconfirmed", "outcome": outcome, "operation_id": operation.get("id"),
+                "message": message, **({"error": message} if outcome == "unconfirmed" else {})}
 
     def active_sessions(self):
         stored = read_json(STATE / "active-sessions.json")
@@ -2532,6 +2747,12 @@ class Broker:
 
     def apply_workstations(self, state, preserve_unrelated=False):
         """Disable before any change, verify the entire policy, then admit peers."""
+        revoked = self.revocations()["records"]
+        if self.revocation_persistence_failed or any(record["outcome"] == "unconfirmed" for record in revoked.values()):
+            raise BrokerError("Workstation revocation requires verified recovery before access can be admitted.")
+        if any(item["id"] in revoked or any(item["public_key"] == record["public_key"]
+                                           for record in revoked.values()) for item in state["workstations"]):
+            raise BrokerError("Refusing to apply revoked workstation authority.")
         has_pending_migration = any(item.get("migration") for item in state.get("workstations", []))
         if (preserve_unrelated or has_pending_migration) and state["connection_state"] != "closed" and not (STATE / "disabled").exists():
             saved = read_json(STATE / "workstations.json")
@@ -2775,7 +2996,7 @@ class Broker:
                                       self.locked_interface(item) if item.get("locked") else None):
                         if interface is not None and self.link_state(interface) is not None:
                             self.run([self.tool("wg"), "set", interface, "peer", key, "remove"], check=False)
-            self.workstation_error = "Workstation policy update could not be verified; affected access was removed and cleanup requires retry: " + (
+            self.workstation_error = "Workstation policy update could not be verified; affected access removal is unconfirmed and cleanup requires retry: " + (
                 str(error) if isinstance(error, BrokerError) else "network configuration failed.")
             raise BrokerError(self.workstation_error) from error
 
@@ -2783,6 +3004,9 @@ class Broker:
         """Broker start: re-create persistent and unexpired temporary pairings, failing closed."""
         with self.wslock:
             try:
+                result = self.reconcile_revocations()
+                if result and not result["ok"]:
+                    return
                 state, changed = self.workstation_state()
                 self.apply_workstations(state)
                 if changed:
@@ -2796,6 +3020,17 @@ class Broker:
 
     def expire_workstations(self):
         with self.wslock:
+            revocations = self.revocations()
+            if (any(record["outcome"] != "complete" for record in revocations["records"].values())
+                    or revocations.get("operation", {}).get("outcome", "complete") != "complete"):
+                self.expire_sessions()
+                if self.enforcement_event.is_set() or (self.monitor is not None and not self.monitor.alive()):
+                    self.contain_workstations()
+                    self.workstation_retry_at = 0.0
+                    self.enforcement_event.clear()
+                if time.monotonic() >= self.workstation_retry_at:
+                    self.reconcile_revocations()
+                return
             self.expire_sessions()
             event = self.enforcement_event.is_set()
             if event:
@@ -2877,6 +3112,8 @@ class Broker:
         if (STATE / "disabled").exists():
             raise BrokerError("TELIPHONES is disabled; workstation pairing is unavailable.")
         pairing = parse_pair_request(request["request"])
+        if any(record["public_key"] == pairing["public_key"] for record in self.revocations()["records"].values()):
+            raise BrokerError("This workstation identity was revoked. Generate a new workstation identity before pairing.")
         state, _ = self.workstation_state()
         existing = next((item for item in state["workstations"] if item["public_key"] == pairing["public_key"]), None)
         if state["connection_state"] == "frozen" and existing is None:
@@ -3001,23 +3238,41 @@ class Broker:
 
     def unpair(self, request, uid):
         state, _ = self.workstation_state()
-        revoked_ids = ["ws-" + item["id"] for item in state["workstations"]
-                       if request["workstation_id"] == "all" or item["id"] == request["workstation_id"]]
-        before = len(state["workstations"])
-        state["workstations"] = [] if request["workstation_id"] == "all" else [item for item in state["workstations"] if item["id"] != request["workstation_id"]]
-        if len(state["workstations"]) == before and request["workstation_id"] != "all":
+        journal = self.revocations()
+        targets = [item for item in state["workstations"]
+                   if request["workstation_id"] == "all" or item["id"] == request["workstation_id"]]
+        if not targets and request["workstation_id"] != "all" and request["workstation_id"] not in journal["records"]:
             raise BrokerError("Unknown workstation; it may already have been revoked or expired.")
-        self.apply_workstations(state, preserve_unrelated=True)
-        self.save_workstations(state)
-        sessions = self.active_sessions()
-        sessions = {key: value for key, value in sessions.items()
-                    if key not in {identifier[3:] for identifier in revoked_ids}}
-        self.save_active_sessions(sessions)
-        self.reconcile_session_servers(state)
-        for diagnostic_id in revoked_ids:
+        self.revocation_stage("Recording durable workstation revocation")
+        for item in targets:
+            journal["records"][item["id"]] = {
+                "public_key": item["public_key"],
+                "dedicated": bool(item.get("locked") or item.get("migration", {}).get("locked")),
+                "outcome": "unconfirmed", "revoked_at": int(time.time()), "administrator_uid": uid}
+        # A retry re-verifies even an operation whose final response was lost.
+        for identifier, record in journal["records"].items():
+            if request["workstation_id"] in ("all", identifier):
+                record["outcome"] = "unconfirmed"
+        operation_id = uuid.uuid4().hex
+        journal["operation"] = {"id": operation_id, "action": "unpair", "state": "running",
+                                "outcome": "unconfirmed", "stage": "Verifying workstation revocation",
+                                "message": "Revocation recorded; effective removal is not yet confirmed.",
+                                "started_at": int(time.time()), "finished_at": None}
+        try:
+            self.save_revocations(journal)
+            self.revocation_persistence_failed = False
+        except (BrokerError, OSError) as error:
+            self.revocation_persistence_failed = True
+            self.contain_workstations()
+            self.workstation_error = "Durable workstation revocation could not be confirmed. Access removal is unconfirmed; immediate root recovery is required."
+            raise BrokerError(self.workstation_error) from error
+        result = self.reconcile_revocations(force=True)
+        for item in targets:
+            diagnostic_id = "ws-" + item["id"]
             self.diagnostic_observations.pop(diagnostic_id, None)
             self.diagnostic(diagnostic_id, "pairing.revoked", reason="administrator")
-        self.audit("unpair", uid, "completed")
+        self.audit("unpair", uid, result["outcome"])
+        return result
 
     def configure_web(self, request, uid):
         """Replace the management web services and reconcile both firewall layers; no stale permits remain."""
@@ -3334,9 +3589,9 @@ class Broker:
             return {"ok": True, "pairing_response": code,
                     "message": "Workstation '%s' paired. Paste the pairing response into the TELIPHONES Windows application." % entry["name"]}
         if action == "unpair":
+            self.revocation_stage("Waiting for workstation policy lock")
             with self.wslock:
-                self.unpair(request, uid)
-            return {"ok": True, "message": "Workstation access revoked." if request["workstation_id"] != "all" else "All workstation access revoked."}
+                return self.unpair(request, uid)
         if action == "web":
             with self.wslock:
                 web = self.configure_web(request, uid)

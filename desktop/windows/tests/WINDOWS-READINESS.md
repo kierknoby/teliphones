@@ -1,17 +1,18 @@
 # Windows developer builds, testing and readiness
 
-Targets: TELIPHONES for Windows **0.8.3**, TELIPHONES for FreePBX **0.6.4**.
+Targets: TELIPHONES for Windows **0.8.3**, TELIPHONES for FreePBX **0.6.5**.
 The FreePBX connection-state policy and Windows pairing/clipboard UX are
 independently versioned; neither entry declares a published release.
 
-Root broker is **0.6.3**, protocol **12**. Version.h derives Windows
+Root broker is **0.6.5**, protocol **12**. Version.h derives Windows
 product 0.8.3 and file 0.8.3.0; executable resources, captions, About/licence and
 build provenance reuse it. The dependency manifest must match the product version.
 Current Release portable build/CTest and source contracts can run on Linux;
 native MFC pairing tests, executable metadata and startup smoke are registered
 in the Windows workflow. No current native 0.8.3 execution is claimed.
 The patch increment distinguishes this correction from the operator's installed
-0.8.2 executable; no FreePBX version or package changed. No 0.8.3 binary or
+0.8.2 executable. The subsequent PBX security update targets module/broker
+0.6.5 without changing Windows functionality or existing packages. No 0.8.3 binary or
 application bundle has been produced.
 
 Native compilation, SCM/WireGuardNT execution and artefact creation are
@@ -25,8 +26,9 @@ Later operator reports confirm eleven native SSH integrations and first-run
 startup smoke passed for an earlier build. The historical investigations below
 retain their original versions/counts and outstanding checks at that time;
 they are not evidence that the subsequent 0.8.1 pairing dialogue passed natively.
-The local 0.6.4 module archive includes the PHP form and listener diagnostic
-corrections; the preserved 0.6.3 archive predates them. Live acceptance is pending.
+The local 0.6.5 module archive includes the PHP form, listener diagnostics and
+revocation security corrections. The obsolete root-level 0.6.4 archive/checksum
+were removed. Live acceptance is pending; Windows functionality is unchanged.
 
 ## Current evidence
 

@@ -8,6 +8,36 @@ repository. Portable Linux validation is current for the broker, FreePBX module 
 Windows core. Native Windows compilation/UI integration and live FreePBX
 session, migration, firewall and SSH acceptance remain outstanding.
 
+## 0.6.5, durable workstation revocation and reliability (unreleased source)
+
+- Advance the FreePBX module and root broker to **0.6.5**, retaining protocol
+  **12** and independently versioned Windows **0.8.3**. Module metadata drives
+  the GUI heading; broker status and diagnostic events report the new broker
+  version. Reject earlier brokers even when they report protocol 12.
+- Durably persist revocation before fallible network cleanup using a private
+  journal with file and directory fsync. Public identity tombstones override
+  saved pairing state, restart recovery, heartbeat admission and SSH authority.
+  Revoked identities require a newly generated workstation identity to pair again.
+- Verify WireGuard peer/interface removal, owned nft policy, session admission
+  and managed SSH termination. Report unconfirmed removal, confirmed removal
+  with pending housekeeping, and complete cleanup separately. Apply verified
+  fail-closed containment when targeted enforcement cannot be confirmed.
+- Decouple access removal from unchanged shared-listener reconciliation.
+  Preserve unrelated authorised peers where safe and retain cleanup ownership
+  without restoring revoked authority or editing FreePBX-generated chains.
+- Extend bounded progress framing to revocation, preserve accepted operations
+  after browser disconnection, and expose the persisted latest outcome with the
+  explicit **Revoke workstation access** label.
+- Add failure-injection, crash/persistence, restart, concurrency, slow-operation,
+  disconnected-browser, SSH termination and GUI regressions. Local real nft and
+  isolated OpenSSH checks do not certify live FreePBX generation or production
+  systemd/cgroup supervision. Build the local module-only 0.6.5 archive and
+  SHA-256 sidecar from current source, replacing the obsolete root-level 0.6.4
+  pair. No publication, release, live installation or deployment is claimed.
+- Upgrade the module in place and rerun the trusted root bootstrap with tunnels
+  disconnected and no active support session. Preserve revocation journals;
+  older broker binaries do not understand these new security decisions.
+
 ## 0.6.4, pairing form and listener diagnostics (local test package, not published)
 
 - Include the web-only pairing form correction developed after the preserved

@@ -345,11 +345,11 @@ class Authority:
             raise SshError("Managed SSH listener failed to start.")
         self.active.add(item["id"])
 
-    def reconcile(self, state):
+    def reconcile(self, state, start=True):
         now = int(time.time())
         items = {item["id"]: item for item in state.get("workstations", []) if managed(item)
                  and (item.get("expires_at") is None or item["expires_at"] > now)}
-        if items or self.active or self.directory.exists():
+        if not start or items or self.active or self.directory.exists():
             units = run(["/usr/bin/systemctl", "list-units", "--all", "--plain", "--no-legend", "--no-pager",
                          "teliphones-ssh-*.service"])
             for line in units.splitlines():
@@ -369,16 +369,18 @@ class Authority:
             self.server_address = None
             return
         pbx = str(ipaddress.IPv4Network(state["subnet"])[1])
-        for item in items.values():
-            self.start(item, pbx)
+        if start:
+            for item in items.values():
+                self.start(item, pbx)
         endpoints = {(self.item_interface(item), item.get("pbx_address", pbx)) for item in items.values()}
         for binding in set(self.servers) - endpoints:
             server = self.servers.pop(binding)
             server.shutdown()
             server.server_close()
-        for interface, address in sorted(endpoints):
-            if (interface, address) not in self.servers:
-                self.servers[(interface, address)] = self.start_api(address, interface)
+        if start:
+            for interface, address in sorted(endpoints):
+                if (interface, address) not in self.servers:
+                    self.servers[(interface, address)] = self.start_api(address, interface)
         self.server = next(iter(self.servers.values()), None)
         self.server_address = next(iter(self.servers), (None, None))[1]
 
@@ -393,6 +395,29 @@ class Authority:
             raise SshError("SSH authorisation has expired.")
         return item, str(ipaddress.IPv4Network(state["subnet"])[1])
 
+    def remove_configuration(self, identifier):
+        if not isinstance(identifier, str) or re.fullmatch(r"[a-f0-9]{16}", identifier) is None:
+            raise SshError("Invalid owned SSH identity.")
+        if identifier in self.active:
+            raise SshError("Cannot remove configuration before managed SSH termination is verified.")
+        self.challenges.pop(identifier, None)
+        if not self.directory.exists() and not self.directory.is_symlink():
+            return
+        private_directory(self.directory)
+        path = self.directory / identifier
+        if not path.exists() and not path.is_symlink():
+            return
+        private_directory(path)
+        for child in path.iterdir():
+            if child.name not in ("principals", "ca.pub", "sshd_config"):
+                raise SshError("Unexpected SSH recovery artifact; retaining authority files.")
+            info = child.lstat()
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o077:
+                raise SshError("Unsafe SSH recovery artifact; retaining authority files.")
+        for child in path.iterdir():
+            child.unlink()
+        path.rmdir()
+
     def destroy(self):
         self.reconcile({"workstations": []})
         if not self.directory.exists():
@@ -400,16 +425,7 @@ class Authority:
         private_directory(self.directory)
         for path in self.directory.iterdir():
             if re.fullmatch(r"[a-f0-9]{16}", path.name):
-                private_directory(path)
-                for child in path.iterdir():
-                    if child.name not in ("principals", "ca.pub", "sshd_config"):
-                        raise SshError("Unexpected SSH recovery artifact; retaining authority files.")
-                    info = child.lstat()
-                    if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o077:
-                        raise SshError("Unsafe SSH recovery artifact; retaining authority files.")
-                for child in path.iterdir():
-                    child.unlink()
-                path.rmdir()
+                self.remove_configuration(path.name)
             elif path.name not in ("ca", "ca.pub"):
                 raise SshError("Unknown SSH authority artifact; retaining recovery files.")
         for name in ("ca", "ca.pub"):

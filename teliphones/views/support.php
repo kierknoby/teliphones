@@ -137,6 +137,10 @@ if ($failedAction === 'pair' && WebSupport::validRequest($_POST, $token ?? '')) 
 <div class="alert <?=!empty($notice['ok']) ? 'alert-info' : 'alert-danger'?>"><?=$escape($notice['error'] ?? $notice['message'] ?? 'Request submitted.')?></div>
 <?php endif; ?>
 <?php endif; ?>
+<?php $revocation = $live['workstation_revocation']; ?>
+<div id="teliphones-workstation-revocation" role="status" class="alert <?=$revocation && $revocation['outcome'] === 'complete' ? 'alert-info' : 'alert-warning'?>"<?=$revocation ? '' : ' hidden'?>>
+<?php if ($revocation): ?><strong>Revoke workstation access</strong>: <?=$escape($revocation['message'])?> <?=$revocation['state'] === 'running' ? $escape($revocation['stage']) : ''?> <small>Operation <?=$escape($revocation['id'])?></small><?php endif; ?>
+</div>
 <div id="teliphones-live" role="status" aria-live="polite">
 <?php $showRunning = $running && !(isset($notice) && is_array($notice) && !empty($notice['ok'])); ?>
 <div class="alert alert-info" id="teliphones-started"<?=$showRunning ? '' : ' hidden'?>><?=$showRunning ? 'TELIPHONES operation in progress: ' . $escape($operation['label']) . '. Monitoring progress automatically…' : ''?></div>

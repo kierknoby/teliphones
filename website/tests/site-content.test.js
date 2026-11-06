@@ -49,6 +49,9 @@ test('all site pages have valid local links, assets and unique fragment targets'
 });
 
 test('current product and installation copy matches independent source versions', () => {
+  assert.equal(moduleVersion, '0.6.5');
+  assert.equal(brokerVersion, '0.6.5');
+  assert.equal(version, '0.8.3');
   for (const name of ['index.html', 'windows/index.html', 'downloads/index.html',
     'freepbx/index.html', 'faq/index.html', 'about/index.html', 'roadmap/index.html']) {
     const html = contents.get(path.join(site, name));
@@ -66,17 +69,19 @@ test('current product and installation copy matches independent source versions'
   }
 });
 
-test('pairing guide distinguishes approval, current package and preserved archive', () => {
+test('pairing guide distinguishes approval, current package and obsolete archive', () => {
   const html = contents.get(path.join(site, 'windows/index.html'));
   const pairing = html.slice(html.indexOf('<section id="pair">'), html.indexOf('<section id="connect">'));
   assert.equal((pairing.match(/<li>/g) || []).length, 8);
   for (const phrase of ['Request access', 'Complete pairing', 'Generate request', 'Copy request',
     'Save connection', 'Changing name/access', 'read-only', 'not independently signed',
-    'predates', 'web-only form correction']) {
+    'local 0.6.5 archive', 'durable revocation', 'obsolete 0.6.4 archive was removed']) {
     assert.ok(pairing.includes(phrase), `Missing pairing guidance: ${phrase}`);
   }
-  assert.match(contents.get(path.join(site, 'downloads/index.html')), /has not been rebuilt/);
-  assert.match(contents.get(path.join(site, 'downloads/index.html')), /0\.6\.4 archive includes the web-only form correction and listener diagnostics/);
+  assert.match(contents.get(path.join(site, 'downloads/index.html')), /0\.6\.5 archive includes the web-only form correction, listener diagnostics and latest revocation security corrections/);
+  assert.match(contents.get(path.join(site, 'downloads/index.html')), /obsolete root-level 0\.6\.4 archive and checksum were removed/);
+  assert.match(contents.get(path.join(site, 'downloads/index.html')), /website ZIP and its checksum are unchanged/);
+  assert.match(contents.get(path.join(site, 'downloads/index.html')), /Durable revocation/);
   assert.match(contents.get(path.join(site, 'about/index.html')), /localStorage/);
 });
 

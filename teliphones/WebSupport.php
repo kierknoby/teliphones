@@ -106,7 +106,7 @@ class WebSupport
     public const OPERATION_STATES = ['running', 'succeeded', 'failed'];
     /** Broker status protocol this module requires (support_broker.py PROTOCOL): 2 adds live operation records, 3 adds workstation pairing. */
     public const BROKER_PROTOCOL = 3;
-    public const BROKER_VERSION = '0.6.3';
+    public const BROKER_VERSION = '0.6.5';
     public const DIAGNOSTICS_PROTOCOL = 4;
     public const SSH_PROTOCOL = 5;
     /** Protocol 6 adds the WireGuard listener firewall permit and configurable management web services. */
@@ -389,9 +389,22 @@ class WebSupport
             'engineer' => $text($status['engineer'] ?? null, 200),
             'challenge' => is_array($status['challenge'] ?? null) ? $status['challenge'] : null,
             'operation' => $available ? $operation : null,
+            'workstation_revocation' => $available ? self::revocationStatus($status['workstation_revocation'] ?? null) : null,
             'server_time' => is_int($status['server_time'] ?? null) ? $status['server_time'] : time(),
             'error' => $available ? ($text($support['error'] ?? null) ?: null) : null,
         ];
+    }
+
+    private static function revocationStatus($raw): ?array
+    {
+        if (!is_array($raw) || ($raw['action'] ?? null) !== 'unpair'
+            || !is_string($raw['id'] ?? null) || preg_match('/^[a-f0-9]{32}$/D', $raw['id']) !== 1
+            || !in_array($raw['outcome'] ?? null, ['unconfirmed', 'housekeeping', 'complete'], true)
+            || !in_array($raw['state'] ?? null, self::OPERATION_STATES, true)) return null;
+        return ['id' => $raw['id'], 'action' => 'unpair', 'label' => self::ACTION_LABELS['unpair'],
+            'state' => $raw['state'], 'outcome' => $raw['outcome'],
+            'message' => is_string($raw['message'] ?? null) ? substr($raw['message'], 0, 1000) : '',
+            'stage' => is_string($raw['stage'] ?? null) ? substr($raw['stage'], 0, 200) : ''];
     }
 
     /** Control availability, mirrored by assets/js/teliphones.js for live updates. */
@@ -745,8 +758,8 @@ class WebSupport
 
     public function request(array $request): array
     {
-        $pairing = ($request['action'] ?? null) === 'pair';
-        if ($pairing) $request['progress'] = true;
+        $streaming = in_array($request['action'] ?? null, ['pair', 'unpair'], true);
+        if ($streaming) $request['progress'] = true;
         try {
             $payload = json_encode($request, JSON_THROW_ON_ERROR) . "\n";
         } catch (\JsonException $error) {
@@ -790,10 +803,13 @@ class WebSupport
                         . json_last_error_msg() . '); refresh status before retrying.');
                 }
                 if (isset($response['progress'])) {
-                    if (!$pairing || array_keys($response) !== ['progress'] || !in_array($response['progress'], [
+                    if (!$streaming || array_keys($response) !== ['progress'] || !in_array($response['progress'], [
                         'Validating pairing request', 'Waiting for workstation policy lock',
                         'Running nftables verification', 'Configuring workstation interface',
                         'Configuring WireGuard', 'Verifying FreePBX listener rules', 'Running workstation command',
+                        'Recording durable workstation revocation', 'Terminating revoked workstation SSH',
+                        'Removing revoked workstation peers', 'Verifying revoked workstation enforcement',
+                        'Cleaning revoked workstation resources',
                     ], true)) {
                         return $this->responseFailure('TELIPHONES broker returned invalid progress framing; refresh status before retrying.');
                     }
@@ -803,8 +819,10 @@ class WebSupport
                 if (!is_bool($response['ok'] ?? null)) {
                     return $this->responseFailure('TELIPHONES broker response is missing its success/failure result; refresh status before retrying.');
                 }
-                if ($pairing && ($response['error'] ?? null) === 'Unexpected TELIPHONES input.') {
-                    $response['error'] = 'The installed root broker does not support pairing progress responses. Rerun Complete Installation from a root shell to refresh the broker helpers supplied with module 0.6.4, then refresh status before pairing.';
+                if ($streaming && in_array($response['error'] ?? null, [
+                    'Unexpected TELIPHONES input.', 'Progress framing is available only for workstation pairing.',
+                ], true)) {
+                    $response['error'] = 'The installed root broker does not support this workstation progress operation. Rerun Complete Installation from a root shell to refresh the broker helpers, then refresh status before retrying. No successful operation is assumed.';
                 }
                 return $response;
             }

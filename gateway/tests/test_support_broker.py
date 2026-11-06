@@ -253,7 +253,7 @@ class SupportBrokerTests(unittest.TestCase):
 
     def test_status_reports_live_monitoring_protocol_matching_gui(self):
         status = self.broker.status()
-        self.assertEqual(status["component_version"], "0.6.3")
+        self.assertEqual(status["component_version"], "0.6.5")
         self.assertEqual(status["protocol"], 12)
         self.assertEqual(status["protocol"], broker_module.PROTOCOL)
         self.assertIn("operation", status)
@@ -1249,9 +1249,10 @@ class WorkstationPairingTests(unittest.TestCase):
             self.assertIn(22002, ports)
             self.assertNotIn(22, ports)
             with patch.object(self.broker.ssh, "reconcile", side_effect=broker_module.ssh.SshError("cleanup not verified")):
-                with self.assertRaisesRegex(broker_module.BrokerError, "cleanup"):
-                    self.broker.dispatch({"action": "unpair", "workstation_id": "all"}, 1000)
-            self.assertEqual(len(broker_module.read_json(self.state / "workstations.json")["workstations"]), 1)
+                result = self.broker.dispatch({"action": "unpair", "workstation_id": "all"}, 1000)
+                self.assertFalse(result["ok"])
+                self.assertEqual(result["outcome"], "unconfirmed")
+            self.assertEqual(broker_module.read_json(self.state / "workstations.json")["workstations"], [])
 
     def test_pairing_applies_port_policy_before_admitting_the_peer(self):
         result, response = self.pair(ssh="1")
@@ -1339,8 +1340,7 @@ class WorkstationPairingTests(unittest.TestCase):
         result = self.broker.dispatch({"action": "unpair", "workstation_id": first["workstation_id"]}, 1000)
         self.assertTrue(result["ok"])
         self.assertEqual(set(self.net.peers), {"B" * 42 + "E="})
-        with self.assertRaises(broker_module.BrokerError):
-            self.broker.dispatch({"action": "unpair", "workstation_id": first["workstation_id"]}, 1000)
+        self.assertTrue(self.broker.dispatch({"action": "unpair", "workstation_id": first["workstation_id"]}, 1000)["ok"])
         self.broker.dispatch({"action": "unpair", "workstation_id": "all"}, 1000)
         self.assertTrue(self.net.link)
         self.assertTrue(self.net.up)
@@ -1353,12 +1353,13 @@ class WorkstationPairingTests(unittest.TestCase):
         _, first = self.pair()
         self.pair(public_key="B" * 42 + "E=")
         self.net.fail = lambda name, rest: name == "nft" and rest == ["-j", "-f", "-"]
-        with self.assertRaises(broker_module.BrokerError):
-            self.broker.dispatch({"action": "unpair", "workstation_id": first["workstation_id"]}, 1000)
+        result = self.broker.dispatch({"action": "unpair", "workstation_id": first["workstation_id"]}, 1000)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["outcome"], "unconfirmed")
         self.assertTrue(self.net.link)
-        self.assertTrue(self.net.up)
+        self.assertFalse(self.net.up)
         self.assertNotIn("A" * 42 + "E=", self.net.peers)
-        self.assertIn(first["workstation_id"], [item["id"] for item in json.loads((self.state / "workstations.json").read_text())["workstations"]])
+        self.assertNotIn(first["workstation_id"], [item["id"] for item in json.loads((self.state / "workstations.json").read_text())["workstations"]])
 
     def test_failed_interface_deletion_disables_traffic_and_preserves_firewall(self):
         self.pair()
@@ -1376,10 +1377,11 @@ class WorkstationPairingTests(unittest.TestCase):
     def test_failed_firewall_cleanup_is_not_reported_as_success(self):
         self.pair()
         self.net.fail = lambda name, rest: name == "nft" and rest == ["-j", "-f", "-"]
-        with self.assertRaisesRegex(broker_module.BrokerError, "cleanup"):
-            self.broker.dispatch({"action": "unpair", "workstation_id": "all"}, 1000)
+        result = self.broker.dispatch({"action": "unpair", "workstation_id": "all"}, 1000)
+        self.assertFalse(result["ok"])
+        self.assertIn("unconfirmed", result["error"])
         self.assertTrue(self.net.link)
-        self.assertTrue(self.net.up)
+        self.assertFalse(self.net.up)
         self.assertEqual(self.net.peers, {})
         self.assertIsNotNone(self.net.ruleset)
 
@@ -1443,7 +1445,7 @@ class WorkstationPairingTests(unittest.TestCase):
         self.assertNotIn("disconnected", json.dumps(events).lower())
         self.assertEqual({item["diagnostic_id"] for item in events}, {diagnostic_id})
         exported = self.broker.dispatch({"action": "diagnostics", "diagnostic_id": diagnostic_id}, 1000)
-        self.assertEqual(exported["component_version"], "0.6.3")
+        self.assertEqual(exported["component_version"], "0.6.5")
         self.assertEqual(exported["diagnostic_id"], diagnostic_id)
         self.assertFalse(any("public_key" in item or "token" in json.dumps(item).lower() for item in exported["events"]))
 
@@ -1457,7 +1459,7 @@ class WorkstationPairingTests(unittest.TestCase):
         self.assertIn("interface.established", names)
         self.assertIn("peer.admitted", names)
         self.assertIn("peer.observation", names)
-        self.assertTrue(all(event["source"] == "pbx" and event["component_version"] == "0.6.3" for event in events))
+        self.assertTrue(all(event["source"] == "pbx" and event["component_version"] == "0.6.5" for event in events))
         self.broker.dispatch({"action": "unpair", "workstation_id": response["workstation_id"]}, 1000)
         events = self.broker.diagnostics.read(diagnostic_id)
         self.assertEqual(events[-1]["event"], "pairing.revoked")

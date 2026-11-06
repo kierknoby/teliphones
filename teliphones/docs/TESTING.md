@@ -1,14 +1,23 @@
 # TELIPHONES testing
 
-## Windows 0.8.1 source review and package boundary
+## Windows 0.8.3 source review and package boundary
 
-Windows 0.8.1 is independently versioned; module 0.6.4 and root broker 0.6.3
-retain protocol 12. The preserved 0.6.3 archive **does not match current
-module source**: it predates the later PHP web-only form correction and these
-documentation changes. Exact-source package validation is expected to reject
-that historical mismatch. The authorised 0.6.4 local package includes the form
-and listener diagnostic corrections and must match current module source.
-Do not rebuild 0.6.3 or describe its corrections as retroactively shipped.
+Windows 0.8.3 is independently versioned; module 0.6.5 and root broker 0.6.5
+retain protocol 12. The local 0.6.5 archive and checksum match current source;
+the obsolete root-level 0.6.4 pair was removed. Historical archives **do not
+match current module source** and must not be rebuilt or described as containing
+the new revocation security corrections. No publication or deployment is claimed.
+Source version checks run without an archive; exact package validation requires
+a separately prepared reviewed archive and checksum.
+
+Run source version consistency independently from the repository root:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 teliphones/tests/package-validation.py SourceVersionTests
+```
+
+The complete package validator still requires the current archive and checksum
+and fails when they are missing; it is not replaced by this source-only check.
 
 Offline documentation and site validation, from the repository root:
 
@@ -24,15 +33,15 @@ pairing behaviour, startup smoke and portable Release checks, use the
 `desktop/windows/tests/WINDOWS-READINESS.md` reference in the source repository.
 Linux checks do not substitute for Windows execution.
 
-## 0.6.4 pairing form, listener diagnostics and package validation
+## 0.6.5 revocation security, reliability and version validation
 
 Run the PHP/Node and gateway suites below, then run
 `PYTHONDONTWRITEBYTECODE=1 python3 teliphones/tests/package-validation.py`
-after building `TELIPHONES-0.6.4.tgz` using the root README procedure.
-The package validator checks exact module-source equality, module 0.6.4,
-root broker 0.6.3, compatibility declarations, protocol 12, Windows exclusion
+after building `TELIPHONES-0.6.5.tgz` using the root README procedure.
+The package validator checks exact module-source equality, module 0.6.5,
+root broker 0.6.5, compatibility declarations, protocol 12, Windows exclusion
 and preservation of available historical archives. PHP tests verify the
-metadata-derived `TELIPHONES 0.6.4` heading and reject broker 0.6.2 even when
+metadata-derived `TELIPHONES 0.6.5` heading and reject brokers through 0.6.4 even when
 it reports protocol 12.
 
 During the earlier 0.6.3 preparation the isolated real-nft namespace lab passed 10/10
@@ -81,7 +90,8 @@ against modelled firewall/WireGuard state, and checks that malformed requests,
 ports and endpoints cannot mutate existing pairings. This is not a browser
 engine or live FreePBX test. The form correction changes module PHP/templates,
 not the broker; the preserved 0.6.3 archive remains unchanged and does not
-contain these subsequent source edits. They are included in 0.6.4.
+contain those subsequent source edits. The form changes were included in 0.6.4
+and remain in current 0.6.5 source.
 
 The listener PHP regressions replay the observed UDP 51821/zone rule shape
 through the production predicate and test admission, removal, missing/differing
@@ -123,8 +133,8 @@ class; a missing interpreter produces an explicit skip.
 
 These tests do not execute real FreePBX listener convergence, web-server/proxy
 request deadlines, installed broker upgrades or live workstation pairing.
-Those remain live-PBX validation requirements. At packaging, 0.6.3 was checked
-against then-current source; it now predates later edits. The 0.6.2 archive is historical.
+Those remain live-PBX validation requirements. The local 0.6.5 archive is
+validated against current source; historical archives predate these corrections.
 
 From the repository root, run `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s gateway/tests -v` and `php teliphones/tests/run.php`. The new enforcement cases exercise complete JSON-policy tampering, ownership conflicts, verified disable/delete failures, recovery-file retention, both pairing lifetimes, transient external flush/restore events, monitor startup/death and own-event filtering. PHP covers trusted-helper ancestry, refusal of legacy/web-owned helpers, verified service stopping and abort-on-failure ordering. The existing portable C++ contract tests reuse the updated Python fake network; Windows sources are unchanged.
 
@@ -242,8 +252,8 @@ with versions and build provenance recorded separately:
    screenshots are historical, not evidence of the current integrated console.
 4. **FreePBX workstation approval:** SSH opt-in with a deliberately selected
    test account, permission/lifetime controls, integration status and diagnostics.
-5. **FreePBX readiness/upgrade:** module 0.6.4 and separately refreshed broker
-   0.6.3/protocol 12, including the form and listener diagnostic corrections;
+5. **FreePBX readiness/upgrade:** module 0.6.5 and separately refreshed broker
+   0.6.5/protocol 12, including the form and listener diagnostic corrections;
    an older capture does not establish those corrections.
 
 Use synthetic names and harmless commands. Redact keys, pairing strings,

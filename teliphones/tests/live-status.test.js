@@ -54,6 +54,28 @@ function harness(initial) {
 }
 
 const tests = {
+    async 'pending workstation revocation is monitored and preserves its own result'() {
+        const revocation = { id: 'a'.repeat(32), action: 'unpair', outcome: 'unconfirmed',
+            state: 'running', message: 'Revocation recorded; effective removal is not yet confirmed.' };
+        const h = harness(status({ workstation_revocation: revocation }));
+        assert.strictEqual(h.monitor.state().monitoring, true);
+        h.fire();
+        h.fetches[0].resolve({ kind: 'ok', status: status({
+            workstation_revocation: Object.assign({}, revocation, { state: 'succeeded', outcome: 'housekeeping',
+                message: 'Workstation access removal confirmed; listener/integration housekeeping remains pending.' })
+        }) });
+        await tick();
+        assert.strictEqual(h.last().status.workstation_revocation.outcome, 'housekeeping');
+        assert.strictEqual(h.monitor.state().monitoring, true);
+        h.fire();
+        h.fetches[1].resolve({ kind: 'ok', status: status({
+            workstation_revocation: Object.assign({}, revocation, { state: 'succeeded', outcome: 'complete',
+                message: 'Workstation revocation and cleanup fully complete.' })
+        }) });
+        await tick();
+        assert.strictEqual(h.monitor.state().monitoring, false);
+        assert.strictEqual(h.last().status.workstation_revocation.action, 'unpair');
+    },
     async 'idle page does not poll'() {
         const h = harness(status());
         assert.strictEqual(h.pending().length, 0);

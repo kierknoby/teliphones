@@ -173,6 +173,60 @@ class AuthorityTests(unittest.TestCase):
             self.authority.stop(self.item["id"], "revoked")
         self.assertNotIn(self.item["id"], self.authority.active)
 
+    def test_revocation_only_reconcile_stops_removed_units_without_starting_others(self):
+        revoked = "f" * 16
+        units = "\n".join(self.authority.unit(identifier) + " loaded active running"
+                          for identifier in (revoked, self.item["id"]))
+        with patch.object(ssh, "run", return_value=units), \
+                patch.object(self.authority, "stop") as stop, \
+                patch.object(self.authority, "start") as start, \
+                patch.object(self.authority, "start_api") as api:
+            self.authority.reconcile(self.state, start=False)
+        stop.assert_called_once_with(revoked, "revoked")
+        start.assert_not_called()
+        api.assert_not_called()
+
+    def test_revocation_inventories_units_even_without_in_memory_or_disk_ownership(self):
+        self.assertFalse(self.authority.directory.exists())
+        self.assertEqual(self.authority.active, set())
+        unit = self.authority.unit(self.item["id"])
+        with patch.object(ssh, "run", return_value=unit + " loaded active running\n") as inventory, \
+                patch.object(self.authority, "stop") as stop:
+            self.authority.reconcile({"workstations": []}, start=False)
+        inventory.assert_called_once()
+        stop.assert_called_once_with(self.item["id"], "revoked")
+
+    def test_revocation_configuration_cleanup_requires_verified_termination(self):
+        self.authority.active.add(self.item["id"])
+        with self.assertRaisesRegex(ssh.SshError, "termination is verified"):
+            self.authority.remove_configuration(self.item["id"])
+        self.authority.active.clear()
+        directory = self.authority.directory / self.item["id"]
+        ssh.private_directory(self.authority.directory)
+        ssh.private_directory(directory)
+        ssh.write(directory / "principals", "principal")
+        self.authority.challenges[self.item["id"]] = ("challenge", "100.70.1.2", 123)
+        original_lstat = Path.lstat
+        with patch.object(Path, "lstat", autospec=True, side_effect=lambda path:
+                          types.SimpleNamespace(st_mode=0o100600, st_uid=0)
+                          if path.name == "principals" else original_lstat(path)):
+            self.authority.remove_configuration(self.item["id"])
+        self.assertFalse(directory.exists())
+        self.assertNotIn(self.item["id"], self.authority.challenges)
+
+    def test_revocation_cleanup_rejects_symlinked_authority_or_identity_directories(self):
+        target = Path(self.temporary.name) / "unrelated"
+        target.mkdir(mode=0o700)
+        self.authority.directory.symlink_to(target, target_is_directory=True)
+        with self.assertRaises(ssh.SshError):
+            self.authority.remove_configuration(self.item["id"])
+        self.authority.directory.unlink()
+        ssh.private_directory(self.authority.directory)
+        (self.authority.directory / self.item["id"]).symlink_to(target, target_is_directory=True)
+        with self.assertRaises(ssh.SshError):
+            self.authority.remove_configuration(self.item["id"])
+        self.assertTrue(target.is_dir())
+
     def test_helper_errors_do_not_echo_sensitive_output(self):
         result = types.SimpleNamespace(returncode=1, stdout="sensitive", stderr="private key material")
         with patch.object(ssh.subprocess, "run", return_value=result):

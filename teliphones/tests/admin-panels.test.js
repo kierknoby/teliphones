@@ -57,4 +57,27 @@ assert(!configurationWarning.includes('platform administrator'), 'configuration 
 assert(live.readinessWarning({ readiness: { iproute2: false } }).includes('platform administrator'));
 assert.strictEqual(live.readinessWarning({ readiness: { 'Checker trusted public key': true } }), '',
     'configured components clear their warning after a live update');
+for (const outcome of ['unconfirmed', 'housekeeping', 'complete']) {
+    const revocationPanel = element('DIV', null);
+    Object.defineProperty(revocationPanel, 'innerHTML', { set() { throw new Error('Use textContent, never HTML'); } });
+    const revocation = { id: 'a'.repeat(32), action: 'unpair', outcome, state: 'succeeded',
+        message: 'Revocation result <not markup>' };
+    const isolatedRoot = element('DIV', null);
+    isolatedRoot.querySelector = selector => selector === '#teliphones-workstation-revocation' ? revocationPanel : null;
+    const initial = { textContent: JSON.stringify({ available: true, broker_current: true, phase: 'Ready',
+        operation: null, workstation_revocation: revocation }) };
+    const monitor = live.bindDocument({
+        getElementById: id => id === 'teliphones-root' ? isolatedRoot : id === 'teliphones-initial-status' ? initial : null,
+        addEventListener() {}
+    }, {
+        fetch() { throw new Error('No request expected before the scheduled poll'); },
+        setTimeout() { return 1; }, clearTimeout() {}, setInterval() { return 2; }, clearInterval() {},
+        addEventListener() {}
+    });
+    assert.strictEqual(revocationPanel.hidden, false);
+    assert.strictEqual(revocationPanel.textContent,
+        'Revoke workstation access: Revocation result <not markup> Operation ' + revocation.id);
+    assert.strictEqual(revocationPanel.className, 'alert ' + (outcome === 'complete' ? 'alert-info' : 'alert-warning'));
+    monitor.stop();
+}
 console.log('Administration panel JavaScript tests: PASS (nested validation, accessible toggle, pairing link, no-fetch fallback)');
