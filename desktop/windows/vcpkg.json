@@ -1,5 +1,5 @@
 {
   "name": "teliphones-windows",
-  "version-string": "0.8.4",
+  "version-string": "0.8.5",
   "dependencies": ["openssl"]
 }

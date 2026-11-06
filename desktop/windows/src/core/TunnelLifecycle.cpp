@@ -1,5 +1,7 @@
 #include "TunnelLifecycle.h"
 
+#include <set>
+
 namespace tlp {
 namespace tunnel_lifecycle {
 namespace {
@@ -107,6 +109,29 @@ AdapterPresence ClassifyTunnelAdapter(bool enumerated, const std::vector<Interfa
         if (row.alias == tunnelName && row.operStatus != kInterfaceOperStatusNotPresent) return AdapterPresence::Active;
     }
     return AdapterPresence::Absent;
+}
+
+bool IsTeliphonesTunnelName(const std::string& name) {
+    static const std::string prefix = "TELIPHONES-";
+    if (name.size() != prefix.size() + 12 || name.compare(0, prefix.size(), prefix) != 0) return false;
+    for (std::size_t i = prefix.size(); i < name.size(); ++i) {
+        const char c = name[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
+    }
+    return true;
+}
+
+std::vector<std::string> StartupResidualTunnels(const std::vector<std::string>& installedSavedTunnels,
+                                                const std::vector<std::string>& serviceTunnelNames,
+                                                const std::vector<InterfaceRow>& adapters) {
+    std::set<std::string> names;
+    for (const auto& name : installedSavedTunnels)
+        if (IsTeliphonesTunnelName(name)) names.insert(name);
+    for (const auto& name : serviceTunnelNames)
+        if (IsTeliphonesTunnelName(name)) names.insert(name);
+    for (const auto& row : adapters)
+        if (IsTeliphonesTunnelName(row.alias) && row.operStatus != kInterfaceOperStatusNotPresent) names.insert(row.alias);
+    return {names.begin(), names.end()};
 }
 
 std::uint32_t EncodeHelperResult(const HelperResult& result) {

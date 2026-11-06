@@ -816,7 +816,10 @@
                         'interface.established': 'PBX workstation interface established',
                         'interface.removed': 'PBX workstation interface removed',
                         'firewall.integration': 'FreePBX Firewall integration state changed',
-                        'broker.error': 'TELIPHONES broker observed an error'
+                        'broker.error': 'TELIPHONES broker observed an error',
+                        'session.request': 'Workstation session-controller request',
+                        'controller.state': 'Workstation session controller state changed',
+                        'reconcile.background': 'Background workstation reconciliation'
                     };
                     var lines = report.events.map(function (item) {
                         return item.timestamp_utc + '  ' + (labels[item.event] || item.event)

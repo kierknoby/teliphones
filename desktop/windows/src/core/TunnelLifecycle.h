@@ -76,6 +76,15 @@ struct InterfaceRow {
 enum class AdapterPresence { Absent, Active, Unverified };
 AdapterPresence ClassifyTunnelAdapter(bool enumerated, const std::vector<InterfaceRow>& rows, const std::string& tunnelName);
 
+// TELIPHONES' own tunnel namespace: exactly "TELIPHONES-" plus 12 lowercase hexadecimal characters (TunnelNameFor).
+bool IsTeliphonesTunnelName(const std::string& name);
+// Tunnels to clean up at startup, when no TELIPHONES connection can be active: those of saved profiles that are
+// installed, plus any other name in the TELIPHONES namespace still registered as a WireGuard tunnel service or
+// present as an adapter, such as one left by a removed or re-paired profile. Other names are never returned.
+std::vector<std::string> StartupResidualTunnels(const std::vector<std::string>& installedSavedTunnels,
+                                                const std::vector<std::string>& serviceTunnelNames,
+                                                const std::vector<InterfaceRow>& adapters);
+
 // Polls until the adapter is absent or the budget ends, returning the last observation. Windows may finish
 // removing the device shortly after its service stops; an adapter that stays active is reported, never ignored.
 template <class Probe, class Now, class Pause>

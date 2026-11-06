@@ -37,7 +37,7 @@ SOCKET = "/run/teliphones/control.sock"
 # Protocol 11 adds PBX-enforced workstation session leases and management gating.
 # Protocol 12 adds post-pair workstation policy management.
 PROTOCOL = 12
-VERSION = "0.6.6"
+VERSION = "0.6.7"
 SESSION_CONTROL_PORT = 8766
 SESSION_LEASE_SECONDS = 30
 FWCONSOLE = "/usr/sbin/fwconsole"
@@ -141,6 +141,27 @@ def atomic(path, value, mode=0o600, durable=False):
             temporary.unlink()
 
 
+SESSION_REFUSAL_REASONS = ("unknown-peer", "closed", "firewall-unsafe", "session-limit", "firewall-unverified",
+                           "migration", "invalid-request", "other")
+# Slow requests and background passes are recorded; fast renewals are not, so retention holds days of history.
+SLOW_OPERATION_MS = 2000
+DIAGNOSTIC_REPEAT_SECONDS = 60
+
+
+def session_refusal_reason(message):
+    for prefix, reason in (("This authenticated WireGuard peer is not an approved workstation", "unknown-peer"),
+                           ("PBX Closed", "closed"),
+                           ("FreePBX Firewall integration is unsafe", "firewall-unsafe"),
+                           ("Session limit reached", "session-limit"),
+                           ("Workstation session firewall could not be verified", "firewall-unverified"),
+                           ("The new workstation listener could not be acknowledged", "migration"),
+                           ("Unsupported workstation session operation", "invalid-request"),
+                           ("Workstation session request has an invalid", "invalid-request")):
+        if message.startswith(prefix):
+            return reason
+    return "other"
+
+
 class DiagnosticLog:
     MAX_FILE_BYTES = 1024 * 1024
     RETAINED_FILES = 3
@@ -162,6 +183,17 @@ class DiagnosticLog:
                                  "backend": ("nullable_enum", ("nf_tables", "legacy"))},
         "broker.error": {"category": ("enum", ("workstation-enforcement", "firewall-integration",
                                                 "telemetry-unavailable", "cleanup-unverified"))},
+        # One workstation session-controller request. processing_ms beyond the Windows 5 s receive timeout, or
+        # delivered=false, means the PBX decided but Windows did not receive the answer.
+        "session.request": {"action": ("enum", ("heartbeat", "release")),
+                            "result": ("enum", ("admitted", "renewed", "released", "migration", "refused", "failed")),
+                            "reason": ("nullable_enum", SESSION_REFUSAL_REASONS),
+                            "lock_wait_ms": ("int", None), "processing_ms": ("int", None),
+                            "delivered": ("bool", None), "attempt": ("nullable_hex16", None)},
+        "controller.state": {"state": ("enum", ("listening", "stopped", "failed"))},
+        # Background reconciliation holds the workstation lock that every admission request needs.
+        "reconcile.background": {"result": ("enum", ("slow", "failed", "recovered")), "duration_ms": ("int", None),
+                                 "retry_seconds": ("nullable_int", None)},
     }
 
     def __init__(self, directory):
@@ -204,6 +236,8 @@ class DiagnosticLog:
             elif kind == "int" and isinstance(value, int) and not isinstance(value, bool) and value >= 0:
                 clean[name] = value
             elif kind == "nullable_int" and (value is None or (isinstance(value, int) and not isinstance(value, bool) and value >= 0)):
+                clean[name] = value
+            elif kind == "nullable_hex16" and (value is None or (isinstance(value, str) and re.fullmatch(r"[a-f0-9]{16}", value))):
                 clean[name] = value
             else:
                 raise ValueError("Invalid diagnostic event field.")
@@ -1159,6 +1193,7 @@ class Broker:
         self.workstation_retry_policy = None
         self.workstation_retry_at = 0.0
         self.workstation_retry_delay = 0
+        self.workstation_reconcile_failing = False  # background reconciliation disabled access until it succeeds
         self.revocation_persistence_failed = False
         self.revocation_progress = None
         self.diagnostics = DiagnosticLog(STATE / "diagnostics")
@@ -1166,6 +1201,8 @@ class Broker:
         self.diagnostic_interface_up = False
         self.diagnostic_observations = {}
         self.diagnostic_telemetry_error = False
+        self.diagnostic_repeats = {}
+        self.diagnostic_repeat_lock = threading.Lock()
         self.ssh = ssh.Authority(ENROLLMENT / "ssh", self.workstation_state, self.wslock, self.diagnostic)
 
     def diagnostic(self, diagnostic_id, event, **fields):
@@ -1174,6 +1211,66 @@ class Broker:
         except Exception:
             # Diagnostics must never alter firewall enforcement or access decisions.
             LOGGER.warning("TELIPHONES diagnostic write failed", exc_info=True)
+
+    def diagnostic_due(self, key, interval=DIAGNOSTIC_REPEAT_SECONDS):
+        """Bounds repeated identical events so a persistent fault cannot displace older evidence."""
+        now = time.monotonic()
+        with self.diagnostic_repeat_lock:
+            last = self.diagnostic_repeats.get(key)
+            if last is not None and now - last < interval:
+                return False
+            self.diagnostic_repeats[key] = now
+            return True
+
+    def diagnostic_workstations(self, event, workstations=None, **fields):
+        """Records a PBX-wide event in every paired workstation's history, where each workstation's view finds it."""
+        try:
+            if workstations is None:
+                workstations = read_json(STATE / "workstations.json").get("workstations", [])
+        except (BrokerError, OSError, ValueError, AttributeError):
+            return
+        for item in workstations:
+            if isinstance(item, dict) and re.fullmatch(r"[a-f0-9]{16}", str(item.get("id", ""))):
+                self.diagnostic("ws-" + item["id"], event, **fields)
+
+    def session_request(self, action, source, destination=None, payload=None, attempt=None):
+        """Runs one session-controller request and returns (HTTP status, response, trace) without raising."""
+        trace = {"action": action, "attempt": attempt if isinstance(attempt, str) and
+                 re.fullmatch(r"[a-f0-9]{16}", attempt) else None, "lock_wait_ms": 0}
+        started = time.monotonic()
+        try:
+            result = self.workstation_session(action, source, destination, payload, trace=trace)
+            response, status = {"ok": True, **result}, 200
+        except BrokerError as error:
+            trace.update(result="refused", reason=session_refusal_reason(str(error)))
+            response, status = {"ok": False, "error": str(error)}, 409
+        except (ValueError, TypeError):
+            trace.update(result="refused", reason="invalid-request")
+            response, status = {"ok": False, "error": "Invalid workstation session request."}, 409
+        except Exception:
+            # Answer rather than drop the connection, so Windows reports a PBX failure instead of a transport timeout.
+            LOGGER.exception("TELIPHONES workstation session request failed")
+            trace.update(result="failed", reason="other")
+            response, status = {"ok": False, "error": "The PBX session controller failed while processing this "
+                                                      "request; TELIPHONES diagnostics on the PBX record it."}, 500
+        trace["processing_ms"] = int((time.monotonic() - started) * 1000)
+        return status, response, trace
+
+    def record_session_request(self, trace, delivered):
+        workstation_id = trace.get("workstation_id")
+        action = trace.get("action")
+        if workstation_id is None or action not in ("heartbeat", "release") or "result" not in trace:
+            return
+        slow = trace.get("processing_ms", 0) >= SLOW_OPERATION_MS or trace.get("lock_wait_ms", 0) >= SLOW_OPERATION_MS
+        result = trace["result"]
+        if result == "renewed" and delivered and not slow:
+            return
+        if result in ("refused", "failed", "migration") and delivered and not slow and not self.diagnostic_due(
+                ("session.request", workstation_id, result, trace.get("reason"))):
+            return
+        self.diagnostic("ws-" + workstation_id, "session.request", action=action, result=result,
+                        reason=trace.get("reason"), lock_wait_ms=trace.get("lock_wait_ms", 0),
+                        processing_ms=trace.get("processing_ms", 0), delivered=delivered, attempt=trace.get("attempt"))
 
     def begin(self, action, stage):
         self.operation = {"id": uuid.uuid4().hex, "action": action, "state": "running", "stage": stage,
@@ -1947,12 +2044,15 @@ class Broker:
         if not policy_equal(self.owned_table(), expected):
             raise BrokerError("TELIPHONES listener policy did not reconcile to the complete expected firewall state.")
 
-    def workstation_session(self, action, source, destination=None, ssh_public_key=None):
+    def workstation_session(self, action, source, destination=None, ssh_public_key=None, trace=None):
+        trace = {} if trace is None else trace
         try:
             address = str(ipaddress.ip_address(source))
         except ValueError as error:
             raise BrokerError("Workstation session request has an invalid tunnel source.") from error
+        waiting = time.monotonic()
         with self.wslock:
+            trace["lock_wait_ms"] = int((time.monotonic() - waiting) * 1000)
             state, _ = self.workstation_state()
             item = next((entry for entry in state["workstations"] if entry["address"].split("/")[0] == address), None)
             migration_item = next((entry for entry in state["workstations"]
@@ -1967,6 +2067,7 @@ class Broker:
                 migration_source = item is not None
             if item is None:
                 raise BrokerError("This authenticated WireGuard peer is not an approved workstation.")
+            trace["workstation_id"] = item["id"]
             if state["connection_state"] == "closed" or (STATE / "disabled").exists():
                 raise BrokerError("PBX Closed: workstation access is unavailable.")
             if self.integration.get("state") == "error":
@@ -2019,6 +2120,7 @@ class Broker:
                     self.save_workstations(state)
                 return {"ssh_request_status": "pending"}
             if migration and migration_source and action == "heartbeat":
+                trace["result"] = "migration"
                 return {"active": False, "expires_at": None,
                         "connected_workstations": len(self.active_sessions()),
                         "max_sessions": state["max_sessions"],
@@ -2054,9 +2156,11 @@ class Broker:
                 if item["id"] not in current and len(current) >= state["max_sessions"]:
                     raise BrokerError("Session limit reached: %d of %d workstation connections are active." %
                                       (len(current), state["max_sessions"]))
+                # Keyed by workstation identity, so a reconnect from a new public address renews its own lease.
                 current[item["id"]] = {"expires_at": int(time.time()) + SESSION_LEASE_SECONDS}
             else:
                 raise BrokerError("Unsupported workstation session operation.")
+            outcome = "released" if action == "release" else "renewed" if item["id"] in previous else "admitted"
             self.save_active_sessions(current)
             try:
                 self.reconcile_policy_only(state)
@@ -2068,21 +2172,12 @@ class Broker:
                     self.workstation_error = "Session firewall update failed and workstation shutdown is unverified: " + str(cleanup_error)
                 raise BrokerError("Workstation session firewall could not be verified; access was disabled.") from error
             self.lease_wake.set()
+            trace["result"] = outcome
             response = {"active": action == "heartbeat", "expires_at": current.get(item["id"], {}).get("expires_at"),
                         "connected_workstations": len(current), "max_sessions": state["max_sessions"]}
             if action == "heartbeat":
-                try:
-                    current_source = self.verified_workstation_source(item) \
-                        if isinstance(item.get("public_key"), str) else None
-                except (BrokerError, OSError, subprocess.SubprocessError):
-                    current_source = None
-                effective, failed = resolve_source_restrictions(item.get("sources", []), cache=self.source_cache) \
-                    if item.get("locked") else ([], [])
                 response["policy"] = {"locked": item.get("locked") is True,
                                       "sources": item.get("sources", []),
-                                      "effective_source_count": len(effective),
-                                      "source_resolution_failures": failed,
-                                      "current_source": current_source,
                                       "ssh_approved": item.get("ssh") is True,
                                       "ssh_request_pending": bool(item.get("ssh_request")),
                                       "unlock_request_pending": bool(item.get("unlock_request")),
@@ -2095,7 +2190,20 @@ class Broker:
                         "ssh_user": item["ssh_user"], "ssh_public_key": item["ssh_public_key"],
                         "ssh_host_key": self.ssh.host_key(), "ssh_ca_key": self.ssh.initialise(),
                         "ssh_port": ssh.port(item), "ssh_api_port": ssh.API_PORT}
-            return response
+            reported = json.loads(json.dumps(item))
+        if action == "heartbeat":
+            # Reporting-only reads (wg show, DNS) run after the lock is released: they decide nothing, and holding the
+            # workstation lock across them delayed every other admission and background reconciliation.
+            try:
+                current_source = self.verified_workstation_source(reported) \
+                    if isinstance(reported.get("public_key"), str) else None
+            except (BrokerError, OSError, subprocess.SubprocessError):
+                current_source = None
+            effective, failed = resolve_source_restrictions(reported.get("sources", []), cache=self.source_cache) \
+                if reported.get("locked") else ([], [])
+            response["policy"].update(effective_source_count=len(effective), source_resolution_failures=failed,
+                                      current_source=current_source)
+        return response
 
     def reconcile_session_servers(self, state=None):
         if not self.session_server_enabled:
@@ -2114,6 +2222,7 @@ class Broker:
             server.shutdown()
             server.server_close()
             thread.join(timeout=2)
+            self.diagnostic_workstations("controller.state", state["workstations"], state="stopped")
         for address in wanted - set(self.session_servers):
             broker = self
 
@@ -2122,6 +2231,7 @@ class Broker:
                     if self.path != "/workstation/session":
                         self.send_error(404)
                         return
+                    trace = {}
                     try:
                         length = int(self.headers.get("Content-Length", "0"))
                         if not 1 <= length <= 4096:
@@ -2132,31 +2242,46 @@ class Broker:
                                                     else {"action", "sources"} if request.get("action") == "sources-request"
                                                     else {"action"})):
                             raise BrokerError("Invalid workstation session request.")
-                        result = broker.workstation_session(request["action"], self.client_address[0],
-                                                            self.server.server_address[0],
-                                                            request.get("ssh_public_key", request.get("sources")))
-                        response = {"ok": True, **result}
-                        status = 200
+                        # Optional random Windows attempt id; anything else is ignored rather than recorded.
+                        status, response, trace = broker.session_request(
+                            request["action"], self.client_address[0], self.server.server_address[0],
+                            request.get("ssh_public_key", request.get("sources")),
+                            self.headers.get("X-Teliphones-Attempt"))
                     except (BrokerError, ValueError, TypeError) as error:
                         response = {"ok": False, "error": str(error) if isinstance(error, BrokerError)
                                     else "Invalid workstation session request."}
                         status = 409
                     payload = json.dumps(response, separators=(",", ":")).encode("utf-8")
-                    self.send_response(status)
-                    self.send_header("Content-Type", "application/json")
-                    self.send_header("Content-Length", str(len(payload)))
-                    self.send_header("Connection", "close")
-                    self.end_headers()
-                    self.wfile.write(payload)
+                    delivered = False
+                    try:
+                        self.send_response(status)
+                        self.send_header("Content-Type", "application/json")
+                        self.send_header("Content-Length", str(len(payload)))
+                        self.send_header("Connection", "close")
+                        self.end_headers()
+                        self.wfile.write(payload)
+                        self.wfile.flush()
+                        delivered = True
+                    except OSError:
+                        # Windows gave up (receive timeout) or its path vanished before the answer was sent.
+                        pass
+                    finally:
+                        broker.record_session_request(trace, delivered)
 
                 def log_message(self, format, *args):
                     return
 
-            server = ThreadingHTTPServer((address, SESSION_CONTROL_PORT), Handler)
+            try:
+                server = ThreadingHTTPServer((address, SESSION_CONTROL_PORT), Handler)
+            except OSError:
+                if self.diagnostic_due(("controller.state", "failed")):
+                    self.diagnostic_workstations("controller.state", state["workstations"], state="failed")
+                raise
             server.daemon_threads = True
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
             self.session_servers[address] = (server, thread)
+            self.diagnostic_workstations("controller.state", state["workstations"], state="listening")
 
     def stop_session_servers(self):
         self.session_server_enabled = False
@@ -3029,93 +3154,113 @@ class Broker:
 
     def expire_workstations(self):
         with self.wslock:
-            revocations = self.revocations()
-            if (any(record["outcome"] != "complete" for record in revocations["records"].values())
-                    or revocations.get("operation", {}).get("outcome", "complete") != "complete"):
-                self.expire_sessions()
-                if self.enforcement_event.is_set() or (self.monitor is not None and not self.monitor.alive()):
-                    self.contain_workstations()
-                    self.workstation_retry_at = 0.0
-                    self.enforcement_event.clear()
-                if time.monotonic() >= self.workstation_retry_at:
-                    self.reconcile_revocations()
-                return
-            self.expire_sessions()
-            event = self.enforcement_event.is_set()
-            if event:
-                self.enforcement_event.clear()
-            stored = read_json(STATE / "workstations.json")
-            now = int(time.time())
-            expired_ids = ["ws-" + item["id"] for item in stored.get("workstations", [])
-                           if isinstance(item, dict) and re.fullmatch(r"[a-f0-9]{16}", str(item.get("id", "")))
-                           and item.get("mode") != "persistent" and isinstance(item.get("expires_at"), int)
-                           and item["expires_at"] <= now]
-            retry_policy = json.dumps([stored, (STATE / "disabled").exists()], sort_keys=True)
-            self.request_context.background_listener_check = True
+            started = time.monotonic()
             try:
-                if retry_policy != self.workstation_retry_policy:
-                    self.workstation_retry_delay = 0
-                    self.workstation_retry_at = 0.0
-                if time.monotonic() < self.workstation_retry_at:
-                    # The prior attempt disabled access. Reassert that boundary even under an event storm.
-                    self.disable_workstations()
-                    return
-                state, changed = self.workstation_state()
-                active = state["connection_state"] != "closed" and not (STATE / "disabled").exists()
-                if active:
-                    if self.monitor is None or not self.monitor.alive():
-                        raise BrokerError("Workstation nft monitor is unavailable; access disabled. Restart the broker.")
-                    actual = self.owned_table()
-                    try:
-                        matches = actual is not None and policy_equal(actual, self.expected_policy(state))
-                        matches_with_expired_bans = actual is not None and policy_equal(
-                            actual, self.expected_policy(state, include_expired_bans=True))
-                    except (BrokerError, KeyError, TypeError):
-                        matches = matches_with_expired_bans = False
-                    if not matches:
-                        if matches_with_expired_bans:
-                            self.reconcile_policy_only(state)
-                        else:
-                            event = True
-                interfaces = [WORKSTATION_IFACE] + [self.locked_interface(item) for item in state["workstations"]
-                                                    if item.get("locked")]
-                links_ready = active and all(
-                    (link := self.link_state(interface)) is not None and "UP" in link["flags"]
-                    for interface in interfaces)
-                if changed or event or (STATE / "disabled").exists() or (
-                        active and not links_ready):
-                    self.apply_workstations(state)
-                    if changed:
-                        self.save_workstations(state)
-                        self.audit("workstation-expired", 0, "completed")
-                        for diagnostic_id in expired_ids:
-                            self.diagnostic_observations.pop(diagnostic_id, None)
-                            self.diagnostic(diagnostic_id, "pairing.expired", reason="deadline")
-                elif active and links_ready:
-                    # Repairs a FreePBX Firewall reload without re-admitting peers; a no-op when already exact.
-                    self.reconcile_integration(state)
-                    ports = [state["listen_port"]] + [item["listener_port"] for item in state["workstations"]
-                                                     if item.get("locked")]
-                    self.reconcile_listener(ports)
-                    if any(ssh.managed(item) for item in state["workstations"]):
-                        self.ssh.reconcile(state)
-                self.workstation_retry_policy = None
-                self.workstation_retry_at = 0.0
-                self.workstation_retry_delay = 0
-            except (BrokerError, ssh.SshError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
-                self.workstation_error = str(error)
-                self.workstation_retry_policy = retry_policy
-                self.workstation_retry_delay = min(60, max(5, self.workstation_retry_delay * 2))
-                LOGGER.warning("TELIPHONES background workstation reconciliation failed (%s); retry in %d seconds",
-                               type(error).__name__, self.workstation_retry_delay)
-                try:
-                    self.disable_workstations()
-                    self.ssh.reconcile({"workstations": []})
-                except (BrokerError, ssh.SshError, OSError, ValueError, subprocess.SubprocessError) as cleanup_error:
-                    self.workstation_error += " Cleanup could not be confirmed: " + str(cleanup_error)
-                self.workstation_retry_at = time.monotonic() + self.workstation_retry_delay
+                self.expire_workstations_locked()
             finally:
-                self.request_context.background_listener_check = False
+                duration_ms = int((time.monotonic() - started) * 1000)
+                if duration_ms >= SLOW_OPERATION_MS and self.diagnostic_due(("reconcile.background", "slow")):
+                    self.diagnostic_workstations("reconcile.background", result="slow", duration_ms=duration_ms,
+                                                 retry_seconds=None)
+
+    def expire_workstations_locked(self):
+        revocations = self.revocations()
+        if (any(record["outcome"] != "complete" for record in revocations["records"].values())
+                or revocations.get("operation", {}).get("outcome", "complete") != "complete"):
+            self.expire_sessions()
+            if self.enforcement_event.is_set() or (self.monitor is not None and not self.monitor.alive()):
+                self.contain_workstations()
+                self.workstation_retry_at = 0.0
+                self.enforcement_event.clear()
+            if time.monotonic() >= self.workstation_retry_at:
+                self.reconcile_revocations()
+            return
+        self.expire_sessions()
+        event = self.enforcement_event.is_set()
+        if event:
+            self.enforcement_event.clear()
+        stored = read_json(STATE / "workstations.json")
+        now = int(time.time())
+        expired_ids = ["ws-" + item["id"] for item in stored.get("workstations", [])
+                       if isinstance(item, dict) and re.fullmatch(r"[a-f0-9]{16}", str(item.get("id", "")))
+                       and item.get("mode") != "persistent" and isinstance(item.get("expires_at"), int)
+                       and item["expires_at"] <= now]
+        retry_policy = json.dumps([stored, (STATE / "disabled").exists()], sort_keys=True)
+        self.request_context.background_listener_check = True
+        try:
+            if retry_policy != self.workstation_retry_policy:
+                self.workstation_retry_delay = 0
+                self.workstation_retry_at = 0.0
+            if time.monotonic() < self.workstation_retry_at:
+                # The prior attempt disabled access. Reassert that boundary even under an event storm.
+                self.disable_workstations()
+                return
+            state, changed = self.workstation_state()
+            active = state["connection_state"] != "closed" and not (STATE / "disabled").exists()
+            if active:
+                if self.monitor is None or not self.monitor.alive():
+                    raise BrokerError("Workstation nft monitor is unavailable; access disabled. Restart the broker.")
+                actual = self.owned_table()
+                try:
+                    matches = actual is not None and policy_equal(actual, self.expected_policy(state))
+                    matches_with_expired_bans = actual is not None and policy_equal(
+                        actual, self.expected_policy(state, include_expired_bans=True))
+                except (BrokerError, KeyError, TypeError):
+                    matches = matches_with_expired_bans = False
+                if not matches:
+                    if matches_with_expired_bans:
+                        self.reconcile_policy_only(state)
+                    else:
+                        event = True
+            interfaces = [WORKSTATION_IFACE] + [self.locked_interface(item) for item in state["workstations"]
+                                                if item.get("locked")]
+            links_ready = active and all(
+                (link := self.link_state(interface)) is not None and "UP" in link["flags"]
+                for interface in interfaces)
+            if changed or event or (STATE / "disabled").exists() or (
+                    active and not links_ready):
+                self.apply_workstations(state)
+                if changed:
+                    self.save_workstations(state)
+                    self.audit("workstation-expired", 0, "completed")
+                    for diagnostic_id in expired_ids:
+                        self.diagnostic_observations.pop(diagnostic_id, None)
+                        self.diagnostic(diagnostic_id, "pairing.expired", reason="deadline")
+            elif active and links_ready:
+                # Repairs a FreePBX Firewall reload without re-admitting peers; a no-op when already exact.
+                self.reconcile_integration(state)
+                ports = [state["listen_port"]] + [item["listener_port"] for item in state["workstations"]
+                                                 if item.get("locked")]
+                self.reconcile_listener(ports)
+                if any(ssh.managed(item) for item in state["workstations"]):
+                    self.ssh.reconcile(state)
+            if self.workstation_reconcile_failing:
+                self.workstation_reconcile_failing = False
+                self.diagnostic_workstations("reconcile.background", stored.get("workstations", []),
+                                             result="recovered", duration_ms=0, retry_seconds=None)
+            self.workstation_retry_policy = None
+            self.workstation_retry_at = 0.0
+            self.workstation_retry_delay = 0
+        except (BrokerError, ssh.SshError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+            self.workstation_error = str(error)
+            self.workstation_retry_policy = retry_policy
+            self.workstation_retry_delay = min(60, max(5, self.workstation_retry_delay * 2))
+            # Workstation access is disabled until a retry succeeds; the first failure of a run is recorded.
+            if not self.workstation_reconcile_failing:
+                self.workstation_reconcile_failing = True
+                self.diagnostic_workstations("reconcile.background", stored.get("workstations", []),
+                                             result="failed", duration_ms=0,
+                                             retry_seconds=self.workstation_retry_delay)
+            LOGGER.warning("TELIPHONES background workstation reconciliation failed (%s); retry in %d seconds",
+                           type(error).__name__, self.workstation_retry_delay)
+            try:
+                self.disable_workstations()
+                self.ssh.reconcile({"workstations": []})
+            except (BrokerError, ssh.SshError, OSError, ValueError, subprocess.SubprocessError) as cleanup_error:
+                self.workstation_error += " Cleanup could not be confirmed: " + str(cleanup_error)
+            self.workstation_retry_at = time.monotonic() + self.workstation_retry_delay
+        finally:
+            self.request_context.background_listener_check = False
 
     def pair(self, request, uid):
         if (STATE / "disabled").exists():

@@ -54,6 +54,7 @@ protected:
     afx_msg LRESULT OnProbeDone(WPARAM generation, LPARAM result);
     afx_msg LRESULT OnFirstRun(WPARAM, LPARAM);
     afx_msg LRESULT OnStartupNotices(WPARAM, LPARAM);
+    afx_msg LRESULT OnNetworkChanged(WPARAM, LPARAM);
     DECLARE_MESSAGE_MAP()
 
 private:
@@ -128,4 +129,7 @@ private:
     bool sourcesRequestPending_ = false;
     UINT_PTR generation_ = 0;
     std::uint64_t lastTelemetryTickMs_ = 0;
+    void* networkWatch_ = nullptr;
+    std::int64_t lastNetworkChangeUnix_ = 0;     // last non-TELIPHONES interface change; offered as admission context
+    std::int64_t lastNetworkChangeLogUnix_ = 0;  // network_changed is recorded at most once per 30 seconds
 };

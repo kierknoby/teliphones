@@ -1,19 +1,19 @@
 # Windows developer builds, testing and readiness
 
-Targets: TELIPHONES for Windows **0.8.4**, TELIPHONES for FreePBX **0.6.6**.
+Targets: TELIPHONES for Windows **0.8.5**, TELIPHONES for FreePBX **0.6.7**.
 The FreePBX connection-state policy and Windows pairing/clipboard UX are
 independently versioned; neither entry declares a published release.
 
-Root broker is **0.6.6**, protocol **12**. Version.h derives Windows
-product 0.8.4 and file 0.8.4.0; executable resources, captions, About/licence and
+Root broker is **0.6.7**, protocol **12**. Version.h derives Windows
+product 0.8.5 and file 0.8.5.0; executable resources, captions, About/licence and
 build provenance reuse it. The dependency manifest must match the product version.
 Current Release portable build/CTest and source contracts can run on Linux;
 native MFC pairing tests, executable metadata and startup smoke are registered
-in the Windows workflow. No current native 0.8.4 execution is claimed.
-The patch increment distinguishes the tunnel lifecycle correction from the
-operator's installed 0.8.3 executable. The subsequent PBX security update targets module/broker
-0.6.6 without changing Windows functionality or existing packages. No 0.8.4 binary or
-application bundle has been produced.
+in the Windows workflow. No current native 0.8.5 execution is claimed.
+The custom SSH console remains part of the intended Windows distribution.
+Opening it unexpectedly closing TELIPHONES is an unresolved release blocker;
+no source or test result here establishes that crash is fixed. No 0.8.5 binary
+or application bundle has been produced.
 
 Native compilation, SCM/WireGuardNT execution and artefact creation are
 **blocked**: this workspace is Linux without MSVC/MFC or a Windows runtime.
@@ -26,9 +26,9 @@ Later operator reports confirm eleven native SSH integrations and first-run
 startup smoke passed for an earlier build. The historical investigations below
 retain their original versions/counts and outstanding checks at that time;
 they are not evidence that the subsequent 0.8.1 pairing dialogue passed natively.
-The local 0.6.6 module archive includes the PHP form, listener diagnostics and
-revocation security corrections. The superseded root-level 0.6.5 archive/checksum
-were removed. Live acceptance is pending; Windows functionality is unchanged.
+The local 0.6.7 module archive contains the PHP diagnostics view and broker
+admission instrumentation. The existing 0.6.6 archive is preserved unchanged.
+Live acceptance is pending.
 
 ## Current evidence
 
@@ -56,6 +56,28 @@ Still requires native evidence: the official installer's exact service binary
 path (unexpected formats fail safe as unverified ownership), and actual
 recovery of a stuck official service. A process blocked in kernel mode cannot
 be terminated from user mode; that case is reported and requires a restart.
+
+### Admission diagnostics and network changes (0.8.5, unverified natively)
+
+The route check (`GetBestInterfaceEx`/`GetIfEntry2`), namespace-wide residual
+tunnel enumeration (`EnumServicesStatusExW`/`GetIfTable2`), the
+`NotifyIpInterfaceChange` watch and the `X-Teliphones-Attempt` header are
+compiled only by MSVC and have not run. Portable tests cover classification,
+messages and residual-name selection; broker tests inject request delays,
+source changes, restart and reconciliation failures. These are not proof that
+WireGuard roaming or the complete recovery sequence works. Still required on
+Windows and a live FreePBX 17 PBX:
+
+1. MSVC Release build and CTest, including `core_tests` and
+   `session_diagnostics_tests`.
+2. Connect, admit, disconnect, change public network, reconnect, admit, open
+   the PBX GUI and SSH, disconnect, close, relaunch and reconnect with the same
+   pairing. Confirm the Windows session log and the PBX diagnostics view for
+   the same `ws-` ID show matching attempt identifiers.
+3. With another VPN routing the PBX tunnel address, confirm
+   "route-misdirected" names that interface.
+4. With a leftover `TELIPHONES-*` tunnel from a revoked pairing, confirm
+   startup lists it and removes only it.
 
 ### WireGuard startup regression
 

@@ -12,7 +12,7 @@ $pageSource = is_readable($pageFile) ? file_get_contents($pageFile) : '';
 $assertions = [
     (string)$module->rawname === 'teliphones',
     (string)$module->name === 'TELIPHONES',
-    (string)$module->version === '0.6.6',
+    (string)$module->version === '0.6.7',
     (string)$module->category === 'Connectivity',
     count($menuItems) === 1,
     isset($module->menuitems->teliphones),

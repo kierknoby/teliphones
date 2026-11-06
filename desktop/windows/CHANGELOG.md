@@ -5,7 +5,36 @@ No Windows release is declared published by this document. Earlier development
 builds lacked embedded file/product versions and cannot be assigned reliable
 version numbers retrospectively.
 
-## 0.8.4 — Unreleased development target
+## 0.8.5 — Unreleased development target
+
+Windows file/product version: **0.8.5.0** / **0.8.5**. Independent source
+targets: FreePBX module **0.6.7**, root broker **0.6.7**, protocol **12**
+(unchanged).
+
+- Improve workstation admission failure classification. Messages distinguish
+  connection from response failures, report the observed route to the PBX
+  tunnel address and avoid claiming authentication when the unelevated app
+  cannot read the WireGuard handshake.
+- Record local interface-change events without public addresses and correlate
+  each Windows admission attempt with the PBX's persisted `ws-` diagnostic
+  history. PBX-side evidence is displayed by the administrator diagnostics
+  view; client retries continue on the existing monitor interval.
+- Find residual TELIPHONES-named tunnel services/adapters beyond saved profiles
+  and offer owned-resource cleanup without touching unrelated WireGuard
+  tunnels. Route and residual-resource handling still require native Windows
+  validation.
+- Retain the SSH runtime cleanup and startup corrections that preserve saved
+  connections when abandoned attempt files remain, plus the previously
+  implemented tunnel cleanup, reconnect safeguards and verified shutdown.
+  These changes do not establish that the embedded SSH console crash is fixed:
+  opening that console unexpectedly closing TELIPHONES remains a release
+  blocker, and its trigger is unconfirmed.
+- Portable core, broker, layout and module regressions pass in the Linux
+  workspace. MSVC Release compilation, native Windows CTest/integration,
+  executable metadata, portable bundle creation and the live PBX acceptance
+  sequence remain required. No Windows executable or installer is claimed.
+
+## 0.8.4 — Previous development target
 
 Windows file/product version: **0.8.4.0** / **0.8.4**. Independent source targets:
 FreePBX module **0.6.6**, root broker **0.6.6**, protocol **12** (unchanged).
@@ -87,6 +116,25 @@ Further corrections before release (version unchanged):
   traffic counters keep updating while admission fails. Admission failures and
   recoveries are recorded in the session log. The existing monitor continues
   retrying admission; no new retry loop or longer timeout was added.
+- Admission failures after a network change are diagnosed from evidence. The
+  handshake read uses `wg.exe show`, which needs administrator rights, so the
+  non-elevated application normally reports the handshake as unknown; it no
+  longer infers a cause from that. Each failure now states whether the request
+  failed to connect or connected without an answer, and checks which interface
+  Windows routes the PBX tunnel address through. A route through another
+  interface (another VPN or a leftover TELIPHONES tunnel) is named. Reported
+  network changes are recorded without addresses. Admission requests carry a
+  random per-attempt identifier that the PBX records under the same diagnostic
+  ID, so the PBX diagnostics view shows whether it admitted a request that
+  Windows never received.
+- Startup cleanup finds leftover `TELIPHONES-*` tunnel services and adapters
+  from revoked or re-paired connections, not only those of saved profiles, and
+  lists them before removal with UAC. Unrelated WireGuard tunnels are excluded
+  by name.
+- Eight session-log events (SSH console/teardown failures and shutdown
+  residue) were silently dropped by the event allowlist; they are now
+  recorded, and a build-layout guard rejects any logged event the allowlist
+  does not accept.
 
 Adds portable classification, adapter-release and runtime-cleanup tests, a
 native disconnect/immediate-reconnect integration check and a native console

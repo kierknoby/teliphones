@@ -11,7 +11,7 @@ $recorder = new class extends WebSupport {
     public array $reply = ['ok' => true, 'message' => 'paired', 'pairing_response' => 'TELIPHONES-PAIR-RESPONSE-1:eyJzY2hlbWEiOiJ0ZWxpcGhvbmVzIn0'];
     public function request(array $request): array
     {
-        if ($request['action'] === 'status') return ['ok' => true, 'status' => ['protocol' => 4, 'component_version' => '0.6.6', 'phase' => 'Ready',
+        if ($request['action'] === 'status') return ['ok' => true, 'status' => ['protocol' => 4, 'component_version' => '0.6.7', 'phase' => 'Ready',
             'workstations' => ['ready' => true, 'requirements' => ['wg' => true, 'ip' => true, 'nft' => true], 'items' => []]]];
         $this->sent[] = $request;
         return $this->reply;
@@ -96,7 +96,7 @@ $assert($result['dispatched'], 'Missing SSH prerequisites must not disable web-o
 $result = WebSupport::handleAction($recorder, ['ssh' => '1'] + $post, 'known', $modern, $https);
 $assert(!$result['dispatched'] && strpos($result['notice']['error'], 'did not include SSH capability') !== false,
     'A version-1 web-only request must never receive SSH permission.');
-$policyStatus = ['ok' => true, 'status' => ['protocol' => 8, 'component_version' => '0.6.6', 'workstations' => [
+$policyStatus = ['ok' => true, 'status' => ['protocol' => 8, 'component_version' => '0.6.7', 'workstations' => [
     'ready' => true, 'items' => [], 'requirements' => ['wg' => true, 'ip' => true, 'nft' => true],
     'connection_state' => 'closed']]];
 $assert(WebSupport::supportsWorkstationPolicy($policyStatus), 'Protocol 8 must expose connection-state controls.');
@@ -105,7 +105,7 @@ $recorder->sent = [];
 $result = WebSupport::handleAction($recorder, $policyPost, 'known', $policyStatus, $https);
 $assert($result['dispatched'] && $recorder->sent[0] === ['action' => 'workstation-policy', 'state' => 'frozen'],
     'Connection-state changes must forward only the selected state.');
-$sessionStatus = ['ok' => true, 'status' => ['protocol' => 11, 'component_version' => '0.6.6', 'workstations' => [
+$sessionStatus = ['ok' => true, 'status' => ['protocol' => 11, 'component_version' => '0.6.7', 'workstations' => [
     'ready' => true, 'items' => [], 'requirements' => ['wg' => true, 'ip' => true, 'nft' => true],
     'max_sessions' => 1, 'connected_workstations' => 1]]];
 $assert(WebSupport::supportsWorkstationSessions($sessionStatus), 'Protocol 11 must report enforced workstation session capacity.');
@@ -228,6 +228,23 @@ $events = $ajax['body']['diagnostics']['events'];
 $assert(count($events) === 1 && $events[0]['event'] === 'pairing.approved'
     && $events[0]['source'] === 'pbx' && !isset($events[0]['data']['token']),
     'Diagnostics response must filter by session and drop non-whitelisted fields.');
+$admission = ['timestamp_utc' => '2026-11-02T19:00:00Z', 'unix_time' => 1793646000, 'diagnostic_id' => $diagnosticId,
+    'source' => 'pbx', 'event' => 'session.request', 'data' => ['action' => 'heartbeat', 'result' => 'renewed',
+        'reason' => null, 'lock_wait_ms' => 5400, 'processing_ms' => 5420, 'delivered' => false,
+        'attempt' => '0123456789abcdef']];
+$recorder->reply['events'] = [$admission,
+    array_replace_recursive($admission, ['data' => ['attempt' => '../../etc/passwd']]),
+    array_replace_recursive($admission, ['data' => ['reason' => 'endpoint 203.0.113.10']]),
+    ['timestamp_utc' => '2026-11-02T19:00:01Z', 'unix_time' => 1793646001, 'diagnostic_id' => $diagnosticId,
+        'source' => 'pbx', 'event' => 'controller.state', 'data' => ['state' => 'listening']],
+    ['timestamp_utc' => '2026-11-02T19:00:02Z', 'unix_time' => 1793646002, 'diagnostic_id' => $diagnosticId,
+        'source' => 'pbx', 'event' => 'reconcile.background',
+        'data' => ['result' => 'failed', 'duration_ms' => 61000, 'retry_seconds' => 5]]];
+$ajax = WebSupport::ajax('diagnostics', 'POST', $diagnosticPost, $session, $admin, $https, $recorder);
+$events = $ajax['body']['diagnostics']['events'];
+$assert(array_column($events, 'event') === ['session.request', 'controller.state', 'reconcile.background']
+    && $events[0]['data'] === $admission['data'] && $events[2]['data']['retry_seconds'] === 5,
+    'Admission, controller and reconciliation evidence must reach the administrator with malformed values dropped.');
 $recorder->sent = [];
 $ajax = WebSupport::ajax('diagnostics', 'POST', ['diagnostic_id' => $diagnosticId], $session, $admin, $https, $recorder);
 $assert($ajax['code'] === 403 && $recorder->sent === [], 'Diagnostics must reject missing CSRF tokens.');
@@ -255,7 +272,7 @@ $item = ['id' => '0123456789abcdef', 'name' => 'ADMIN-PC', 'address' => '100.70.
     'created_at' => 1, 'expires_at' => 2000000000, 'last_handshake' => 0,
     'verified_endpoint' => ['address' => '2001:db8::24', 'port' => 51821],
     'fingerprint' => 'SHA256:abcdefghijklmnop', 'public_key' => 'LEAKED-PUBLIC-KEY'];
-$status = ['ok' => true, 'status' => ['protocol' => 4, 'component_version' => '0.6.6', 'phase' => 'Ready', 'workstations' => ['ready' => true, 'requirements' => ['wg' => true, 'ip' => true, 'nft' => true],
+$status = ['ok' => true, 'status' => ['protocol' => 4, 'component_version' => '0.6.7', 'phase' => 'Ready', 'workstations' => ['ready' => true, 'requirements' => ['wg' => true, 'ip' => true, 'nft' => true],
     'error' => '', 'listen_port' => 51821, 'pbx_address' => '100.70.1.1', 'items' => [$item, ['id' => '../../x', 'name' => 'bad']]]]];
 $workstations = WebSupport::workstations($status);
 $assert($workstations['supported'] && $workstations['ready'] && count($workstations['items']) === 1 && !isset($workstations['items'][0]['public_key']), 'Workstation status must be allowlisted.');

@@ -1,13 +1,15 @@
 # TELIPHONES security
 
-This document explains current source targets **FreePBX module 0.6.6**, **root
-broker 0.6.6**, **protocol 12** and **Windows 0.8.4**, evidence and limitations.
+This document explains current source targets **FreePBX module 0.6.7**, **root
+broker 0.6.7**, **protocol 12** and **Windows 0.8.5**, evidence and limitations.
 
 > [!WARNING]
 > TELIPHONES remains experimental. The operator reports successful native
 > Windows tests and initial live authenticated SSH, not complete lifecycle
-> assurance. The latest 0.8.4 source still requires native Windows validation,
+> assurance. The latest 0.8.5 source still requires native Windows validation,
 > and current firewall/session recovery requires live-PBX acceptance.
+> The reported failure where opening the embedded SSH console closes TELIPHONES
+> remains an unresolved release blocker.
 > Do not use TELIPHONES on a production PBX.
 
 ## Contents
@@ -55,16 +57,16 @@ This documentation uses three levels of assurance. A control at one level should
 
 ## Verification evidence
 
-This evidence register is reviewed on **5 November 2026**. It distinguishes
+This evidence register is reviewed on **6 November 2026**. It distinguishes
 supplied reports, current source and preserved packages from local execution.
 Earlier failed runs remain in the [Windows readiness history](../desktop/windows/tests/WINDOWS-READINESS.md#historical-investigations);
 they are not the current native-test result.
 
 | Evidence source | Result and boundary |
 |---|---|
-| Current source review | Windows 0.8.4 corrects the tunnel lifecycle: verified cleanup, per-tunnel exclusion of elevated helpers, original-error reporting and termination of a stuck `START_PENDING` service's own `wireguard.exe` only after SCM binary path and process image prove ownership (PID reuse excluded); other WireGuard tunnels are never changed, and a process blocked in kernel mode still requires a Windows restart. It retains 0.8.3's replacement of the incompatible text-UAPI pipe introduced in 0.8.0 with the official WireGuardNT adapter API. The official 1.1 archive/DLL/header hashes and AMD64 exports/imports were inspected locally. The private-only update preserves peers; PID-bound delivery, bootstrap-only disk configuration and fail-closed cleanup remain. Native compilation, SCM regressions, actual official service/driver activation, MFC dialogue and startup smoke are CI gates, not executed in this Linux workspace. Native build and artefact creation remain pending; no connectivity success is claimed. |
+| Current source review | Windows 0.8.5 retains the verified tunnel cleanup, per-tunnel exclusion, owned `START_PENDING` recovery and shutdown corrections from 0.8.4. It adds route-aware admission failure reporting, interface-change events, PBX attempt correlation and TELIPHONES-owned residual-tunnel detection. Native compilation and platform integration have not run here. The embedded SSH console crash remains a release blocker; public-IP roaming and end-to-end reconnection are not established. No Windows binary or connectivity success is claimed. |
 | Pairing form source correction | Disabled SSH select omitted `ssh` from web-only POST. The module now submits explicit `ssh=0`, retains safe values and rejects missing/invalid choices. PHP/Node page-path tests passed; gateway suite 203 run, 202 passed, one skipped, includes actual PHP page/Unix-socket broker pairing with modelled network commands. This is not live PBX execution. |
-| Current and preserved packages | Module/broker 0.6.6 source corrects the nftables feedback loop that blocked session admission, retaining 0.6.5 durable workstation revocation, verified enforcement and retrievable outcomes; the local 0.6.6 archive and checksum include current source; no release or deployment is claimed. The superseded 0.6.5 archive was removed; historical archives lack these new security fixes. Exact archive/source equality is a local packaging check, not proof of live connectivity. Windows is independently 0.8.4. |
+| Current and preserved packages | Module/broker 0.6.7 adds bounded correlated admission diagnostics and responsiveness corrections to the prior nftables feedback-loop and durable-revocation fixes. The local 0.6.7 archive and checksum match current module source; the existing 0.6.6 archive is preserved unchanged. No release or deployment is claimed. Exact archive/source equality is a local packaging check, not proof of live connectivity. Windows is independently 0.8.5. |
 | nftables repeatability | At 0.6.3 preparation, 10/10 working-tree and 10/10 unchanged-baseline namespace runs passed after an earlier intermittent own-event-filtering failure. That failure remains undiagnosed; successful samples do not exclude recurrence. |
 | Later operator report | Earlier Windows Actions run: all eleven native SSH integrations passed; first-run GUI smoke subsequently reported successful. No matching 0.8.1 run or independently fetched evidence is supplied. |
 | Operator's latest report | Successful Windows GitHub Actions builds and **all ten native OpenSSH integration tests passing**. No run URL, commit/build hash or raw logs accompanied this update; no external service was queried to verify it. |

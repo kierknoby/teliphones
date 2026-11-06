@@ -2,6 +2,7 @@
 // the pinned official WireGuardNT API DLL for in-memory adapter configuration.
 #pragma once
 
+#include "../core/Admission.h"
 #include "../core/TunnelLifecycle.h"
 
 #include <string>
@@ -35,6 +36,17 @@ bool InstallTunnel(const std::string& tunnelName, const std::string& configText)
 void RemoveTunnel(const std::string& tunnelName);
 // Whether an active network adapter with this tunnel's exact name exists (read-only interface table snapshot).
 tunnel_lifecycle::AdapterPresence TunnelAdapterPresence(const std::string& tunnelName);
+// Which interface Windows currently selects for traffic to this IPv4 address (GetBestInterfaceEx), compared with the
+// tunnel's adapter alias. Read-only; Unknown whenever the route or interface cannot be read.
+struct AddressRoute {
+    RouteEvidence route = RouteEvidence::Unknown;
+    std::string interfaceAlias;  // the selecting interface, reported only when it is not this tunnel
+};
+AddressRoute RouteToAddress(const std::string& tunnelName, const std::string& ipv4Address);
+// Startup residue in the TELIPHONES tunnel namespace: the given installed tunnels of saved profiles plus any
+// WireGuardTunnel$TELIPHONES-<12 hex> service or TELIPHONES-<12 hex> adapter left by a removed or re-paired profile.
+// Enumeration failures only narrow the result; other WireGuard tunnels are never listed.
+std::vector<std::string> ResidualTeliphonesTunnels(const std::vector<std::string>& installedSavedTunnels);
 
 // Entry point when the executable is started elevated with /tunnel-up or /tunnel-down. Returns the process exit code.
 int RunTunnelHelper(const std::vector<std::string>& arguments);

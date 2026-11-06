@@ -106,7 +106,7 @@ class WebSupport
     public const OPERATION_STATES = ['running', 'succeeded', 'failed'];
     /** Broker status protocol this module requires (support_broker.py PROTOCOL): 2 adds live operation records, 3 adds workstation pairing. */
     public const BROKER_PROTOCOL = 3;
-    public const BROKER_VERSION = '0.6.6';
+    public const BROKER_VERSION = '0.6.7';
     public const DIAGNOSTICS_PROTOCOL = 4;
     public const SSH_PROTOCOL = 5;
     /** Protocol 6 adds the WireGuard listener firewall permit and configurable management web services. */
@@ -542,6 +542,14 @@ class WebSupport
             'firewall.integration' => ['state' => ['inactive', 'active', 'not-detected', 'error'],
                 'backend' => ['nf_tables', 'legacy', null]],
             'broker.error' => ['category' => ['workstation-enforcement', 'firewall-integration', 'telemetry-unavailable', 'cleanup-unverified']],
+            'session.request' => ['action' => ['heartbeat', 'release'],
+                'result' => ['admitted', 'renewed', 'released', 'migration', 'refused', 'failed'],
+                'reason' => ['unknown-peer', 'closed', 'firewall-unsafe', 'session-limit', 'firewall-unverified',
+                    'migration', 'invalid-request', 'other', null],
+                'lock_wait_ms' => 'int', 'processing_ms' => 'int', 'delivered' => 'bool', 'attempt' => 'nullable-hex16'],
+            'controller.state' => ['state' => ['listening', 'stopped', 'failed']],
+            'reconcile.background' => ['result' => ['slow', 'failed', 'recovered'], 'duration_ms' => 'int',
+                'retry_seconds' => 'nullable-int'],
         ];
         $events = [];
         foreach (is_array($reply['events'] ?? null) ? array_slice($reply['events'], -200) : [] as $event) {
@@ -560,6 +568,7 @@ class WebSupport
                 if ($rule === 'int') $valid = is_int($value) && $value >= 0;
                 elseif ($rule === 'nullable-int') $valid = $value === null || (is_int($value) && $value >= 0);
                 elseif ($rule === 'bool') $valid = is_bool($value);
+                elseif ($rule === 'nullable-hex16') $valid = $value === null || (is_string($value) && preg_match('/^[a-f0-9]{16}$/', $value) === 1);
                 else $valid = in_array($value, $rule, true);
                 if (!$valid) break;
                 $clean[$name] = $value;

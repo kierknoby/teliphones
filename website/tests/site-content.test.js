@@ -49,9 +49,9 @@ test('all site pages have valid local links, assets and unique fragment targets'
 });
 
 test('current product and installation copy matches independent source versions', () => {
-  assert.equal(moduleVersion, '0.6.6');
-  assert.equal(brokerVersion, '0.6.6');
-  assert.equal(version, '0.8.4');
+  assert.equal(moduleVersion, '0.6.7');
+  assert.equal(brokerVersion, '0.6.7');
+  assert.equal(version, '0.8.5');
   for (const name of ['index.html', 'windows/index.html', 'downloads/index.html',
     'freepbx/index.html', 'faq/index.html', 'about/index.html', 'roadmap/index.html']) {
     const html = contents.get(path.join(site, name));
@@ -75,10 +75,10 @@ test('pairing guide distinguishes approval, current package and obsolete archive
   assert.equal((pairing.match(/<li>/g) || []).length, 8);
   for (const phrase of ['Request access', 'Complete pairing', 'Generate request', 'Copy request',
     'Save connection', 'Changing name/access', 'read-only', 'not independently signed',
-    'local 0.6.6 archive', 'durable revocation', 'superseded 0.6.5 archive was removed']) {
+    'local 0.6.7 archive', 'durable revocation', 'existing 0.6.6 archive is preserved unchanged']) {
     assert.ok(pairing.includes(phrase), `Missing pairing guidance: ${phrase}`);
   }
-  assert.match(contents.get(path.join(site, 'downloads/index.html')), /0\.6\.6 archive includes the web-only form correction, listener diagnostics, revocation security corrections and the session-admission feedback-loop correction/);
+  assert.match(contents.get(path.join(site, 'downloads/index.html')), /0\.6\.7 archive includes the current PHP diagnostics view\/sanitiser, broker diagnostics and documentation/);
   assert.match(contents.get(path.join(site, 'downloads/index.html')), /superseded root-level 0\.6\.5 archive and checksum were removed/);
   assert.match(contents.get(path.join(site, 'downloads/index.html')), /website ZIP and its checksum are unchanged/);
   assert.match(contents.get(path.join(site, 'downloads/index.html')), /Durable revocation/);

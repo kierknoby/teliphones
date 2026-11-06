@@ -8,7 +8,40 @@ repository. Portable Linux validation is current for the broker, FreePBX module 
 Windows core. Native Windows compilation/UI integration and live FreePBX
 session, migration, firewall and SSH acceptance remain outstanding.
 
-## 0.6.6, firewall reconciliation feedback-loop correction (unreleased source)
+## 0.6.7, admission diagnostics and responsiveness (unreleased source)
+
+- Advance the FreePBX module and root broker independently to **0.6.7**,
+  retaining protocol **12** and Windows **0.8.5**. Module Admin does not
+  necessarily refresh the separately installed root broker; repeat the root
+  bootstrap after upgrading the module.
+- Persist correlated workstation session-controller outcomes in the existing
+  bounded diagnostic history: admission/refusal/failure, reason, lock wait and
+  processing time, response delivery and a random per-attempt identifier.
+  Fast successful lease renewals are omitted. Histories remain size- and
+  age-bounded; endpoint addresses, credentials, keys and pairing responses are
+  not recorded.
+- Record controller listener state and slow, failed and recovered background
+  workstation reconciliation. A failed reconciliation still disables
+  workstation access until a later successful retry; it is now visible in the
+  persistent administrator diagnostics rather than only the system journal.
+- Move source verification and DNS resolution for the admission status report
+  outside the workstation lock. Unexpected session-controller exceptions now
+  receive a generic error response rather than silently dropping the request.
+  A request that the PBX admitted but Windows did not receive can be identified
+  by matching the `ws-` diagnostic ID and attempt ID on both sides.
+- Keep leases keyed to the authenticated workstation identity: a public source
+  change does not consume another simultaneous-session slot. This does not
+  establish that endpoint roaming or a complete network-change/reconnect
+  succeeds on Windows or a live PBX.
+- Add broker regressions for delivery, sanitisation, lock contention, source
+  changes, admission limits, restart recovery, listener state and reconciliation
+  failure/recovery. The FreePBX administrator diagnostics view and export
+  validate and display the new event types.
+- Native Windows validation and live FreePBX 17 / Debian 12 admission,
+  roaming, firewall and end-to-end recovery acceptance remain outstanding.
+  This is development source preparation, not a release or deployment claim.
+
+## 0.6.6, firewall reconciliation feedback-loop correction (previous development target)
 
 - Advance the FreePBX module and root broker to **0.6.6**, retaining protocol
   **12** and independently versioned Windows **0.8.3**. Brokers through 0.6.5
@@ -26,6 +59,9 @@ session, migration, firewall and SSH acceptance remain outstanding.
   changes, and bounded read-only work under repeated firewall events. The
   isolated real-nft namespace lab asserts that the broker's own table
   replacement and teardown do not trigger enforcement.
+- Source changes after the 0.6.6 archive was built are not yet packaged: the
+  later 0.6.7 package contains those changes; the historical 0.6.6 archive is
+  preserved unchanged.
 - Build the local module-only 0.6.6 archive and SHA-256 sidecar from current
   source, replacing the superseded root-level 0.6.5 pair. Live FreePBX 17 /
   Debian 12 session-admission and idle-CPU acceptance remain outstanding; no

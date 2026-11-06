@@ -1415,6 +1415,22 @@ void testTunnelLifecycle() {
     // A disconnected tunnel can leave a non-present interface row with its alias; that row carries no traffic.
     const std::string tunnel = "TELIPHONES-1df533523b61";
     const std::uint32_t up = 1, down = 2, notPresent = lc::kInterfaceOperStatusNotPresent;
+    check(lc::IsTeliphonesTunnelName("TELIPHONES-0123456789ab") && !lc::IsTeliphonesTunnelName("TELIPHONES-0123456789AB") &&
+          !lc::IsTeliphonesTunnelName("TELIPHONES-0123456789a") && !lc::IsTeliphonesTunnelName("TELIPHONES-0123456789abc") &&
+          !lc::IsTeliphonesTunnelName("teliphones-0123456789ab") && !lc::IsTeliphonesTunnelName("wg0"),
+          "only the exact TELIPHONES tunnel namespace is recognised");
+    {
+        // A pairing that was revoked and re-created leaves its tunnel under a profile id no longer saved.
+        const auto orphans = lc::StartupResidualTunnels(
+            {"TELIPHONES-111111111111"},
+            {"TELIPHONES-222222222222", "office", "TELIPHONES-111111111111", "TELIPHONES-XYZ"},
+            {{"TELIPHONES-333333333333", 1}, {"TELIPHONES-444444444444", notPresent}, {"Corporate VPN", 1}, {"wg0", 1}});
+        check(orphans == std::vector<std::string>{"TELIPHONES-111111111111", "TELIPHONES-222222222222",
+                                                   "TELIPHONES-333333333333"},
+              "startup cleanup covers orphaned TELIPHONES services and adapters but never foreign or absent ones");
+        check(lc::StartupResidualTunnels({}, {}, {}).empty(), "nothing installed means nothing to clean");
+    }
+
     check(lc::ClassifyTunnelAdapter(true, {}, tunnel) == lc::AdapterPresence::Absent, "no interface row means no adapter");
     check(lc::ClassifyTunnelAdapter(true, {{tunnel, notPresent}}, tunnel) == lc::AdapterPresence::Absent,
           "a released adapter's non-present row does not block reconnection");
@@ -1749,6 +1765,56 @@ void testAdmissionFailureClassification() {
     check(std::string(tlp::AdmissionFailureName(AdmissionFailure::NoHandshake)) == "no-handshake" &&
           std::string(tlp::AdmissionFailureName(AdmissionFailure::ControllerSilent)) == "controller-silent",
           "classification names are stable diagnostic keys");
+
+    // Without handshake telemetry (TELIPHONES runs unelevated), a completed TCP handshake routed into this tunnel can
+    // only have been answered by the PBX's authenticated peer, so a response timeout is a PBX-side stall.
+    check(tlp::ClassifyAdmissionFailure(AdmissionStage::Response, std::nullopt, now, tlp::RouteEvidence::ViaTunnel) ==
+              AdmissionFailure::ControllerSilent, "tunnel-routed response timeout proves the PBX answered TCP");
+    check(tlp::ClassifyAdmissionFailure(AdmissionStage::Reach, std::nullopt, now, tlp::RouteEvidence::ViaTunnel) ==
+              AdmissionFailure::HandshakeUnknown, "an unanswered connect through the tunnel proves nothing about authentication");
+    check(tlp::ClassifyAdmissionFailure(AdmissionStage::Response, std::nullopt, now, tlp::RouteEvidence::Unknown) ==
+              AdmissionFailure::HandshakeUnknown, "an unverified route does not prove the PBX answered");
+    check(tlp::ClassifyAdmissionFailure(AdmissionStage::Reach, now - 5, now, tlp::RouteEvidence::ViaOtherInterface) ==
+              AdmissionFailure::RouteMisdirected, "a route outside the tunnel outranks every other cause");
+    check(std::string(tlp::AdmissionStageName(AdmissionStage::Reach)) == "connect" &&
+          std::string(tlp::AdmissionStageName(AdmissionStage::Response)) == "response", "stage names are stable");
+
+    tlp::AdmissionContext context;
+    context.route = tlp::RouteEvidence::ViaTunnel;
+    context.networkChangedUnixSeconds = now - 42;
+    context.correlationId = "ws-0123456789abcdef";
+    const auto withContext = [&](AdmissionStage stage, std::optional<std::int64_t> handshake) {
+        return tlp::DescribeAdmissionFailure(tlp::AdmissionTransportError(stage, 12002, "timeout"), handshake, now,
+                                             endpoint, controller, context);
+    };
+    const std::string reachUnknown = withContext(AdmissionStage::Reach, std::nullopt);
+    check(reachUnknown.find("did not accept a TCP connection") != std::string::npos &&
+          reachUnknown.find("could not be read") != std::string::npos &&
+          reachUnknown.find("does route the PBX address into this tunnel") != std::string::npos &&
+          reachUnknown.find("network changed 42 seconds ago") != std::string::npos &&
+          reachUnknown.find("ws-0123456789abcdef") != std::string::npos &&
+          reachUnknown.find("authenticated (") == std::string::npos,
+          "unknown-handshake message names the stage, route, network change and PBX correlation without claiming authentication");
+    const std::string provenSilent = withContext(AdmissionStage::Response, std::nullopt);
+    check(provenSilent.find("completed a TCP connection through it") != std::string::npos &&
+          provenSilent.find("accepted the request, but did not answer in time") != std::string::npos &&
+          provenSilent.find("ws-0123456789abcdef") != std::string::npos,
+          "tunnel-routed silent controller is attributed to the PBX with its correlation id");
+    context.networkChangedUnixSeconds = now - 601;
+    check(withContext(AdmissionStage::Reach, now - 30).find("network changed") == std::string::npos,
+          "an old network change is not offered as context");
+    for (const bool own : {true, false}) {
+        context.route = tlp::RouteEvidence::ViaOtherInterface;
+        context.routeInterface = own ? "TELIPHONES-aaaaaaaaaaaa" : "Corporate VPN";
+        context.routeInterfaceTeliphones = own;
+        const std::string misrouted = withContext(AdmissionStage::Reach, now - 5);
+        check(misrouted.find("\"" + context.routeInterface + "\"") != std::string::npos &&
+              misrouted.find("never enter the tunnel") != std::string::npos &&
+              misrouted.find("100.84.115.1:8766") != std::string::npos &&
+              misrouted.find(own ? "leftover TELIPHONES tunnel" : "will not change it") != std::string::npos &&
+              misrouted.find("keeps retrying while connected") != std::string::npos,
+              "misrouted message names the capturing interface and the safe action for its owner");
+    }
 }
 
 int main() {
@@ -1758,8 +1824,8 @@ int main() {
     for (unsigned part : versionParts) check(part <= 65535, "Windows version component fits the resource WORD");
     check(TELIPHONES_VERSION_FILE_STRING == versionBase + "." + std::to_string(versionParts[3]), "file version expands consistently");
     check(TELIPHONES_VERSION_STRING == versionBase, "product version expands without a development suffix");
-    check(std::string(TELIPHONES_VERSION_STRING) == "0.8.4", "Windows application version is independent of the module");
-    check(std::string(TELIPHONES_VERSION_FILE_STRING) == "0.8.4.0", "Windows file version is 0.8.4.0");
+    check(std::string(TELIPHONES_VERSION_STRING) == "0.8.5", "Windows application version is independent of the module");
+    check(std::string(TELIPHONES_VERSION_FILE_STRING) == "0.8.5.0", "Windows file version is 0.8.5.0");
     testEncoding();
     testJson();
     testValidation();

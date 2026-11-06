@@ -206,7 +206,7 @@ class BuildLayoutTests(unittest.TestCase):
         main = (ROOT / "src/app/MainDlg.cpp").read_text()
         probe = main.split("struct ProbeResult {", 1)[1].split("};", 1)[0]
         self.assertIn("bool sourcesRequestPending = false;", probe)
-        heartbeat = main.split("MaintainWorkstationSession(address, false, &pairing)", 1)[1].split(
+        heartbeat = main.split("MaintainWorkstationSession(address, false, &pairing, ", 1)[1].split(
             "} catch (const std::exception& e)", 1
         )[0]
         self.assertIn("result->sourcesRequestPending = lease.sourcesRequestPending;", heartbeat)
@@ -464,6 +464,49 @@ class BuildLayoutTests(unittest.TestCase):
         self.assertIn('"admission_failed", "admission_recovered"', diagnostics)
         # Recovery stays on the existing monitor tick; no extra retry loop or longer timeout is introduced.
         self.assertNotIn("Sleep(", (ROOT / "src/core/Admission.h").read_text())
+
+    def test_every_logged_event_is_accepted_by_session_diagnostics(self):
+        # An unlisted event is rejected by the store and its evidence is lost behind a single generic error.
+        diagnostics = (ROOT / "src/core/SessionDiagnostics.cpp").read_text()
+        allowed = diagnostics.split("bool eventValid(", 1)[1].split("};", 1)[0]
+        accepted = set(re.findall(r'"([a-z_]+)"', allowed))
+        logged = set()
+        for source in [*(ROOT / "src/app").glob("*.cpp"), *(ROOT / "src/platform").glob("*.cpp")]:
+            text = source.read_text()
+            logged.update(re.findall(r'LogEvent\(\s*"([a-z_]+)"', text))
+            logged.update(re.findall(r'WriteSessionEvent\([^;]*?"[^"]*",\s*"([a-z_]+)",\s*"(?:info|warning|error)"', text, re.S))
+        self.assertGreater(len(logged), 20)
+        self.assertEqual(sorted(logged - accepted), [])
+
+    def test_reconnect_evidence_routes_and_residue_are_read_only_and_correlated(self):
+        main = (ROOT / "src/app/MainDlg.cpp").read_text()
+        wireguard = (ROOT / "src/platform/WireGuard.cpp").read_text()
+        services = (ROOT / "src/platform/Services.cpp").read_text()
+        # The route check and network watch only read Windows state; no route or interface is ever modified.
+        for mutation in ("CreateIpForwardEntry2", "DeleteIpForwardEntry2", "SetIpInterfaceEntry", "SetIfEntry"):
+            self.assertNotIn(mutation, wireguard + services + main)
+        route = wireguard.split("AddressRoute RouteToAddress(", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("GetBestInterfaceEx", route)
+        residue = wireguard.split("std::vector<std::string> ResidualTeliphonesTunnels(", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("lifecycle::StartupResidualTunnels(", residue)
+        self.assertNotIn("RemoveTunnel", residue)
+        stale = main.split("void CMainDlg::RemoveStaleTunnels() {", 1)[1].split("\n}\n", 1)[0]
+        self.assertLess(stale.index("ResidualTeliphonesTunnels(saved)"), stale.index("ShowMessage("))
+        self.assertIn("Other WireGuard tunnels are not changed.", stale)
+        # Network changes are recorded and offered as context; they do not start another reconnect loop.
+        changed = main.split("LRESULT CMainDlg::OnNetworkChanged(", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn('LogEvent("network_changed"', changed)
+        for action in ("StartDisconnect", "OnConnect", "RunInBackground", "SetTimer"):
+            self.assertNotIn(action, changed)
+        self.assertIn('wcsncmp(alias, L"TELIPHONES-", 11) == 0', services)
+        shutdown = main.split("KillTimer(kMonitorTimer);", 2)[-1]
+        self.assertIn("StopWatchingNetworkChanges(networkWatch_)", shutdown)
+        # The heartbeat carries the attempt id so PBX diagnostics can be matched to this attempt.
+        self.assertIn('MaintainWorkstationSession(address, false, &pairing, "", "", "", attemptId)', main)
+        self.assertIn("X-Teliphones-Attempt: ", services)
+        probe = main.split("if (transportFailure) {", 1)[1].split("result->admissionTransportFailure = true;", 1)[0]
+        self.assertIn("tlp::win::RouteToAddress(tunnelName, address)", probe)
+        self.assertIn("context.correlationId = diagnosticId;", probe)
 
     def test_ssh_runtime_cleanup_cannot_block_startup_and_exit_tears_down_everything(self):
         main = (ROOT / "src/app/MainDlg.cpp").read_text()
@@ -1244,8 +1287,8 @@ endfunction()
         base = ".".join(map(str, parts[:3]))
         product = base
         numeric = ".".join(map(str, parts))
-        self.assertEqual(product, "0.8.4")
-        self.assertEqual(numeric, "0.8.4.0")
+        self.assertEqual(product, "0.8.5")
+        self.assertEqual(numeric, "0.8.5.0")
         self.assertIn(f'"version-string": "{product}"', (ROOT / "vcpkg.json").read_text(encoding="utf-8"))
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
@@ -1255,7 +1298,10 @@ endfunction()
         self.assertIn(f"## {product} — Unreleased", changelog)
         self.assertEqual(re.findall(r"^## (\d+\.\d+\.\d+) ", changelog, re.MULTILINE)[0], product)
         self.assertIn(f"**{numeric}**", changelog)
-        self.assertIn(f"Windows {product} corrects the", readme)
+        self.assertIn("route-aware", readme)
+        self.assertIn("release blocker", readme)
+        workflow = (ROOT.parents[1] / ".github/workflows/windows-build.yml").read_text(encoding="utf-8")
+        self.assertIn("TELIPHONES-SSH.exe", workflow)
         self.assertIn(
             "Windows 0.8.0 adds explicit pairing access selection",
             " ".join(changelog.split()),
@@ -1319,7 +1365,7 @@ endfunction()
         module_version = ET.parse(ROOT.parents[1] / "teliphones/module.xml").getroot().findtext("version")
         self.assertRegex(module_version or "", r"^\d+\.\d+\.\d+$")
         for path, statement in (
-            (ROOT / "README.md", "TELIPHONES 0.8.4 for Windows is licensed under GPLv3."),
+            (ROOT / "README.md", "TELIPHONES 0.8.5 for Windows is licensed under GPLv3."),
             (ROOT.parents[1] / "teliphones/README.md",
              f"TELIPHONES {module_version} for FreePBX is licensed under GPLv3."),
         ):

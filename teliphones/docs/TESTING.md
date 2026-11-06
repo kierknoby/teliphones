@@ -1,10 +1,10 @@
 # TELIPHONES testing
 
-## Windows 0.8.3 source review and package boundary
+## Current 0.8.5 / 0.6.7 source review and package boundary
 
-Windows 0.8.3 is independently versioned; module 0.6.6 and root broker 0.6.6
-retain protocol 12. The local 0.6.6 archive and checksum match current source;
-the superseded root-level 0.6.5 pair was removed. Historical archives **do not
+Windows 0.8.5 is independently versioned; module 0.6.7 and root broker 0.6.7
+retain protocol 12. The local 0.6.7 archive and checksum match current source;
+the existing 0.6.6 archive is preserved unchanged. Historical archives **do not
 match current module source** and must not be rebuilt or described as containing
 the new revocation security corrections. No publication or deployment is claimed.
 Source version checks run without an archive; exact package validation requires
@@ -32,6 +32,28 @@ without accessing external URLs. For native Windows version resources, MFC
 pairing behaviour, startup smoke and portable Release checks, use the
 `desktop/windows/tests/WINDOWS-READINESS.md` reference in the source repository.
 Linux checks do not substitute for Windows execution.
+
+## 0.6.7 admission diagnostics and package validation
+
+The broker regressions exercise correlated admission results, whether a response
+reached Windows, lock contention, source changes for the same workstation,
+actual session limits for a different workstation, lease clearing on broker
+restart, listener state and reconciliation failure/recovery. The source-change
+case is simulated; it does not validate live WireGuard endpoint roaming or
+FreePBX admission recovery.
+
+The PHP tests verify the administrator diagnostics sanitiser, including
+rejecting endpoint-like strings and malformed attempt identifiers. A parity
+guard ensures that every broker diagnostic event and field is understood by
+the FreePBX sanitiser. The package validator checks the archive file set,
+metadata, permissions, source-byte equality and checksum. Build the archive
+using the root `README.md` command before running the complete package test.
+
+The Windows route check, interface-change callback and residual-service/
+adapter enumeration require native MSVC validation. The embedded SSH console
+closing TELIPHONES unexpectedly remains a release blocker, and the complete
+public-IP change/reconnect sequence requires native Windows and live FreePBX
+17 / Debian 12 testing.
 
 ## 0.6.6 feedback-loop correction, revocation security and version validation
 

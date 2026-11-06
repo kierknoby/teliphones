@@ -1,25 +1,28 @@
-# TELIPHONES 0.8.4 for Windows (experimental)
+# TELIPHONES 0.8.5 for Windows (experimental)
 
 **TELIPHONES is a UK registered trademark.**
 
-**TELIPHONES 0.8.4 for Windows is licensed under GPLv3.**
+**TELIPHONES 0.8.5 for Windows is licensed under GPLv3.**
 
 Reach your PBX privately, open FreePBX in your preferred browser and start an
 approved SSH session without distributing permanent administrator SSH credentials.
 This guide covers installing and using the Windows application. The
 [FreePBX administration guide](../../teliphones/README.md) covers server setup.
 
-Windows **0.8.4** (file version **0.8.4.0**) is independent of FreePBX module
-**0.6.6**, root broker **0.6.6**, protocol **12**. Windows 0.8.4 corrects the
-tunnel lifecycle: a tunnel service stuck in `START_PENDING` is removed through
-verified ownership without a reboot wherever Windows permits, overlapping
-connect/cleanup operations are excluded, and failures report the original
-Windows error with the exact cleanup outcome. It retains 0.8.3's official
+Windows **0.8.5** (file version **0.8.5.0**) is independent of FreePBX module
+**0.6.7**, root broker **0.6.7**, protocol **12**. It adds route-aware
+admission-failure reporting, local network-change detection, correlation with
+PBX-side session diagnostics, and detection of residual TELIPHONES-owned
+tunnels. It retains the verified tunnel lifecycle and shutdown corrections,
+SSH attempt cleanup and startup recovery from 0.8.4, and 0.8.3's official
 WireGuardNT 1.1 adapter-API activation with memory-only keys. It retains 0.8.1's pairing dialogue order, stale-request handling, Copy/Save
 availability and response-derived approved SSH account display, and the 0.8.0 source
 features: password protection, listener migration, PBX policy/status, Allowed
 List and unlock requests, post-pair SSH elevation and the experimental built-in
-SSH console. It is an unreleased release candidate, not a published download.
+SSH console. The reported failure where opening the embedded SSH console closes
+TELIPHONES remains an unresolved release blocker; this version does not claim
+the crash is fixed or that public-IP roaming works end to end. It is unreleased,
+not a published download.
 The [version definition](src/app/Version.h), not the manifest assembly identity,
 defines the application version.
 
@@ -30,8 +33,9 @@ defines the application version.
 > authenticated SSH into a FreePBX 17 test server and automatic closure of the
 > owned terminal when TELIPHONES disconnects. Complete server-side revocation,
 > authorisation expiry, systemd/cgroup lifecycle, reconnection and failure
-> recovery still need live validation. These supplied reports do not validate
-> the current 0.8.4 source or establish a matching binary. See
+> recovery still need live validation. Opening the embedded SSH console
+> unexpectedly closing TELIPHONES remains a release blocker. These supplied
+> reports do not validate the current 0.8.5 source or establish a matching binary. See
 > [verification status](#verification-status).
 
 ## Choose your workflow
@@ -91,8 +95,8 @@ risk. See the [current security limitations](#security).
 
 ### Download an existing build
 
-**0.8.4 source is prepared, but its native build and application artefact are
-blocked pending an isolated Windows runner. No 0.8.4 executable is supplied.**
+**0.8.5 source is prepared, but its native build and application artefact are
+blocked pending Windows CI validation. No 0.8.5 executable is supplied.**
 Do not substitute an older successful run for current-source validation.
 
 Download **TELIPHONES-Windows-x64** from an existing successful Windows build
@@ -112,7 +116,7 @@ source rather than disabling Windows protections. For source builds, see
 
 ### Upgrade the development workstation after native validation
 
-Only proceed after the exact 0.8.4 build passes native Release compilation,
+Only proceed after the exact 0.8.5 build passes native Release compilation,
 the complete CTests (including `tunnel_startup_native` with its stuck
 `START_PENDING` and per-tunnel lock cases, and `wireguard_nt_unit`),
 the actual official service/driver integration gate, application tests and
@@ -121,28 +125,28 @@ an MSI installer. The workflow's bundle directory is `desktop/windows/build/arti
 its Actions artefact name is **TELIPHONES-Windows-x64**. No bundle has been
 produced for this pending source.
 
-1. Disconnect in 0.8.3 and close TELIPHONES and its owned SSH console. Retain
+1. Disconnect in 0.8.4 and close TELIPHONES and its owned SSH console. Retain
    the old application directory for rollback; do not delete profiles,
    Credential Manager entries or application data.
    If a `WireGuardTunnel$TELIPHONES-*` service remains (for example stuck in
    `START_PENDING`), record the read-only diagnostics in
-   [Troubleshooting](#troubleshooting) and restart Windows before upgrading;
-   the 0.8.3 build cannot recover it.
-2. Extract the validated bundle into a separate **TELIPHONES-0.8.4** directory.
+   [Troubleshooting](#troubleshooting). Do not assume cleanup or network roaming
+   succeeded unless the application confirms it.
+2. Extract the validated bundle into a separate **TELIPHONES-0.8.5** directory.
    Keep both executables, `wireguard.dll`, licences and `build-info.json` together.
 3. Before launch, in PowerShell in that directory, check:
 
    ```powershell
    $info = Get-Content .\build-info.json -Raw | ConvertFrom-Json
    $version = [Diagnostics.FileVersionInfo]::GetVersionInfo((Resolve-Path .\TELIPHONES.exe).Path)
-   if ($version.ProductVersion -ne '0.8.4' -or $version.FileVersion -ne '0.8.4.0') { throw 'Wrong executable version' }
-   if ($info.productVersion -ne '0.8.4' -or $info.fileVersion -ne '0.8.4.0') { throw 'Wrong build metadata' }
+   if ($version.ProductVersion -ne '0.8.5' -or $version.FileVersion -ne '0.8.5.0') { throw 'Wrong executable version' }
+   if ($info.productVersion -ne '0.8.5' -or $info.fileVersion -ne '0.8.5.0') { throw 'Wrong build metadata' }
    if ((Get-FileHash .\TELIPHONES.exe -Algorithm SHA256).Hash -ine $info.sha256) { throw 'Application hash mismatch' }
    if ((Get-FileHash .\TELIPHONES-SSH.exe -Algorithm SHA256).Hash -ine $info.sshHelperSha256) { throw 'SSH helper hash mismatch' }
    if ((Get-FileHash .\wireguard.dll -Algorithm SHA256).Hash -ine $info.wireGuardNtSha256) { throw 'WireGuardNT hash mismatch' }
    ```
 
-4. Launch the new executable, confirm **0.8.4** in About and reuse the saved
+4. Launch the new executable, confirm **0.8.5** in About and reuse the saved
    profile without re-pairing. Perform one controlled Connect and retain the
    WireGuard log plus any stage-specific error. Confirm sustained service
    operation, eventual handshake, approved PBX access and disconnect/reconnect.
@@ -175,16 +179,11 @@ During installation the dialogue cannot be closed until the worker finishes; can
 
 ## Pair an administrator workstation
 
-The preserved 0.6.3 module archive includes broker transport fixes but predates
-the web-only form correction now in module source. Do not assume that correction
-is shipped: use a reviewed build containing it for the web-only workflow.
-Updating that PHP/template correction alone needs no root-broker change.
-
-Prepare a reviewed Module Admin test package containing the required form
-correction and complete the [root broker bootstrap](../../teliphones/README.md#complete-installation-on-freepbx-17).
-After module upgrades, repeat bootstrap with no active support session and
-tunnels disconnected; verify broker 0.6.2/protocol 12, not just an operational
-socket. The later PHP form correction alone requires no broker change.
+Use the reviewed FreePBX module 0.6.7 package for pairing. After installing or
+upgrading the module, complete the [root broker bootstrap](../../teliphones/README.md#complete-installation-on-freepbx-17)
+with no active support session and workstation tunnels disconnected. Verify
+that the broker reports version 0.6.7 and protocol 12; an operational socket
+alone does not confirm the required broker version.
 
 1. Select **Add my PBX...** and enter the workstation name under **Pair my PBX >
    Request access**.
@@ -348,7 +347,7 @@ preserves timing, telemetry, window-lifecycle and manual display-test detail.
 
 Events include startup/shutdown, local pairing changes, manual connection attempts, service establishment/removal, health/probe/telemetry transitions, errors and minute summaries. Deterioration events retain recent bounded measurements. Logs never dump profiles, tunnel configurations, passwords or key material; detail sanitisation also applies before viewing/export.
 
-For **My PBXs**, both ends use `ws-<workstation_id>` as a non-secret pairing-lifetime diagnostic identifier. Each Windows connection has a separate local attempt identifier, since the current pairing protocol does not notify the broker of application button presses. The PBX records only its own peer/interface/authorisation/firewall observations, never a fictional client connect or failure. Compare UTC timelines allowing for clock skew, aided by local monotonic elapsed milliseconds. **Remote Support** uses separate local `support-<profile_id>` identifiers, not these PBX workstation logs.
+For **My PBXs**, both ends use `ws-<workstation_id>` as a non-secret pairing-lifetime diagnostic identifier. Each Windows connection has a separate attempt identifier; session-controller requests carry it to correlate client attempts with broker request handling. This does not claim the PBX observed a local button press or a WireGuard event. The PBX records only its own peer/interface/authorisation/firewall observations. Compare UTC timelines allowing for clock skew, aided by local monotonic elapsed milliseconds. **Remote Support** uses separate local `support-<profile_id>` identifiers, not these PBX workstation logs.
 
 The FreePBX full-administrator interface provides the corresponding bounded broker diagnostics. Export each side to compare events; insufficient evidence remains explicitly inconclusive. The diagnostics do not grant SSH access or transmit logs to a telemetry service.
 
@@ -518,16 +517,16 @@ still need Windows validation; portable success is not that evidence.
 |---|---|
 | WireGuard missing, unverified or installation cancelled | Use **Settings... > Connectivity > Check Again** or retry **Install WireGuard**; investigate signature/proxy errors, never bypass them |
 | No WireGuard handshake | Check approved pairing, endpoint DNS/IP and router/host UDP policy; a relay is not provided |
-| Handshake but FreePBX unreachable | Check **Connection Health**, the PBX's **FreePBX Firewall integration** status and the [module troubleshooting guide](../../teliphones/README.md#troubleshooting); confirm the 0.4.1 root broker was actually refreshed |
+| Handshake but FreePBX unreachable | Check **Connection Health**, the PBX's **FreePBX Firewall integration** status and the [module troubleshooting guide](../../teliphones/README.md#troubleshooting); confirm the 0.6.7 root broker was actually refreshed |
 | **Open SSH** unavailable or rejected | Confirm explicit SSH approval, the approved account, Windows system OpenSSH and adjacent `TELIPHONES-SSH.exe`; choose an OpenSSH-backed terminal, not PuTTY |
 | Host/CA/certificate mismatch | Stop and investigate; re-pair only after verifying the PBX identity through a trusted channel, never accept an unverified key |
 | Browser/terminal missing | Choose a supported installed application in Settings; no silent substitution occurs |
 | Connect or Disconnect reports **Cleanup is incomplete** | The message names the failed stage, Windows error and residual state. TELIPHONES only ends this tunnel's own verified `wireguard.exe`; other WireGuard tunnels are not changed. If the process survived termination (`START_PENDING`, stop error 1052), restart Windows. Before restarting, record `sc.exe queryex` and `sc.exe qc` for the named `WireGuardTunnel$TELIPHONES-*` service, `Get-NetAdapter -Name <alias>` and System log Service Control Manager events 7000/7009/7011/7031/7034/7045 |
 | Startup or Disconnect reports **Temporary SSH files could not be removed** | Saved connections are still loaded and the SSH session has ended. The message names the remaining path under `%LOCALAPPDATA%\TELIPHONES\SSH`; these files hold no private keys. Close any program holding that file (for example an editor viewing `ssh.log`); TELIPHONES retries at the next disconnect or start. A file TELIPHONES did not create is left for inspection, never deleted |
-| TELIPHONES closes unexpectedly | Record Event Viewer **Windows Logs > Application** event 1000 (Application Error) and any Windows Error Reporting entry for `TELIPHONES.exe` (exception code and faulting module), plus the session log. Owned SSH processes end with TELIPHONES; the next start removes its temporary SSH files and detects a remaining tunnel |
+| TELIPHONES closes unexpectedly while opening the embedded SSH console | This remains an unresolved release blocker; do not assume the console is reliable. Preserve the session diagnostic export, Event Viewer **Windows Logs > Application** event 1000 (Application Error), and any Windows Error Reporting entry for `TELIPHONES.exe` (exception code and faulting module) for investigation. The application must not be treated as having passed the console lifecycle until native Windows regression testing covers the failure and restart path |
 | Starting TELIPHONES reports it **is already running … but it has no open window** | The earlier process is still closing connections or showing an error. Wait and start again. If it stays without a window, end that process ID in Task Manager. The next start removes any tunnel or temporary SSH files it left; saved connections, credentials and pairings are not affected |
-| **Admission unavailable**: *the WireGuard handshake … has not completed* or *last completed N seconds ago* | The tunnel is not authenticated from the current network, which is common after changing network or public IP. This is not a PBX admission decision. Check that outbound UDP to the PBX endpoint (for example `pbx.example:51821`) is permitted and the name resolves (`Resolve-DnsName`). Disconnect and Connect looks up the endpoint again. On the PBX, `wg show tlp-admin latest-handshakes endpoints` (a Locked workstation uses its dedicated interface) shows whether any handshake arrives |
-| **Admission unavailable**: *the WireGuard tunnel is authenticated (handshake N seconds ago)* | The network path works and the PBX session controller (TCP 8766 through the tunnel) is not answering. On the PBX, record `ss -ltnp 'sport = :8766'`, `fwconsole teliphones status`, the broker journal (`journalctl -u teliphones-broker --since -30min`) and whether `fwconsole teliphones listener` runs repeatedly. TELIPHONES keeps retrying while connected |
+| **Admission unavailable** and the diagnostic says the handshake could not be read | Whether the tunnel is authenticated is unknown; do not infer an authentication failure or success. Export **View Session Log** and compare it with the PBX diagnostic view. Check approved endpoint DNS and UDP reachability, then inspect `wg show tlp-admin latest-handshakes endpoints` on the PBX (a Locked workstation uses its dedicated interface) |
+| **Admission unavailable** after the handshake was read | A recent handshake alone does not prove that tunnel routing, TCP 8766, or admission works. Use the diagnostic's last confirmed stage and attempt identifier; compare **View Session Log** with the PBX's bounded diagnostics. On the PBX, check `ss -ltnp 'sport = :8766'`, `fwconsole teliphones status`, and `journalctl -u teliphones-broker --since -30min`. The diagnostics distinguish controller transport/timeouts from a broker admission rejection when that evidence is available |
 | Expired or revoked pairing | Obtain a new PBX approval; reconnecting or editing a local profile cannot renew authority |
 | Display or pop-out problem | Record Windows version, scaling, monitor layout and theme; compare with the [manual validation matrix](tests/WINDOWS-READINESS.md#test-coverage-and-manual-validation) |
 
@@ -545,7 +544,7 @@ identity-bound migration parsing and the Argon2id positive-path provider tests
 when available. This is not a native Windows build: this Linux environment
 cannot compile or exercise the MFC application, Windows Credential Manager,
 DPAPI, UAC, service/helper lifecycle, or actual WireGuard reconnect path.
-Historical operator reports for 0.7.0 are not evidence for the current 0.8.4
+Historical operator reports for 0.7.0 are not evidence for the current 0.8.5
 changes.
 
 Live FreePBX session admission, listener migration, source restrictions,

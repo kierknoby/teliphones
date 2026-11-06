@@ -640,6 +640,69 @@ lifecycle::AdapterPresence TunnelAdapterPresence(const std::string& tunnelName) 
     return lifecycle::ClassifyTunnelAdapter(true, rows, tunnelName);
 }
 
+AddressRoute RouteToAddress(const std::string& tunnelName, const std::string& ipv4Address) {
+    AddressRoute result;
+    std::uint32_t parsed = 0;
+    if (!ParseIPv4(ipv4Address, parsed)) return result;
+    // Filled byte by byte in network order; this file does not link Winsock.
+    sockaddr_in destination{};
+    destination.sin_family = AF_INET;
+    destination.sin_addr.S_un.S_un_b.s_b1 = static_cast<UCHAR>(parsed >> 24);
+    destination.sin_addr.S_un.S_un_b.s_b2 = static_cast<UCHAR>(parsed >> 16);
+    destination.sin_addr.S_un.S_un_b.s_b3 = static_cast<UCHAR>(parsed >> 8);
+    destination.sin_addr.S_un.S_un_b.s_b4 = static_cast<UCHAR>(parsed);
+    DWORD index = 0;
+    if (GetBestInterfaceEx(reinterpret_cast<sockaddr*>(&destination), &index) != NO_ERROR) return result;
+    MIB_IF_ROW2 row{};
+    row.InterfaceIndex = index;
+    if (GetIfEntry2(&row) != NO_ERROR) return result;
+    const std::string alias = Narrow(row.Alias);
+    if (alias == tunnelName) {
+        result.route = RouteEvidence::ViaTunnel;
+    } else {
+        result.route = RouteEvidence::ViaOtherInterface;
+        result.interfaceAlias = alias;
+    }
+    return result;
+}
+
+std::vector<std::string> ResidualTeliphonesTunnels(const std::vector<std::string>& installedSavedTunnels) {
+    static const std::wstring servicePrefix = L"WireGuardTunnel$";
+    std::vector<std::string> services;
+    ServiceHandle manager(OpenSCManagerW(nullptr, nullptr, SC_MANAGER_ENUMERATE_SERVICE));
+    if (manager) {
+        std::vector<BYTE> buffer;
+        DWORD resume = 0;
+        // Bounded: each pass either completes or grows the buffer to the size Windows reports.
+        for (int pass = 0; pass < 16; ++pass) {
+            DWORD needed = 0, count = 0;
+            const BOOL done = EnumServicesStatusExW(manager.get(), SC_ENUM_PROCESS_INFO, SERVICE_WIN32, SERVICE_STATE_ALL,
+                                                    buffer.empty() ? nullptr : buffer.data(),
+                                                    static_cast<DWORD>(buffer.size()), &needed, &count, &resume, nullptr);
+            if (!done && GetLastError() != ERROR_MORE_DATA) break;
+            const auto* entries = reinterpret_cast<const ENUM_SERVICE_STATUS_PROCESSW*>(buffer.data());
+            for (DWORD i = 0; i < count; ++i) {
+                const std::wstring name = entries[i].lpServiceName;
+                if (name.compare(0, servicePrefix.size(), servicePrefix) == 0)
+                    services.push_back(Narrow(name.substr(servicePrefix.size())));
+            }
+            if (done) break;
+            if (needed > buffer.size()) buffer.resize(needed);
+        }
+    }
+    std::vector<lifecycle::InterfaceRow> adapters;
+    PMIB_IF_TABLE2 table = nullptr;
+    if (GetIfTable2(&table) == NO_ERROR) {
+        const std::unique_ptr<MIB_IF_TABLE2, decltype(&FreeMibTable)> owned(table, &FreeMibTable);
+        for (ULONG i = 0; i < table->NumEntries; ++i) {
+            const std::string alias = Narrow(table->Table[i].Alias);
+            if (lifecycle::IsTeliphonesTunnelName(alias))
+                adapters.push_back({alias, static_cast<std::uint32_t>(table->Table[i].OperStatus)});
+        }
+    }
+    return lifecycle::StartupResidualTunnels(installedSavedTunnels, services, adapters);
+}
+
 bool IsHelperInvocation(const std::vector<std::string>& arguments) {
     return !arguments.empty() && (arguments[0] == "/tunnel-up" || arguments[0] == "/tunnel-down");
 }

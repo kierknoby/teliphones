@@ -14,46 +14,48 @@ workflow for bounded support windows.
 
 | Component | Current version | Start here |
 |---|---|---|
-| FreePBX module / root broker | **0.6.6** / **0.6.6**, protocol 12 (unreleased source) | [Install](teliphones/README.md#installing-the-module) · [Upgrade](teliphones/README.md#updating-teliphones) |
-| Windows application | **0.8.4** (file version 0.8.4.0; native build pending) | [Download and requirements](desktop/windows/README.md#requirements-and-download) · [Pair a PBX](desktop/windows/README.md#pair-an-administrator-workstation) |
+| FreePBX module / root broker | **0.6.7** / **0.6.7**, protocol 12 (unreleased source) | [Install](teliphones/README.md#installing-the-module) · [Upgrade](teliphones/README.md#updating-teliphones) |
+| Windows application | **0.8.5** (file version 0.8.5.0; native build pending) | [Download and requirements](desktop/windows/README.md#requirements-and-download) · [Pair a PBX](desktop/windows/README.md#pair-an-administrator-workstation) |
 | Reference gateway and Checker probe | Optional laboratory infrastructure | [Integration guide](teliphones/docs/INTEGRATION.md) · [Gateway](gateway/README.md) |
 
-FreePBX module **0.6.6**, root broker **0.6.6** and Windows **0.8.4** are
+FreePBX module **0.6.7**, root broker **0.6.7** and Windows **0.8.5** are
 independently versioned; the broker protocol remains 12. The module/broker
-update adds durable workstation revocation, verified access removal, fail-closed
-containment and retrievable revocation outcomes. It retains the web-only `ssh=0` form correction, field-specific validation
-and safe-value retention. Listener diagnostics distinguish admission/removal
-and preserve initiating errors through cleanup and policy restoration.
-Progress is never pairing success; firewall verification
-and single-dispatch behaviour remain unchanged. Upgrade the module in place and
-rerun the root bootstrap so the separately installed broker is refreshed;
-pairings and their identities are preserved.
-Windows **0.8.4** corrects the tunnel lifecycle after a 0.8.3 tunnel service
-remained stuck in `START_PENDING` until reboot: cleanup is verified, a stuck
-service's own `wireguard.exe` is ended only after ownership is proven, overlapping
-tunnel operations are excluded and failures keep their original Windows error.
-It retains 0.8.3's official WireGuardNT adapter-API activation with memory-only
-keys; native build and live acceptance are pending. It retains
+update adds correlated, persistent workstation-admission diagnostics, records
+lock contention and controller/reconciliation state, moves reporting work out
+of the admission lock and returns an error response for unexpected controller
+failures. The bounded diagnostics are available from the FreePBX administrator
+view/export and omit credentials, keys and public endpoint addresses.
+The broker preserves workstation identity across source-address changes, but
+this does not prove that public-IP roaming or end-to-end reconnection succeeds.
+Upgrade the module in place and rerun the root bootstrap so the separately
+installed broker is refreshed; pairings and their identities are preserved.
+Windows **0.8.5** adds route-aware admission failure reporting, local network
+change detection, correlation with PBX diagnostics and discovery of residual
+TELIPHONES-owned tunnels. It retains verified tunnel lifecycle and shutdown
+corrections, SSH runtime cleanup and the intended custom SSH console in its
+Windows distribution. **The reported console crash remains an unresolved
+release blocker.** Native build and live acceptance are pending. It retains
 its corrected pairing dialogue: select name/access, generate and copy the request, then validate and
 save FreePBX's response. Name/access changes invalidate stale requests; approved
 SSH accounts are response-derived. It retains 0.8.0's password protection, PBX
 policy requests, listener migration and post-pair SSH elevation.
 The Windows application is not included in the Module Admin package.
 
-The local `TELIPHONES-0.6.6.tgz` and matching SHA-256 sidecar contain current
-module/broker 0.6.6 source, including the 0.6.5 revocation security corrections and the
-0.6.6 nftables feedback-loop correction that restores workstation session admission.
+The local `TELIPHONES-0.6.7.tgz` and matching SHA-256 sidecar contain current
+module/broker 0.6.7 source, including the prior revocation and nftables
+feedback-loop corrections and the new admission diagnostics and responsiveness
+changes.
 The superseded 0.6.5 archive and checksum have been removed from the repository root.
 The historical `TELIPHONES-0.6.3.tgz`
 contains broker 0.6.2 and predates the form and listener diagnostic corrections.
 The initiating live listener convergence failure remains unconfirmed. Regression
 tests do not establish successful Debian 12 / FreePBX 17 pairing or connectivity.
 The later operator-confirmed CPU overload came from repeated listener commands
-in installed broker 0.6.2. Current broker 0.6.6 source gates background
+in installed broker 0.6.2. Current broker 0.6.7 source gates background
 commands on owned kernel readback and adds bounded failure backoff. Keep the
 development broker stopped until this replacement is reviewed; use the
 [controlled startup/CPU and live acceptance procedure](teliphones/README.md#064-development-server-acceptance).
-No Windows 0.8.4 executable has been built here or published. Native execution
+No Windows 0.8.5 executable has been built here or published. Native execution
 and artefact creation are blocked pending a Windows runner; check exact build
 provenance, not the target version alone. See the
 [controlled Windows upgrade procedure](desktop/windows/README.md#upgrade-the-development-workstation-after-native-validation).
@@ -155,10 +157,10 @@ Remote Support uses `wg-teliphones`, separate from My PBXs' `tlp-admin`.
 1. **Check the platform:** FreePBX 17 on Debian 12, root console access, HTTPS,
    WireGuard kernel support, `wg`, `ip`, `nft`, iptables and systemd.
    See [PBX requirements](teliphones/README.md#requirements).
-2. **Verify and install** `TELIPHONES-0.6.6.tgz` through Module Admin:
+2. **Verify and install** `TELIPHONES-0.6.7.tgz` through Module Admin:
 
    ```bash
-   sha256sum -c TELIPHONES-0.6.6.tgz.sha256
+   sha256sum -c TELIPHONES-0.6.7.tgz.sha256
    ```
 
 3. **Complete the root bootstrap** using the
@@ -262,20 +264,20 @@ The [package validator](teliphones/tests/package-validation.py) checks exact
 archive/source equality. Documentation edits after packaging deliberately make
 that equality fail; they do not justify rewriting a preserved archive.
 
-Build the module-only 0.6.6 archive from the repository root using the existing
+Build the module-only 0.6.7 archive from the repository root using the existing
 package exclusions, then validate the exact contents and checksum:
 
 ```bash
 tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
   --mode='u+rwX,go+rX,go-w' --exclude='*/.*' --exclude='*/tests' \
   --exclude='*/__pycache__' --exclude='*.pyc' --exclude='*.pyo' \
-  -czf TELIPHONES-0.6.6.tgz teliphones
-  sha256sum TELIPHONES-0.6.6.tgz > TELIPHONES-0.6.6.tgz.sha256
+  -czf TELIPHONES-0.6.7.tgz teliphones
+sha256sum TELIPHONES-0.6.7.tgz > TELIPHONES-0.6.7.tgz.sha256
 PYTHONDONTWRITEBYTECODE=1 python3 teliphones/tests/package-validation.py
 ```
 
-Do not rebuild historical archives. The current 0.6.6 package
-contains the 0.6.6 root broker and protocol 12; no Windows or gateway sources
+Do not rebuild historical archives. The current 0.6.7 package
+contains the 0.6.7 root broker and protocol 12; no Windows or gateway sources
 are included.
 
 ## Contributing
@@ -297,8 +299,8 @@ sanitised evidence. Report suspected security issues privately through
 
 **TELIPHONES is a UK registered trademark.**
 
-TELIPHONES 0.7.0 for Windows is licensed under GPLv3.
-TELIPHONES 0.4.1 for FreePBX is licensed under GPLv3.
+TELIPHONES 0.8.5 for Windows is licensed under GPLv3.
+TELIPHONES 0.6.7 for FreePBX is licensed under GPLv3.
 These are the product footer statements. The software grant is **GPL version 3
 or, at your option, any later version (GPL-3.0-or-later)**; the module metadata
 declares `GPLv3+`. See [LICENSE](LICENSE). Software licensing does not grant

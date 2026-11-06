@@ -25,15 +25,15 @@ def included(path):
 
 class SourceVersionTests(unittest.TestCase):
     def test_authoritative_versions(self):
-        self.assertEqual(VERSION, "0.6.6")
+        self.assertEqual(VERSION, "0.6.7")
         tree = ast.parse((MODULE / "support_broker.py").read_text())
         versions = [ast.literal_eval(node.value) for node in tree.body if isinstance(node, ast.Assign)
                     and any(isinstance(target, ast.Name) and target.id == "VERSION" for target in node.targets)]
-        self.assertEqual(versions, ["0.6.6"], "The broker patch version identifies the firewall feedback-loop correction")
+        self.assertEqual(versions, ["0.6.7"], "The broker patch version identifies the admission diagnostics and responsiveness corrections")
         self.assertIn("BROKER_VERSION = '%s';" % versions[0], (MODULE / "WebSupport.php").read_text())
-        self.assertIn("TELIPHONES 0.6.6 requires broker version 0.6.6, broker protocol 12",
+        self.assertIn("TELIPHONES 0.6.7 requires broker version 0.6.7, broker protocol 12",
                       (MODULE / "BrokerBootstrap.php").read_text())
-        self.assertIn("## 0.6.6, firewall reconciliation feedback-loop correction", (MODULE / "docs/CHANGELOG.md").read_text())
+        self.assertIn("## 0.6.7, admission diagnostics and responsiveness", (MODULE / "docs/CHANGELOG.md").read_text())
         self.assertIn("durable workstation revocation", (MODULE / "BrokerBootstrap.php").read_text())
 
 
@@ -207,9 +207,12 @@ class PackageTests(unittest.TestCase):
                                 "workstation-revocations.json", "def reconcile_revocations(",
                                 "def revocation_status(", "revocation_persistence_failed",
                                 'NftMonitor.signature("delete", kind, value)',
-                                "if existing is not None and policy_equal(existing, expected):"):
+                                "if existing is not None and policy_equal(existing, expected):",
+                                "def session_request(", "def record_session_request(",
+                                "X-Teliphones-Attempt", "reconcile.background",
+                                "controller.state", "DIAGNOSTIC_REPEAT_SECONDS"):
                     self.assertIn(feature, broker)
-                self.assertIn('VERSION = "0.6.6"', broker)
+                self.assertIn('VERSION = "0.6.7"', broker)
                 for feature in ("def listener_failure_output(", "listener_operation", "Initiating failure:",
                                 "listener_failure_output(result.stderr)", "def listener_rules_current(",
                                 "background_listener_check", "workstation_retry_at",

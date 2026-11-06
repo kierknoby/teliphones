@@ -1,9 +1,10 @@
 # My PBXs managed SSH: implementation and validation
 
-The current implementation targets **Windows 0.8.4**, **FreePBX 0.6.6**, **root
-broker 0.6.6**, protocol **12**, independently versioned. Current source retains
-0.6.5 durable workstation revocation and verified removal and adds the 0.6.6
-nftables feedback-loop correction. The local 0.6.6 archive and checksum include current source;
+The current implementation targets **Windows 0.8.5**, **FreePBX 0.6.7**, **root
+broker 0.6.7**, protocol **12**, independently versioned. Current source retains
+the 0.6.6 nftables feedback-loop correction and adds persistent correlated
+admission diagnostics and broker responsiveness corrections. The local 0.6.7
+archive and checksum include current module source;
 the superseded 0.6.5 archive was removed; historical archives lack those new security corrections. Historical reports and the
 proposal below retain their original versions; they do not validate current source.
 
@@ -28,6 +29,9 @@ stability, PBX revocation/expiry/systemd/cgroup termination, reboot, upgrade,
 rollback and failure recovery remain unverified. This local environment has
 Linux OpenSSH, not a Windows runtime/compiler or running systemd manager.
 There is no shared-agent, plaintext-file, password or host-verification fallback.
+The reported current failure where opening the embedded SSH console closes
+TELIPHONES remains an unresolved release blocker; historical successful SSH
+reports do not establish that the current console lifecycle is reliable.
 See the [current evidence register](SECURITY.md#verification-evidence).
 
 ## Pairing identity and ephemeral certificate contract

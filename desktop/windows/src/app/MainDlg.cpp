@@ -176,6 +176,7 @@ BEGIN_MESSAGE_MAP(CMainDlg, CAppearanceDialog)
     ON_MESSAGE(WM_APP_PROBE_DONE, &CMainDlg::OnProbeDone)
     ON_MESSAGE(WM_APP_FIRST_RUN, &CMainDlg::OnFirstRun)
     ON_MESSAGE(WM_APP_STARTUP_NOTICES, &CMainDlg::OnStartupNotices)
+    ON_MESSAGE(WM_APP_NETWORK_CHANGED, &CMainDlg::OnNetworkChanged)
 END_MESSAGE_MAP()
 
 CMainDlg::CMainDlg(CWnd* parent) : CAppearanceDialog(IDD_MAIN, parent), healthDialog_(this) {}
@@ -243,6 +244,7 @@ BOOL CMainDlg::OnInitDialog() {
     SetState("Not connected", "Select a PBX and choose Connect. Add a PBX with \"Add my PBX...\" or a Remote Support gateway.");
     RemoveStaleTunnels();
     SetTimer(kMonitorTimer, kMonitorIntervalMs, nullptr);
+    networkWatch_ = tlp::win::WatchNetworkChanges(m_hWnd, WM_APP_NETWORK_CHANGED);
 
     try {
         std::optional<tlp::HealthPreferences> storedHealth = tlp::win::LoadHealthPreferences();
@@ -676,17 +678,45 @@ void CMainDlg::RefreshWireGuard() {
     UpdateButtons();
 }
 
+LRESULT CMainDlg::OnNetworkChanged(WPARAM, LPARAM) {
+    const std::int64_t now = tlp::win::UnixNow();
+    lastNetworkChangeUnix_ = now;
+    if (now - lastNetworkChangeLogUnix_ >= 30) {
+        lastNetworkChangeLogUnix_ = now;
+        // Interface changes only; addresses are not recorded. WireGuard roams on its own next handshake, and the
+        // existing monitor tick re-checks admission, so no separate reconnect is started here.
+        LogEvent("network_changed", "info", active_ && active_->connected
+            ? "A local network interface changed while connected. WireGuard follows the new path on its next handshake; "
+              "admission is re-checked on the next monitor tick."
+            : "A local network interface changed while no tunnel was connected.");
+    }
+    return 0;
+}
+
 void CMainDlg::RemoveStaleTunnels() {
     // A previous run may have ended without disconnecting (crash, power loss). Ask before a cleanup
     // that may require UAC; launching the GUI alone must not trigger a privileged operation.
-    std::vector<std::string> stale;
+    std::vector<std::string> saved;
     for (const Profile& profile : profiles_) {
         std::string name = tlp::TunnelNameFor(profile);
         tlp::win::TunnelState state = tlp::win::QueryTunnel(name);
-        if (state != tlp::win::TunnelState::Absent && state != tlp::win::TunnelState::Unknown) stale.push_back(name);
+        if (state != tlp::win::TunnelState::Absent && state != tlp::win::TunnelState::Unknown) saved.push_back(name);
+    }
+    // No TELIPHONES connection exists yet, so anything in its tunnel namespace is residue, including the tunnel of a
+    // pairing that was revoked or re-created. Such a leftover routes the same PBX address and can capture admission.
+    std::vector<std::string> stale = saved;
+    try {
+        stale = tlp::win::ResidualTeliphonesTunnels(saved);
+    } catch (const std::exception& e) {
+        LogEvent("residual_tunnels_found", "warning", std::string("Leftover tunnel enumeration was incomplete: ") + e.what());
     }
     if (stale.empty()) return;
-    if (tlp::ui::ShowMessage(L"A TELIPHONES tunnel from a previous run is still installed. Remove it now?", MB_ICONQUESTION | MB_YESNO) != IDYES) {
+    std::string names;
+    for (const auto& name : stale) names += (names.empty() ? "" : ", ") + name;
+    LogEvent("residual_tunnels_found", "warning", "TELIPHONES tunnels installed at startup: " + names + ".");
+    if (tlp::ui::ShowMessage(Widen("TELIPHONES tunnels from a previous run are still installed (" + names +
+                                   "). Remove them now? Other WireGuard tunnels are not changed.").c_str(),
+                             MB_ICONQUESTION | MB_YESNO) != IDYES) {
         SetState("Previous tunnel still installed", "Remove it from WireGuard for Windows, or restart TELIPHONES and approve cleanup.");
         return;
     }
@@ -1151,13 +1181,17 @@ void CMainDlg::OnTimer(UINT_PTR id) {
     const tlp::PairResponse pairing = connectedProfile ? connectedProfile->pairing : tlp::PairResponse{};
     std::wstring wgExecutable = wireguard_.wgExe;
     std::int64_t expiresAt = active_->expiresAt;
+    const std::string diagnosticId = active_->diagnosticId;
+    const std::string attemptId = active_->attemptId;
+    const std::int64_t networkChangedAt = lastNetworkChangeUnix_;
     std::uint64_t tickNow = GetTickCount64();
     bool collectTelemetry = lastTelemetryTickMs_ == 0 ||
                             tickNow - lastTelemetryTickMs_ >= tlp::ConnectionHealthMonitor::kTelemetryIntervalSeconds * 1000ULL;
     if (collectTelemetry) lastTelemetryTickMs_ = tickNow;
     try {
     std::thread([window, generation, tunnelName, address, managementUrl, peerPublicKey, managedSshProfile, pairing,
-                 workstationSessionRequired, wgExecutable, expiresAt, collectTelemetry]() {
+                 workstationSessionRequired, wgExecutable, expiresAt, collectTelemetry, diagnosticId, attemptId,
+                 networkChangedAt]() {
         auto* result = new ProbeResult;
         std::unique_ptr<tlp::AdmissionTransportError> transportFailure;
         result->sample.authorizationExpiresAt = expiresAt;
@@ -1178,7 +1212,7 @@ void CMainDlg::OnTimer(UINT_PTR id) {
                 if (workstationSessionRequired) {
                     result->sessionAdmissionRequired = true;
                     try {
-                        const auto lease = tlp::win::MaintainWorkstationSession(address, false, &pairing);
+                        const auto lease = tlp::win::MaintainWorkstationSession(address, false, &pairing, "", "", "", attemptId);
                         result->connectedWorkstations = lease.connectedWorkstations;
                         result->maximumWorkstations = lease.maximumWorkstations;
                         result->policyLocked = lease.policyLocked;
@@ -1227,12 +1261,25 @@ void CMainDlg::OnTimer(UINT_PTR id) {
                 }
                 if (transportFailure) {
                     const std::int64_t observed = tlp::win::UnixNow();
+                    tlp::AdmissionContext context;
+                    try {
+                        const auto route = tlp::win::RouteToAddress(tunnelName, address);
+                        context.route = route.route;
+                        context.routeInterface = route.interfaceAlias;
+                        context.routeInterfaceTeliphones = tlp::tunnel_lifecycle::IsTeliphonesTunnelName(route.interfaceAlias);
+                    } catch (const std::exception&) {
+                        context.route = tlp::RouteEvidence::Unknown;
+                    }
+                    if (networkChangedAt > 0) context.networkChangedUnixSeconds = networkChangedAt;
+                    context.correlationId = diagnosticId;
                     result->sessionAdmissionError = tlp::DescribeAdmissionFailure(
                         *transportFailure, result->sample.handshakeUnixSeconds, observed, pairing.endpoint,
-                        address + ":8766");
+                        address + ":8766", context);
                     result->admissionTransportFailure = true;
-                    result->admissionFailureClass = tlp::AdmissionFailureName(tlp::ClassifyAdmissionFailure(
-                        transportFailure->stage, result->sample.handshakeUnixSeconds, observed));
+                    // The stage is part of the key so a change from connect to response failures is recorded too.
+                    result->admissionFailureClass = std::string(tlp::AdmissionFailureName(tlp::ClassifyAdmissionFailure(
+                        transportFailure->stage, result->sample.handshakeUnixSeconds, observed, context.route))) + "/" +
+                        tlp::AdmissionStageName(transportFailure->stage);
                 }
             }
             result->probeSucceeded = result->sample.probeKnown && result->sample.probeSucceeded;
@@ -1676,6 +1723,8 @@ void CMainDlg::OnCancel() {
     }
     healthDialog_.PersistWindowState();
     KillTimer(kMonitorTimer);
+    tlp::win::StopWatchingNetworkChanges(networkWatch_);
+    networkWatch_ = nullptr;
     LogEvent("shutdown", "info", "Application shutdown completed.");
     CDialogEx::OnCancel();
 }

@@ -32,6 +32,12 @@ void WriteSessionEvent(const std::string& sessionId, const std::string& attemptI
                        const std::string& severity, const std::string& detail);
 std::string ReadSessionEvents(const std::string& sessionId);
 
+// Posts `message` to `window` whenever Windows reports an IP interface change on an interface outside the TELIPHONES
+// tunnel namespace (NotifyIpInterfaceChange). Read-only; returns nullptr when notifications are unavailable.
+// StopWatchingNetworkChanges waits for any callback in progress, so the window must still exist when it is called.
+void* WatchNetworkChanges(void* window, unsigned message);
+void StopWatchingNetworkChanges(void* watch);
+
 // TCP connection to the PBX tunnel address; succeeds only when the PBX answers through the tunnel.
 bool ProbeTcp(const std::string& ipv4, unsigned short port, unsigned timeoutMs);
 struct TcpProbeMeasurement {
@@ -60,7 +66,8 @@ WorkstationSessionStatus MaintainWorkstationSession(const std::string& pbxAddres
                                                     const PairResponse* pairing = nullptr,
                                                     const std::string& action = "",
                                                     const std::string& sshPublicKey = "",
-                                                    const std::string& allowedSources = "");
+                                                    const std::string& allowedSources = "",
+                                                    const std::string& attemptId = "");
 WireGuardCounters ReadWireGuardCounters(const std::wstring& wgExecutable, const std::string& tunnelName, const std::string& peerPublicKey);
 // IP-layer interface octets, not encrypted per-peer counters; handshake remains unknown.
 WireGuardCounters ReadTunnelInterfaceCounters(const std::string& tunnelName);

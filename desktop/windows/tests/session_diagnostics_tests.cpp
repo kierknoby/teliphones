@@ -127,6 +127,13 @@ void tests(const fs::path& root) {
           store.Read("application").find("Saved connections were loaded.") != std::string::npos,
           "startup cleanup warning is accepted without triggering a second diagnostics error");
 
+    for (const char* event : {"ssh_console_failed", "ssh_ended", "ssh_teardown_failed", "ssh_cleanup_failed",
+                              "ssh_local_cleanup_failed", "session_release_warning", "shutdown_teardown_failed",
+                              "shutdown_with_residual_tunnel", "residual_tunnels_found", "network_changed"}) {
+        check(!throws([&] { store.Write("application", "", event, "warning", "evidence"); }),
+              "every lifecycle event MainDlg logs is accepted rather than silently dropped");
+    }
+
     const std::string key(43, 'A');
     const std::string secret = "password=short-secret; {\"token\":\"short-token\"}; grant abcdef; pair-code-abcd; " +
         key + "=; -----BEGIN PRIVATE KEY-----\nPEMSECRET\n-----END PRIVATE KEY-----; "

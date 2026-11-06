@@ -173,6 +173,40 @@ void WriteSessionEvent(const std::string& sessionId, const std::string& attemptI
 
 std::string ReadSessionEvents(const std::string& sessionId) { return sessionDiagnostics().Read(sessionId); }
 
+namespace {
+struct NetworkWatch {
+    HWND window = nullptr;
+    UINT message = 0;
+    HANDLE handle = nullptr;
+};
+
+VOID WINAPI onInterfaceChange(PVOID context, PMIB_IPINTERFACE_ROW row, MIB_NOTIFICATION_TYPE type) {
+    if (!context || !row || type == MibInitialNotification) return;
+    // TELIPHONES' own adapters appear and disappear on every connect and disconnect; they are not a network change.
+    wchar_t alias[IF_MAX_STRING_SIZE + 1]{};
+    if (ConvertInterfaceLuidToAlias(&row->InterfaceLuid, alias, IF_MAX_STRING_SIZE + 1) == NO_ERROR &&
+        wcsncmp(alias, L"TELIPHONES-", 11) == 0)
+        return;
+    const auto* watch = static_cast<const NetworkWatch*>(context);
+    ::PostMessageW(watch->window, watch->message, 0, 0);
+}
+}  // namespace
+
+void* WatchNetworkChanges(void* window, unsigned message) {
+    auto watch = std::make_unique<NetworkWatch>();
+    watch->window = static_cast<HWND>(window);
+    watch->message = message;
+    if (NotifyIpInterfaceChange(AF_UNSPEC, &onInterfaceChange, watch.get(), FALSE, &watch->handle) != NO_ERROR) return nullptr;
+    return watch.release();
+}
+
+void StopWatchingNetworkChanges(void* opaque) {
+    auto* watch = static_cast<NetworkWatch*>(opaque);
+    if (!watch) return;
+    CancelMibChangeNotify2(watch->handle);
+    delete watch;
+}
+
 TcpProbeMeasurement MeasureTcpProbe(const std::string& ipv4, unsigned short port, unsigned timeoutMs) {
     TcpProbeMeasurement measurement;
     std::uint32_t parsed = 0;
@@ -248,7 +282,8 @@ TcpProbeMeasurement MeasureTcpProbe(const std::string& ipv4, unsigned short port
 WorkstationSessionStatus MaintainWorkstationSession(const std::string& pbxAddress, bool release,
                                                     const PairResponse* pairing, const std::string& action,
                                                     const std::string& sshPublicKey,
-                                                    const std::string& allowedSources) {
+                                                    const std::string& allowedSources,
+                                                    const std::string& attemptId) {
     std::uint32_t parsed = 0;
     if (!ParseIPv4(pbxAddress, parsed)) throw Error("The PBX session-control address is invalid.");
     struct HttpHandle {
@@ -279,7 +314,12 @@ WorkstationSessionStatus MaintainWorkstationSession(const std::string& pbxAddres
         throw AdmissionTransportError(stage, code,
             "The PBX workstation session controller did not respond through WireGuard: " + Narrow(ErrorText(code)) + ".");
     };
-    if (!WinHttpSendRequest(request.value, L"Content-Type: application/json\r\n", static_cast<DWORD>(-1L),
+    // The local connection-attempt id lets the PBX diagnostic history be matched to this attempt. It is random,
+    // carries no credential and is sent only inside the authenticated tunnel.
+    std::wstring headers = L"Content-Type: application/json\r\n";
+    if (attemptId.size() == 16 && attemptId.find_first_not_of("0123456789abcdef") == std::string::npos)
+        headers += L"X-Teliphones-Attempt: " + Widen(attemptId) + L"\r\n";
+    if (!WinHttpSendRequest(request.value, headers.c_str(), static_cast<DWORD>(-1L),
                             const_cast<char*>(body.data()), static_cast<DWORD>(body.size()),
                             static_cast<DWORD>(body.size()), 0))
         transportFailure(AdmissionStage::Reach);
