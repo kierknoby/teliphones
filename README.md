@@ -1,4 +1,4 @@
-# TELIPHONES
+# TELIPHONES®
 
 **Private, administrator-approved access to FreePBX, from the workstation you use every day.**
 
