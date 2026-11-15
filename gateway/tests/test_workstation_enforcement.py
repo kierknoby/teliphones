@@ -185,7 +185,7 @@ class EnforcementTests(unittest.TestCase):
         with self.assertRaisesRegex(broker.BrokerError, "ownership chain"):
             self.broker.owned_table()
 
-    def test_restart_revalidates_owner_chain_and_revocation_retains_open_listener(self):
+    def test_restart_revalidates_owner_chain_and_last_revocation_closes_listener(self):
         _, response = self.pair(mode="persistent", ssh="1")
         restarted = broker.Broker()
         self.addCleanup(lambda: restarted.monitor.close() if restarted.monitor is not None else None)
@@ -203,8 +203,10 @@ class EnforcementTests(unittest.TestCase):
             restarted.dispatch({"action": "unpair", "workstation_id": response["workstation_id"]}, 1000)
         state = json.loads(self.saved())
         self.assertEqual(self.net.peers, {})
-        self.assertTrue(self.net.up)
-        self.assertTrue(broker.policy_equal(self.net.table, restarted.expected_policy(state)))
+        self.assertFalse(self.net.up)
+        self.assertFalse(self.net.link)
+        self.assertIsNone(self.net.table)
+        self.assertEqual(state["workstations"], [])
 
     def test_pairing_addition_preserves_existing_listener_and_firewall_policy(self):
         _, first = self.pair()

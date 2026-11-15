@@ -85,6 +85,7 @@ final class FirewallListener
             }
             self::save($stateFile, $saved);
 
+            $pending = [];
             foreach ($ports as $port) {
                 $key = (string)$port;
                 if (!isset($saved['services'][$key])) {
@@ -126,10 +127,11 @@ final class FirewallListener
                 if (($services[$owned] ?? null) !== self::service($owned, $port, $record['name']) || $zones !== self::ZONES) {
                     throw new \RuntimeException('FreePBX listener service configuration could not be verified.');
                 }
-                ($verify ?? [self::class, 'verifyRules'])($owned, $port);
+                $pending[$owned] = $port;
             }
 
-            foreach (array_diff(array_keys($saved['services']), array_map('strval', $ports)) as $stalePort) {
+            $stalePorts = array_diff(array_keys($saved['services']), array_map('strval', $ports));
+            foreach ($stalePorts as $stalePort) {
                 $record = $saved['services'][$stalePort];
                 $id = $record['id'];
                 if ($id !== null) {
@@ -140,11 +142,21 @@ final class FirewallListener
                     if (!is_array($services) || !empty($services[$id])) {
                         throw new \RuntimeException('FreePBX listener service removal could not be verified.');
                     }
-                    ($verify ?? [self::class, 'verifyRules'])($id, 0);
+                    $pending[$id] = 0;
                 }
-                unset($saved['services'][$stalePort]);
-                self::save($stateFile, $saved);
             }
+            // FreePBX persists Custom Services immediately, but generates rules on a
+            // separate 15/30/120-second cycle. Submit all changes before waiting, with
+            // one deadline for the entire transaction (including removed services).
+            $deadline = hrtime(true) / 1e9 + 150;
+            foreach ($pending as $id => $port) {
+                if ($verify !== null) $verify($id, $port);
+                else self::verifyRules($id, $port, '/sbin/iptables', $deadline);
+            }
+            foreach ($stalePorts as $stalePort) {
+                unset($saved['services'][$stalePort]);
+            }
+            if ($stalePorts) self::save($stateFile, $saved);
             if (!$saved['services'] && is_file($stateFile) && !unlink($stateFile)) {
                 throw new \RuntimeException('Cannot remove TELIPHONES listener ownership state.');
             }
@@ -169,16 +181,18 @@ final class FirewallListener
         }
     }
 
-    public static function verifyRules(string $id, int $port, string $iptables = '/sbin/iptables'): void
+    public static function verifyRules(string $id, int $port, string $iptables = '/sbin/iptables', ?float $deadline = null): void
     {
         $chain = 'fpbxsvc-' . substr(str_replace('-', '', $id), 0, 16);
-        for ($attempt = 0; $attempt < 30; ++$attempt) {
+        $deadline = $deadline ?? hrtime(true) / 1e9 + 150;
+        do {
             $lines = [];
             exec(escapeshellarg($iptables) . ' -w 1 -t filter -S 2>&1', $lines, $result);
             if ($result !== 0) throw new \RuntimeException('Cannot inspect FreePBX generated listener rules.');
             if (self::rulesConverged($lines, $chain, $port)) return;
+            if (hrtime(true) / 1e9 >= $deadline) break;
             usleep(500000);
-        }
+        } while (true);
         throw new \RuntimeException('FreePBX generated listener rules have not converged; reconciliation will retry. '
             . $chain . ' ' . ($port === 0 ? 'removal' : 'UDP ' . $port) . ': '
             . self::rulesMismatch($lines, $chain, $port));

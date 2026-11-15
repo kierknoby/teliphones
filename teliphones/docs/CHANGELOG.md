@@ -4,11 +4,83 @@
 
 Historical entries describe their versions at the time, not current behaviour
 or current test status. Windows has an independent history in the source
-repository. Portable Linux validation is current for the broker, FreePBX module and
-Windows core. Native Windows compilation/UI integration and live FreePBX
+repository. Portable Linux validation has been run for the broker, FreePBX module and
+Windows core; the current 0.7.0 source run is not all passing. Native Windows compilation/UI integration and live FreePBX
 session, migration, firewall and SSH acceptance remain outstanding.
 
-## 0.6.7, admission diagnostics and responsiveness (unreleased source)
+## 0.7.0, listener reconciliation and workstation admission (unreleased)
+
+- Proposed FreePBX module/root broker version **0.7.0**, retaining broker
+  protocol **12**; Windows remains independently versioned at **0.8.5**. The
+  module-only `TELIPHONES-0.7.0.tgz` is locally available after deterministic
+  packaging and static source/metadata/content/checksum validation. It is an
+  unreleased development candidate, not a public release, production approval
+  or live acceptance.
+- Reconcile shared and per-workstation WireGuard listener ports through
+  FreePBX Custom Service generation. Submit batched service changes, verify the
+  generated rules and zone jumps against a shared deadline, preserve
+  FreePBX-owned chains, and close the listener only after the final pairing
+  authorization expires or is revoked. Correct IPv6 wildcard classification so
+  an IPv6 wildcard is not falsely treated as proof that IPv4 web access is
+  absent. These implemented paths still require live FreePBX verification.
+- Enforce workstation admission against the configured Open/Closed/Frozen
+  policy, pairing lifetime, source restrictions and session capacity. Persist
+  revocation decisions before network cleanup, recover revoked identities
+  fail-closed, report verified removal separately from pending housekeeping,
+  and retain correlated bounded diagnostics for admission, lock wait,
+  reconciliation, refusal, cleanup and response delivery. Preserve pairing
+  identity and original expiry through listener migration and transport loss.
+- Expand gateway, broker, concurrency, listener-scheduling, namespace and PHP
+  regression coverage for FreePBX rule generation, final-authorisation listener
+  closure, expiry, revocation, retries, failure recovery, IPv6 handling,
+  correlated diagnostics and archive/source equality. Automated models and
+  namespace packet tests are local evidence; they do not establish production
+  FreePBX behavior or unknown-public-IP connectivity with FreePBX Firewall
+  enabled and no manual whitelisting.
+- The latest recorded gateway run executed 272 tests: 244 passed, 27 skipped,
+  zero failed, and one PHP-dependent environment error because PHP was
+  unavailable to the checker bridge. The PHP regression runner was not run.
+  The two wake-event test failures were resolved by correcting fixtures to
+  model stable generated-listener ownership; production code and original
+  assertions were not weakened.
+- Slow reconciliation still holds `wslock` and can delay admission, revocation
+  and expiry; a guaranteed 30-second lease cutoff is unverified. PHP validation,
+  native Windows build/acceptance, live FreePBX 17 acceptance and the original
+  public-IP connectivity requirement remain outstanding. The embedded SSH
+  console crash remains a release blocker. No release, deployment or
+  production-readiness claim is made.
+
+## 0.6.8, listener closure and admission correction (superseded development milestone)
+
+- Proposed FreePBX module/root broker patch version **0.6.8** at that
+  development milestone. It was source preparation only: never released,
+  published, installed or deployed. Its locally validated development package
+  has been superseded and removed as the project advances to 0.7.0. Protocol
+  **12** and Windows **0.8.5** were unchanged.
+- Close the shared/dedicated listener when the final pairing authorisation
+  expires or is revoked, including under Open policy; retain valid pairings
+  across temporary transport loss. Correct expired-lease permission handling
+  and IPv6 wildcard reachability classification.
+- Batch FreePBX Custom Service updates/removals and verify generated rules with
+  a shared 150-second deadline; allow 180 seconds in the broker helper call.
+  Keep listener reconciliation serialized under `wslock`.
+- Current development-source verification (15 November 2026): gateway suite
+  272 executed, 244 passed, 27 skipped, zero failed, and one PHP-dependent
+  environment error (`php` unavailable in the checker bridge). The PHP
+  regression runner was not run. The two wake-event failures reproduced during
+  investigation were resolved by completing the stable FreePBX listener
+  ownership/generated-rule setup in the affected test fixtures; the original
+  idle-wake, bounded-work and no-mutation assertions remain. Both targeted tests
+  and 96 relevant broker, listener-scheduling and concurrency tests passed.
+  Historical 13 November counts apply to an earlier source state. See the root
+  verification status for exact boundaries.
+- Slow reconciliation still holds the workstation lock and can delay admission,
+  revocation and lease expiry. No guaranteed 30-second lease cutoff is proven.
+  PHP validation, live FreePBX 17 acceptance, native Windows validation and the
+  embedded SSH console crash remain release blockers. The former development
+  package was not a release.
+
+## 0.6.7, admission diagnostics and responsiveness (historical source)
 
 - Advance the FreePBX module and root broker independently to **0.6.7**,
   retaining protocol **12** and Windows **0.8.5**. Module Admin does not

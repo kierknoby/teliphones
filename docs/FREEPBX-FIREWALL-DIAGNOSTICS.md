@@ -1,30 +1,147 @@
 # FreePBX 17: workstation firewall integration investigation
 
-This is the historical 0.4.0/0.4.1 incident and read-only evidence runbook,
-not current installation instructions or archive availability. Current targets
-are module 0.6.7, root broker 0.6.7, protocol 12 and Windows 0.8.5. Use the
+This runbook records the pending listener/admission investigation, read-only
+evidence collection and historical 0.4.0/0.4.1 incident. It is not installation
+instructions or an archive-availability statement. Current targets
+are proposed, unreleased module 0.7.0, root broker 0.7.0, protocol 12 and Windows 0.8.5. A statically validated 0.7.0 development package is available, but it is not production-ready or live-accepted; the historical 0.6.7 archive was intentionally removed from this checkout and did not contain these changes. Use the
 [current upgrade guide](../teliphones/README.md#updating-teliphones) for bootstrap;
 account for dedicated Locked interfaces and configured management ports when
 interpreting the shared-interface/default-port examples below. The preserved
 0.6.3 archive predates the subsequent module-side web-only form correction
-and listener diagnostics included in 0.6.4. Current 0.6.7 source additionally
+and listener diagnostics included in 0.6.4. Proposed 0.7.0 source additionally
 contains 0.6.5 durable revocation and verified removal, the 0.6.6 nftables
 feedback-loop correction, and correlated admission diagnostics; the local
-0.6.7 archive and checksum include current source.
+0.6.7 archive predates and does not contain the correction documented below.
 
 ## Current evidence and scope
 
-### Listener convergence failures in current source
+### Pending listener and admission correction — 13 November 2026
 
-The listener verifier now includes the owned chain, requested UDP port (or
-`removal`) and final mismatch in its timeout error. It reports missing exact
-UDP ACCEPT rules, differing service-rule counts and missing or remaining zone
-jumps. It does not echo raw rules, comments, keys or pairing material. The
-verification predicate, retry deadline and fail-closed cleanup are unchanged.
-This diagnostic improvement remains in current 0.6.7 source, not a
-demonstrated correction of the operator's live pairing failure. Follow the
-[development-server acceptance checklist](../teliphones/README.md#064-development-server-acceptance)
-after the in-place module upgrade and root broker refresh.
+**Unreleased development candidate; not production-ready or live-accepted.**
+A statically validated 0.7.0 development package exists locally. The historical
+0.6.7 package is not included in this checkout and is not evidence that these
+0.7.0 changes are installed.
+The reported failure to administer
+the affected PBX from an untrusted public IP remains unresolved in live evidence.
+A WireGuard handshake, TCP 8766 reachability or an iptables ACCEPT alone does
+not establish management admission or web-server reachability.
+
+#### Confirmed local defects and corrections
+
+- `FirewallListener::verifyRules()` originally waited about 15 seconds. FreePBX
+  persists Custom Service configuration before its separate rule-generation
+  cycle; inspected FreePBX 17 code has 15/30/120-second scheduling modes.
+  The pending reconciler submits all additions/removals before verifying them
+  against one shared 150-second deadline. The broker allows 180 seconds for
+  the helper. Verification still requires exact generated rules and zone jumps;
+  a timeout does not count as admission. The original timeout dates to
+  `8e44678` (0.5.0). The last revision confirmed working on the affected PBX
+  has not been identified, and timing is not proven to explain every live symptom.
+- `Broker.expire_sessions()` compared leases after `active_sessions()` had
+  already filtered expired entries, so it could leave their management permits
+  installed. It now compares persisted leases before filtering and reconciles
+  the nft policy. The defect is present in `c8840f9` (0.6.0). A real-packet
+  baseline reproduction retained GUI/SSH access after lease expiry.
+- The listener/interface now closes after the last pairing authorisation expires
+  or is revoked, including under Open policy. Open still permits a new explicit
+  administrator-approved pairing. Losing a transport lease or disconnecting
+  does not revoke an otherwise valid pairing or extend its original deadline.
+- `web_listening()` now reports an IPv6 wildcard as indeterminate for IPv4,
+  rather than absent: `/proc/net/tcp6` does not expose `IPV6_V6ONLY`. This avoids
+  a false negative but does not prove Apache accepts the private IPv4 address.
+- A provisional handover change temporarily replaced `self.reconcile_listener`
+  on the shared broker and deferred verification outside `wslock`. It was
+  removed. It bypassed transaction verification, failure/backoff handling and
+  the background read-only fast path. Reconciliation is serialized again;
+  concurrent policy changes cannot overtake an in-flight listener transaction.
+
+**Remaining concurrency limitation:** slow listener verification holds `wslock`.
+Admission, revocation and lease-expiry processing that require that lock can be
+delayed. The 30-second lease is not a guaranteed kernel-enforced cutoff during
+such a wait. Restoring serialization corrects the handover regression; it does
+not solve this latency/enforcement problem. A safe correction and tests for
+expiry/revocation during slow generation remain required before recommending
+deployment. Do not release the lock around a stale desired-port list or replace
+shared instance methods as a workaround.
+
+The convergence error identifies the owned chain, requested UDP port (or
+`removal`) and final rule/zone mismatch. Broker diagnostics retain only the
+sanitised structured helper output; raw rules, keys and pairing material must
+not be echoed. Capture the initiating error before cleanup changes the state.
+
+#### Local evidence
+
+An earlier 13 November 2026 working-tree run completed 269 gateway Python tests:
+267 passed and two skipped; its PHP regression runner passed. This is historical
+and not current verification. The 15 November 2026 gateway run executed 272
+tests: 244 passed, 27 skipped, none failed, and one errored because the PHP
+checker bridge could not find `php`. The PHP regression runner was unavailable
+and not run. The two wake-event failures found in the earlier focused
+investigation were resolved by correcting the affected test fixtures to model
+stable FreePBX listener ownership and generated firewall rules. Both targets
+passed with original assertions intact; 96 related broker, listener scheduling
+and concurrency tests also passed. This does not establish live FreePBX
+behavior. Slow listener reconciliation still holds `wslock`, can delay
+revocation/expiry, and does not prove a 30-second lease cutoff. Live FreePBX 17
+acceptance and PHP validation remain outstanding.
+
+Real WireGuard and nft/iptables-nft packet tests ran in disposable namespaces.
+They exercised untrusted-source admission, roaming, approved-IP locking,
+unknown-key and pre-admission denial, GUI/SSH TCP access, lease and pairing
+expiry, revocation, reconnection and modelled FreePBX rule regeneration.
+The management endpoints were TCP fixtures; these are not real Apache sign-in,
+managed SSH authentication, production systemd/cgroup or live FreePBX-daemon
+acceptance results. No live services or firewall settings were changed.
+
+#### Read-only collection on the affected PBX
+
+Use the independent FreePBX UK root console; no direct SSH access is assumed.
+Capture a UTC timestamp alongside the failed attempt and run:
+
+```bash
+date -u
+iptables -w 5 -t filter -S
+nft -a list table inet teliphones_workstations
+ss -ltnp '( sport = :443 or sport = :8080 or sport = :8766 or sport = :22002 )'
+journalctl -u teliphones-broker.service --since '-15 minutes' --no-pager -o short-iso
+cat /var/lib/teliphones/active-sessions.json
+cat /var/lib/teliphones/firewall-listener.json
+```
+
+Adjust the TCP port filter to the approved GUI/SSH ports. These two JSON files
+contain lease/ownership metadata, not private keys; share outputs privately and
+redact unrelated addresses/identifiers consistently. Do not collect private keys
+or complete pairing/enrolment files. Retain command errors as evidence.
+
+Correlate the requested listener ports and failed chain with the ownership
+journal and generated rules at the same time. Check the admitted workstation's
+lease against UTC, and follow its exact interface/source/private destination
+through both firewall layers. An iptables ACCEPT cannot override a later nft
+DROP. Distinguish management refusal from a web server bound only to loopback or
+a different address. Check the browser's actual destination and redirects:
+management should use the approved private endpoint, not depend on public GUI
+access. A Trusted-zone workaround conceals the failure rather than validates it.
+
+#### Recovery and live acceptance boundary
+
+Preserve the independent root console and collect evidence before changing state.
+Do not automatically re-pair, trust an address, flush rules, restart services,
+run the bootstrap or overwrite recovery journals. A failed/unknown cleanup
+outcome requires administrator investigation; a successful handshake is not a
+reason to disregard it. Any installation or service/firewall change needs a
+separately approved plan identifying the exact candidate and rollback files.
+
+After the concurrency limitation is addressed and a controlled installation is
+approved, verify the installed helper contents rather than relying on 0.6.7
+version labels alone. With FreePBX Firewall enabled and the test source outside
+Trusted, demonstrate actual private GUI login and approved managed SSH login.
+Also verify pre-admission and unknown-key denial, rejection from an unapproved
+IP for Locked pairings, unlocked roaming and reconnection without extending
+authorisation. Test lease expiry, final-pairing expiry/revocation and listener
+closure, including while generation is delayed. With separate approval, test
+normal FreePBX regeneration and confirm unrelated rules, VPN traffic and SSH
+sessions are preserved. Record failed steps; do not declare the incident fixed
+until management access from an untrusted public IP is demonstrated.
 
 ### Operator-confirmed listener subprocess overload
 
@@ -43,7 +160,7 @@ notification stream and whether any individual command failed were not captured;
 neither asynchronous rejection nor nft transaction failure is required to
 produce the unnecessary subprocesses.
 
-The 0.6.6 broker correction, retained in current 0.6.7, checks desired ports
+The 0.6.6 broker correction, retained in historical 0.6.7 and proposed 0.7.0 source, checks desired ports
 against the root-owned listener journal and exact generated IPv4 service/zone
 rules before background helper invocation. It does not cache success without
 checking kernel state or bypass explicit pairing/cleanup verification. Failed
@@ -55,10 +172,10 @@ Access remains disabled after failure. FreePBX rule changes still trigger
 readback and repair.
 
 The observed `51821,58490` versus `51821` is consistent with a Locked workstation
-attempt followed by rollback to the authoritative Open/zero-peer shared policy.
+attempt followed by rollback to the then-authoritative Open/zero-peer shared policy.
 A regression covers that sequence without continued port oscillation. The
 historical live attempt's exact requested source-lock policy remains unproven.
-This fix is included in the preserved 0.6.6 package and current 0.6.7 source;
+This fix is included in the preserved 0.6.6 package and subsequent source;
 the superseded root-level 0.6.5 archive/checksum were removed. Review before
 any controlled installation. Successful local regressions are not demonstrated
 end-to-end pairing or live CPU acceptance.
@@ -67,8 +184,9 @@ The operator-supplied FreePBX Firewall 17.0.1.35 snapshots contained one UDP
 51821 ACCEPT and exact external/internal/other zone jumps for the owned service.
 Those snapshots pass the actual admission predicate and fail the removal
 predicate. They were captured after the failure, not at the failed verification.
-An Open policy with no paired workstations can subsequently restore the shared
-listener through background reconciliation. Neither those snapshots nor
+In that earlier implementation, an Open policy with no paired workstations
+could subsequently restore the shared listener through background reconciliation.
+The pending correction closes listeners when no pairing authorisation remains. Neither those snapshots nor
 matching installed-source hashes establish successful pairing or the initiating
 transient failure. A missing dedicated Locked listener, incomplete generation,
 or stale removal rules must be distinguished using the failed chain/port and
@@ -80,8 +198,9 @@ acquires the same lock. The PHP listener helper additionally holds the ownership
 journal's exclusive file lock through API changes and kernel verification.
 The broker background worker therefore cannot recreate a listener during pairing
 cleanup. Failure teardown verifies listener removal while interfaces are down;
-only after successful cleanup does rollback restore the previous Open policy,
-including its shared listener with zero peers. These are separate transactions,
+only after successful cleanup does rollback restore the previous policy.
+With the pending correction, restoring an empty Open policy verifies listener
+removal again; it does not recreate a listener without an authorised pairing. These are separate transactions,
 not contradictory simultaneous desired states. FreePBX's own asynchronous
 generator is not protected by these TELIPHONES locks.
 

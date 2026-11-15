@@ -1,7 +1,11 @@
 # TELIPHONES security
 
-This document explains current source targets **FreePBX module 0.6.7**, **root
-broker 0.6.7**, **protocol 12** and **Windows 0.8.5**, evidence and limitations.
+This document explains proposed, unreleased source targets **FreePBX module
+0.7.0**, **root broker 0.7.0**, **protocol 12** and **Windows 0.8.5**, evidence
+and limitations. A statically validated 0.7.0 development package is available;
+it is not production-ready or live-accepted. The historical 0.6.7 archive was
+intentionally removed from this checkout and did not contain the proposed
+changes.
 
 > [!WARNING]
 > TELIPHONES remains experimental. The operator reports successful native
@@ -57,7 +61,31 @@ This documentation uses three levels of assurance. A control at one level should
 
 ## Verification evidence
 
-This evidence register is reviewed on **6 November 2026**. It distinguishes
+**Current 0.7.0 development-source verification (15 November 2026):** the
+gateway suite executed 272 tests: 244 passed, 27 were skipped, none failed, and
+one errored because the PHP checker bridge could not find `php`. The PHP
+regression runner is unavailable in this environment and was not run. The two
+wake-event failures seen before the final run were resolved by making the
+`test_support_broker.py` fixtures model already-generated FreePBX listener rules
+and matching ownership state. Both targeted tests then passed, as did 96 broker,
+listener-scheduling and concurrency tests. Their checks still assert bounded
+read-only handling, no self-wake, actual repair on changed rules, and genuine
+external nftables enforcement; this correction changes fixture setup, not
+production behavior or assertions. Isolated WireGuard and packet tests
+demonstrated admission and permission removal using management TCP fixtures,
+not actual FreePBX administration. The prior timeout and expired-lease defects
+were reproduced against the committed baseline. This supersedes the historical
+13 November 2026 report of 269 tests (267 passed, two skips) and a passing PHP
+suite; that report was for an earlier source state. The unsafe shared-method
+handover change was removed. Slow listener reconciliation still holds `wslock`
+and can delay revocation and lease expiry; 30-second lease enforcement is not
+verified. Live FreePBX 17 acceptance and PHP validation remain outstanding. See
+the [investigation and acceptance runbook](FREEPBX-FIREWALL-DIAGNOSTICS.md#pending-listener-and-admission-correction--13-november-2026).
+The historical 0.6.7 archive was intentionally removed from this checkout; it
+predated and did not contain these 0.7.0 source changes. The available 0.7.0
+development package is not production-ready or live-accepted.
+
+The historical evidence register below was reviewed on **6 November 2026**. It distinguishes
 supplied reports, current source and preserved packages from local execution.
 Earlier failed runs remain in the [Windows readiness history](../desktop/windows/tests/WINDOWS-READINESS.md#historical-investigations);
 they are not the current native-test result.
@@ -66,10 +94,10 @@ they are not the current native-test result.
 |---|---|
 | Current source review | Windows 0.8.5 retains the verified tunnel cleanup, per-tunnel exclusion, owned `START_PENDING` recovery and shutdown corrections from 0.8.4. It adds route-aware admission failure reporting, interface-change events, PBX attempt correlation and TELIPHONES-owned residual-tunnel detection. Native compilation and platform integration have not run here. The embedded SSH console crash remains a release blocker; public-IP roaming and end-to-end reconnection are not established. No Windows binary or connectivity success is claimed. |
 | Pairing form source correction | Disabled SSH select omitted `ssh` from web-only POST. The module now submits explicit `ssh=0`, retains safe values and rejects missing/invalid choices. PHP/Node page-path tests passed; gateway suite 203 run, 202 passed, one skipped, includes actual PHP page/Unix-socket broker pairing with modelled network commands. This is not live PBX execution. |
-| Current and preserved packages | Module/broker 0.6.7 adds bounded correlated admission diagnostics and responsiveness corrections to the prior nftables feedback-loop and durable-revocation fixes. The local 0.6.7 archive and checksum match current module source; the existing 0.6.6 archive is preserved unchanged. No release or deployment is claimed. Exact archive/source equality is a local packaging check, not proof of live connectivity. Windows is independently 0.8.5. |
+| Current and historical packages | Proposed module/broker 0.7.0 retains protocol 12; a statically validated development package is available, but it is not production-ready or live-accepted. The historical 0.6.7 archive was intentionally removed from this checkout and did not contain 0.7.0 listener/admission changes. No release or deployment is claimed. Exact archive/source equality is a local packaging check, not proof of live connectivity. Windows is independently 0.8.5. |
 | nftables repeatability | At 0.6.3 preparation, 10/10 working-tree and 10/10 unchanged-baseline namespace runs passed after an earlier intermittent own-event-filtering failure. That failure remains undiagnosed; successful samples do not exclude recurrence. |
 | Later operator report | Earlier Windows Actions run: all eleven native SSH integrations passed; first-run GUI smoke subsequently reported successful. No matching 0.8.1 run or independently fetched evidence is supplied. |
-| Operator's latest report | Successful Windows GitHub Actions builds and **all ten native OpenSSH integration tests passing**. No run URL, commit/build hash or raw logs accompanied this update; no external service was queried to verify it. |
+| Operator's latest report | A supplied historical report states successful Windows GitHub Actions builds and ten native OpenSSH integration tests passing. Another report states eleven. No run URL, commit/build hash or raw logs accompanied either report, so the counts cannot be reconciled or verified against the current source. |
 | Operator's live test | Windows 0.7.0 authenticated to a FreePBX 17 / Debian 12 server with installed module 0.4.0; the owned SSH terminal closed automatically on disconnect. This establishes an initial interoperability milestone, not complete PBX-side termination. |
 | Local 0.4.1 correction tests | Gateway suite: 148 run, 147 passed, one skipped because `wg` was absent. Includes genuine OpenSSH in isolated Linux namespaces and real packets through both iptables backends with simulated FreePBX rules; the SSH supervisor substitutes for systemd/cgroups. Module PHP/JS/docs, portable Windows 7/7 CTest and archive validation passed at packaging. |
 | Preserved review archive | `TELIPHONES-0.4.1.tgz` includes the corrected broker. Subsequent documentation-only edits are not repackaged; full archive/source byte equality must be re-established before a future distribution. |
@@ -120,9 +148,10 @@ flowchart TB
 
 | Traffic from a paired workstation | Result |
 |---|---|
-| TCP 80 and 443 to the PBX tunnel address | Permitted |
-| TCP 8765 and that peer's `22000 + IPv4 last octet` listener | Managed SSH-approved peers only: authenticated certificate API and isolated SSH service |
-| TCP 22 to the PBX tunnel address | Legacy version-1 SSH-approved pairings only; not granted to managed pairings |
+| Configured GUI TCP ports (80/443 by default) to the PBX tunnel address | Require an admitted, active management-session lease |
+| TCP 8766 to the PBX tunnel address | Session control for authenticated paired peers before management admission; source restrictions still apply |
+| TCP 8765 and that peer's `22000 + IPv4 last octet` listener | Managed SSH-approved peers with an active management-session lease: authenticated certificate API and isolated SSH service |
+| TCP 22 to the PBX tunnel address | Legacy version-1 SSH-approved pairings with an active management-session lease; not granted to managed pairings |
 | ICMP echo request to the PBX tunnel address | Permitted by TELIPHONES' nftables table; still subject to FreePBX Firewall |
 | SIP, IAX, AMI, ARI, databases, provisioning and every other port | Dropped by TELIPHONES' nftables table |
 | Any destination other than the PBX tunnel address, including forwarding | Dropped |
@@ -172,7 +201,7 @@ preferences belong to Remote Support and the earlier helper paths. Current
 ### FreePBX Firewall integration
 
 - The broker maintains the `teliphones-ws` iptables chain and one marked jump at the start of `fpbxfirewall`. Every direct INPUT Fail2Ban hook must precede entry. No rule is inserted above FreePBX's INPUT hook: that old placement triggered the reported recurring "invading rule" resets.
-- The chain accepts only configured management TCP ports (default 80/443) and approved SSH ports from admitted peers to their PBX address on the shared/dedicated interface. Management requires an active session lease. Managed certificate SSH uses TCP 8765 and a per-peer listener, never system TCP 22; legacy approvals retain 22. Everything else returns to the remaining FreePBX rules.
+- The chain accepts only configured management TCP ports (default 80/443) and approved SSH ports from paired peers to their PBX address on the shared/dedicated interface. The separate nftables admission gate requires an active management-session lease; an iptables ACCEPT alone does not grant management access. Managed certificate SSH uses TCP 8765 and a per-peer listener, never system TCP 22; legacy approvals retain 22. Everything else returns to the remaining FreePBX rules.
 - The integration is installed only after the nftables policy has been verified, and before the interface is brought up.
 - Only the exact marked jump is changed inside `fpbxfirewall`; the exact legacy INPUT jump is removed during migration/cleanup. A TELIPHONES Custom Service manages the required UDP listener ports through FreePBX's API and verifies generated rules. Unrelated zones/rules/services remain unchanged. Custom Rules need not be enabled; the interface/subnet are not trusted.
 - If Fail2Ban's hooks cannot all precede the integration, TELIPHONES withdraws the integration rather than bypass Fail2Ban. Tunnel web traffic is then dropped by FreePBX Firewall until the ordering is corrected.
@@ -186,7 +215,7 @@ TELIPHONES never flushes the system ruleset or a foreign chain, deletes/replaces
 
 - An administrator can revoke one workstation or all workstations from **Windows workstations**. Before changing anything, revocation disables `tlp-admin` and verifies that it is down.
 - Revocation is reported as successful only once it has been verified. A failed revocation is reported as an error, and **Revoke all workstations** remains available for retry.
-- Temporary pairings are removed on expiry by the broker's periodic check, approximately every 15 seconds.
+- Temporary pairings are removed on expiry by the broker's periodic check, approximately every 15 seconds when the worker can acquire its lock; slow reconciliation can delay enforcement.
 - The Windows application learns of revocation by losing reachability. There is no server-pushed revocation channel, so a client may briefly continue to show a connection. The PBX remains authoritative.
 - Deleting a Windows profile does **not** revoke a pairing. Revoke on the PBX first.
 
@@ -241,6 +270,13 @@ locations; request/credential contents are not logged by that reporting path.
 - Exposure of the WireGuard UDP port itself. It must be reachable; WireGuard does not respond to unauthenticated packets.
 
 ## Known limitations
+
+- **Workstation lock delay.** Listener verification remains serialized under
+  `wslock`; the pending helper may wait 150 seconds for generation (180-second
+  subprocess timeout). Admission, revocation and lease-expiry workers can wait
+  behind it. A 30-second lease is not a guaranteed kernel-enforced cutoff during
+  contention. Safe concurrency correction and delayed-generation lifecycle
+  testing remain outstanding.
 
 - **External firewall flushes.** TELIPHONES detects and repairs external changes; it cannot prevent them. A privileged process that flushes or replaces the firewall can expose an active tunnel until the change is detected. A transient removal can pass traffic even if the rules are restored before detection. There is no guaranteed detection latency under load or resource exhaustion. This is **not** fail-closed or zero-exposure protection.
 - **Fail2Ban ordering gap.** A Fail2Ban INPUT hook externally moved after `fpbxfirewall` can be bypassed for approved flows until reconciliation withdraws integration. Hooks inserted before `fpbxfirewall` remain ahead of the internal jump without a repair window. The result is read back and an invalid concurrent change causes withdrawal. Monitor wakeups and periodic checks are not a guaranteed recovery deadline.

@@ -8,7 +8,7 @@ version numbers retrospectively.
 ## 0.8.5 — Unreleased development target
 
 Windows file/product version: **0.8.5.0** / **0.8.5**. Independent source
-targets: FreePBX module **0.6.7**, root broker **0.6.7**, protocol **12**
+targets: proposed, unreleased FreePBX module/root broker **0.7.0**, protocol **12**
 (unchanged).
 
 - Improve workstation admission failure classification. Messages distinguish
@@ -279,10 +279,12 @@ Windows file version: **0.7.0.0**. FreePBX module version: **0.4.1**.
 The FreePBX-only firewall correction advances the installed/tested module from
 0.4.0 to 0.4.1. Windows remains 0.7.0 because no application code changes are
 made; this note does not declare a new Windows build or release.
-**Evidence reported at the 0.7.0 development stage:** successful Windows Actions builds,
-**all ten native OpenSSH integration tests passing**, authenticated Windows
-SSH into FreePBX 17 with module 0.4.0, and owned-terminal closure on disconnect.
-Run identifiers and raw logs were not supplied here. Complete PBX-side
+**Evidence reported at the 0.7.0 development stage:** conflicting historical
+operator reports state eleven and ten native OpenSSH integrations passed;
+authenticated Windows SSH into FreePBX 17 with module 0.4.0 and owned-terminal
+closure on disconnect were also reported. Run identifiers and raw logs were not
+supplied here, so the counts cannot be reconciled or independently verified.
+Complete PBX-side
 revocation/expiry/cgroups, reboot/recovery, the all-terminal matrix and real
 module 0.4.1 firewall stability remain outstanding. See the
 [evidence register](../../docs/SECURITY.md#verification-evidence).

@@ -1,6 +1,6 @@
 # TELIPHONES architecture
 
-This document describes **FreePBX module 0.6.7**, **root broker 0.6.7**,
+This document describes proposed, unreleased **FreePBX module 0.7.0**, **root broker 0.7.0**,
 **broker protocol 12** and **Windows 0.8.5** source:
 components, trust boundaries, interfaces, firewall layers and stored state.
 Architecture describes the implementation, not proof of production behaviour.
@@ -70,8 +70,8 @@ flowchart TB
 Key points:
 
 - The broker is installed by a **root bootstrap**, because Module Admin runs as the web service account and cannot create root-owned files or services. The bootstrap stages the module into a root-owned directory before executing it, so root never runs code directly from the web-writable module directory.
-- The broker reports protocol, component version and capabilities. Module 0.6.7 requires broker 0.6.7 even at protocol 12; missing/malformed capabilities or an older component block workstation operations.
-- Pairing and revocation opt into fixed, non-secret progress frames while synchronous verification runs. PHP retains a five-second inactivity deadline; only a verified final result confirms removal. Connection loss does not cancel or redispatch the mutation. Broker 0.6.7 durably records revocation before cleanup, rejects revoked identities during recovery/admission, exposes the latest persisted outcome separately from listener housekeeping, and records correlated workstation admission outcomes in bounded persistent diagnostics. The 0.6.7 archive contains current module source; the existing 0.6.6 archive is preserved unchanged. Local tests do not establish live FreePBX acceptance.
+- The broker reports protocol, component version and capabilities. Proposed module 0.7.0 requires broker 0.7.0 even at protocol 12; missing/malformed capabilities or an older component block workstation operations. A statically validated development package exists locally; it is not production-ready or live-accepted.
+- Pairing and revocation opt into fixed, non-secret progress frames while synchronous verification runs. PHP retains a five-second inactivity deadline; only a verified final result confirms removal. Connection loss does not cancel or redispatch the mutation. Broker 0.7.0 durably records revocation before cleanup, rejects revoked identities during recovery/admission, exposes the latest persisted outcome separately from listener housekeeping, and records correlated workstation admission outcomes in bounded persistent diagnostics. It also reconciles generated FreePBX Custom Service rules for listener ports and classifies IPv6 wildcard web listeners as indeterminate for IPv4. The historical 0.6.7 package was intentionally removed from this checkout and predates the proposed 0.7.0 listener/admission correction. Local tests do not establish live FreePBX acceptance.
 - Like other root `fwconsole` services, this design trusts the integrity of the FreePBX application code. Anyone able to execute code as the FreePBX service account can send requests to the broker.
 
 ## Administrator workstation connections
@@ -197,6 +197,20 @@ Placement rules:
 The exact rule text, the reconciliation behaviour and the known ordering gap are documented in [FreePBX Firewall integration](../teliphones/docs/WORKSTATION-PAIRING.md#freepbx-firewall-integration).
 
 ## Broker lifecycle and reconciliation
+
+Pending, unpackaged source batches listener additions/removals before waiting
+for exact FreePBX-generated rules, with one 150-second verification deadline
+and a 180-second broker subprocess timeout. The helper's ownership lock and
+the broker's `wslock` serialize their respective transactions. Shared methods
+are never temporarily replaced to defer verification. Slow reconciliation can
+still block admission, revocation and lease-expiry workers; these intervals
+are not hard enforcement deadlines. See the
+[current investigation](FREEPBX-FIREWALL-DIAGNOSTICS.md#pending-listener-and-admission-correction--13-november-2026).
+
+The pending lifecycle closes listeners when the last pairing authorisation
+ends, even under Open policy. Expired transport leases remove management
+permits without revoking still-valid pairings; reconnection does not extend
+the administrator's expiry. Open permits new administrator-approved pairings.
 
 | Event | Broker behaviour |
 |---|---|

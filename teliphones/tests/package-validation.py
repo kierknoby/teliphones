@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[2]
 MODULE = ROOT / "teliphones"
 VERSION = ET.parse(MODULE / "module.xml").findtext("version")
 PACKAGE = ROOT / ("TELIPHONES-%s.tgz" % VERSION)
+WINDOWS_VERSION = "0.8.5"
 
 
 def included(path):
@@ -25,15 +26,19 @@ def included(path):
 
 class SourceVersionTests(unittest.TestCase):
     def test_authoritative_versions(self):
-        self.assertEqual(VERSION, "0.6.7")
+        self.assertEqual(VERSION, "0.7.0")
         tree = ast.parse((MODULE / "support_broker.py").read_text())
         versions = [ast.literal_eval(node.value) for node in tree.body if isinstance(node, ast.Assign)
                     and any(isinstance(target, ast.Name) and target.id == "VERSION" for target in node.targets)]
-        self.assertEqual(versions, ["0.6.7"], "The broker patch version identifies the admission diagnostics and responsiveness corrections")
+        self.assertEqual(versions, ["0.7.0"], "The broker patch version identifies the listener-close and admission corrections")
         self.assertIn("BROKER_VERSION = '%s';" % versions[0], (MODULE / "WebSupport.php").read_text())
-        self.assertIn("TELIPHONES 0.6.7 requires broker version 0.6.7, broker protocol 12",
+        self.assertIn("TELIPHONES 0.7.0 requires broker version 0.7.0, broker protocol 12",
                       (MODULE / "BrokerBootstrap.php").read_text())
-        self.assertIn("## 0.6.7, admission diagnostics and responsiveness", (MODULE / "docs/CHANGELOG.md").read_text())
+        windows_version = (ROOT / "desktop/windows/src/app/Version.h").read_text()
+        self.assertIn("#define TELIPHONES_VERSION_MAJOR 0", windows_version)
+        self.assertIn("#define TELIPHONES_VERSION_MINOR 8", windows_version)
+        self.assertIn("#define TELIPHONES_VERSION_PATCH 5", windows_version)
+        self.assertIn("## 0.7.0, listener reconciliation and workstation admission (unreleased)", (MODULE / "docs/CHANGELOG.md").read_text())
         self.assertIn("durable workstation revocation", (MODULE / "BrokerBootstrap.php").read_text())
 
 
@@ -212,7 +217,8 @@ class PackageTests(unittest.TestCase):
                                 "X-Teliphones-Attempt", "reconcile.background",
                                 "controller.state", "DIAGNOSTIC_REPEAT_SECONDS"):
                     self.assertIn(feature, broker)
-                self.assertIn('VERSION = "0.6.7"', broker)
+                self.assertIn('VERSION = "0.7.0"', broker)
+                self.assertIn("PROTOCOL = 12", broker)
                 for feature in ("def listener_failure_output(", "listener_operation", "Initiating failure:",
                                 "listener_failure_output(result.stderr)", "def listener_rules_current(",
                                 "background_listener_check", "workstation_retry_at",

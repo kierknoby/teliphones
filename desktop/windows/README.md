@@ -9,9 +9,13 @@ approved SSH session without distributing permanent administrator SSH credential
 This guide covers installing and using the Windows application. The
 [FreePBX administration guide](../../teliphones/README.md) covers server setup.
 
-Windows **0.8.5** (file version **0.8.5.0**) is independent of FreePBX module
-**0.6.7**, root broker **0.6.7**, protocol **12**. It adds route-aware
-admission-failure reporting, local network-change detection, correlation with
+Windows **0.8.5** (file version **0.8.5.0**) is independent of proposed,
+unreleased FreePBX module/root broker **0.7.0**, protocol **12**. A statically
+validated 0.7.0 development archive is available in this checkout, but is not
+a release or production approval. The historical 0.6.7 archive was intentionally
+removed from this checkout and did not contain these proposed changes. Windows
+0.8.5 adds route-aware admission-failure reporting, local network-change
+detection, correlation with
 PBX-side session diagnostics, and detection of residual TELIPHONES-owned
 tunnels. It retains the verified tunnel lifecycle and shutdown corrections,
 SSH attempt cleanup and startup recovery from 0.8.4, and 0.8.3's official
@@ -27,15 +31,17 @@ The [version definition](src/app/Version.h), not the manifest assembly identity,
 defines the application version.
 
 > [!WARNING]
-> **Experimental, not production-ready.** The operator reports successful
-> earlier Windows Actions builds, including a later report of **eleven native
-> OpenSSH integration tests passing** and a successful first-run startup smoke,
-> authenticated SSH into a FreePBX 17 test server and automatic closure of the
-> owned terminal when TELIPHONES disconnects. Complete server-side revocation,
+> **Experimental, not production-ready.** Conflicting historical operator reports
+> state that eleven and ten native OpenSSH integration tests passed. A successful
+> first-run startup smoke, authenticated SSH into a FreePBX 17 test server and
+> automatic closure of the owned terminal when TELIPHONES disconnects were also
+> reported. Complete server-side revocation,
 > authorisation expiry, systemd/cgroup lifecycle, reconnection and failure
 > recovery still need live validation. Opening the embedded SSH console
-> unexpectedly closing TELIPHONES remains a release blocker. These supplied
-> reports do not validate the current 0.8.5 source or establish a matching binary. See
+> unexpectedly closing TELIPHONES remains a release blocker.
+> These supplied reports lack matching run/build identifiers and raw logs; they
+> do not establish which test count is accurate, validate current 0.8.5 source or
+> establish a matching binary. See
 > [verification status](#verification-status).
 
 ## Choose your workflow
@@ -99,8 +105,10 @@ risk. See the [current security limitations](#security).
 blocked pending Windows CI validation. No 0.8.5 executable is supplied.**
 Do not substitute an older successful run for current-source validation.
 
-Download **TELIPHONES-Windows-x64** from an existing successful Windows build
-run in GitHub Actions. Retention is 14 days; expired artefacts may be unavailable.
+When a matching 0.8.5 build has passed the required Windows validation, download
+**TELIPHONES-Windows-x64** from that exact successful Windows Actions run.
+Retention is 14 days; expired artefacts may be unavailable. No matching 0.8.5
+application artefact currently exists.
 Extract the ZIP and keep **`TELIPHONES.exe`, `TELIPHONES-SSH.exe` and
 `wireguard.dll` together**.
 It also contains this guide, the changelog, licences and `build-info.json`,
@@ -179,10 +187,13 @@ During installation the dialogue cannot be closed until the worker finishes; can
 
 ## Pair an administrator workstation
 
-Use the reviewed FreePBX module 0.6.7 package for pairing. After installing or
-upgrading the module, complete the [root broker bootstrap](../../teliphones/README.md#complete-installation-on-freepbx-17)
+The 0.7.0 development package is available locally and statically validated,
+but is not live-accepted or approved for production use. The historical 0.6.7
+archive is not included in this checkout and predates these changes. After an
+authorized controlled-development installation or upgrade, complete the
+[root broker bootstrap](../../teliphones/README.md#complete-installation-on-freepbx-17)
 with no active support session and workstation tunnels disconnected. Verify
-that the broker reports version 0.6.7 and protocol 12; an operational socket
+that the broker reports version 0.7.0 and protocol 12; an operational socket
 alone does not confirm the required broker version.
 
 1. Select **Add my PBX...** and enter the workstation name under **Pair my PBX >
@@ -438,10 +449,13 @@ The app alone retains each non-inheritable kill-on-close Job handle. The console
 
 Process DACLs restrict new memory-reading, thread-creation and handle-duplication access; agent pipes are user/SYSTEM-only, reject remote clients and enforce client PID ownership. These controls are not protection against administrators/debug privileges, a compromised OS, tampered binaries, malicious code already inside the app or previously obtained privileged handles. Logical signing-capability destruction is not guaranteed physical erasure of OpenSSL/OS copies, paging files, crash dumps or SSD blocks. Legacy plaintext exposure still requires explicit PBX revocation/re-pairing.
 
-**Evidence boundary:** all ten native OpenSSH integration tests are reported
-passing, including the registered login, key destruction, process/agent denial,
-isolation, certificate refusal, local expiry and crash scenarios. No raw run log
-or build identifier is available here to independently audit individual results.
+**Evidence boundary:** operator reports conflict: one reports eleven native
+OpenSSH integrations passing and another reports ten. Neither supplied a
+matching run URL, commit/build identifier or raw log, so neither count can be
+independently reconciled with the current source. The twelve methods currently
+registered in the readiness documentation are not evidence that twelve ran or
+passed. Report these as unverified historical reports, not current 0.8.5
+validation.
 The all-terminal/Unicode-path, Windows reboot and real FreePBX/systemd
 revocation/expiry/rollback matrix remains outstanding. The loopback issuer is a
 fixture, not FreePBX; local expiry is not proof of server-side termination.
@@ -517,7 +531,7 @@ still need Windows validation; portable success is not that evidence.
 |---|---|
 | WireGuard missing, unverified or installation cancelled | Use **Settings... > Connectivity > Check Again** or retry **Install WireGuard**; investigate signature/proxy errors, never bypass them |
 | No WireGuard handshake | Check approved pairing, endpoint DNS/IP and router/host UDP policy; a relay is not provided |
-| Handshake but FreePBX unreachable | Check **Connection Health**, the PBX's **FreePBX Firewall integration** status and the [module troubleshooting guide](../../teliphones/README.md#troubleshooting); confirm the 0.6.7 root broker was actually refreshed |
+| Handshake but FreePBX unreachable | Check **Connection Health**, the PBX's **FreePBX Firewall integration** status and the [module troubleshooting guide](../../teliphones/README.md#troubleshooting); confirm the installed broker version and helper contents match the authorized module package |
 | **Open SSH** unavailable or rejected | Confirm explicit SSH approval, the approved account, Windows system OpenSSH and adjacent `TELIPHONES-SSH.exe`; choose an OpenSSH-backed terminal, not PuTTY |
 | Host/CA/certificate mismatch | Stop and investigate; re-pair only after verifying the PBX identity through a trusted channel, never accept an unverified key |
 | Browser/terminal missing | Choose a supported installed application in Settings; no silent substitution occurs |
@@ -539,7 +553,19 @@ customer data in an issue.
 
 ## Verification status
 
-The portable Windows core and cryptographic tests pass locally, including
+The FreePBX module target is proposed 0.7.0 and unreleased. Its statically
+validated development archive is available locally; the historical 0.6.7
+archive was intentionally removed from this checkout and predates the proposed
+changes. Windows native build/validation is also outstanding, and the
+embedded SSH console crash remains an unresolved release blocker. Historical
+native test-count reports are not interchangeable or independently reproduced:
+an earlier report said eleven SSH integration tests, a later report said ten,
+and current readiness documents twelve registered integration methods. No
+matching run URL, commit/build identifier or logs were supplied to reconcile
+these counts; registration is not evidence of execution.
+
+The Windows portable core and cryptographic tests have passed in prior local
+validation, including
 identity-bound migration parsing and the Argon2id positive-path provider tests
 when available. This is not a native Windows build: this Linux environment
 cannot compile or exercise the MFC application, Windows Credential Manager,

@@ -12,7 +12,18 @@ class ListenerSchedulingTests(unittest.TestCase):
     setUp = helpers.WorkstationPairingTests.setUp
     tearDown = helpers.WorkstationPairingTests.tearDown
 
-    def open_empty(self):
+    def test_open_without_authorisations_keeps_listener_closed(self):
+        self.net.freepbx()
+        self.broker.configure_workstation_policy({"state": "open"}, 1000)
+        before = [call for call in self.net.calls if call[0] == broker.FWCONSOLE]
+        for _ in range(100):
+            self.broker.expire_workstations()
+        self.assertFalse(self.net.link)
+        self.assertIsNone(self.net.table)
+        self.assertEqual(self.broker.workstation_state()[0]["connection_state"], "open")
+        self.assertEqual([call for call in self.net.calls if call[0] == broker.FWCONSOLE], before)
+
+    def open_paired(self):
         self.net.freepbx()
         self.commands = []
         self.generated = {}
@@ -54,13 +65,13 @@ class ListenerSchedulingTests(unittest.TestCase):
             return original(arguments, **kwargs)
 
         self.broker.run = run
-        state, _ = self.broker.workstation_state()
-        self.broker.apply_workstations(state)
-        self.broker.save_workstations(state)
+        helpers.WorkstationPairingTests.pair(self)
+        self.expected_peers = dict(self.net.peers)
+        self.expected_workstations = self.broker.workstation_state()[0]["workstations"]
         self.assertEqual(self.commands, ["51821"])
 
-    def test_idle_open_zero_peers_does_not_spawn_listener_on_periodic_or_self_events(self):
-        self.open_empty()
+    def test_idle_authorised_listener_does_not_spawn_listener_on_periodic_or_self_events(self):
+        self.open_paired()
         for _ in range(240):
             self.broker.expire_workstations()
         self.assertEqual(self.commands, ["51821"], "One hour of 15-second ticks must not reload FreePBX")
@@ -69,11 +80,11 @@ class ListenerSchedulingTests(unittest.TestCase):
                 "family": "ip", "table": "filter", "chain": "zone-external"}}})
         self.broker.expire_workstations()
         self.assertEqual(self.commands, ["51821"], "Repeated notifications must not invoke an unchanged listener")
-        self.assertEqual(self.broker.workstation_state()[0]["workstations"], [])
-        self.assertEqual(self.net.peers, {})
+        self.assertEqual(self.broker.workstation_state()[0]["workstations"], self.expected_workstations)
+        self.assertEqual(self.net.peers, self.expected_peers)
 
     def test_real_rule_change_repairs_once_then_becomes_idle(self):
-        self.open_empty()
+        self.open_paired()
         chain = self.generated["51821"]
         self.net.filter["zone-other"].remove(["-j", chain])
         self.broker.monitor.event({"delete": {"rule": {
@@ -85,7 +96,7 @@ class ListenerSchedulingTests(unittest.TestCase):
         self.assertEqual(len(self.commands), 2)
 
     def test_successful_freepbx_notification_feedback_reaches_quiescence(self):
-        self.open_empty()
+        self.open_paired()
         cycles = 0
         while self.broker.wake.is_set() and cycles < 20:
             self.broker.wake.clear()
@@ -96,7 +107,7 @@ class ListenerSchedulingTests(unittest.TestCase):
         self.assertEqual(self.commands, ["51821"])
 
     def test_failed_listener_is_rate_limited_under_event_storm_and_recovers(self):
-        self.open_empty()
+        self.open_paired()
         self.net.filter[self.generated["51821"]] = []
         self.fail_listener = True
         clock = [100.0]
@@ -123,7 +134,7 @@ class ListenerSchedulingTests(unittest.TestCase):
             clock[0] += 60
             self.broker.expire_workstations()
             self.assertTrue(self.net.up)
-            self.assertEqual(self.net.peers, {})
+            self.assertEqual(self.net.peers, self.expected_peers)
             self.assertEqual(self.broker.workstation_error, "")
             initial = len(self.commands)
             for _ in range(20):
@@ -131,7 +142,7 @@ class ListenerSchedulingTests(unittest.TestCase):
             self.assertEqual(len(self.commands), initial)
 
     def test_changed_authoritative_policy_is_not_blocked_by_retry_backoff(self):
-        self.open_empty()
+        self.open_paired()
         self.net.filter[self.generated["51821"]] = []
         with patch.object(broker.time, "monotonic", return_value=100):
             self.fail_listener = True
@@ -144,17 +155,17 @@ class ListenerSchedulingTests(unittest.TestCase):
         self.assertEqual(self.generated, {})
 
     def test_external_owned_nft_change_still_fails_closed_and_recovers(self):
-        self.open_empty()
+        self.open_paired()
         self.net.table = None
         self.broker.monitor.event({"delete": {"table": {
             "family": "inet", "name": broker.WORKSTATION_TABLE}}})
         self.broker.expire_workstations()
         self.assertTrue(broker.policy_equal(self.broker.owned_table(),
                                            self.broker.expected_policy(self.broker.workstation_state()[0])))
-        self.assertEqual(self.net.peers, {})
+        self.assertEqual(self.net.peers, self.expected_peers)
 
     def test_acknowledged_own_nft_events_do_not_request_reconciliation(self):
-        self.open_empty()
+        self.open_paired()
         self.broker.wake.clear()
         self.broker.enforcement_event.clear()
         value = {"family": "inet", "table": broker.WORKSTATION_TABLE, "name": "input"}
@@ -170,7 +181,7 @@ class ListenerSchedulingTests(unittest.TestCase):
         self.assertEqual(self.commands, ["51821"])
 
     def test_late_owned_notifications_with_exact_readback_do_not_reapply(self):
-        self.open_empty()
+        self.open_paired()
         for _ in range(100):
             self.broker.monitor.event({"add": {"chain": {
                 "family": "inet", "table": broker.WORKSTATION_TABLE, "name": "input"}}})
@@ -179,7 +190,7 @@ class ListenerSchedulingTests(unittest.TestCase):
         self.assertEqual(self.broker.monitor.pending, [])
 
     def test_failed_dedicated_pairing_restores_shared_policy_without_port_oscillation(self):
-        self.open_empty()
+        self.open_paired()
         self.fail_ports = "51821,58490"
         request = {"action": "pair", "request": helpers.pair_request(), "endpoint_host": "pbx.example.net",
                    "listen_port": "51821", "mode": "persistent", "minutes": "60", "ssh": "0",
@@ -187,20 +198,20 @@ class ListenerSchedulingTests(unittest.TestCase):
         with patch.object(self.broker, "locked_listener_port", return_value=58490):
             with self.assertRaisesRegex(broker.BrokerError, "listener fixture failed"):
                 self.broker.dispatch(request, 1000)
-        self.assertEqual(self.commands, ["51821", "51821,58490", "0", "51821"])
-        self.assertEqual(self.broker.workstation_state()[0]["workstations"], [])
-        self.assertEqual(self.net.peers, {})
+        self.assertEqual(self.commands, ["51821", "51821,58490", "51821"])
+        self.assertEqual(self.broker.workstation_state()[0]["workstations"], self.expected_workstations)
+        self.assertEqual(self.net.peers, self.expected_peers)
         self.assertEqual(set(self.generated), {"51821"})
         for _ in range(60):
             self.broker.expire_workstations()
-        self.assertEqual(len(self.commands), 4, "Restored shared policy must stay stable after failed Locked pairing")
+        self.assertEqual(len(self.commands), 3, "Restored shared policy must stay stable after failed Locked pairing")
         self.fail_ports = None
         response = self.broker.dispatch(request, 1000)
         self.assertTrue(response["ok"])
         self.assertEqual(len(self.broker.workstation_state()[0]["workstations"]), 1)
 
     def test_readback_rejects_stale_ownership_and_wrong_or_forbidden_rules(self):
-        self.open_empty()
+        self.open_paired()
         self.assertTrue(self.broker.listener_rules_current([51821]))
         self.assertFalse(self.broker.listener_rules_current([51821, 58490]))
         self.assertFalse(self.broker.listener_rules_current([]))

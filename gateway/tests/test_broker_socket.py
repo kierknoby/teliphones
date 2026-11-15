@@ -165,7 +165,7 @@ class BrokerSocketTests(unittest.TestCase):
         def run(arguments, **kwargs):
             if arguments[:3] == [broker.FWCONSOLE, "teliphones", "listener"] and arguments[-1] != "0":
                 with patch.object(broker.subprocess, "run", side_effect=subprocess.TimeoutExpired(
-                        arguments, 60, stderr="PRIVATE-KEY-FIXTURE")):
+                        arguments, 180, stderr="PRIVATE-KEY-FIXTURE")):
                     return broker.Broker.run(self.broker, arguments, **kwargs)
             return original(arguments, **kwargs)
 
@@ -173,7 +173,7 @@ class BrokerSocketTests(unittest.TestCase):
         with self.assertLogs(broker.LOGGER, level="ERROR") as captured:
             response = self.php(self.request())
         self.assertFalse(response["ok"])
-        self.assertIn("FreePBX listener verification timed out after 60 seconds", response["error"])
+        self.assertIn("FreePBX listener verification timed out after 180 seconds", response["error"])
         self.assertIn("TimeoutExpired", str(captured.output))
         self.assertNotIn("PRIVATE-KEY-FIXTURE", json.dumps(response) + str(captured.output))
         self.assertFalse(self.net.up)
@@ -250,11 +250,12 @@ class BrokerSocketTests(unittest.TestCase):
                 raise broker.BrokerError("Listener admission fixture failed")
             if ports == 0:
                 self.assertFalse(self.net.up)
+                attempted.clear()
                 worker = threading.Thread(target=reconcile, name="background-listener")
                 background.append(worker)
                 worker.start()
                 self.assertTrue(attempted.wait(5), "Background must contend for the held policy lock")
-                self.assertEqual(contenders, [False])
+                self.assertEqual(contenders, [False] * len(background))
                 self.assertFalse(any(name == "background-listener" for name, _ in calls))
             return original(ports)
 
@@ -268,8 +269,10 @@ class BrokerSocketTests(unittest.TestCase):
                 self.assertFalse(worker.is_alive(), "Reconciliation must finish after rollback releases the lock")
         self.assertEqual(errors, [])
         self.assertEqual([ports for name, ports in calls if name != "background-listener"],
-                         [[51821], 0, [51821]])
-        self.assertEqual(calls[-1], ("background-listener", [51821]))
+                         [[51821], 0, 0])
+        self.assertFalse(any(name == "background-listener" for name, _ in calls))
+        self.assertFalse(self.net.up)
+        self.assertFalse(self.net.link)
         state, _ = self.broker.workstation_state()
         self.assertEqual(state["connection_state"], "open")
         self.assertEqual(state["workstations"], [])
@@ -288,15 +291,18 @@ class BrokerSocketTests(unittest.TestCase):
         self.assertEqual(broker.listener_failure_output(" \n"), "empty")
         self.assertIn("withheld", broker.listener_failure_output(b"PRIVATE-KEY-FIXTURE"))
 
-    def test_listener_policy_restoration_failure_retains_initiating_error(self):
+    def test_empty_listener_policy_rollback_failure_retains_initiating_error(self):
         original = self.broker.reconcile_listener
         failures = []
 
         def listener(ports):
+            failures.append(ports)
             if ports:
-                failures.append(True)
-                raise broker.BrokerError("Admission fixture failed" if len(failures) == 1
-                                        else "Policy restoration fixture failed")
+                raise broker.BrokerError("Admission fixture failed")
+            # Initial failed admission cleanup succeeds; restoring the prior empty
+            # policy must verify removal again, and that verification fails here.
+            if failures.count(0) == 2:
+                raise broker.BrokerError("Policy restoration fixture failed")
             return original(ports)
 
         self.broker.reconcile_listener = listener

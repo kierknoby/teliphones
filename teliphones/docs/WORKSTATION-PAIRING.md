@@ -1,4 +1,4 @@
-# TELIPHONES 0.6.7 workstation pairing and connection policy
+# TELIPHONES proposed 0.7.0 workstation pairing and connection policy
 
 The current broker is protocol 12. It enforces a default maximum of one
 simultaneous admitted workstation with atomic lease admission, authenticated
@@ -8,17 +8,21 @@ admits management traffic only for an active session lease.
 
 ## Current Windows-to-FreePBX sequence
 
-Source targets: Windows **0.8.5**, module **0.6.7**, broker **0.6.7**, protocol
-**12**. These component versions are independent. Broker/module 0.6.7 adds
-bounded persistent diagnostics correlating each recorded Windows attempt with
-PBX admission, response delivery, lock contention and controller/reconciliation
-state. It retains the 0.6.6 nftables feedback-loop correction and the earlier
-durable revocation and verified removal; all are in the local 0.6.7 module
-archive. The existing 0.6.6 archive is preserved unchanged. These changes and
+Source targets: Windows **0.8.5**, proposed, unreleased module **0.7.0**, broker
+**0.7.0**, protocol **12**. These component versions are independent. The
+statically validated 0.7.0 development archive is available in this checkout;
+it is not live-accepted or production-approved. The historical 0.6.7 archive
+was intentionally removed from this checkout and did not contain these source
+changes. The historical 0.6.7 milestone added bounded persistent diagnostics
+correlating each recorded Windows attempt with PBX admission, response delivery,
+lock contention and controller/reconciliation state. It retained the 0.6.6
+nftables feedback-loop correction and earlier durable revocation and verified
+removal. Its historical package was removed from this checkout; it did not
+contain the proposed 0.7.0 changes. These changes and
 the simulated source-change tests do not prove that WireGuard endpoint roaming
 or live network-change reconnection succeeds. Repeat root bootstrap after
 Module Admin and follow
-the [0.6.7 live acceptance checklist](../README.md#064-development-server-acceptance).
+the [0.7.0 live acceptance checklist](../README.md#current-verification-status).
 
 When investigating a failed admission, compare the Windows session log's
 diagnostic ID and random attempt ID with the PBX administrator's diagnostics
@@ -128,8 +132,11 @@ server-side enforcement that SSH permission requires an SSH-capable pairing
 request. Updated Windows builds expose a web-only or web-plus-SSH request
 choice, show explicit SSH authorisation status, and use temporary inline
 clipboard feedback instead of success dialogues. Module and Windows versions
-are independent; the current development targets are FreePBX **0.6.7**,
-root broker **0.6.7**, protocol **12** and Windows **0.8.5**.
+are independent; the current source targets are proposed, unreleased FreePBX
+**0.7.0**, root broker **0.7.0**, protocol **12** and Windows **0.8.5**. The
+statically validated 0.7.0 development package is available but not
+production-ready or live-accepted; the historical 0.6.7 archive was removed
+from this checkout and did not contain these changes.
 
 When a pairing is Locked, an approved managed SSH listener and its short-lived
 certificate API bind to the dedicated `tlpw...` interface and tunnel address.
@@ -238,7 +245,7 @@ is not included in the module-only package.
 ## Preserved version-1 contract
 
 This section records the original v1 contract and historical lifecycle;
-current source additionally requires module 0.6.7 / broker 0.6.7 / protocol 12,
+current source additionally requires proposed module 0.7.0 / broker 0.7.0 / protocol 12,
 management leases, dedicated Locked interfaces and identity-preserving updates.
 The older protocol minima and full-interface rebuild description below are not
 the current broker compatibility/admission policy.
@@ -281,10 +288,10 @@ The response is a copyable enrolment artefact, not proof that arbitrary access i
 
 This also applies when upgrading from 0.2.1. Install the current module and rerun the root bootstrap before relying on the separately installed broker.
 
-Install the current test package `TELIPHONES-0.6.7.tgz` through Module Admin, then rerun the documented root bootstrap with no active support session and Windows tunnels disconnected. Installation does not delete `workstations.json`, `workstation-recovery.json` or `workstation-wg.key`. Valid pairings keep their identities, keys and original deadlines; a required listener migration is authenticated and coordinated rather than requiring re-pairing.
+For an authorized controlled-development 0.7.0 installation, use the locally available statically validated candidate only after review; it is not production approval or live acceptance. The historical `TELIPHONES-0.6.7.tgz` is not included in this checkout and did not contain the proposed changes. After authorized package installation, rerun the documented root bootstrap with no active support session and Windows tunnels disconnected. Installation does not delete `workstations.json`, `workstation-recovery.json` or `workstation-wg.key`. Valid pairings keep their identities, keys and original deadlines; a required listener migration is authenticated and coordinated rather than requiring re-pairing.
 
-Module Admin does not necessarily replace the root-owned broker. Module 0.6.7
-requires broker 0.6.7 even if an earlier helper reports protocol 12. The bootstrap
+Module Admin does not necessarily replace the root-owned broker. Proposed module
+0.7.0 requires broker 0.7.0 even if an earlier helper reports protocol 12. The bootstrap
 copies the packaged helpers and restarts the service; confirm the component
 version and compare installed files as described in
 [Updating TELIPHONES](../README.md#updating-teliphones).
@@ -309,16 +316,17 @@ An unmarked legacy table is migrated only when its complete nft JSON exactly mat
 
 The 0.3.1 broker adds the hookless `teliphones_owner_v1` chain because Debian 12 nftables 1.0.6 drops table comments from kernel JSON readback. The operator reports that this ownership correction was tested successfully on the actual FreePBX 17 test PBX. The repository code still needs to be installed and verified on that PBX through the normal upgrade/bootstrap procedure; this document does not claim that deployment has occurred.
 
-Install the current test package `TELIPHONES-0.6.7.tgz`, confirm there is no active support session, disconnect Windows tunnels, then rerun [Complete Installation on FreePBX 17](../README.md#complete-installation-on-freepbx-17) from an existing root shell. The 0.3.1 ownership correction originally kept protocol 3; protocol 12 alone likewise does not prove the installed helper's version or contents. On restart, the broker verifies the tunnel is down, safely migrates only the exact known 0.3.0 policy, restores current policy from saved state and readmits valid, unexpired pairings. Pairing identities, addresses, SSH permissions, deadlines and the PBX WireGuard key are preserved. If exact ownership cannot be established, migration is refused and recovery data remains intact.
+For an authorized controlled-development 0.7.0 installation, use the available statically validated candidate only after review; it is not a release. The historical `TELIPHONES-0.6.7.tgz` is not included here and did not contain the proposed changes. Follow the current root-bootstrap instructions in the module guide. The 0.3.1 ownership correction originally kept protocol 3; protocol 12 alone likewise does not prove the installed helper's version or contents. The broker verifies the tunnel is down, safely migrates only the exact known 0.3.0 policy, restores current policy from saved state and readmits valid, unexpired pairings. Pairing identities, addresses, SSH permissions, deadlines and the PBX WireGuard key are preserved. If exact ownership cannot be established, migration is refused and recovery data remains intact.
+For an authorized controlled-development 0.7.0 installation, use the available statically validated candidate only after review; it is not a release. The historical `TELIPHONES-0.6.7.tgz` is not included here and did not contain the proposed changes. Follow the current root-bootstrap instructions in the module guide. The 0.3.1 ownership correction originally kept protocol 3; protocol 12 alone likewise does not prove the installed helper's version or contents. The broker verifies the tunnel is down, safely migrates only the exact known 0.3.0 policy, restores current policy from saved state and readmits valid, unexpired pairings. Pairing identities, addresses, SSH permissions, deadlines and the PBX WireGuard key are preserved. If exact ownership cannot be established, migration is refused and recovery data remains intact.
 
 ## Upgrading from 0.3.1
 
 The historical 0.3.2 change added bounded diagnostics and protocol 4 without
 changing firewall permissions or pairing protocol. For a current upgrade,
-use the reviewed 0.6.7 test package, disconnect workstation tunnels, confirm no active support session,
+use the preserved historical 0.6.7 package only for its matching source, disconnect workstation tunnels, confirm no active support session,
 and rerun the root bootstrap. Preserve pairing state and the WireGuard key.
-Managed SSH originally required protocol 5; current module 0.6.7 requires broker
-0.6.7/protocol 12 and all three protected helpers even if an older broker reports
+Managed SSH originally required protocol 5; proposed module 0.7.0 requires broker
+0.7.0/protocol 12 and all three protected helpers even if an older broker reports
 protocol 12. Protocol 4 identifies historical diagnostics support only.
 Follow [current upgrade verification](../README.md#updating-teliphones).
 

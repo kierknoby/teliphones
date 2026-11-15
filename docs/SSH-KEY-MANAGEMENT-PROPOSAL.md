@@ -1,10 +1,14 @@
 # My PBXs managed SSH: implementation and validation
 
-The current implementation targets **Windows 0.8.5**, **FreePBX 0.6.7**, **root
-broker 0.6.7**, protocol **12**, independently versioned. Current source retains
+The current implementation targets **Windows 0.8.5**, proposed, unreleased
+**FreePBX 0.7.0**, **root broker 0.7.0**, protocol **12**, independently
+versioned. A statically validated 0.7.0 development package is available but is
+not production-ready or live-accepted; the historical 0.6.7 archive was removed
+from this checkout and did not contain the proposed changes. Current source retains
 the 0.6.6 nftables feedback-loop correction and adds persistent correlated
-admission diagnostics and broker responsiveness corrections. The local 0.6.7
-archive and checksum include current module source;
+admission diagnostics and broker responsiveness corrections. The historical
+0.6.7 archive and checksum were intentionally removed from this checkout and did
+not include the proposed 0.7.0 source;
 the superseded 0.6.5 archive was removed; historical archives lack those new security corrections. Historical reports and the
 proposal below retain their original versions; they do not validate current source.
 
@@ -18,11 +22,13 @@ request/2 certificate endpoint, pinned host/CA identities and an owned console
 helper/SSH Job. GUI-only pairing, Connection Health, appearance, WireGuard and
 the independent Remote Support path are preserved.
 
-The operator now reports successful Windows Actions builds, **all ten native
-OpenSSH integration tests passing**, authenticated Windows 0.7.0 SSH into a
-FreePBX 17 / Debian 12 test PBX with module 0.4.0, and owned-terminal closure
-on disconnect. No run URL, commit/build hash or raw logs were supplied here;
-these results are attributed reports, not locally repeated Windows tests.
+Historical operator reports conflict: one reports eleven native SSH integrations
+passing, another reports ten. The supplied reports also describe authenticated
+Windows 0.7.0 SSH into a FreePBX 17 / Debian 12 test PBX with module 0.4.0 and
+owned-terminal closure on disconnect. No run URL, commit/build hash or raw logs
+were supplied here; these are attributed reports, not locally repeated Windows
+tests or validation of current Windows 0.8.5. The current readiness document
+registers twelve methods, which does not establish that twelve ran or passed.
 
 **This is not a completion or production-security claim.** Real 0.4.1 firewall
 stability, PBX revocation/expiry/systemd/cgroup termination, reboot, upgrade,

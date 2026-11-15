@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 if (os.geteuid() != 0 or len(sys.argv) != 3 or not sys.argv[1].startswith("net:[")
@@ -325,6 +326,39 @@ print("ok")
                          (SSH_PEER, broker.SESSION_CONTROL_PORT), (WEB_PEER, broker.SESSION_CONTROL_PORT)}
         check(instance.integration["state"] == "active", instance.integration)
         check(open_set(workstation) == expected_open, "integration must open exactly authorised web/SSH flows")
+        # Expiry must update installed rules even though active_sessions() already
+        # hides expired leases. An iptables ACCEPT cannot bypass the nft admission gate.
+        with patch.object(broker.time, "time", return_value=lease + 1):
+            instance.expire_sessions()
+            check(open_set(workstation) == {(source, broker.SESSION_CONTROL_PORT)
+                                           for source in (SSH_PEER, WEB_PEER)},
+                  "expired admission still permits private GUI/SSH packets")
+            check(not instance.active_sessions(include_expired=True), "expired lease was not removed")
+        # No expiry worker runs during this interval. Even with wslock held,
+        # the kernel must stop management packets at the lease/pairing deadline.
+        for authority in ("lease", "pairing"):
+            cutoff = int(broker.time.time()) + 3
+            grant_state = json.loads(json.dumps(state))
+            if authority == "pairing":
+                for item in grant_state["workstations"]:
+                    item.update(mode="temporary", expires_at=cutoff)
+            instance.save_active_sessions({item["id"]: {"expires_at": cutoff if authority == "lease" else cutoff + 300}
+                                           for item in state["workstations"]})
+            with instance.wslock:
+                instance.reconcile_policy_only(grant_state)
+                before_expiry = instance.owned_table()
+                check(open_set(workstation) == expected_open, authority + " deadline blocked early")
+                broker.time.sleep(max(0, cutoff - broker.time.time()) + 0.15)
+                check(open_set(workstation) == {(source, broker.SESSION_CONTROL_PORT)
+                                               for source in (SSH_PEER, WEB_PEER)},
+                      authority + " expiry required a running broker worker")
+                check(broker.policy_equal(before_expiry, instance.owned_table()),
+                      "deadline test unexpectedly rewrote the firewall")
+        # Transport loss expires admission, not the administrator's pairing grant.
+        check(len(instance.workstation_state()[0]["workstations"]) == 2, "expiry revoked valid pairings")
+        instance.workstation_session("heartbeat", SSH_PEER)
+        instance.workstation_session("heartbeat", WEB_PEER)
+        check(open_set(workstation) == expected_open, "reconnection did not restore GUI/SSH admission")
         # The WireGuard listener accepts handshakes from any public address, including a previously
         # unknown one and a changed one, without any per-source configuration (the live regression).
         for source, gateway in WAN:
@@ -338,7 +372,8 @@ print("ok")
         locked_policy = broker.workstation_policy(
             PBX, [SSH_PEER], web_ports=tuple(entry["port"] for entry in broker.DEFAULT_WEB),
             listener_sources=[{"port": 52022, "sources": [WAN[0][0] + "/32"]}],
-            admitted_sources=[SSH_PEER, WEB_PEER], control_sources=[SSH_PEER, WEB_PEER])
+            admitted_sources=[SSH_PEER, WEB_PEER], control_sources=[SSH_PEER, WEB_PEER],
+            admission_deadlines={source: int(broker.time.time()) + 300 for source in (SSH_PEER, WEB_PEER)})
         instance.mutate_policy(locked_policy, instance.owned_table())
         check(udp_probe(workstation, WAN[0][0], WAN[0][1], 52022),
               "a source explicitly allowed on a locked listener must reach UDP")
@@ -358,6 +393,7 @@ print("ok")
             listener_sources=[{"port": 52022, "sources": [WAN[0][0] + "/32"]}],
             peer_interfaces=[{"interface": locked_interface, "pbx_address": "100.71.1.1",
                               "source": locked_peer, "ssh_port": 22002}],
+            admission_deadlines={source: int(broker.time.time()) + 300 for source in (SSH_PEER, WEB_PEER, locked_peer)},
             admitted_sources=[SSH_PEER, WEB_PEER, locked_peer],
             control_sources=[SSH_PEER, WEB_PEER, locked_peer])
         instance.mutate_policy(dedicated_policy, instance.owned_table())

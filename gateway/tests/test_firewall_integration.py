@@ -159,7 +159,7 @@ class IntegrationTests(unittest.TestCase):
             self.assertNotIn(("ip", ("link", "set", "down", "dev", broker.WORKSTATION_IFACE)), self.net.calls)
             self.assertEqual(self.broker.integration["state"], "active")
 
-    def test_revocation_and_expiry_remove_peer_rules_but_keep_open_listener(self):
+    def test_revocation_and_expiry_remove_peer_rules_and_last_listener(self):
         _, first = self.pair(mode="temporary")
         _, second = self.pair(public_key="B" * 42 + "E=", nonce="m" * 22, ssh="1")
         self.unpair(second["workstation_id"])
@@ -170,8 +170,8 @@ class IntegrationTests(unittest.TestCase):
         (self.state / "workstations.json").write_text(json.dumps(state))
         self.broker.expire_workstations()
         self.assertEqual(self.accepted(), set())
-        self.assertIn(CHAIN, self.net.filter)
-        self.assertTrue(self.net.up)
+        self.assertNotIn(CHAIN, self.net.filter)
+        self.assertFalse(self.net.up)
 
     def test_complete_chain_deletion_is_repaired_without_monitor_event(self):
         self.pair()
@@ -201,12 +201,12 @@ class IntegrationTests(unittest.TestCase):
                                            (response["address"], "8766")})
         self.assertEqual(self.broker.integration["state"], "active")
 
-    def test_last_revocation_keeps_open_listener_and_shutdown_removes_integration(self):
+    def test_last_revocation_and_shutdown_remove_listener_and_integration(self):
         self.pair()
         self.unpair("all")
-        self.assertTrue(self.net.up)
+        self.assertFalse(self.net.up)
         self.assertEqual(self.accepted(), set())
-        self.assertIn(CHAIN, self.net.filter)
+        self.assertNotIn(CHAIN, self.net.filter)
         self.pair(nonce="m" * 22, public_key="B" * 42 + "E=")
         self.broker.teardown_workstations()
         self.assertNotIn(CHAIN, self.net.filter)
@@ -463,12 +463,12 @@ class IntegrationTests(unittest.TestCase):
         self.broker.expire_workstations()
         self.assertIn((broker.FWCONSOLE, ("teliphones", "listener", "--listen-port=51899")), self.net.calls)
         self.assertEqual(self.broker.integration["state"], "active")
-        # Open mode keeps the listener available for a future pairing, with no peer permits.
+        # Last revocation closes the listener even while pairing policy remains Open.
         self.unpair("all")
-        self.assertIn((broker.FWCONSOLE, ("teliphones", "listener", "--listen-port=51899")), self.net.calls)
-        self.assertIn(CHAIN, self.net.filter)
+        self.assertIn((broker.FWCONSOLE, ("teliphones", "listener", "--listen-port=0")), self.net.calls)
+        self.assertNotIn(CHAIN, self.net.filter)
         self.assertEqual(self.accepted(), set())
-        self.assertTrue(self.net.up)
+        self.assertFalse(self.net.up)
 
     def test_management_web_services_follow_configuration_without_stale_rules(self):
         _, response = self.pair(web="https:8443")
@@ -567,6 +567,20 @@ class IntegrationTests(unittest.TestCase):
         with patch.object(broker.Path, "read_text", side_effect=OSError("unreadable")):
             self.assertIsNone(broker.web_listening(8443, address))
 
+    def test_dual_stack_web_listener_is_not_reported_as_absent(self):
+        # Linux exposes the same tcp6 wildcard for dual-stack and v6-only sockets.
+        # Test actual IPv4 connectivity, not a guessed system-wide bindv6only default.
+        for v6_only in (0, 1):
+            with broker.socket.socket(broker.socket.AF_INET6, broker.socket.SOCK_STREAM) as server:
+                server.setsockopt(broker.socket.IPPROTO_IPV6, broker.socket.IPV6_V6ONLY, v6_only)
+                server.bind(("::", 0))
+                server.listen()
+                port = server.getsockname()[1]
+                with broker.socket.socket() as client:
+                    client.settimeout(1)
+                    self.assertEqual(client.connect_ex(("127.0.0.1", port)) == 0, not v6_only)
+                self.assertIsNone(broker.web_listening(port, "127.0.0.1"))
+
 
 class NamespaceIntegrationTests(unittest.TestCase):
     def run_lab(self, backend):
@@ -580,7 +594,8 @@ class NamespaceIntegrationTests(unittest.TestCase):
         result = subprocess.run(["unshare", "--user", "--map-root-user", "--net", sys.executable, str(script),
                                  os.readlink("/proc/self/ns/net"), backend],
                                 capture_output=True, text=True, timeout=180, env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
-        if result.returncode and backend == "legacy" and "can't initialize iptables table" in result.stderr:
+        if result.returncode and backend == "legacy" and any(
+                message in result.stderr for message in ("can't initialize iptables table", "can't initialize ip6tables table")):
             self.skipTest("legacy iptables kernel support unavailable in namespace")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("PASS (%s)" % backend, result.stdout)
@@ -590,3 +605,17 @@ class NamespaceIntegrationTests(unittest.TestCase):
 
     def test_real_packets_iptables_legacy_backend(self):
         self.run_lab("legacy")
+
+    def test_real_wireguard_admission_from_untrusted_sources(self):
+        if not all(shutil.which(tool) for tool in ("unshare", "nsenter", "nft", "ip", "php", "wg", "iptables-nft")):
+            self.skipTest("WireGuard admission namespace prerequisites unavailable")
+        probe = subprocess.run(["unshare", "--user", "--map-root-user", "--net", "ip", "link", "add",
+                                "tlp-test", "type", "wireguard"], capture_output=True, text=True)
+        if probe.returncode:
+            self.skipTest("isolated WireGuard kernel support unavailable: " + probe.stderr.strip())
+        result = subprocess.run(["unshare", "--user", "--map-root-user", "--net", sys.executable,
+                                 str(Path(__file__).with_name("workstation_admission_lab.py")),
+                                 os.readlink("/proc/self/ns/net")], capture_output=True, text=True, timeout=180,
+                                env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("PASS: real WireGuard", result.stdout)

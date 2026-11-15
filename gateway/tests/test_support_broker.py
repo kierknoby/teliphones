@@ -253,7 +253,7 @@ class SupportBrokerTests(unittest.TestCase):
 
     def test_status_reports_live_monitoring_protocol_matching_gui(self):
         status = self.broker.status()
-        self.assertEqual(status["component_version"], "0.6.7")
+        self.assertEqual(status["component_version"], "0.7.0")
         self.assertEqual(status["protocol"], 12)
         self.assertEqual(status["protocol"], broker_module.PROTOCOL)
         self.assertIn("operation", status)
@@ -1122,10 +1122,25 @@ class WorkstationPairingTests(unittest.TestCase):
                 or (call[0] == "ip" and call[1][:2] in (("link", "set"), ("link", "del"), ("link", "add")))
                 or (call[0] == "wg" and call[1][:1] == ("set",))]
 
+    def model_listener_rules(self, port):
+        identifier = "a" * 32
+        chain = "fpbxsvc-" + identifier[:16]
+        self.net.filter[chain] = [["-p", "udp", "-m", "udp", "--dport", str(port), "-j", "ACCEPT"]]
+        for zone in ("external", "internal", "other", "reject", "trusted"):
+            rules = self.net.filter.setdefault("zone-" + zone, [])
+            if zone in ("external", "internal", "other"):
+                rules.append(["-j", chain])
+        broker_module.atomic(self.state / "firewall-listener.json",
+                             json.dumps({"services": {str(port): {"id": identifier,
+                                                                   "name": "TELIPHONES WireGuard listener fixture"}}}))
+        self.assertTrue(self.broker.listener_rules_current([port]))
+
     def test_unrestricted_gui_only_workstation_is_admitted_and_broker_stays_idle(self):
+        self.net.freepbx()
         _, response = self.pair()
         self.assertNotIn("sources", self.broker.workstation_state()[0]["workstations"][0])
         source = response["address"].split("/")[0]
+        self.model_listener_rules(51821)
         broker_module.time.sleep(0.1)
         self.broker.enforcement_event.clear()
         self.broker.wake.clear()
@@ -1190,8 +1205,10 @@ class WorkstationPairingTests(unittest.TestCase):
         self.open_session(second)
 
     def test_repeated_firewall_events_cause_bounded_read_only_work(self):
+        self.net.freepbx()
         _, response = self.pair()
         self.open_session(response)
+        self.model_listener_rules(51821)
         broker_module.time.sleep(0.1)
         self.broker.wake.clear()
         calls = len(self.net.calls)
@@ -1403,7 +1420,7 @@ class WorkstationPairingTests(unittest.TestCase):
         self.assertIn("ip saddr { 100.70.1.2, 100.70.1.3 } ip daddr 100.70.1.1 tcp dport 22 accept", ruleset)
         self.assertLess(ruleset.index("dport 22 accept"), ruleset.index('iifname "tlp-admin" drop'))
 
-    def test_temporary_pairing_expires_and_open_listener_remains(self):
+    def test_temporary_pairing_expiry_closes_last_listener(self):
         _, response = self.pair(mode="temporary", minutes="15")
         self.assertGreater(response["expires_at"], broker_module.time.time() + 14 * 60)
         self.assertTrue(self.net.link)
@@ -1411,9 +1428,9 @@ class WorkstationPairingTests(unittest.TestCase):
         state["workstations"][0]["expires_at"] = 1
         (self.state / "workstations.json").write_text(json.dumps(state))
         self.broker.expire_workstations()
-        self.assertTrue(self.net.link)
-        self.assertTrue(self.net.up)
-        self.assertIsNotNone(self.net.ruleset)
+        self.assertFalse(self.net.link)
+        self.assertFalse(self.net.up)
+        self.assertIsNone(self.net.ruleset)
         self.assertEqual(self.broker.status()["workstations"]["items"], [])
         expired = self.broker.diagnostics.read("ws-" + response["workstation_id"])
         self.assertIn("pairing.expired", [item["event"] for item in expired])
@@ -1429,7 +1446,7 @@ class WorkstationPairingTests(unittest.TestCase):
         _, other = self.pair(public_key="B" * 42 + "E=", nonce="m" * 22)
         self.assertNotEqual(other["address"], first["address"])
 
-    def test_revocation_removes_peer_and_keeps_open_listener(self):
+    def test_revocation_keeps_listener_only_for_remaining_authorisations(self):
         _, first = self.pair()
         _, second = self.pair(public_key="B" * 42 + "E=", ssh="1")
         result = self.broker.dispatch({"action": "unpair", "workstation_id": first["workstation_id"]}, 1000)
@@ -1437,10 +1454,10 @@ class WorkstationPairingTests(unittest.TestCase):
         self.assertEqual(set(self.net.peers), {"B" * 42 + "E="})
         self.assertTrue(self.broker.dispatch({"action": "unpair", "workstation_id": first["workstation_id"]}, 1000)["ok"])
         self.broker.dispatch({"action": "unpair", "workstation_id": "all"}, 1000)
-        self.assertTrue(self.net.link)
-        self.assertTrue(self.net.up)
+        self.assertFalse(self.net.link)
+        self.assertFalse(self.net.up)
         self.assertEqual(self.net.peers, {})
-        self.assertIsNotNone(self.net.ruleset)
+        self.assertIsNone(self.net.ruleset)
         self.broker.configure_workstation_policy({"state": "closed"}, 1000)
         self.assertFalse(self.net.link)
 
@@ -1484,9 +1501,9 @@ class WorkstationPairingTests(unittest.TestCase):
         self.net.fail = lambda name, rest: name == "wg" and "allowed-ips" in rest
         with self.assertRaisesRegex(broker_module.BrokerError, "removed"):
             self.pair()
-        self.assertTrue(self.net.link)
-        self.assertTrue(self.net.up)
-        self.assertIsNotNone(self.net.ruleset)
+        self.assertFalse(self.net.link)
+        self.assertFalse(self.net.up)
+        self.assertIsNone(self.net.ruleset)
         self.assertEqual(self.broker.status()["workstations"]["items"], [])
 
     def test_failed_new_pairing_restores_existing_workstations(self):
@@ -1540,7 +1557,7 @@ class WorkstationPairingTests(unittest.TestCase):
         self.assertNotIn("disconnected", json.dumps(events).lower())
         self.assertEqual({item["diagnostic_id"] for item in events}, {diagnostic_id})
         exported = self.broker.dispatch({"action": "diagnostics", "diagnostic_id": diagnostic_id}, 1000)
-        self.assertEqual(exported["component_version"], "0.6.7")
+        self.assertEqual(exported["component_version"], "0.7.0")
         self.assertEqual(exported["diagnostic_id"], diagnostic_id)
         self.assertFalse(any("public_key" in item or "token" in json.dumps(item).lower() for item in exported["events"]))
 
@@ -1554,7 +1571,7 @@ class WorkstationPairingTests(unittest.TestCase):
         self.assertIn("interface.established", names)
         self.assertIn("peer.admitted", names)
         self.assertIn("peer.observation", names)
-        self.assertTrue(all(event["source"] == "pbx" and event["component_version"] == "0.6.7" for event in events))
+        self.assertTrue(all(event["source"] == "pbx" and event["component_version"] == "0.7.0" for event in events))
         self.broker.dispatch({"action": "unpair", "workstation_id": response["workstation_id"]}, 1000)
         events = self.broker.diagnostics.read(diagnostic_id)
         self.assertEqual(events[-1]["event"], "pairing.revoked")
@@ -1626,7 +1643,7 @@ class WorkstationPairingTests(unittest.TestCase):
         with patch.object(broker_module.LOGGER, "warning") as warning:
             result = self.broker.dispatch({"action": "unpair", "workstation_id": response["workstation_id"]}, 1000)
         self.assertTrue(result["ok"])
-        self.assertTrue(self.net.link)
+        self.assertFalse(self.net.link)
         self.assertTrue(warning.called)
 
     def test_diagnostic_storage_failure_does_not_block_expiry_cleanup(self):
@@ -1637,7 +1654,7 @@ class WorkstationPairingTests(unittest.TestCase):
         self.broker.diagnostics.record = lambda *args, **kwargs: (_ for _ in ()).throw(OSError("disk unavailable"))
         with patch.object(broker_module.LOGGER, "warning") as warning:
             self.broker.expire_workstations()
-        self.assertTrue(self.net.link)
+        self.assertFalse(self.net.link)
         self.assertEqual(self.broker.status()["workstations"]["items"], [])
         self.assertTrue(warning.called)
 

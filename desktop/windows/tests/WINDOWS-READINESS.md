@@ -1,10 +1,10 @@
 # Windows developer builds, testing and readiness
 
-Targets: TELIPHONES for Windows **0.8.5**, TELIPHONES for FreePBX **0.6.7**.
+Targets: TELIPHONES for Windows **0.8.5**, proposed, unreleased TELIPHONES for FreePBX **0.7.0**. A statically validated 0.7.0 development package is available but is not production-ready or live-accepted; the historical 0.6.7 archive was intentionally removed from this checkout and did not contain the proposed changes.
 The FreePBX connection-state policy and Windows pairing/clipboard UX are
 independently versioned; neither entry declares a published release.
 
-Root broker is **0.6.7**, protocol **12**. Version.h derives Windows
+Proposed root broker is **0.7.0**, protocol **12**. Version.h derives Windows
 product 0.8.5 and file 0.8.5.0; executable resources, captions, About/licence and
 build provenance reuse it. The dependency manifest must match the product version.
 Current Release portable build/CTest and source contracts can run on Linux;
@@ -26,8 +26,9 @@ Later operator reports confirm eleven native SSH integrations and first-run
 startup smoke passed for an earlier build. The historical investigations below
 retain their original versions/counts and outstanding checks at that time;
 they are not evidence that the subsequent 0.8.1 pairing dialogue passed natively.
-The local 0.6.7 module archive contains the PHP diagnostics view and broker
-admission instrumentation. The existing 0.6.6 archive is preserved unchanged.
+The historical 0.6.7 module package included the PHP diagnostics view and broker
+admission instrumentation; its archive was intentionally removed from this
+checkout. The historical 0.6.6 archive is not the current candidate.
 Live acceptance is pending.
 
 ## Current evidence
@@ -250,11 +251,13 @@ application or validate Windows Credential Manager, DPAPI, UAC, the WireGuard
 service lifecycle, or actual migration/reconnect. Native Windows and live
 FreePBX Firewall/session/SSH acceptance remain outstanding.
 
-The operator reports successful Windows Actions builds, **all ten native
-OpenSSH integration tests passing**, authenticated Windows-to-FreePBX 17 SSH
-and automatic owned-terminal closure on disconnect. No run URL, commit/build
-hash or raw logs were supplied with this update; no remote logs were fetched.
-Earlier nine-of-ten and seven-failure records below are historical.
+Historical operator reports conflict: one reports eleven native OpenSSH
+integrations passing, while a later report states ten passed along with
+authenticated Windows-to-FreePBX 17 SSH and automatic owned-terminal closure on
+disconnect. Neither supplied a run URL, commit/build identifier or raw logs;
+no remote logs were fetched. These reports cannot be reconciled with the current
+source. The twelve methods currently registered below are not proof they ran or
+passed. Earlier nine-of-ten and seven-failure records remain historical.
 
 These are initial native/live milestones, not complete server-side revocation,
 expiry, systemd/cgroup, reboot or recovery evidence. Real module 0.4.1 firewall

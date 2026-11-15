@@ -142,7 +142,7 @@ try {
     file_put_contents($iptables, "#!/bin/sh\nprintf '%s\\n' "
         . escapeshellarg('-A ' . $chain . ' -m comment --comment PRIVATE-KEY-FIXTURE -j ACCEPT') . "\n");
     try {
-        FirewallListener::verifyRules('50dc7372-5c3e-4073-a477-e49ecf930b1f', 51821, $iptables);
+        FirewallListener::verifyRules('50dc7372-5c3e-4073-a477-e49ecf930b1f', 51821, $iptables, hrtime(true) / 1e9);
         throw new LogicException('Unconverged listener was accepted.');
     } catch (RuntimeException $error) {
         $assert(strpos($error->getMessage(), $chain . ' UDP 51821: service rules differ (rules=1, exact ACCEPTs=0)') !== false);
