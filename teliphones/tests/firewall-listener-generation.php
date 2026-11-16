@@ -7,11 +7,17 @@ namespace FreePBX\modules\Teliphones {
     function usleep($microseconds) { $GLOBALS['generationClock'] += $microseconds / 1e6; }
     function exec($command, &$lines, &$result) {
         $fw = $GLOBALS['generationFirewall'];
-        if ($GLOBALS['generationClock'] >= $fw->next && !$fw->stalled) {
-            $fw->generate();
-            $fw->next = $GLOBALS['generationClock'] + $fw->period;
+        if ($fw->permanentlyIncomplete) {
+            $lines = [];
+        } elseif ($GLOBALS['generationClock'] < $fw->regenerationUntil) {
+            $lines = [];
+        } else {
+            if ($GLOBALS['generationClock'] >= $fw->next && !$fw->stalled) {
+                $fw->generate();
+                $fw->next = $GLOBALS['generationClock'] + $fw->period;
+            }
+            $lines = $fw->rules;
         }
-        $lines = $fw->rules;
         $result = 0;
     }
 }
@@ -22,7 +28,8 @@ namespace {
     $fw = new class {
         public array $services = [], $zones = [], $rules = [];
         public float $period = 30, $next = 30;
-        public bool $stalled = false;
+        public bool $stalled = false, $permanentlyIncomplete = false;
+        public float $regenerationUntil = 0;
         public function getAllCustomServices() { return $this->services; }
         public function getCustomServiceZones($id) { return $this->zones[$id] ?? []; }
         public function addCustomService($name, $protocol, $port) {
@@ -75,7 +82,27 @@ namespace {
             $check(is_file($state), 'Failed convergence lost recovery ownership');
             $check($GLOBALS['generationClock'] <= 150, 'Failure exceeded the transaction deadline');
         }
-        echo "Firewall asynchronous generation tests: PASS (fast/normal/slow, multi-port, regeneration, removal, stalled daemon)\n";
+        $fw->stalled = false;
+        $fw->regenerationUntil = $GLOBALS['generationClock'] + 3;
+        $fw->rules = [];
+        $fw->next = $fw->regenerationUntil;
+        FirewallListener::reconcile($fw, [51821], $state);
+        $check(count($fw->rules) === 6, 'A bounded empty intermediate snapshot did not recover after restoration');
+        $check($GLOBALS['generationClock'] >= $fw->regenerationUntil, 'Reconciliation returned before firewall restoration');
+
+        $fw->permanentlyIncomplete = true;
+        $fw->rules = [];
+        $before = $GLOBALS['generationClock'];
+        try {
+            FirewallListener::reconcile($fw, [51821], $state);
+            throw new LogicException('A permanently incomplete firewall admitted a listener');
+        } catch (RuntimeException $error) {
+            $check(strpos($error->getMessage(), 'have not converged') !== false, $error->getMessage());
+            $check(is_file($state), 'Permanent incomplete state lost listener recovery ownership');
+            $check($GLOBALS['generationClock'] - $before <= 150, 'Permanent incomplete state exceeded its deadline');
+            $check($fw->rules === [], 'A permanently incomplete firewall acquired generated listener rules');
+        }
+        echo "Firewall asynchronous generation tests: PASS (fast/normal/slow, multi-port, bounded regeneration and restoration, removal, stalled daemon, permanent incomplete state)\n";
     } finally {
         if (is_file($state)) unlink($state);
         if (is_file($state . '.lock')) unlink($state . '.lock');

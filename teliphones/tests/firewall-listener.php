@@ -122,12 +122,46 @@ try {
     // IPv4 success cannot stand in for a separate blocked IPv6 snapshot.
     $ipv6 = array_merge(['-A INPUT -j REJECT'], $rules);
     $assert(FirewallListener::rulesMismatch($ipv6, 'fpbxsvc-owned', 51821) === 'public INPUT path blocked');
+    $assert(FirewallListener::publicPath([], 'fpbxsvc-owned', 'INPUT', [], 51821)
+        === 'unknown (undeclared chain INPUT)');
+    $assert(FirewallListener::publicPath(['-N INPUT'], 'fpbxsvc-owned', 'INPUT', [], 51821)
+        === 'unknown (empty declared chain INPUT)');
+    $assert(FirewallListener::publicPath(['-N arbitrary'], 'fpbxsvc-owned', 'arbitrary', [], 51821)
+        === 'unknown (empty declared chain arbitrary)');
+    $assert(FirewallListener::publicPath(['-A INPUT -j arbitrary'], 'fpbxsvc-owned', 'INPUT', [], 51821)
+        === 'unknown (undeclared chain arbitrary)');
+    $assert(FirewallListener::publicPath(['-A INPUT -j fpbxfirewall', '-A fpbxfirewall -j DROP'],
+        'fpbxsvc-owned', 'INPUT', [], 51821) === 'blocked');
+    $assert(FirewallListener::publicPath(['-A INPUT -m conntrack --ctstate NEW -j ACCEPT'],
+        'fpbxsvc-owned', 'INPUT', [], 51821) === 'unknown (unsupported match)');
 
     $assert(!FirewallListener::rulesConverged($rules, 'fpbxsvc-owned', 51899));
     $assert(!FirewallListener::rulesConverged(array_slice($rules, 0, 3), 'fpbxsvc-owned', 51821));
     $assert(!FirewallListener::rulesConverged(array_merge($rules, [$rules[0]]), 'fpbxsvc-owned', 51821));
     $assert(!FirewallListener::rulesConverged($rules, 'fpbxsvc-owned', 0));
     $assert(FirewallListener::rulesConverged([], 'fpbxsvc-owned', 0));
+    $blockedDuringRemoval = ['-A INPUT -j REJECT'];
+    $regeneratingDuringRemoval = [];
+    $assert(FirewallListener::rulesConverged($blockedDuringRemoval, 'fpbxsvc-owned', 0));
+    $assert(FirewallListener::rulesConverged($regeneratingDuringRemoval, 'fpbxsvc-owned', 0));
+    $blockedRemoval = tempnam(sys_get_temp_dir(), 'tlp-listener-blocked-removal-');
+    file_put_contents($blockedRemoval, json_encode(['services' => [
+        '51821' => ['id' => 'owned-blocked', 'name' => 'TELIPHONES WireGuard listener (managed)']
+    ]]));
+    $blockedFw = new class {
+        public array $services = ['owned-blocked' => ['name' => 'TELIPHONES WireGuard listener (managed)',
+            'defzones' => ['internal'], 'descr' => 'Custom Service',
+            'custfw' => ['protocol' => 'udp', 'port' => '51821'], 'custid' => 'owned-blocked', 'noreject' => true]];
+        public array $zones = ['owned-blocked' => ['external', 'internal', 'other']];
+        public function getAllCustomServices() { return $this->services; }
+        public function getCustomServiceZones($id) { return $this->zones[$id] ?? []; }
+        public function deleteCustomService($id) { unset($this->services[$id], $this->zones[$id]); }
+    };
+    FirewallListener::reconcile($blockedFw, [], $blockedRemoval, static function ($id, $port) use ($assert) {
+        $assert($port === 0, 'Removal verification must not require public INPUT reachability.');
+    });
+    $assert($blockedFw->services === [] && !is_file($blockedRemoval));
+    unlink($blockedRemoval . '.lock');
     $chain = 'fpbxsvc-50dc73725c3e4073';
     $observed = array_map(static function ($line) use ($chain) {
         return str_replace('fpbxsvc-owned', $chain, $line);
@@ -149,6 +183,12 @@ try {
         . implode(' ', array_map('escapeshellarg', $observed)) . "\n");
     chmod($iptables, 0700);
     FirewallListener::verifyRules('50dc7372-5c3e-4073-a477-e49ecf930b1f', 51821, $iptables);
+    file_put_contents($iptables, "#!/bin/sh\nprintf '%s\\n' "
+        . escapeshellarg('-A INPUT -j REJECT') . "\n");
+    chmod($iptables, 0700);
+    FirewallListener::verifyRules('50dc7372-5c3e-4073-a477-e49ecf930b1f', 0, $iptables);
+    file_put_contents($iptables, "#!/bin/sh\nprintf '%s\\n'");
+    FirewallListener::verifyRules('50dc7372-5c3e-4073-a477-e49ecf930b1f', 0, $iptables);
     file_put_contents($iptables, "#!/bin/sh\nprintf '%s\\n' "
         . escapeshellarg('-A ' . $chain . ' -m comment --comment PRIVATE-KEY-FIXTURE -j ACCEPT') . "\n");
     try {

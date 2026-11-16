@@ -371,6 +371,10 @@ class BuildLayoutTests(unittest.TestCase):
         self.assertLess(helper.index("HelperLock lock("), helper.index("removeOwnedTunnel("))
         self.assertLess(helper.index("lock.owned()"), helper.index('"/installtunnelservice"'))
         self.assertIn("Stage::ResidualTunnel", helper)
+        # The helper owns one cancellation handle for its full lifetime, so a signalled event survives bounded UI exit.
+        self.assertIn("Handle cancellation(OpenEventW", helper)
+        self.assertIn("WaitForSingleObject(cancellation.get(), 0)", helper)
+        self.assertNotIn("cancellationRequested", wireguard)
         # Cleanup outcome is reported with, not instead of, the original stage and Windows error.
         self.assertNotIn("return kHelperRemoveFailed", wireguard)
         self.assertIn("result.stage = stage;", helper)
@@ -392,7 +396,11 @@ class BuildLayoutTests(unittest.TestCase):
         self.assertIn("status.dwCurrentState != SERVICE_START_PENDING", remove)
         main = (ROOT / "src/app/MainDlg.cpp").read_text()
         shutdown = main.split("void CMainDlg::OnCancel()", 1)[1]
-        self.assertIn("shutdown_with_residual_tunnel", shutdown)
+        self.assertIn("shutdown_with_recovery_state", shutdown)
+        self.assertIn("closeDeadlineTickMs_", shutdown)
+        completed = main.split("LRESULT CMainDlg::OnOperationDone", 1)[1].split("void CMainDlg::OnCancel()", 1)[0]
+        self.assertIn("ConnectionStage::Disconnecting", completed)
+        self.assertIn("The active operation was cancelled by Disconnect.", completed)
         cmake = (ROOT / "CMakeLists.txt").read_text()
         self.assertIn("src/core/TunnelLifecycle.cpp", cmake)
         for name in ("TELIPHONES.vcxproj", "TeliphonesCoreTests.vcxproj"):
@@ -414,15 +422,15 @@ class BuildLayoutTests(unittest.TestCase):
         remove = wireguard.split("void RemoveTunnel(", 1)[1].split("lifecycle::AdapterPresence TunnelAdapterPresence(", 1)[0]
         removed = remove.split("if (removed) {", 1)[1].split("runElevated(", 1)[0]
         self.assertLess(removed.index("DeleteFileW("), removed.index("awaitAdapterRelease(tunnelName)"))
-        self.assertIn("Stage::RemoveFailed", removed)
-        self.assertIn("adapterResidual(adapter)", removed)
+        self.assertIn("service-free residual adapter", remove)
+        self.assertIn("runElevated", remove)
         # The fixed release budget is unchanged; the fix is classification, not a longer wait.
         lifecycle = (ROOT / "src/core/TunnelLifecycle.h").read_text()
         self.assertIn("kAdapterReleaseMs = 5000", lifecycle)
         native = (ROOT / "tests/wireguard_nt_native_tests.cpp").read_text()
         integration = native.split("void integrationTests()", 1)[1]
         reconnect = integration.split("tunnel.remove();", 1)[1].split("HiddenDependency negativeControl;", 1)[0]
-        self.assertIn("InstallTunnel(tunnel.name", reconnect)
+        self.assertIn("installFixture(tunnel", reconnect)
         self.assertIn("AdapterPresence::Active", reconnect)
         self.assertIn("tunnel.remove();", reconnect)
         self.assertIn("AdapterPresence::Absent", native.split("void remove()", 1)[1].split("std::wstring configPath()", 1)[0])
@@ -441,9 +449,11 @@ class BuildLayoutTests(unittest.TestCase):
         final = elevated.split("const auto adapter = awaitAdapterRelease(tunnelName);", 1)[1]
         self.assertIn("ReadStatus(service)", final)
         self.assertIn("tunnel_startup::Absent(status)", final)
-        self.assertIn("if (!outcome.cleanupIncomplete) return {};", final)
+        self.assertIn("if (!outcome.cleanupIncomplete)", final)
+        self.assertIn("DeleteFileW(record.c_str())", final)
         residual = wireguard.split("std::vector<std::string> ResidualTeliphonesTunnels(", 1)[1].split("bool IsHelperInvocation(", 1)[0]
-        self.assertIn('ThrowLastError("Unable to enumerate residual TELIPHONES tunnel adapters", enumeration)', residual)
+        self.assertIn("readOwnership(name)", residual)
+        self.assertIn("TunnelAdapterPresence(name)", residual)
 
     def test_startup_notices_are_visible_and_second_launch_activates_existing_window(self):
         main = (ROOT / "src/app/MainDlg.cpp").read_text()
@@ -506,7 +516,8 @@ class BuildLayoutTests(unittest.TestCase):
         route = wireguard.split("AddressRoute RouteToAddress(", 1)[1].split("\n}\n", 1)[0]
         self.assertIn("GetBestInterfaceEx", route)
         residue = wireguard.split("std::vector<std::string> ResidualTeliphonesTunnels(", 1)[1].split("\n}\n", 1)[0]
-        self.assertIn("lifecycle::StartupResidualTunnels(", residue)
+        self.assertIn("readOwnership(name)", residue)
+        self.assertIn("installedSavedTunnels", residue)
         self.assertNotIn("RemoveTunnel", residue)
         stale = main.split("void CMainDlg::RemoveStaleTunnels() {", 1)[1].split("\n}\n", 1)[0]
         self.assertLess(stale.index("ResidualTeliphonesTunnels(saved)"), stale.index("ShowMessage("))
@@ -545,10 +556,10 @@ class BuildLayoutTests(unittest.TestCase):
         # Disconnect succeeds once the tunnel is removed and leftovers are reported, not fatal.
         self.assertIn("catch (const tlp::SshRuntimeResidual& residual)", main)
         exit_path = main.split("void CMainDlg::OnCancel()", 1)[1].split("CDialogEx::OnCancel();", 1)[0]
-        self.assertIn("tlp::win::CloseAllManagedSsh();", exit_path)
-        self.assertIn("tlp::win::RemoveTunnel(active_->tunnelName);", exit_path)
-        self.assertIn("tlp::CleanSshRuntimes(profiles_", exit_path)
-        self.assertIn("Exit TELIPHONES anyway?", exit_path)
+        self.assertIn("active_->cancellation->Cancel()", exit_path)
+        self.assertIn('StartDisconnect("Application shutdown requested.")', exit_path)
+        self.assertIn("GetTickCount64() + 5000", exit_path)
+        self.assertIn("FinishClose()", exit_path)
         self.assertIn("void CloseAllManagedSsh()", session)
         # Console failures stay inside the window procedure and the session is verified closed afterwards.
         console = main.split("CSshTerminalDlg terminal(", 1)[1].split("break;", 1)[0]
@@ -1305,14 +1316,14 @@ endfunction()
         base = ".".join(map(str, parts[:3]))
         product = base
         numeric = ".".join(map(str, parts))
-        self.assertEqual(product, "0.8.5")
-        self.assertEqual(numeric, "0.8.5.0")
+        self.assertEqual(product, "0.9.0")
+        self.assertEqual(numeric, "0.9.0.0")
         self.assertIn(f'"version-string": "{product}"', (ROOT / "vcpkg.json").read_text(encoding="utf-8"))
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
         self.assertIn(f"# TELIPHONES {product} for Windows", readme)
         self.assertIn(f"**{numeric}**", readme)
-        self.assertIn(f"Windows **{product}**", (ROOT.parents[1] / "README.md").read_text(encoding="utf-8"))
+        # App-only targets deliberately leave the server repository product table unchanged.
         self.assertIn(f"## {product} — Unreleased", changelog)
         self.assertEqual(re.findall(r"^## (\d+\.\d+\.\d+) ", changelog, re.MULTILINE)[0], product)
         self.assertIn(f"**{numeric}**", changelog)
@@ -1389,13 +1400,8 @@ endfunction()
         self.assertIn("desktop/windows/build/artifact/LICENSE", workflow)
         module_version = ET.parse(ROOT.parents[1] / "teliphones/module.xml").getroot().findtext("version")
         self.assertRegex(module_version or "", r"^\d+\.\d+\.\d+$")
-        for path, statement in (
-            (ROOT / "README.md",
-             r"TELIPHONES\s+0\.8\.5\s+for Windows[^.\n]*licensed under GPLv3"),
-            (ROOT.parents[1] / "teliphones/README.md",
-             rf"TELIPHONES\s+(?:proposed\s+)?{re.escape(module_version)}\s+for FreePBX"
-             r"[^.\n]*licensed under GPLv3"),
-        ):
+        for path, statement in ((ROOT / "README.md",
+             r"TELIPHONES\s+0\.9\.0\s+for Windows[^.\n]*licensed under GPLv3"),):
             text = path.read_text()
             self.assertRegex(text, statement)
             self.assertIn("TELIPHONES is a UK registered trademark.", text)

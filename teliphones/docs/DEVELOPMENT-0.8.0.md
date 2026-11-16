@@ -1,7 +1,9 @@
 # TELIPHONES 0.8.0 development implementation and acceptance
 
-Module and root broker are **0.8.0**, protocol **12**. Windows remains **0.8.5**,
-file version **0.8.5.0**. This is an uncommitted development candidate, not a
+This report records the original module and root broker **0.8.0**, protocol
+**12**. The current development candidate is module/broker **0.8.1**, while
+Windows is independently **0.9.0**, file version **0.9.0.0**. This is an
+uncommitted development candidate, not a
 release. The original requirement — access from a previously unknown public IP
 on FreePBX 17 / Debian 12 with Firewall enabled and no manual whitelisting —
 **has not been demonstrated**. No installation, service restart, privileged

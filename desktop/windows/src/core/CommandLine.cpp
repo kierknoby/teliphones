@@ -3,6 +3,8 @@
 #include "Json.h"
 #include "Validation.h"
 
+#include <limits>
+
 namespace tlp {
 
 std::string QuoteArgument(const std::string& argument) {
@@ -73,20 +75,45 @@ bool IsSid(const std::string& text) {
 }
 
 std::vector<std::string> HelperArguments(const HelperCommand& command) {
-    if (command.verb == HelperCommand::Verb::TunnelUp) return {"/tunnel-up", command.tunnelName, command.stagingPath, command.userSid, command.keyPipe};
+    if (command.verb == HelperCommand::Verb::TunnelUp)
+        return {"/tunnel-up", command.tunnelName, command.stagingPath, command.userSid, command.keyPipe,
+                command.profileId, command.workstationId, command.operationId, command.generation, command.cancelToken};
     return {"/tunnel-down", command.tunnelName};
 }
 
 HelperCommand ParseHelperArguments(const std::vector<std::string>& arguments) {
     HelperCommand command;
-    if (arguments.size() == 5 && arguments[0] == "/tunnel-up") {
+    if (arguments.size() == 10 && arguments[0] == "/tunnel-up") {
         command.verb = HelperCommand::Verb::TunnelUp;
         command.tunnelName = arguments[1];
         command.stagingPath = arguments[2];
         command.userSid = arguments[3];
         command.keyPipe = arguments[4];
-        if (command.keyPipe.size() != 32 || command.keyPipe.find_first_not_of("0123456789abcdef") != std::string::npos)
+        command.profileId = arguments[5];
+        command.workstationId = arguments[6];
+        command.operationId = arguments[7];
+        command.generation = arguments[8];
+        command.cancelToken = arguments[9];
+        const auto hex32 = [](const std::string& value) {
+            return value.size() == 32 && value.find_first_not_of("0123456789abcdef") == std::string::npos;
+        };
+        const auto validGeneration = [](const std::string& value) {
+            if (value.empty() || value.size() > 20 || value.find_first_not_of("0123456789") != std::string::npos || value == "0")
+                return false;
+            std::uint64_t parsed = 0;
+            for (const char digit : value) {
+                const auto number = static_cast<std::uint64_t>(digit - '0');
+                if (parsed > (std::numeric_limits<std::uint64_t>::max() - number) / 10) return false;
+                parsed = parsed * 10 + number;
+            }
+            return parsed != 0;
+        };
+        if (!hex32(command.keyPipe) || !hex32(command.operationId) || !hex32(command.cancelToken))
             throw Error("Invalid tunnel key pipe.");
+        if (!IsProfileId(command.profileId) || command.workstationId.empty() || command.workstationId.size() > 96 ||
+            command.workstationId.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_") != std::string::npos ||
+            !validGeneration(command.generation))
+            throw Error("Invalid tunnel ownership arguments.");
         std::string expectedName = "\\" + command.tunnelName + ".conf";
         const std::string& path = command.stagingPath;
         bool absolute = path.size() > 3 && ((path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z')) && path[1] == ':' && path[2] == '\\';

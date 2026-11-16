@@ -5,8 +5,8 @@ Unknown-public-IP FreePBX 17 connectivity remains unverified. Historical evidenc
 below does not validate this development candidate.
 
 This document explains proposed, unreleased source targets **FreePBX module
-0.8.0**, **root broker 0.8.0**, **protocol 12** and **Windows 0.8.5**, evidence
-and limitations. A statically validated 0.8.0 development package is available;
+0.8.1**, **root broker 0.8.1**, **protocol 12** and **Windows 0.9.0**, evidence
+and limitations. The 0.8.1 development package is for controlled testing;
 it is not production-ready or live-accepted. The historical 0.6.7 archive was
 intentionally removed from this checkout and did not contain the proposed
 changes.
@@ -14,7 +14,7 @@ changes.
 > [!WARNING]
 > TELIPHONES remains experimental. The operator reports successful native
 > Windows tests and initial live authenticated SSH, not complete lifecycle
-> assurance. The latest 0.8.5 source still requires native Windows validation,
+> assurance. The current 0.9.0 source still requires native Windows validation,
 > and current firewall/session recovery requires live-PBX acceptance.
 > The reported failure where opening the embedded SSH console closes TELIPHONES
 > remains an unresolved release blocker.
@@ -70,7 +70,8 @@ listener reconciliation, conservative firewall path verification, expiring
 management grants and bounded controller requests. The original unknown-public-IP
 FreePBX 17 requirement remains **unverified**. Native Windows validation and live
 kernel/FreePBX acceptance remain outstanding; the reported SSH console crash is
-also unresolved. Windows remains 0.8.5 and broker protocol remains 12.
+also unresolved. Windows 0.9.0 native validation and broker protocol 12 remain
+independent status items.
 
 See [current exact results](DEVELOPMENT-0.8.0-REPORT.md) and
 [protections, limitations and acceptance](../teliphones/docs/DEVELOPMENT-0.8.0.md).

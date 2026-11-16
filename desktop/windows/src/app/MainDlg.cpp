@@ -10,6 +10,7 @@
 
 #include "../core/Admission.h"
 #include "../core/CommandLine.h"
+#include "../core/Encoding.h"
 #include "../core/Json.h"
 #include "../core/Pairing.h"
 #include "../core/Rendezvous.h"
@@ -54,6 +55,7 @@ struct OperationResult {
     bool sourcesRequestPending = false;
     std::shared_ptr<tlp::win::ManagedSshConsole> sshConsole;
     std::optional<tlp::Profile> sshProfile;
+    UINT_PTR generation = 0;
 };
 
 struct ProbeResult {
@@ -603,7 +605,7 @@ void CMainDlg::UpdateButtons() {
     GetDlgItem(IDC_UPDATE_GRANT)->EnableWindow(profile != nullptr && profile->kind == ProfileKind::Support && !busy_ && !selectedActive);
     GetDlgItem(IDC_REMOVE)->EnableWindow(profile != nullptr && !busy_ && !selectedActive);
     GetDlgItem(IDC_CONNECT)->EnableWindow(canConnect);
-    GetDlgItem(IDC_DISCONNECT)->EnableWindow(active_ && !busy_);
+    GetDlgItem(IDC_DISCONNECT)->EnableWindow(active_ != nullptr && !closing_);
     GetDlgItem(IDC_OPEN_GUI)->EnableWindow(verified);
     GetDlgItem(IDC_OPEN_SSH)->EnableWindow(verified && sshAllowed);
     GetDlgItem(IDC_OPEN_SSH)->SetWindowTextW(activeProfile != nullptr && activeProfile->kind == ProfileKind::Administrator &&
@@ -702,8 +704,8 @@ void CMainDlg::RemoveStaleTunnels() {
         tlp::win::TunnelState state = tlp::win::QueryTunnel(name);
         if (state != tlp::win::TunnelState::Absent && state != tlp::win::TunnelState::Unknown) saved.push_back(name);
     }
-    // No TELIPHONES connection exists yet, so anything in its tunnel namespace is residue, including the tunnel of a
-    // pairing that was revoked or re-created. Such a leftover routes the same PBX address and can capture admission.
+    // No TELIPHONES connection exists yet. Recovery candidates are restricted to saved profiles and valid protected
+    // ownership records; a similar-looking WireGuard service or adapter is not evidence that TELIPHONES owns it.
     std::vector<std::string> stale = saved;
     try {
         stale = tlp::win::ResidualTeliphonesTunnels(saved);
@@ -717,7 +719,7 @@ void CMainDlg::RemoveStaleTunnels() {
     if (tlp::ui::ShowMessage(Widen("TELIPHONES tunnels from a previous run are still installed (" + names +
                                    "). Remove them now? Other WireGuard tunnels are not changed.").c_str(),
                              MB_ICONQUESTION | MB_YESNO) != IDYES) {
-        SetState("Previous tunnel still installed", "Remove it from WireGuard for Windows, or restart TELIPHONES and approve cleanup.");
+        SetState("Recovery required", "Restart TELIPHONES when you are ready and approve recovery of the listed owned tunnel.");
         return;
     }
     busy_ = true;
@@ -816,6 +818,7 @@ void CMainDlg::OnConnect() {
     active->diagnosticId = profile->kind == ProfileKind::Administrator ? "ws-" + profile->pairing.workstationId : "support-" + profile->id;
     try {
         active->attemptId = tlp::win::NewProfileId();
+        active->operationId = tlp::HexEncode(tlp::win::RandomBytes(16));
         LogEvent("connection_attempt", "info", "Manual connection attempt. Correlation ID identifies this pairing; attempt ID is workstation-local.",
                  active->diagnosticId, active->attemptId);
         if (profile->kind == ProfileKind::Administrator && profile->pairing.mode == "temporary" && profile->pairing.expiresAt <= now) {
@@ -870,18 +873,28 @@ void CMainDlg::OnConnect() {
     lastTelemetryTickMs_ = 0;
     active_ = std::move(active);
     ++generation_;
+    active_->lifecycle = tlp::tunnel_lifecycle::BeginConnection(generation_, GetTickCount64(), 90000);
+    active_->cancellation = std::make_shared<tlp::win::TunnelCancellation>();
+    const auto operationId = active_->operationId;
+    const auto profileId = active_->profileId;
+    const auto workstationId = active_->diagnosticId;
+    const auto operationGeneration = generation_;
+    const auto cancellation = active_->cancellation;
     busy_ = true;
     RefreshList();
-    SetState("Connecting...", "Windows will ask for administrative approval to start the WireGuard tunnel.");
+    SetState("Connecting - establishing WireGuard...", "Windows will ask for administrative approval to start the WireGuard tunnel.");
     auto stagedConfig = std::shared_ptr<std::string>(new std::string(std::move(configText)), [](std::string* value) {
         tlp::win::SecureWipe(*value);
         delete value;
     });
     try {
-        RunInBackground(m_hWnd, OperationKind::Connect, "", [tunnelName, stagedConfig](OperationResult&) {
+        RunInBackground(m_hWnd, OperationKind::Connect, "", [tunnelName, stagedConfig, profileId, workstationId,
+                                                               operationId, operationGeneration, cancellation](OperationResult& result) {
+            result.generation = operationGeneration;
             bool installed = false;
             try {
-                installed = tlp::win::InstallTunnel(tunnelName, *stagedConfig);
+                installed = tlp::win::InstallTunnel(tunnelName, *stagedConfig, profileId, workstationId,
+                                                    operationId, operationGeneration, cancellation);
             } catch (...) {
                 tlp::win::SecureWipe(*stagedConfig);
                 throw;
@@ -900,10 +913,20 @@ void CMainDlg::OnConnect() {
 }
 
 void CMainDlg::StartDisconnect(const std::string& reason) {
-    if (!active_ || busy_) return;
+    if (!active_) return;
+    if (busy_) {
+        if (active_->cancellation) active_->cancellation->Cancel();
+        tlp::tunnel_lifecycle::CancelOperation(active_->lifecycle);
+        ++generation_;
+        SetState("Cancelling connection...", reason.empty() ?
+            "TELIPHONES is stopping the current operation and will remove only its owned tunnel." : reason);
+        UpdateButtons();
+        return;
+    }
     busy_ = true;
     LogEvent("disconnect_requested", "info", reason.empty() ? "User requested tunnel removal." : reason);
     ++generation_;
+    tlp::tunnel_lifecycle::CancelOperation(active_->lifecycle);
     UpdateButtons();
     SetState("Disconnecting...", reason);
     std::string tunnelName = active_->tunnelName;
@@ -1154,6 +1177,23 @@ void CMainDlg::OnTimer(UINT_PTR id) {
     for (int row = 0; row < list_.GetItemCount() && static_cast<std::size_t>(row) < profiles_.size(); ++row) {
         list_.SetItemText(row, 2, Widen(AccessText(profiles_[static_cast<std::size_t>(row)], tlp::win::UnixNow())).c_str());
     }
+    if (closing_ && GetTickCount64() >= closeDeadlineTickMs_) {
+        LogEvent("shutdown_cleanup_deferred", "warning",
+                 "The bounded close window ended; persisted ownership will drive cleanup at the next launch.");
+        FinishClose();
+        return;
+    }
+    if (active_ && tlp::tunnel_lifecycle::CheckDeadline(active_->lifecycle, GetTickCount64()) ==
+                       tlp::tunnel_lifecycle::LifecycleAction::BeginCleanup) {
+        LogEvent("connection_deadline", "error", "The connection stage exceeded its deadline; automatic retries stopped.");
+        if (active_->cancellation) active_->cancellation->Cancel();
+        ++generation_;
+        SetState("Connection timed out - cancelling...",
+                 "Automatic retries stopped. The current helper is being cancelled before owned-resource cleanup.");
+        UpdateButtons();
+        if (!busy_) StartDisconnect("The connection stage reached its deadline.");
+        return;
+    }
     if (!active_ || !active_->connected || busy_) {
         RefreshHealth();
         return;
@@ -1304,6 +1344,11 @@ LRESULT CMainDlg::OnProbeDone(WPARAM generation, LPARAM lparam) {
     std::unique_ptr<ProbeResult> result(reinterpret_cast<ProbeResult*>(lparam));
     probing_ = false;
     if (generation != generation_ || !active_ || !active_->monitor || busy_) return 0;
+    if (active_->lifecycle.stage == tlp::tunnel_lifecycle::ConnectionStage::Authenticating &&
+        result->sample.handshakeUnixSeconds && *result->sample.handshakeUnixSeconds > 0) {
+        tlp::tunnel_lifecycle::AuthenticationObserved(active_->lifecycle, GetTickCount64(), 30000);
+        SetState("Waiting for controller admission...", "WireGuard authentication was observed; management remains blocked until the PBX admits this session.");
+    }
     if (result->migration) {
         active_->verified = false;
         UpdateButtons();
@@ -1418,6 +1463,7 @@ LRESULT CMainDlg::OnProbeDone(WPARAM generation, LPARAM lparam) {
         return 0;
     }
     if (result->sessionAdmissionRequired && result->sessionAdmissionError.empty()) {
+        tlp::tunnel_lifecycle::AdmissionObserved(active_->lifecycle);
         if (!active_->lastAdmissionFailure.empty()) {
             LogEvent("admission_recovered", "info", "The PBX session controller answered and admitted this workstation.");
             active_->lastAdmissionFailure.clear();
@@ -1478,6 +1524,8 @@ LRESULT CMainDlg::OnProbeDone(WPARAM generation, LPARAM lparam) {
             UpdateButtons();
         }
     }
+    if (!result->sessionAdmissionRequired && result->probeSucceeded)
+        tlp::tunnel_lifecycle::AdmissionObserved(active_->lifecycle);
     const Profile* observedProfile = FindProfile(active_->profileId);
     activePolicyLocked_ = observedProfile != nullptr && observedProfile->kind == ProfileKind::Administrator &&
                           result->policyLocked;
@@ -1535,6 +1583,16 @@ LRESULT CMainDlg::OnProbeDone(WPARAM generation, LPARAM lparam) {
 LRESULT CMainDlg::OnOperationDone(WPARAM, LPARAM lparam) {
     std::unique_ptr<OperationResult> result(reinterpret_cast<OperationResult*>(lparam));
     busy_ = false;
+    if (result->kind == OperationKind::Connect && result->generation != generation_) {
+        // Disconnect/Close superseded this result.  A late successful install is never promoted.
+        if (active_) {
+            LogEvent("obsolete_connection_result", "warning", "A superseded connection worker completed; cleanup is being enforced.");
+            StartDisconnect("The connection attempt was cancelled.");
+        } else if (closing_) {
+            FinishClose();
+        }
+        return 0;
+    }
     const bool reconnectAfterMigration = result->kind == OperationKind::Disconnect &&
                                          migrationReconnectPending_ && result->error.empty();
     const std::string reconnectProfileId = active_ ? active_->profileId : std::string();
@@ -1585,8 +1643,8 @@ LRESULT CMainDlg::OnOperationDone(WPARAM, LPARAM lparam) {
             break;
         case OperationKind::Cleanup:
             if (!result->error.empty()) {
-                SetState("Not connected", "A TELIPHONES tunnel from a previous session could not be removed: " + result->error +
-                                              " You can remove it in the WireGuard for Windows application.");
+                SetState("Recovery required", "A TELIPHONES tunnel from a previous session could not be removed: " + result->error +
+                                                   " TELIPHONES will offer recovery again at the next launch.");
             } else {
                 SetState("Not connected", "A tunnel left from a previous session was removed.");
             }
@@ -1601,6 +1659,7 @@ LRESULT CMainDlg::OnOperationDone(WPARAM, LPARAM lparam) {
                 healthDialog_.UpdateSnapshot(disconnected);
                 SetState("Not connected", result->declined ? "Connection cancelled: administrative approval was not given." : result->error);
                 if (!result->error.empty()) ShowError(result->error);
+                if (closing_) FinishClose();
                 break;
             }
             if (const Profile* profile = FindProfile(active_->profileId)) {
@@ -1610,14 +1669,18 @@ LRESULT CMainDlg::OnOperationDone(WPARAM, LPARAM lparam) {
                 active_->health = std::make_unique<tlp::ConnectionHealthMonitor>(healthPreferences_.thresholds);
             }
             active_->connected = true;
+            tlp::tunnel_lifecycle::TunnelEstablished(active_->lifecycle, GetTickCount64(), 30000);
             LogEvent("tunnel_started", "info", "WireGuard tunnel service started. PBX application reachability not yet verified.");
-            SetState("Tunnel started - waiting for the PBX to answer...", "");
+            SetState("Waiting for WireGuard authentication...",
+                     "The local tunnel service is running. TELIPHONES is waiting for handshake evidence before controller admission.");
             break;
         case OperationKind::Disconnect:
             if (!result->error.empty()) {
                 LogEvent("disconnect_failed", "error", result->error);
-                SetState("Disconnect failed", result->error + " The tunnel may still be installed; choose Disconnect again or remove it in WireGuard for Windows.");
+                SetState("Cleanup incomplete", result->error + " The tunnel may still be installed; choose Disconnect again or use next-launch recovery.");
                 ShowError(result->error);
+                if (active_) active_->lifecycle.stage = tlp::tunnel_lifecycle::ConnectionStage::CleanupIncomplete;
+                if (closing_) FinishClose();
                 break;
             }
             LogEvent("tunnel_removed", "info", "Tunnel removed: " + result->reason);
@@ -1640,10 +1703,23 @@ LRESULT CMainDlg::OnOperationDone(WPARAM, LPARAM lparam) {
                 LogEvent("session_release_warning", "warning", result->warning);
                 SetState("Disconnected", result->reason + " " + result->warning);
             }
+            if (closing_) {
+                FinishClose();
+                return 0;
+            }
             break;
     }
     if (reconnectAfterMigration) migrationReconnectPending_ = false;
     RefreshList();
+    if (active_ && active_->lifecycle.stage == tlp::tunnel_lifecycle::ConnectionStage::Disconnecting &&
+        result->kind != OperationKind::Disconnect) {
+        StartDisconnect(closing_ ? "Application shutdown requested." : "The active operation was cancelled by Disconnect.");
+        return 0;
+    }
+    if (closing_ && active_ && result->kind != OperationKind::Disconnect) {
+        StartDisconnect("Application shutdown requested.");
+        return 0;
+    }
     if (reconnectAfterMigration) {
         for (std::size_t index = 0; index < profiles_.size(); ++index) {
             if (profiles_[index].id == reconnectProfileId) {
@@ -1657,70 +1733,34 @@ LRESULT CMainDlg::OnOperationDone(WPARAM, LPARAM lparam) {
 }
 
 void CMainDlg::OnCancel() {
-    if (busy_) {
-        tlp::ui::ShowMessage(L"Please wait for the current operation to finish.", MB_ICONINFORMATION);
+    if (closing_) {
+        FinishClose();
         return;
     }
-    if (probing_) {
-        tlp::ui::ShowMessage(L"Please wait for the connection status check to finish before closing.", MB_ICONINFORMATION);
-        return;
+    if (active_ && tlp::ui::ShowMessage(
+            L"Disconnect from the PBX and exit TELIPHONES? Cleanup is bounded; unresolved owned resources will be recovered at the next launch.",
+            MB_ICONQUESTION | MB_YESNO) != IDYES) return;
+    closing_ = true;
+    closeDeadlineTickMs_ = GetTickCount64() + 5000;
+    ++generation_;
+    if (active_ && active_->cancellation) active_->cancellation->Cancel();
+    probing_ = false;  // late probe messages carry an obsolete generation and are discarded
+    UpdateButtons();
+    SetState("Closing...", "Cancelling active work and starting bounded owned-resource cleanup.");
+    if (active_ && !busy_) {
+        StartDisconnect("Application shutdown requested.");
+    } else if (!active_) {
+        FinishClose();
     }
-    // Every owned resource is torn down independently, so one failure never leaves the others running.
-    std::vector<std::string> remaining;
-    bool tunnelRemains = false;
+}
+
+void CMainDlg::FinishClose() {
+    if (GetSafeHwnd() == nullptr) return;
     if (active_) {
-        if (tlp::ui::ShowMessage(L"Disconnect from the PBX and exit TELIPHONES?", MB_ICONQUESTION | MB_YESNO) != IDYES) return;
-        CWaitCursor wait;
-        LogEvent("disconnect_requested", "info", "Application shutdown: removing active tunnel.");
-        const auto* profile = FindProfile(active_->profileId);
-        if (profile && profile->kind == ProfileKind::Administrator) {
-            try {
-                tlp::win::CloseManagedSsh(profile->id);
-            } catch (const std::exception& e) {
-                remaining.push_back(std::string("SSH session: ") + e.what());
-            }
-            try {
-                tlp::win::MaintainWorkstationSession(profile->pairing.pbxAddress, true);
-            } catch (const std::exception& releaseError) {
-                const std::string warning = "PBX lease release was not confirmed during shutdown; capacity will recover after expiry: " +
-                                            tlp::SanitizeDiagnosticDetail(releaseError.what());
-                LogEvent("session_release_warning", "warning", warning);
-            }
-        }
-        try {
-            tlp::win::RemoveTunnel(active_->tunnelName);
-            LogEvent("tunnel_removed", "info", "Tunnel removed during application shutdown.");
-        } catch (const std::exception& e) {
-            tunnelRemains = true;
-            remaining.push_back("WireGuard tunnel " + active_->tunnelName + ": " + e.what());
-        }
-    }
-    CWaitCursor closing;
-    try {
-        tlp::win::CloseAllManagedSsh();
-    } catch (const std::exception& e) {
-        remaining.push_back(std::string("SSH session: ") + e.what());
-    }
-    if (!remaining.empty()) {
-        std::string prompt = "TELIPHONES could not confirm that everything it owns was closed:";
-        for (const auto& item : remaining) prompt += "\n- " + item;
-        prompt += "\n\nExit TELIPHONES anyway? Owned SSH processes end with the application. The next start will detect a "
-                  "remaining tunnel and offer cleanup. Choose No to keep TELIPHONES open and try again.";
-        for (const auto& item : remaining) LogEvent("shutdown_teardown_failed", "error", item);
-        if (tlp::ui::ShowMessage(Widen(prompt).c_str(), MB_ICONERROR | MB_YESNO | MB_DEFBUTTON2) != IDYES) {
-            if (!tunnelRemains) active_.reset();
-            UpdateButtons();
-            return;
-        }
-        if (tunnelRemains) LogEvent("shutdown_with_residual_tunnel", "warning", "Application closed while a TELIPHONES tunnel remained installed.");
+        LogEvent("shutdown_with_recovery_state", "warning",
+                 "Application closed before owned-resource cleanup was verified; next-launch recovery is required.");
     }
     active_.reset();
-    const auto failures = tlp::CleanSshRuntimes(profiles_, [](const Profile& profile) { tlp::win::RemoveSshRuntime(profile); });
-    if (!failures.empty()) {
-        const auto text = tlp::DescribeSshRuntimeCleanupFailures(failures);
-        LogEvent("ssh_runtime_cleanup_incomplete", "warning", text);
-        ShowError(text);
-    }
     healthDialog_.PersistWindowState();
     KillTimer(kMonitorTimer);
     tlp::win::StopWatchingNetworkChanges(networkWatch_);

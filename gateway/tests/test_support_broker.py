@@ -253,7 +253,7 @@ class SupportBrokerTests(unittest.TestCase):
 
     def test_status_reports_live_monitoring_protocol_matching_gui(self):
         status = self.broker.status()
-        self.assertEqual(status["component_version"], "0.8.0")
+        self.assertEqual(status["component_version"], "0.8.1")
         self.assertEqual(status["protocol"], 12)
         self.assertEqual(status["protocol"], broker_module.PROTOCOL)
         self.assertIn("operation", status)
@@ -333,6 +333,19 @@ def decode_response(code):
 # Fail2Ban INPUT chains observed on the FreePBX 17 test installation.
 FREEPBX17_FAIL2BAN = ["fail2ban-sshd", "fail2ban-SIP", "fail2ban-BadBots", "fail2ban-api",
                       "fail2ban-SSH", "fail2ban-apache-auth", "fail2ban-recidive", "fail2ban-PBX-GUI"]
+FREEPBX17_NAT = """-P PREROUTING ACCEPT
+-P INPUT ACCEPT
+-P OUTPUT ACCEPT
+-P POSTROUTING ACCEPT
+-N masq-input
+-N masq-output
+-A POSTROUTING -j masq-input
+-A POSTROUTING -j masq-output
+-A POSTROUTING -m mark --mark 0x3/0x3 -j MASQUERADE
+-A masq-input -j MARK --set-xmark 0x1/0xffffffff
+-A masq-output -o eth0 -j MARK --set-xmark 0x2/0x2
+-A masq-output -o eth1 -j MARK --set-xmark 0x2/0x2
+"""
 
 
 def fail2ban_hook(name):
@@ -360,6 +373,7 @@ class FakeNetwork:
         self.next_handle = 1
         # Simulated iptables filter table (None: no iptables). Rule token lists use iptables -S syntax.
         self.filter = None
+        self.nat_listing = FREEPBX17_NAT
 
     @property
     def link(self):
@@ -441,7 +455,7 @@ class FakeNetwork:
             return self.process
         if name in ("iptables", "ip6tables"):
             if "-t" in rest:
-                return ""
+                return self.nat_listing if rest[rest.index("-t") + 1] == "nat" else ""
             return self.iptables(list(rest))
         if name == "ip" and rest == ["-j", "link", "show"]:
             return json.dumps([{"ifname": interface, "flags": ["UP"] if device["up"] else []}
@@ -1567,7 +1581,7 @@ class WorkstationPairingTests(unittest.TestCase):
         self.assertNotIn("disconnected", json.dumps(events).lower())
         self.assertEqual({item["diagnostic_id"] for item in events}, {diagnostic_id})
         exported = self.broker.dispatch({"action": "diagnostics", "diagnostic_id": diagnostic_id}, 1000)
-        self.assertEqual(exported["component_version"], "0.8.0")
+        self.assertEqual(exported["component_version"], "0.8.1")
         self.assertEqual(exported["diagnostic_id"], diagnostic_id)
         self.assertFalse(any("public_key" in item or "token" in json.dumps(item).lower() for item in exported["events"]))
 
@@ -1581,7 +1595,7 @@ class WorkstationPairingTests(unittest.TestCase):
         self.assertIn("interface.established", names)
         self.assertIn("peer.admitted", names)
         self.assertIn("peer.observation", names)
-        self.assertTrue(all(event["source"] == "pbx" and event["component_version"] == "0.8.0" for event in events))
+        self.assertTrue(all(event["source"] == "pbx" and event["component_version"] == "0.8.1" for event in events))
         self.broker.dispatch({"action": "unpair", "workstation_id": response["workstation_id"]}, 1000)
         events = self.broker.diagnostics.read(diagnostic_id)
         self.assertEqual(events[-1]["event"], "pairing.revoked")

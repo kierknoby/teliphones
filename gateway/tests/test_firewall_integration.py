@@ -194,17 +194,104 @@ class IntegrationTests(unittest.TestCase):
         _, response = self.pair()
         self.net.filter["INPUT"].remove(["-j", "fpbxfirewall"])
         self.broker.expire_workstations()
-        self.assertNotIn(CHAIN, self.net.filter)
-        self.assertEqual(self.broker.integration["state"], "error")
+        self.assertIn(CHAIN, self.net.filter)
+        self.assertEqual(self.broker.integration["state"], "pending")
         self.assertFalse(self.net.up)
+        peer = next(iter(self.net.peers.items()))
+        self.assertEqual(peer[1], response["address"])
+        self.assertIn("INPUT jump", self.broker.workstation_error)
         self.net.filter["INPUT"].append(["-j", "fpbxfirewall"])
         self.broker.workstation_retry_at = 0
         self.broker.expire_workstations()
-        self.open_session(response)
         self.assertEqual(self.input_targets(), EXPECTED)
-        self.assertEqual(self.accepted(), {(response["address"], "80"), (response["address"], "443"),
-                                           (response["address"], "8766")})
+        self.assertEqual(next(iter(self.net.peers.values())), response["address"])
         self.assertEqual(self.broker.integration["state"], "active")
+
+    def test_nat_marking_configurations_and_regeneration_recovery(self):
+        nat6 = helpers.FREEPBX17_NAT
+        nat7 = nat6 + "-A masq-output -o tlp-admin -j MARK --set-xmark 0x2/0x2\n"
+        self.assertEqual(broker.Broker.freepbx_nat_state(nat6.splitlines()), ("stable", ""))
+        self.assertEqual(broker.Broker.freepbx_nat_state(nat7.splitlines()), ("stable", ""))
+        reordered = nat6.splitlines()
+        reordered[6], reordered[7] = reordered[7], reordered[6]
+        self.assertEqual(broker.Broker.freepbx_nat_state(reordered)[0], "unsafe")
+        duplicated = nat6.splitlines() + ["-A POSTROUTING -j masq-input"]
+        self.assertEqual(broker.Broker.freepbx_nat_state(duplicated)[0], "unsafe")
+        unsupported = nat6.splitlines() + ["-A POSTROUTING -j ACCEPT"]
+        self.assertEqual(broker.Broker.freepbx_nat_state(unsupported)[0], "unsafe")
+        _, response = self.pair()
+        self.assertIn("workstation_public_key", response)
+        original_peers = dict(self.net.peers)
+        for incomplete in ("\n".join(nat6.splitlines()[:4]), "\n".join(nat6.splitlines()[:8]),
+                           "\n".join(nat6.splitlines()[:10])):
+            self.net.nat_listing = incomplete
+            self.broker.workstation_retry_at = 0
+            self.broker.expire_workstations()
+            self.assertFalse(self.net.up)
+            self.assertEqual(self.net.peers, original_peers)
+            self.assertIn("regeneration", self.broker.workstation_error)
+            self.net.nat_listing = nat7
+            self.broker.workstation_retry_at = 0
+            self.broker.expire_workstations()
+            self.assertTrue(self.net.up)
+            self.assertEqual(self.net.peers, original_peers)
+            self.assertEqual(self.broker.integration["state"], "active")
+        self.assertIn(response["address"], self.net.peers.values())
+
+    def test_unsupported_nat_rule_is_not_misclassified_as_transient(self):
+        self.pair()
+        self.net.nat_listing += "-A POSTROUTING -j ACCEPT\n"
+        self.broker.workstation_retry_at = 0
+        self.broker.expire_workstations()
+        self.assertFalse(self.net.up)
+        self.assertIn("Unrecognised iptables nat", self.broker.workstation_error)
+
+    def test_repeated_regeneration_recovers_from_each_incomplete_snapshot(self):
+        self.pair()
+        stable = helpers.FREEPBX17_NAT
+        self.net.nat_listing = stable
+        for index in range(4):
+            self.net.filter["INPUT"].remove(["-j", "fpbxfirewall"])
+            self.net.nat_listing = "\n".join(stable.splitlines()[: 4 + index])
+            self.broker.workstation_retry_at = 0
+            self.broker.expire_workstations()
+            self.assertFalse(self.net.up)
+            self.net.nat_listing = stable
+            self.net.filter["INPUT"].append(["-j", "fpbxfirewall"])
+            self.broker.workstation_retry_at = 0
+            self.broker.expire_workstations()
+            self.assertTrue(self.net.up)
+            self.assertEqual(self.broker.integration["state"], "active")
+
+    def test_regeneration_deadline_remains_fail_closed_and_retries_without_teardown(self):
+        self.pair()
+        peers = dict(self.net.peers)
+        self.net.nat_listing = "\n".join(helpers.FREEPBX17_NAT.splitlines()[:4])
+        self.broker.firewall_transition_since = time.monotonic() - 301
+        self.broker.workstation_retry_at = 0
+        self.net.calls = []
+        self.broker.expire_workstations()
+        self.assertFalse(self.net.up)
+        self.assertEqual(self.net.peers, peers)
+        self.assertEqual(self.broker.integration["state"], "error")
+        self.assertIn("remained incomplete for 300 seconds", self.broker.integration["message"])
+        self.assertEqual(self.broker.workstation_retry_delay, 5)
+        self.assertNotIn(("ip", ("link", "del", "dev", broker.WORKSTATION_IFACE)), self.net.calls)
+        self.broker.workstation_retry_at = 0
+        self.broker.expire_workstations()
+        self.assertEqual(self.net.peers, peers)
+        self.assertFalse(self.net.up)
+
+    def test_administrator_revocation_completes_during_nat_regeneration(self):
+        _, revoked = self.pair()
+        _, retained = self.pair(public_key="B" * 42 + "E=")
+        self.net.nat_listing = "\n".join(helpers.FREEPBX17_NAT.splitlines()[:4])
+        result = self.unpair(revoked["workstation_id"])
+        self.assertTrue(result["ok"])
+        self.assertNotIn(revoked["workstation_public_key"], self.net.peers)
+        self.assertIn(retained["workstation_public_key"], self.net.peers)
+        self.assertNotIn(revoked["workstation_id"], [item["id"] for item in self.broker.workstation_state()[0]["workstations"]])
+        self.assertFalse(self.net.up)
 
     def test_last_revocation_and_shutdown_remove_listener_and_integration(self):
         self.pair()
@@ -401,6 +488,41 @@ class IntegrationTests(unittest.TestCase):
             self.assertFalse(self.net.up)
             self.assertIn(name, self.broker.workstation_error)
             self.broker.teardown_workstations()
+
+    def test_empty_declared_fail2ban_chains_are_known_for_management_path(self):
+        _, response = self.pair()
+        self.net.filter["fail2ban-api"] = []
+        self.broker.expire_workstations()
+        self.assertEqual(self.broker.integration["state"], "active")
+        self.assertTrue(self.net.up)
+        for port in (80, 443, 8080, 8766):
+            for connection_state in ("NEW", "ESTABLISHED"):
+                packet = {"interface": broker.WORKSTATION_IFACE,
+                          "source": response["address"].split("/")[0],
+                          "destination": response["pbx_address"], "protocol": "tcp",
+                          "port": port, "state": connection_state}
+                self.assertEqual(broker.management_path(
+                    [(chain, rule) for chain, rules in self.net.filter.items() for rule in rules],
+                    packet, declared_chains=set(self.net.filter)), "verified")
+
+    def test_undeclared_management_chain_drop_reject_and_accept_bypass_fail_closed(self):
+        self.pair()
+        for target in ("DROP", "REJECT", "ACCEPT"):
+            rules = [("INPUT", [["-j", "missing-chain"]]), ("teliphones-ws", [["-j", target]])]
+            packet = {"interface": broker.WORKSTATION_IFACE, "source": "10.1.0.2",
+                      "destination": "10.1.0.1", "protocol": "tcp", "port": 443, "state": "NEW"}
+            result = broker.management_path(rules, packet, declared_chains={"INPUT", "teliphones-ws"})
+            self.assertEqual(result, "unknown")
+        for target in ("DROP", "REJECT", "ACCEPT"):
+            self.net.filter["fail2ban-api"] = [["-j", target]]
+            self.broker.workstation_retry_at = 0
+            self.broker.expire_workstations()
+            self.assertFalse(self.net.up)
+            self.assertNotEqual(self.broker.integration["state"], "active")
+            self.net.filter["fail2ban-api"] = []
+            self.broker.workstation_retry_at = 0
+            self.broker.expire_workstations()
+            self.assertTrue(self.net.up)
 
     def test_reload_moving_fail2ban_after_hook_removes_then_restores_integration(self):
         self.pair()

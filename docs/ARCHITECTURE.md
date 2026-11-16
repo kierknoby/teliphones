@@ -1,6 +1,7 @@
 # TELIPHONES architecture
 
-Current 0.8.0 authority, firewall and lease changes: [implementation and acceptance](../teliphones/docs/DEVELOPMENT-0.8.0.md).
+The 0.8.0 authority, firewall and lease implementation is documented in the
+[development and acceptance report](../teliphones/docs/DEVELOPMENT-0.8.0.md).
 Unknown-public-IP FreePBX 17 connectivity remains unverified. Historical evidence
 below does not validate this development candidate.
 
@@ -74,7 +75,7 @@ flowchart TB
 Key points:
 
 - The broker is installed by a **root bootstrap**, because Module Admin runs as the web service account and cannot create root-owned files or services. The bootstrap stages the module into a root-owned directory before executing it, so root never runs code directly from the web-writable module directory.
-- The broker reports protocol, component version and capabilities. Proposed module 0.8.0 requires broker 0.8.0 even at protocol 12; missing/malformed capabilities or an older component block workstation operations. A statically validated development package exists locally; it is not production-ready or live-accepted.
+- The broker reports protocol, component version and capabilities. Proposed module 0.8.1 requires broker 0.8.1 even at protocol 12; missing/malformed capabilities or an older component block workstation operations. The 0.8.1 development package is not production-ready or live-accepted.
 - Pairing and revocation opt into fixed, non-secret progress frames while synchronous verification runs. PHP retains a five-second inactivity deadline; only a verified final result confirms removal. Connection loss does not cancel or redispatch the mutation. Broker 0.8.0 durably records revocation before cleanup, rejects revoked identities during recovery/admission, exposes the latest persisted outcome separately from listener housekeeping, and records correlated workstation admission outcomes in bounded persistent diagnostics. It also reconciles generated FreePBX Custom Service rules for listener ports and classifies IPv6 wildcard web listeners as indeterminate for IPv4. The historical 0.6.7 package was intentionally removed from this checkout and predates the proposed 0.8.0 listener/admission correction. Local tests do not establish live FreePBX acceptance.
 - Like other root `fwconsole` services, this design trusts the integrity of the FreePBX application code. Anyone able to execute code as the FreePBX service account can send requests to the broker.
 

@@ -1,6 +1,7 @@
 # Connectivity investigation and release gate
 
-Current 0.8.0 authority, firewall and lease changes: [implementation and acceptance](DEVELOPMENT-0.8.0.md).
+The 0.8.0 authority, firewall and lease implementation is documented in the
+[development and acceptance report](DEVELOPMENT-0.8.0.md).
 Unknown-public-IP FreePBX 17 connectivity remains unverified. Historical evidence
 below does not validate this development candidate.
 

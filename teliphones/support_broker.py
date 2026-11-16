@@ -39,7 +39,7 @@ SOCKET = "/run/teliphones/control.sock"
 # Protocol 11 adds PBX-enforced workstation session leases and management gating.
 # Protocol 12 adds post-pair workstation policy management.
 PROTOCOL = 12
-VERSION = "0.8.0"
+VERSION = "0.8.1"
 SESSION_CONTROL_PORT = 8766
 SESSION_LEASE_SECONDS = 30
 FWCONSOLE = "/usr/sbin/fwconsole"
@@ -111,6 +111,10 @@ class BrokerError(Exception):
 
 class Superseded(BrokerError):
     """An obsolete transaction must never roll back newer authority."""
+
+
+class FirewallRegeneration(BrokerError):
+    """A narrowly recognised FreePBX reload transition; never safe for admission."""
 
 
 class AuthorityLock:
@@ -262,7 +266,7 @@ class DiagnosticLog:
         "peer.observation": {"handshake_at": ("int", None), "rx_bytes": ("int", None), "tx_bytes": ("int", None)},
         "interface.established": {"listen_port": ("int", None)},
         "interface.removed": {},
-        "firewall.integration": {"state": ("enum", ("inactive", "active", "not-detected", "error")),
+        "firewall.integration": {"state": ("enum", ("inactive", "active", "not-detected", "pending", "unknown", "blocked", "error")),
                                  "backend": ("nullable_enum", ("nf_tables", "legacy"))},
         "broker.error": {"category": ("enum", ("workstation-enforcement", "firewall-integration",
                                                 "telemetry-unavailable", "cleanup-unverified"))},
@@ -275,7 +279,7 @@ class DiagnosticLog:
                             "delivered": ("bool", None), "attempt": ("nullable_hex16", None)},
         "controller.state": {"state": ("enum", ("listening", "stopped", "failed"))},
         # Background reconciliation holds the workstation lock that every admission request needs.
-        "reconcile.background": {"result": ("enum", ("slow", "failed", "recovered")), "duration_ms": ("int", None),
+        "reconcile.background": {"result": ("enum", ("slow", "failed", "recovered", "firewall-regenerating")), "duration_ms": ("int", None),
                                  "retry_seconds": ("nullable_int", None)},
     }
 
@@ -965,7 +969,7 @@ def is_fail2ban_hook(target):
     return isinstance(target, str) and target.lower().startswith(FAIL2BAN_PREFIXES)
 
 
-def management_path(rules, packet, chain="INPUT", seen=()):
+def management_path(rules, packet, chain="INPUT", seen=(), declared_chains=None):
     """Conservative interpreter for supported filter matches; never guesses unknown matches.
 
     The result proves traversal to our gate, not application connectivity.
@@ -975,7 +979,7 @@ def management_path(rules, packet, chain="INPUT", seen=()):
         return "unknown"
     if chain == INTEGRATION_CHAIN:
         return "verified"
-    known = {parent for parent, _ in rules}
+    known = set(declared_chains or ()) | {parent for parent, _ in rules}
     for parent, tokens in rules:
         if parent != chain:
             continue
@@ -1034,7 +1038,7 @@ def management_path(rules, packet, chain="INPUT", seen=()):
             continue
         if target not in known and target != INTEGRATION_CHAIN:
             return "unknown"
-        result = management_path(rules, packet, target, (*seen, chain))
+        result = management_path(rules, packet, target, (*seen, chain), declared_chains)
         if result != "return":
             return result
     return "return"
@@ -1386,6 +1390,7 @@ class Broker:
         # Wakes the enforcement worker; enforcement_event alone means the owned nft policy must be re-applied.
         self.wake = threading.Event()
         self.integration = {"state": "inactive", "message": "", "backend": None}
+        self.firewall_transition_since = None
         self.source_cache = {}
         self.workstation_cleanup_failed = False
         self.workstation_retry_policy = None
@@ -1913,7 +1918,19 @@ class Broker:
             elif state["connection_state"] == "closed" or (STATE / "disabled").exists():
                 self.disable_workstations()
             else:
-                self.reconcile_policy_only(state)
+                # Revocation must not depend on a currently regenerating
+                # FreePBX INPUT path. Enforce and read back the authoritative
+                # nft policy directly; listener integration is housekeeping and
+                # remains fail-closed until its own stable verification passes.
+                self.start_monitor()
+                expected = self.expected_policy(state)
+                existing = self.owned_table()
+                if existing is None:
+                    self.disable_workstations()
+                if existing is None or not policy_equal(existing, expected):
+                    self.mutate_policy(expected, existing)
+                if not policy_equal(self.owned_table(), expected):
+                    raise BrokerError("TELIPHONES policy did not reconcile during workstation revocation.")
             self.reconcile_session_servers(state)
 
         verify("nft/session enforcement", remove_policy)
@@ -2941,13 +2958,83 @@ class Broker:
             if any(line.startswith("-A ") or line.startswith("-P ") and not line.endswith(" ACCEPT") for line in listing):
                 return "Both iptables backends contain filtering policy; effective integration is unknown."
         # Non-filter tables can reject before INPUT or alter destination/routing.
-        for table in ("raw", "mangle", "nat", "security"):
+        for table in ("raw", "mangle", "security"):
             listing = self.run([iptables, "-w", "5", "-t", table, "-S"], check=False)
             if listing is None:
                 return "Cannot inspect iptables %s; effective integration is unknown." % table
             if listing and any(line.startswith("-A ") for line in listing.splitlines()):
                 return "Unanalysed iptables %s rules; effective integration is unknown." % table
+        nat = self.run([iptables, "-w", "5", "-t", "nat", "-S"], check=False)
+        if nat is None:
+            return "Cannot inspect iptables nat; effective integration is unknown."
+        nat_state, nat_detail = self.freepbx_nat_state(nat.splitlines())
+        if nat_state == "unsafe":
+            return "Unrecognised iptables nat rules; effective integration is unknown."
+        if nat_state == "regenerating":
+            raise self.firewall_regeneration("FreePBX NAT marking rules are temporarily incomplete: " + nat_detail)
         return ""
+
+    def firewall_regeneration(self, reason):
+        if self.firewall_transition_since is None:
+            self.firewall_transition_since = time.monotonic()
+        elapsed = time.monotonic() - self.firewall_transition_since
+        if elapsed >= 300:
+            self.integration_status("error", "FreePBX Firewall remained incomplete for 300 seconds; admission remains disabled: " + reason)
+            # Keep this classified as the same bounded-retry condition. Turning
+            # it into a generic enforcement error would trigger destructive
+            # teardown on every periodic retry while the firewall is still
+            # absent. The broker remains fail-closed and retries at its capped
+            # background interval until a verified stable snapshot resets it.
+            return FirewallRegeneration(self.integration["message"])
+        self.integration_status("pending", "FreePBX Firewall regeneration is in progress; access remains disabled (%d seconds remain): %s"
+                                % (max(0, int(300 - elapsed)), reason))
+        return FirewallRegeneration(self.integration["message"])
+
+    @staticmethod
+    def freepbx_nat_state(lines):
+        """Recognize exact ordered FreePBX NAT layouts and ordered partial snapshots."""
+        if not lines:
+            return "regenerating", "no FreePBX NAT inventory entries"
+        observed = []
+        for line in lines:
+            try:
+                tokens = shlex.split(line)
+            except ValueError:
+                return "unsafe", "malformed NAT listing"
+            if (len(tokens) == 3 and tokens[0] == "-P" and tokens[2] == "ACCEPT"
+                    or len(tokens) == 2 and tokens[0] == "-N"
+                    or len(tokens) >= 4 and tokens[0] == "-A"):
+                observed.append(" ".join(tokens))
+            else:
+                return "unsafe", "unsupported NAT listing entry"
+        def configuration(include_admin):
+            expected = ["-P PREROUTING ACCEPT", "-P INPUT ACCEPT", "-P OUTPUT ACCEPT", "-P POSTROUTING ACCEPT",
+                        "-N masq-input", "-N masq-output",
+                        "-A POSTROUTING -j masq-input", "-A POSTROUTING -j masq-output",
+                        "-A POSTROUTING -m mark --mark 0x3/0x3 -j MASQUERADE",
+                        "-A masq-input -j MARK --set-xmark 0x1/0xffffffff",
+                        "-A masq-output -o eth0 -j MARK --set-xmark 0x2/0x2",
+                        "-A masq-output -o eth1 -j MARK --set-xmark 0x2/0x2"]
+            if include_admin:
+                expected.append("-A masq-output -o tlp-admin -j MARK --set-xmark 0x2/0x2")
+            return expected
+
+        supported = (configuration(False), configuration(True))
+        if observed in supported:
+            return "stable", ""
+        # Partial snapshots are retryable only when they preserve the exact
+        # relative order of a supported complete configuration. This rejects
+        # altered order, duplicates, unsupported rules, and unknown objects.
+        for expected in supported:
+            cursor = 0
+            for entry in observed:
+                try:
+                    cursor = expected.index(entry, cursor) + 1
+                except ValueError:
+                    break
+            else:
+                return "regenerating", "%d known ordered rules present" % len(observed)
+        return "unsafe", "NAT configuration is outside the supported ordered FreePBX shapes"
 
     def firewall_integration(self, state):
         """Idempotently install/verify the exact integration. Caller must have verified the nft policy first."""
@@ -2970,10 +3057,7 @@ class Broker:
             chains, rules = self.integration_inventory(iptables)
         hooks, bans, _ = self.integration_positions(rules)
         if not hooks:
-            self.remove_integration()
-            self.integration_status("not-detected", "No iptables INPUT jump to %s (FreePBX Firewall) was found; no integration rules were installed. "
-                                    "If FreePBX Firewall is enabled and tunnel traffic is dropped, report this." % FREEPBX_HOOK, backend)
-            return
+            raise self.firewall_regeneration("No iptables INPUT jump to %s (FreePBX Firewall) was found." % FREEPBX_HOOK)
         if bans and max(bans) > hooks[0]:
             # Entry to fpbxfirewall must follow every Fail2Ban hook.
             targets = [iptables_target(tokens) for chain, tokens in rules if chain == "INPUT"]
@@ -3042,12 +3126,13 @@ class Broker:
                               "source": item["address"].split("/")[0],
                               "destination": item.get("pbx_address", str(network[1])),
                               "protocol": "tcp", "port": port, "state": connection_state}
-                    path = management_path(rules, packet)
+                    path = management_path(rules, packet, declared_chains=chains)
                     if path != "verified":
                         self.integration_status("blocked" if path == "blocked" else "unknown",
                                                 "Management INPUT path is %s; admission is disabled." % path, backend)
                         return
         web_ports = "/".join(str(entry["port"]) for entry in web)
+        self.firewall_transition_since = None
         self.integration_status("active", "Paired peers may reach TCP %s (session control) and configured management services %s%s "
                                 "on their PBX tunnel address inside %s; nftables permits management only while a broker lease is active, "
                                 "and all other traffic returns to FreePBX Firewall." % (
@@ -3238,6 +3323,9 @@ class Broker:
             self.firewall_integration(state)
             if self.integration.get("state") != "active":
                 raise BrokerError(self.integration.get("message") or "Firewall path is not verified.")
+        except FirewallRegeneration:
+            self.disable_workstations()
+            raise
         except (BrokerError, OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
             if isinstance(error, Superseded):
                 raise
@@ -3516,6 +3604,9 @@ class Broker:
         except (BrokerError, ssh.SshError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
             if isinstance(error, Superseded):
                 raise
+            if isinstance(error, FirewallRegeneration):
+                self.workstation_error = str(error)
+                raise
             category = "firewall-integration" if self.integration.get("state") == "error" else "workstation-enforcement"
             for diagnostic_id in workstation_ids:
                 self.diagnostic(diagnostic_id, "broker.error", category=category)
@@ -3644,6 +3735,9 @@ class Broker:
             self.workstation_error = ""
         except (BrokerError, ssh.SshError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
             if isinstance(error, Superseded):
+                raise
+            if isinstance(error, FirewallRegeneration):
+                self.workstation_error = str(error)
                 raise
             # Revoke only identities whose policy changed; unrelated interfaces and
             # leases remain untouched if an update cannot be verified.
@@ -3788,6 +3882,19 @@ class Broker:
         except (BrokerError, ssh.SshError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
             if isinstance(error, Superseded):
                 raise
+            if isinstance(error, FirewallRegeneration):
+                self.workstation_error = str(error)
+                self.workstation_retry_policy = json.dumps([read_json(STATE / "workstations.json"),
+                                                            (STATE / "disabled").exists()], sort_keys=True)
+                self.workstation_retry_delay = min(60, max(5, self.workstation_retry_delay * 2))
+                self.workstation_retry_at = time.monotonic() + self.workstation_retry_delay
+                self.workstation_reconcile_failing = True
+                if self.diagnostic_due(("reconcile.background", "firewall-regenerating")):
+                    self.diagnostic_workstations("reconcile.background", read_json(STATE / "workstations.json").get("workstations", []),
+                                                 result="firewall-regenerating", duration_ms=0,
+                                                 retry_seconds=self.workstation_retry_delay)
+                LOGGER.warning("TELIPHONES FreePBX Firewall regeneration detected; access remains disabled and resources retained")
+                return
             self.workstation_error = str(error)
             self.workstation_retry_policy = retry_policy
             self.workstation_retry_delay = min(60, max(5, self.workstation_retry_delay * 2))
@@ -4280,6 +4387,10 @@ class Broker:
                 if self.stopping.is_set():
                     raise BrokerError("Broker shutdown is in progress; admission is disabled.")
                 self.advance_generation()
+                # Stop and reap a listener helper before applying newer authority.
+                # Its external wait has released wslock, so this is the serialization
+                # point that prevents stale FreePBX service writes after revocation.
+                self.cancel_listener_repair()
                 return self._dispatch(request, uid)
         return self._dispatch(request, uid)
 

@@ -14,11 +14,11 @@ workflow for bounded support windows.
 
 | Component | Current version | Start here |
 |---|---|---|
-| FreePBX module / root broker | **0.8.0 proposed** / **0.8.0 proposed**, protocol 12 (statically validated development candidate available; not a release or production-approved) | [Install](teliphones/README.md#installing-the-module) · [Upgrade](teliphones/README.md#updating-teliphones) |
-| Windows application | **0.8.5** (file version 0.8.5.0; native build pending) | [Download and requirements](desktop/windows/README.md#requirements-and-download) · [Pair a PBX](desktop/windows/README.md#pair-an-administrator-workstation) |
+| FreePBX module / root broker | **0.8.1 proposed** / **0.8.1 proposed**, protocol 12 (development candidate; not a release or production-approved) | [Install](teliphones/README.md#installing-the-module) · [Upgrade](teliphones/README.md#updating-teliphones) |
+| Windows application | **0.9.0** (file version 0.9.0.0; native build pending) | [Download and requirements](desktop/windows/README.md#requirements-and-download) · [Pair a PBX](desktop/windows/README.md#pair-an-administrator-workstation) |
 | Reference gateway and Checker probe | Optional laboratory infrastructure | [Integration guide](teliphones/docs/INTEGRATION.md) · [Gateway](gateway/README.md) |
 
-FreePBX module **0.8.0 (proposed, unreleased)**, root broker **0.8.0** and Windows **0.8.5** are
+FreePBX module **0.8.1 (proposed, unreleased)**, root broker **0.8.1** and Windows **0.9.0** are
 independently versioned; the broker protocol remains 12. The module/broker
 update adds correlated, persistent workstation-admission diagnostics, records
 lock contention and controller/reconciliation state, moves reporting work out
@@ -29,7 +29,10 @@ The broker preserves workstation identity across source-address changes, but
 this does not prove that public-IP roaming or end-to-end reconnection succeeds.
 Upgrade the module in place and rerun the root bootstrap so the separately
 installed broker is refreshed; pairings and their identities are preserved.
-Windows **0.8.5** adds route-aware admission failure reporting, local network
+Windows **0.9.0** adds bounded connect and admission lifecycle, cancellation,
+generation fencing, verified adapter ownership and startup recovery; its native
+build and live Windows validation remain pending. It also adds route-aware
+admission failure reporting, local network
 change detection, correlation with PBX diagnostics and discovery of residual
 TELIPHONES-owned tunnels. It retains verified tunnel lifecycle and shutdown
 corrections, SSH runtime cleanup and the intended custom SSH console in its
@@ -43,10 +46,9 @@ policy requests, listener migration and post-pair SSH elevation.
 The Windows application is not included in the Module Admin package.
 
 The historical `TELIPHONES-0.6.7.tgz` and checksum have been intentionally
-removed from this checkout; do not restore them. The local,
-statically validated `TELIPHONES-0.8.0.tgz` development candidate and checksum
-are available, but neither constitutes live acceptance or production approval.
-The 0.6.7 package predates and does not contain the proposed 0.8.0
+removed from this checkout; do not restore them. The 0.8.1 development
+candidate is packaged for controlled testing, not live acceptance or
+production approval. The 0.6.7 package predates and does not contain the
 listener/admission corrections.
 The superseded 0.6.5 archive and checksum have been removed from the repository root.
 The historical `TELIPHONES-0.6.3.tgz`
@@ -58,14 +60,16 @@ in installed broker 0.6.2. Historical broker 0.6.7 source gates background
 commands on owned kernel readback and adds bounded failure backoff. Keep the
 development broker stopped until this replacement is reviewed; use the
 [controlled startup/CPU and live acceptance procedure](teliphones/README.md#064-development-server-acceptance).
-No Windows 0.8.5 executable has been built here or published. Native execution
+No Windows 0.9.0 executable has been built here or published. Native execution
 and artefact creation are blocked pending a Windows runner; check exact build
 provenance, not the target version alone. See the
 [controlled Windows upgrade procedure](desktop/windows/README.md#upgrade-the-development-workstation-after-native-validation).
 
 > [!WARNING]
-> **Experimental; not currently suitable for production PBXs.** Current 0.8.0
-> evidence and limitations are in the [development report](docs/DEVELOPMENT-0.8.0-REPORT.md).
+> **Experimental; not currently suitable for production PBXs.** The 0.8.1
+> package is a development candidate; live FreePBX acceptance and native
+> Windows validation remain outstanding. Earlier 0.8.0 evidence is in the
+> [development report](docs/DEVELOPMENT-0.8.0-REPORT.md).
 > Live FreePBX acceptance and native Windows validation remain outstanding.
 
 > [!IMPORTANT]
@@ -157,7 +161,7 @@ Remote Support uses `wg-teliphones`, separate from My PBXs' `tlp-admin`.
 1. **Check the platform:** FreePBX 17 on Debian 12, root console access, HTTPS,
    WireGuard kernel support, `wg`, `ip`, `nft`, iptables and systemd.
    See [PBX requirements](teliphones/README.md#requirements).
-2. **Treat 0.8.0 as a development candidate only.** Its module archive has
+2. **Treat 0.8.1 as a development candidate only.** Its module archive has
    passed static package validation, but live acceptance and production approval
    remain outstanding. Package availability is not operational approval. The
    historical 0.6.7 package predates listener closure and expiry-permission
@@ -166,12 +170,12 @@ Remote Support uses `wg-teliphones`, separate from My PBXs' `tlp-admin`.
    controlled acceptance review is complete.
 
    ```bash
-   sha256sum -c TELIPHONES-0.8.0.tgz.sha256
+   sha256sum -c TELIPHONES-0.8.1.tgz.sha256
    ```
 
    For authorized controlled-development validation only, in FreePBX choose
    **Admin > Module Admin > Upload modules**, upload
-   `TELIPHONES-0.8.0.tgz`, install TELIPHONES and apply the configuration. This
+   `TELIPHONES-0.8.1.tgz`, install TELIPHONES and apply the configuration. This
    documents the supported upload path; it does not authorize production use
    or establish acceptance.
 
@@ -228,14 +232,15 @@ listener reconciliation, conservative firewall path verification, expiring
 management grants and bounded controller requests. The original unknown-public-IP
 FreePBX 17 requirement remains **unverified**. Native Windows validation and live
 kernel/FreePBX acceptance remain outstanding; the reported SSH console crash is
-also unresolved. Windows remains 0.8.5 and broker protocol remains 12.
+also unresolved. The current Windows 0.9.0 native validation and live
+kernel/FreePBX acceptance remain outstanding; broker protocol remains 12.
 
 See the [implementation and acceptance procedure](teliphones/docs/DEVELOPMENT-0.8.0.md)
 and [exact verification report](docs/DEVELOPMENT-0.8.0-REPORT.md).
 
 | Area | Evidence and remaining work |
 |---|---|
-| Windows build and managed SSH | Conflicting historical reports claim ten or eleven native SSH tests passed, plus initial authenticated SSH into FreePBX 17 and terminal closure on disconnect. No run/build identifiers or logs were supplied; current Windows 0.8.5 native validation remains outstanding. |
+| Windows build and managed SSH | Conflicting historical reports claim ten or eleven native SSH tests passed, plus initial authenticated SSH into FreePBX 17 and terminal closure on disconnect. No run/build identifiers or logs were supplied; current Windows 0.9.0 native validation remains outstanding. |
 | Module 0.4.1 firewall correction | Local unit/model and real-packet namespace tests on both iptables backends; real FreePBX watchdog, rebuild and upgrade validation outstanding |
 | Revocation, expiry and recovery | Automated failure/SSH tests exist; complete live PBX server-side session termination, cgroups, reboot and recovery remain outstanding |
 | GUI, appearance, onboarding and connection health | Implemented; initial use does not certify every terminal, display scale, installer or reconnection case |
@@ -286,9 +291,8 @@ The [package validator](teliphones/tests/package-validation.py) checks exact
 archive/source equality. Rebuild the candidate archive after any change to
 packaged module files or documentation.
 
-The statically validated 0.8.0 development candidate is available in this
-checkout as
-`TELIPHONES-0.8.0.tgz`, with a matching checksum. It is not a release: package
+The 0.8.1 development candidate is prepared in this checkout as
+`TELIPHONES-0.8.1.tgz`, with a matching checksum. It is not a release: package
 validation does not establish production readiness or complete the outstanding
 live FreePBX, PHP, or Windows acceptance gates. Build the module-only archive
 from the repository root using the established deterministic exclusions, then
@@ -298,8 +302,8 @@ validate its contents and checksum:
 tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
   --mode='u+rwX,go+rX,go-w' --exclude='*/.*' --exclude='*/tests' \
    --exclude='*/__pycache__' --exclude='*.pyc' --exclude='*.pyo' \
-   -czf TELIPHONES-0.8.0.tgz teliphones
-sha256sum TELIPHONES-0.8.0.tgz > TELIPHONES-0.8.0.tgz.sha256
+   -czf TELIPHONES-0.8.1.tgz teliphones
+sha256sum TELIPHONES-0.8.1.tgz > TELIPHONES-0.8.1.tgz.sha256
 PYTHONDONTWRITEBYTECODE=1 python3 teliphones/tests/package-validation.py
 ```
 
@@ -330,8 +334,8 @@ sanitised evidence. Report suspected security issues privately through
 
 **TELIPHONES is a UK registered trademark.**
 
-TELIPHONES 0.8.5 for Windows is licensed under GPLv3.
-TELIPHONES proposed 0.8.0 for FreePBX is licensed under GPLv3.
+TELIPHONES 0.9.0 for Windows is licensed under GPLv3.
+TELIPHONES proposed 0.8.1 for FreePBX is licensed under GPLv3.
 These are the product footer statements. The software grant is **GPL version 3
 or, at your option, any later version (GPL-3.0-or-later)**; the module metadata
 declares `GPLv3+`. See [LICENSE](LICENSE). Software licensing does not grant

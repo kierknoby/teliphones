@@ -46,6 +46,7 @@ bool eventValid(const std::string& value) {
         "ssh_requested", "ssh_failed", "ssh_launched", "ssh_runtime_cleanup_incomplete",
         "ssh_console_failed", "ssh_ended", "ssh_teardown_failed", "ssh_cleanup_failed", "ssh_local_cleanup_failed",
         "session_release_warning", "shutdown_teardown_failed", "shutdown_with_residual_tunnel", "residual_tunnels_found",
+        "connection_deadline", "obsolete_connection_result", "shutdown_cleanup_deferred", "shutdown_with_recovery_state",
         "health_changed", "probe_changed", "telemetry_changed", "session_summary", "recent_measurements", "measurement_error",
         "admission_failed", "admission_recovered", "network_changed"};
     return std::find(events.begin(), events.end(), value) != events.end();

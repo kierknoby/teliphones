@@ -1,18 +1,18 @@
 # Windows developer builds, testing and readiness
 
-Targets: TELIPHONES for Windows **0.8.5**, proposed, unreleased TELIPHONES for FreePBX **0.8.0**. A statically validated 0.8.0 development package is available but is not production-ready or live-accepted; the historical 0.6.7 archive was intentionally removed from this checkout and did not contain the proposed changes.
+Targets: TELIPHONES for Windows **0.9.0**, proposed, unreleased TELIPHONES for FreePBX **0.8.0**. A statically validated 0.8.0 development package is available but is not production-ready or live-accepted; the historical 0.6.7 archive was intentionally removed from this checkout and did not contain the proposed changes.
 The FreePBX connection-state policy and Windows pairing/clipboard UX are
 independently versioned; neither entry declares a published release.
 
 Proposed root broker is **0.8.0**, protocol **12**. Version.h derives Windows
-product 0.8.5 and file 0.8.5.0; executable resources, captions, About/licence and
+product 0.9.0 and file 0.9.0.0; executable resources, captions, About/licence and
 build provenance reuse it. The dependency manifest must match the product version.
 Current Release portable build/CTest and source contracts can run on Linux;
 native MFC pairing tests, executable metadata and startup smoke are registered
-in the Windows workflow. No current native 0.8.5 execution is claimed.
+in the Windows workflow. No current native 0.9.0 execution is claimed.
 The custom SSH console remains part of the intended Windows distribution.
 Opening it unexpectedly closing TELIPHONES is an unresolved release blocker;
-no source or test result here establishes that crash is fixed. No 0.8.5 binary
+no source or test result here establishes that crash is fixed. No 0.9.0 binary
 or application bundle has been produced.
 
 Native compilation, SCM/WireGuardNT execution and artefact creation are
@@ -33,7 +33,33 @@ Live acceptance is pending.
 
 ## Current evidence
 
-### Tunnel lifecycle (0.8.4)
+### Tunnel lifecycle and owned-adapter recovery (0.9.0)
+
+Version 0.9.0 adds a bounded connection operation with separate establishment,
+authentication and controller-admission deadlines. Disconnect cancels an
+in-progress Connect, obsolete generations cannot publish success, and Close
+has a five-second UI bound. If cleanup cannot finish inside that window, the
+application records that recovery is required and exits normally.
+
+Before the first installation side effect, the elevated helper atomically
+writes a protected ownership record under
+`%ProgramData%\TELIPHONES\TunnelOwnership`. It records the profile,
+workstation, exact tunnel/service, operation and generation. After WireGuardNT
+activation, it completes the record with the interface GUID from IP Helper and
+the PnP instance ID resolved by that GUID from Windows. The supported
+Configuration Manager removal path runs only when the current alias, GUID and
+PnP ID exactly match a complete record. Pending, missing, malformed and
+inconsistent records cannot authorise device removal.
+
+Startup recovery considers saved-profile tunnel names and valid records only.
+It no longer scans the generic WireGuard namespace. A valid interrupted record
+is reconciled even if its service already disappeared; completed records are
+deleted only after the service, adapter and bootstrap configuration are verified
+absent. Portable lifecycle and source-contract tests pass on Linux. MSVC/MFC,
+SCM, registry discovery, Configuration Manager removal, UAC cancellation and
+the controlled orphan-adapter fixture remain native Windows gates.
+
+### Historical tunnel lifecycle (0.8.4)
 
 The 0.8.3 workstation left `WireGuardTunnel$TELIPHONES-*` in `START_PENDING`
 (checkpoint 0, wait hint 0) with its adapter Up; stop returned 1052 and

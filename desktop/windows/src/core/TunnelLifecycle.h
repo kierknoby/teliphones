@@ -3,6 +3,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -76,15 +77,44 @@ struct InterfaceRow {
 enum class AdapterPresence { Absent, Active, Unverified };
 AdapterPresence ClassifyTunnelAdapter(bool enumerated, const std::vector<InterfaceRow>& rows, const std::string& tunnelName);
 
+// Persisted before installation and completed from identifiers reported by Windows.  The
+// generic adapter description is deliberately absent: it is not proof of ownership.
+struct OwnershipRecord {
+    std::string profileId;
+    std::string workstationId;
+    std::string tunnelName;
+    std::string serviceName;
+    std::string interfaceGuid;
+    std::string pnpInstanceId;
+    std::string operationId;
+    std::uint64_t generation = 0;
+    bool complete = false;
+};
+bool ValidOwnershipRecord(const OwnershipRecord& record);
+bool MatchesOwnedAdapter(const OwnershipRecord& record, const std::string& tunnelName,
+                         const std::string& interfaceGuid, const std::string& pnpInstanceId);
+
+// Portable connection-operation policy.  The UI supplies monotonic milliseconds and
+// performs the returned action; late results from another generation are ignored.
+enum class ConnectionStage { Disconnected, Establishing, Authenticating, Admitting, Connected,
+                             Disconnecting, CleanupIncomplete, RecoveryRequired };
+enum class LifecycleAction { None, BeginCleanup, FinishDisconnected };
+struct ConnectionOperation {
+    std::uint64_t generation = 0;
+    ConnectionStage stage = ConnectionStage::Disconnected;
+    std::uint64_t deadlineMs = 0;
+    bool cancelled = false;
+};
+ConnectionOperation BeginConnection(std::uint64_t generation, std::uint64_t nowMs, std::uint32_t startupMs);
+bool AcceptOperationResult(const ConnectionOperation& operation, std::uint64_t generation);
+void TunnelEstablished(ConnectionOperation& operation, std::uint64_t nowMs, std::uint32_t authenticationMs);
+void AuthenticationObserved(ConnectionOperation& operation, std::uint64_t nowMs, std::uint32_t admissionMs);
+void AdmissionObserved(ConnectionOperation& operation);
+LifecycleAction CancelOperation(ConnectionOperation& operation);
+LifecycleAction CheckDeadline(ConnectionOperation& operation, std::uint64_t nowMs);
+
 // TELIPHONES' own tunnel namespace: exactly "TELIPHONES-" plus 12 lowercase hexadecimal characters (TunnelNameFor).
 bool IsTeliphonesTunnelName(const std::string& name);
-// Tunnels to clean up at startup, when no TELIPHONES connection can be active: those of saved profiles that are
-// installed, plus any other name in the TELIPHONES namespace still registered as a WireGuard tunnel service or
-// present as an adapter, such as one left by a removed or re-paired profile. Other names are never returned.
-std::vector<std::string> StartupResidualTunnels(const std::vector<std::string>& installedSavedTunnels,
-                                                const std::vector<std::string>& serviceTunnelNames,
-                                                const std::vector<InterfaceRow>& adapters);
-
 // Polls until the adapter is absent or the budget ends, returning the last observation. Windows may finish
 // removing the device shortly after its service stops; an adapter that stays active is reported, never ignored.
 template <class Probe, class Now, class Pause>

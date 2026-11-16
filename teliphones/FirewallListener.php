@@ -211,21 +211,31 @@ final class FirewallListener
     {
         $chain = 'fpbxsvc-' . substr(str_replace('-', '', $id), 0, 16);
         $deadline = $deadline ?? hrtime(true) / 1e9 + 150;
+        $lastMismatch = '';
         do {
             $lines = [];
             exec(escapeshellarg($iptables) . ' -w 1 -t filter -S 2>&1', $lines, $result);
             if ($result !== 0) throw new \RuntimeException('Cannot inspect FreePBX generated listener rules.');
             if (self::rulesConverged($lines, $chain, $port)) return;
-            $path = $port === 0 || strpos(self::rulesMismatch($lines, $chain, $port), 'public INPUT path') === false ? 'verified' : self::publicPath($lines, $chain, 'INPUT', [], $port);
-            if (strpos($path, 'unknown') === 0 || $path === 'blocked') {
-                throw new \RuntimeException('Public listener path ' . $path . '; no effective integration is claimed.');
+            $lastMismatch = self::rulesMismatch($lines, $chain, $port);
+            if ($port !== 0) {
+                $path = self::publicPath($lines, $chain, 'INPUT', [], $port);
+                // Only an absent INPUT chain or an empty, explicitly declared
+                // chain is a recognised FreePBX regeneration state. Unknown
+                // targets, arbitrary undeclared chains, unsupported matches,
+                // and proven blocks remain immediate failures.
+                $retryable = $path === 'unknown (undeclared chain INPUT)'
+                    || preg_match('/^unknown \(empty declared chain (?:INPUT|fpbxfirewall|zone-(?:external|internal|other))\)$/D', $path);
+                if ($path === 'blocked' || (strpos($path, 'unknown') === 0 && !$retryable)) {
+                    throw new \RuntimeException('Public listener path ' . $path . '; no effective integration is claimed.');
+                }
             }
             if (hrtime(true) / 1e9 >= $deadline) break;
             usleep(500000);
         } while (true);
         throw new \RuntimeException('FreePBX generated listener rules have not converged; reconciliation will retry. '
             . $chain . ' ' . ($port === 0 ? 'removal' : 'UDP ' . $port) . ': '
-            . self::rulesMismatch($lines, $chain, $port));
+            . $lastMismatch);
     }
 
     public static function rulesConverged(array $lines, string $chain, int $port): bool
@@ -263,14 +273,30 @@ final class FirewallListener
      * Explicit source bans remain authoritative exclusions. Unknown classifiers
      * are not interpreted as permission. This is not a live packet probe.
      */
-    public static function publicPath(array $lines, string $service, string $chain = 'INPUT', array $seen = [], int $port = 0): string
+    public static function publicPath(array $lines, string $service, string $chain = 'INPUT', array $seen = [], int $port = 0, ?array $declared = null): string
     {
         if ($chain === $service) return 'verified';
+        if ($declared === null) {
+            $declared = [];
+            foreach ($lines as $line) {
+                if (preg_match('/^-(?:N|P) ([A-Za-z0-9_-]+)(?: |$)/', $line, $match)) $declared[$match[1]] = true;
+                elseif (preg_match('/^-A ([A-Za-z0-9_-]+) /', $line, $match)) $declared[$match[1]] = true;
+            }
+        }
+        if (!isset($declared[$chain])) {
+            // A missing built-in INPUT declaration can occur while FreePBX
+            // rebuilds filter tables. Other missing targets are not inferred
+            // safe: they may be unsupported or malformed policy.
+            return $chain === 'INPUT' ? 'unknown (undeclared chain INPUT)'
+                : 'unknown (undeclared chain ' . $chain . ')';
+        }
         if (in_array($chain, $seen, true) || count($seen) > 32) return 'unknown (cycle)';
         $seen[] = $chain;
+        $hasRules = false;
         foreach ($lines as $line) {
             $prefix = '-A ' . $chain . ' ';
             if (strpos($line, $prefix) !== 0) continue;
+            $hasRules = true;
             $rule = substr($line, strlen($prefix));
             if (preg_match('/^-p udp -m udp --dport ([0-9]+) -j ACCEPT$/D', $rule, $udp) && (int)$udp[1] !== $port) continue;
             // These rules cannot admit a new public WireGuard datagram.
@@ -286,10 +312,12 @@ final class FirewallListener
             if (in_array($target, ['DROP', 'REJECT'], true)) return 'blocked';
             if ($target === 'ACCEPT') return 'unknown (bypasses owned listener)';
             if ($target === 'RETURN') return 'return';
-            $result = self::publicPath($lines, $service, $target, $seen, $port);
+            $result = self::publicPath($lines, $service, $target, $seen, $port, $declared);
             if ($result !== 'return') return $result;
         }
-        return 'return';
+        // An empty or not-yet-declared chain is characteristic of FreePBX's
+        // asynchronous regeneration window; caller retries until its deadline.
+        return $hasRules ? 'return' : 'unknown (empty declared chain ' . $chain . ')';
     }
 
     private static function service(string $id, int $port, string $name = self::NAME): array

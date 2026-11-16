@@ -5,10 +5,34 @@ No Windows release is declared published by this document. Earlier development
 builds lacked embedded file/product versions and cannot be assigned reliable
 version numbers retrospectively.
 
+## 0.9.0 — Unreleased lifecycle reliability target
+
+Windows file/product version: **0.9.0.0** / **0.9.0**. The FreePBX
+module/root broker target is **0.8.1**, protocol **12**.
+
+- Bound service establishment, WireGuard authentication and controller admission;
+  stop retrying after a terminal deadline and fence obsolete operation results.
+- Permit Disconnect and Close during connection work. Cancellation is signalled
+  to the elevated helper, late success is cleaned up, and application close has
+  a five-second UI bound with durable next-launch recovery when Windows remains busy.
+- Persist an atomic, protected tunnel ownership record before installation and
+  complete it with the actual SCM service name, interface GUID and PnP device
+  instance ID discovered from Windows. Never infer ownership from the generic
+  WireGuard description or a hard-coded `ROOT\\WIREGUARD` instance.
+- When the official service removal leaves an adapter, use Configuration Manager
+  removal only after the current alias, interface GUID and PnP instance all match
+  the protected ownership record. Preserve the record on incomplete cleanup and
+  clear it only after service and adapter absence is verified.
+- Restrict startup recovery to saved profiles and valid persisted ownership
+  records. Unrelated WireGuard services and adapters remain outside the cleanup set.
+- Add portable lifecycle, timeout, cancellation, ownership-consistency and
+  isolation regressions. Actual adapter removal still requires controlled native
+  Windows validation; no live workstation operation is claimed here.
+
 ## 0.8.5 — Unreleased development target
 
 Windows file/product version: **0.8.5.0** / **0.8.5**. Independent source
-targets: proposed, unreleased FreePBX module/root broker **0.8.0**, protocol **12**
+targets: proposed, unreleased FreePBX module/root broker **0.8.1**, protocol **12**
 (unchanged).
 
 - Improve workstation admission failure classification. Messages distinguish

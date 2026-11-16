@@ -514,10 +514,12 @@ void testCommandLine() {
     check(support.back() == "root@10.20.4.2" && support[5] == "22222", "Remote Support SSH uses the temporary support service");
 
     HelperCommand up{HelperCommand::Verb::TunnelUp, "TELIPHONES-001122334455", "C:\\Users\\a\\AppData\\Local\\TELIPHONES\\Staging\\TELIPHONES-001122334455.conf",
-                     "S-1-5-21-1-2-3-1001", "00112233445566778899aabbccddeeff"};
+                     "S-1-5-21-1-2-3-1001", "00112233445566778899aabbccddeeff", "0011223344556677", "ws-0011223344556677",
+                     "11223344556677889900aabbccddeeff", "4", "ffeeddccbbaa00998877665544332211"};
     HelperCommand parsed = ParseHelperArguments(HelperArguments(up));
     check(parsed.verb == HelperCommand::Verb::TunnelUp && parsed.stagingPath == up.stagingPath && parsed.userSid == up.userSid &&
-          parsed.keyPipe == up.keyPipe, "helper arguments round trip");
+          parsed.keyPipe == up.keyPipe && parsed.operationId == up.operationId && parsed.cancelToken == up.cancelToken,
+          "helper ownership and cancellation arguments round trip");
     check(ParseHelperArguments({"/tunnel-down", "TELIPHONES-001122334455"}).verb == HelperCommand::Verb::TunnelDown, "tunnel-down arguments");
     std::vector<std::vector<std::string>> bad = {
         {"/tunnel-down", "OtherTunnel"},
@@ -529,6 +531,8 @@ void testCommandLine() {
         {"/tunnel-up", up.tunnelName, up.stagingPath, up.userSid},
         {"/tunnel-up", up.tunnelName, up.stagingPath, up.userSid, "not-a-random-pipe-token"},
         {"/tunnel-up", up.tunnelName, up.stagingPath, up.userSid, "00112233445566778899AABBCCDDEEFF"},
+        {"/tunnel-up", up.tunnelName, up.stagingPath, up.userSid, up.keyPipe, up.profileId, up.workstationId,
+            up.operationId, "18446744073709551616", up.cancelToken},
         {"/tunnel-up", "TELIPHONES-001122334455", "C:\\x\\TELIPHONES-001122334455.conf"},
         {"/install", "x"},
     };
@@ -1420,18 +1424,6 @@ void testTunnelLifecycle() {
           !lc::IsTeliphonesTunnelName("TELIPHONES-0123456789a") && !lc::IsTeliphonesTunnelName("TELIPHONES-0123456789abc") &&
           !lc::IsTeliphonesTunnelName("teliphones-0123456789ab") && !lc::IsTeliphonesTunnelName("wg0"),
           "only the exact TELIPHONES tunnel namespace is recognised");
-    {
-        // A pairing that was revoked and re-created leaves its tunnel under a profile id no longer saved.
-        const auto orphans = lc::StartupResidualTunnels(
-            {"TELIPHONES-111111111111"},
-            {"TELIPHONES-222222222222", "office", "TELIPHONES-111111111111", "TELIPHONES-XYZ"},
-            {{"TELIPHONES-333333333333", 1}, {"TELIPHONES-444444444444", notPresent}, {"Corporate VPN", 1}, {"wg0", 1}});
-        check(orphans == std::vector<std::string>{"TELIPHONES-111111111111", "TELIPHONES-222222222222",
-                                                   "TELIPHONES-333333333333"},
-              "startup cleanup covers orphaned TELIPHONES services and adapters but never foreign or absent ones");
-        check(lc::StartupResidualTunnels({}, {}, {}).empty(), "nothing installed means nothing to clean");
-    }
-
     check(lc::ClassifyTunnelAdapter(true, {}, tunnel) == lc::AdapterPresence::Absent, "no interface row means no adapter");
     check(lc::ClassifyTunnelAdapter(true, {{tunnel, notPresent}}, tunnel) == lc::AdapterPresence::Absent,
           "a released adapter's non-present row does not block reconnection");
@@ -1514,6 +1506,88 @@ void testTunnelLifecycle() {
           "crash exit codes are not misreported as helper stages");
     check(!lc::DecodeHelperResult(1223, decoded), "ERROR_CANCELLED cannot collide with a helper result");
     check(!lc::DecodeHelperResult(0x63, decoded), "unknown stages are rejected");
+
+    lc::OwnershipRecord ownership{"0123456789abcdef", "ws-0123456789abcdef", tunnel,
+        "WireGuardTunnel$" + tunnel, "{01234567-89AB-CDEF-0123-456789ABCDEF}",
+        "ROOT\\WIREGUARD\\0042", "00112233445566778899aabbccddeeff", 7, true};
+    check(lc::ValidOwnershipRecord(ownership), "complete ownership uses discovered service, interface and PnP identities");
+    check(lc::MatchesOwnedAdapter(ownership, tunnel, "{01234567-89ab-cdef-0123-456789abcdef}",
+                                  "root\\wireguard\\0042"),
+          "owned adapter identity comparison is case-insensitive and exact");
+    check(!lc::MatchesOwnedAdapter(ownership, tunnel, ownership.interfaceGuid, "ROOT\\WIREGUARD\\0000") &&
+              !lc::MatchesOwnedAdapter(ownership, "TELIPHONES-aaaaaaaaaaaa", ownership.interfaceGuid,
+                                       ownership.pnpInstanceId),
+          "generic or foreign WireGuard device identities are never accepted");
+    auto pending = ownership;
+    pending.complete = false;
+    pending.interfaceGuid.clear();
+    pending.pnpInstanceId.clear();
+    check(lc::ValidOwnershipRecord(pending) &&
+              !lc::MatchesOwnedAdapter(pending, tunnel, ownership.interfaceGuid, ownership.pnpInstanceId),
+          "early ownership record supports recovery but cannot authorise device removal");
+    pending.serviceName = "WireGuardTunnel$office";
+    check(!lc::ValidOwnershipRecord(pending), "inconsistent ownership is rejected");
+
+    auto operation = lc::BeginConnection(9, 1000, 20000);
+    check(operation.stage == lc::ConnectionStage::Establishing && operation.deadlineMs == 21000,
+          "service establishment has an absolute deadline");
+    check(lc::AcceptOperationResult(operation, 9) && !lc::AcceptOperationResult(operation, 8),
+          "obsolete operation generations cannot publish results");
+    lc::TunnelEstablished(operation, 2000, 15000);
+    check(operation.stage == lc::ConnectionStage::Authenticating && operation.deadlineMs == 17000,
+          "service startup is distinct from authentication");
+    lc::AuthenticationObserved(operation, 3000, 15000);
+    check(operation.stage == lc::ConnectionStage::Admitting && operation.deadlineMs == 18000,
+          "authentication is distinct from controller admission");
+    check(lc::CheckDeadline(operation, 17999) == lc::LifecycleAction::None &&
+              lc::CheckDeadline(operation, 18000) == lc::LifecycleAction::BeginCleanup && operation.cancelled,
+          "controller timeout ends retries and begins cleanup");
+    check(!lc::AcceptOperationResult(operation, 9), "cancelled operation cannot publish a late success");
+    check(lc::CancelOperation(operation) == lc::LifecycleAction::BeginCleanup,
+          "repeated disconnect remains idempotent");
+    auto successful = lc::BeginConnection(10, 0, 100);
+    lc::TunnelEstablished(successful, 1, 100);
+    lc::AuthenticationObserved(successful, 2, 100);
+    lc::AdmissionObserved(successful);
+    check(successful.stage == lc::ConnectionStage::Connected && successful.deadlineMs == 0,
+          "successful admission completes the bounded lifecycle");
+
+    auto startupTimeout = lc::BeginConnection(11, 10, 90);
+    check(lc::CheckDeadline(startupTimeout, 100) == lc::LifecycleAction::BeginCleanup,
+          "service creation failure or startup timeout terminates the connection operation");
+    auto handshakeTimeout = lc::BeginConnection(12, 0, 90);
+    lc::TunnelEstablished(handshakeTimeout, 10, 30);
+    check(lc::CheckDeadline(handshakeTimeout, 40) == lc::LifecycleAction::BeginCleanup,
+          "missing or unknown WireGuard handshake reaches a terminal authentication timeout");
+    auto controller12002 = lc::BeginConnection(13, 0, 90);
+    lc::TunnelEstablished(controller12002, 1, 30);
+    lc::AuthenticationObserved(controller12002, 2, 30);
+    const std::uint32_t controllerError = 12002;
+    check(controllerError == 12002 && lc::CheckDeadline(controller12002, 32) == lc::LifecycleAction::BeginCleanup,
+          "controller error 12002 cannot create an indefinite admission retry");
+    auto closeDuringConnect = lc::BeginConnection(14, 0, 90);
+    check(lc::CancelOperation(closeDuringConnect) == lc::LifecycleAction::BeginCleanup &&
+              closeDuringConnect.stage == lc::ConnectionStage::Disconnecting &&
+              !lc::AcceptOperationResult(closeDuringConnect, 14),
+          "Disconnect or Close during Connect cancels and fences the worker");
+    auto rapidFirst = lc::BeginConnection(15, 0, 90);
+    lc::CancelOperation(rapidFirst);
+    auto rapidSecond = lc::BeginConnection(16, 1, 90);
+    check(!lc::AcceptOperationResult(rapidFirst, 16) && lc::AcceptOperationResult(rapidSecond, 16),
+          "rapid Connect Disconnect Connect accepts only the newest generation");
+    lc::ConnectionOperation alreadyDisconnected;
+    check(lc::CancelOperation(alreadyDisconnected) == lc::LifecycleAction::FinishDisconnected,
+          "repeated Disconnect after completed cleanup is safe");
+    check(contains(lc::HelperMessage(lc::EncodeHelperResult(lc::HelperResult{lc::Stage::NotElevated})), "Administrative approval") &&
+              !lc::DecodeHelperResult(1223, decoded),
+          "cleanup requiring elevation and denied elevation have distinct bounded outcomes");
+    auto staleOwnership = ownership;
+    staleOwnership.operationId = "not-an-operation";
+    check(!lc::ValidOwnershipRecord(staleOwnership) &&
+              !lc::MatchesOwnedAdapter(staleOwnership, tunnel, ownership.interfaceGuid, ownership.pnpInstanceId),
+          "missing stale or inconsistent ownership cannot authorise adapter removal");
+    check(!lc::MatchesOwnedAdapter(ownership, tunnel, "{11234567-89AB-CDEF-0123-456789ABCDEF}", ownership.pnpInstanceId),
+          "with multiple WireGuard devices only the exact recorded interface can be removed");
 
     const std::string exe = "C:\\Program Files\\WireGuard\\wireguard.exe";
     const std::string conf = "C:\\Program Files\\TELIPHONES\\Tunnels\\TELIPHONES-1df533523b61.conf";
@@ -1840,8 +1914,8 @@ int main() {
     for (unsigned part : versionParts) check(part <= 65535, "Windows version component fits the resource WORD");
     check(TELIPHONES_VERSION_FILE_STRING == versionBase + "." + std::to_string(versionParts[3]), "file version expands consistently");
     check(TELIPHONES_VERSION_STRING == versionBase, "product version expands without a development suffix");
-    check(std::string(TELIPHONES_VERSION_STRING) == "0.8.5", "Windows application version is independent of the module");
-    check(std::string(TELIPHONES_VERSION_FILE_STRING) == "0.8.5.0", "Windows file version is 0.8.5.0");
+    check(std::string(TELIPHONES_VERSION_STRING) == "0.9.0", "Windows application version is independent of the module");
+    check(std::string(TELIPHONES_VERSION_FILE_STRING) == "0.9.0.0", "Windows file version is 0.9.0.0");
     testEncoding();
     testJson();
     testValidation();

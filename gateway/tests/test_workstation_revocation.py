@@ -135,6 +135,29 @@ class RevocationTests(unittest.TestCase):
         self.assertEqual(self.net.peers, {})
         self.assert_rejected(revoked, self.restart())
 
+    def test_unconfirmed_nft_session_removal_recovers_automatically(self):
+        _, revoked = self.pair()
+        self.open_session(revoked)
+        self.net.fail = lambda name, rest: name == "nft" and rest == ["-j", "-f", "-"]
+        result = self.revoke()
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["outcome"], "unconfirmed")
+        self.assertIn("nft/session enforcement", result["error"])
+        self.assertFalse(self.net.up)
+        self.assert_rejected(revoked)
+
+        # Periodic broker reconciliation, not an administrator fwconsole action,
+        # retries the durable revocation journal after enforcement is available.
+        self.net.fail = None
+        self.broker.workstation_retry_at = 0
+        self.broker.expire_workstations()
+        journal = self.broker.revocations()
+        self.assertEqual(journal["records"][revoked["workstation_id"]]["outcome"], "complete")
+        self.assertEqual(journal["operation"]["outcome"], "complete")
+        self.assertEqual(self.net.peers, {})
+        self.assertFalse(self.net.up)
+        self.assert_rejected(revoked)
+
     def test_failed_containment_is_never_claimed_verified(self):
         self.pair()
         self.net.fail = lambda name, rest: ((name == "nft" and rest == ["-j", "-f", "-"])

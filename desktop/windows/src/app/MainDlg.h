@@ -68,6 +68,7 @@ private:
         std::string peerPublicKey;
         std::string diagnosticId;
         std::string attemptId;
+        std::string operationId;
         std::string lastTelemetryReason;
         std::string lastMeasurementError;
         std::string lastAdmissionFailure;  // classification logged most recently; empty when admitted
@@ -81,6 +82,8 @@ private:
         bool connected = false;
         // Set only after the monitor has confirmed the PBX answers through the tunnel.
         bool verified = false;
+        tlp::tunnel_lifecycle::ConnectionOperation lifecycle;
+        std::shared_ptr<tlp::win::TunnelCancellation> cancellation;
     };
 
     int SelectedIndex() const;
@@ -94,6 +97,7 @@ private:
     void RefreshConnectionText();
     void Persist();
     void StartDisconnect(const std::string& reason);
+    void FinishClose();
     void RemoveStaleTunnels();
     bool RequireWireGuard();
     void RefreshWireGuard();
@@ -128,6 +132,8 @@ private:
     bool unlockRequestPending_ = false;
     bool sourcesRequestPending_ = false;
     UINT_PTR generation_ = 0;
+    bool closing_ = false;
+    std::uint64_t closeDeadlineTickMs_ = 0;
     std::uint64_t lastTelemetryTickMs_ = 0;
     void* networkWatch_ = nullptr;
     std::int64_t lastNetworkChangeUnix_ = 0;     // last non-TELIPHONES interface change; offered as admission context

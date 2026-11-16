@@ -33,6 +33,11 @@ struct HelperCommand {
     std::string stagingPath;  // TunnelUp only
     std::string userSid;      // TunnelUp only: the interactive user allowed to stop and remove this tunnel
     std::string keyPipe;      // TunnelUp only: random 32-hex token, never the secret
+    std::string profileId;    // TunnelUp only: saved profile owning this operation
+    std::string workstationId;// TunnelUp only: PBX workstation/support identity
+    std::string operationId;  // TunnelUp only: random 32-hex operation identity
+    std::string generation;   // TunnelUp only: non-zero decimal UI generation
+    std::string cancelToken;  // TunnelUp only: random named cancellation event token
 };
 
 std::vector<std::string> HelperArguments(const HelperCommand& command);

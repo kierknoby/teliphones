@@ -8,6 +8,7 @@
 #include "TunnelStartup.h"
 
 #include <aclapi.h>
+#include <cfgmgr32.h>
 #include <iphlpapi.h>
 #include <netioapi.h>
 #include <sddl.h>
@@ -16,6 +17,7 @@
 #include <wintrust.h>
 
 #include <memory>
+#include <set>
 
 #include "../core/CommandLine.h"
 #include "../core/Json.h"
@@ -49,6 +51,7 @@ struct HelperStillRunning : Error {
 };
 
 const wchar_t kTunnelFolderSddl[] = L"D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)";
+const wchar_t kOwnershipSddl[] = L"D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FR;;;BU)";
 
 class ServiceHandle {
 public:
@@ -134,6 +137,10 @@ void pipeTransfer(HANDLE pipe, void* buffer, DWORD size, bool write) {
 
 std::wstring keyPipeName(const std::string& token) {
     return L"\\\\.\\pipe\\TELIPHONES-connect-" + Widen(token);
+}
+
+std::wstring cancellationEventName(const std::string& token) {
+    return L"Local\\TELIPHONES-tunnel-cancel-" + Widen(token);
 }
 
 class KeyPipe {
@@ -279,6 +286,97 @@ void grantUserControl(SC_HANDLE service, const std::string& userSid) {
 
 std::wstring tunnelConfigPath(const std::string& tunnelName) { return tunnelFolder() + L"\\" + Widen(tunnelName) + L".conf"; }
 
+std::wstring ownershipFolder() {
+    return KnownFolder(FOLDERID_ProgramData) + L"\\TELIPHONES\\TunnelOwnership";
+}
+
+std::wstring ownershipPath(const std::string& tunnelName) {
+    return ownershipFolder() + L"\\" + Widen(tunnelName) + L".json";
+}
+
+std::string ownershipJson(const lifecycle::OwnershipRecord& record) {
+    return json::Serialize(json::Value::Object{
+        {"schema", "teliphones-tunnel-ownership/1"}, {"profile_id", record.profileId},
+        {"workstation_id", record.workstationId}, {"tunnel_name", record.tunnelName},
+        {"service_name", record.serviceName}, {"interface_guid", record.interfaceGuid},
+        {"pnp_instance_id", record.pnpInstanceId}, {"operation_id", record.operationId},
+        {"generation", static_cast<std::int64_t>(record.generation)}, {"complete", record.complete}}) + "\n";
+}
+
+void saveOwnership(const lifecycle::OwnershipRecord& record) {
+    if (!lifecycle::ValidOwnershipRecord(record)) throw Error("Invalid tunnel ownership record.");
+    const auto base = EnsureDirectory(KnownFolder(FOLDERID_ProgramData) + L"\\TELIPHONES", kOwnershipSddl);
+    EnsureDirectory(base + L"\\TunnelOwnership", kOwnershipSddl);
+    const auto path = ownershipPath(record.tunnelName);
+    const auto temporary = path + L".tmp";
+    WriteNewFile(temporary, ownershipJson(record), kOwnershipSddl);
+    if (!MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        DeleteFileW(temporary.c_str());
+        ThrowLastError("Unable to persist tunnel ownership");
+    }
+}
+
+std::optional<lifecycle::OwnershipRecord> readOwnership(const std::string& tunnelName) {
+    try {
+        const auto value = json::Parse(ReadSmallFile(ownershipPath(tunnelName), 16384), 16384);
+        json::RequireExactKeys(value, {"schema", "profile_id", "workstation_id", "tunnel_name", "service_name",
+            "interface_guid", "pnp_instance_id", "operation_id", "generation", "complete"}, "Tunnel ownership");
+        if (value.at("schema").asString() != "teliphones-tunnel-ownership/1") return std::nullopt;
+        const auto generation = value.at("generation").asInteger();
+        if (generation <= 0) return std::nullopt;
+        lifecycle::OwnershipRecord record{value.at("profile_id").asString(), value.at("workstation_id").asString(),
+            value.at("tunnel_name").asString(), value.at("service_name").asString(), value.at("interface_guid").asString(),
+            value.at("pnp_instance_id").asString(), value.at("operation_id").asString(),
+            static_cast<std::uint64_t>(generation), value.at("complete").asBool()};
+        return lifecycle::ValidOwnershipRecord(record) && record.tunnelName == tunnelName ? std::optional(record) : std::nullopt;
+    } catch (const std::exception&) {
+        return std::nullopt;
+    }
+}
+
+struct ObservedAdapter {
+    std::string guid;
+    std::string pnp;
+};
+
+std::optional<ObservedAdapter> observeAdapter(const std::string& tunnelName) {
+    PMIB_IF_TABLE2 table = nullptr;
+    if (GetIfTable2(&table) != NO_ERROR) return std::nullopt;
+    const std::unique_ptr<MIB_IF_TABLE2, decltype(&FreeMibTable)> owned(table, &FreeMibTable);
+    const auto alias = Widen(tunnelName);
+    for (ULONG i = 0; i < table->NumEntries; ++i) {
+        if (alias != table->Table[i].Alias || table->Table[i].OperStatus == IfOperStatusNotPresent) continue;
+        wchar_t guid[64]{};
+        if (!StringFromGUID2(table->Table[i].InterfaceGuid, guid, static_cast<int>(std::size(guid)))) return std::nullopt;
+        const std::wstring key = L"SYSTEM\\CurrentControlSet\\Control\\Network\\{4D36E972-E325-11CE-BFC1-08002BE10318}\\" +
+                                 std::wstring(guid) + L"\\Connection";
+        HKEY opened = nullptr;
+        if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, key.c_str(), 0, KEY_READ, &opened) != ERROR_SUCCESS) return std::nullopt;
+        wchar_t pnp[512]{};
+        DWORD type = 0, bytes = sizeof(pnp);
+        const auto status = RegQueryValueExW(opened, L"PnpInstanceID", nullptr, &type,
+                                             reinterpret_cast<BYTE*>(pnp), &bytes);
+        RegCloseKey(opened);
+        if (status != ERROR_SUCCESS || type != REG_SZ || pnp[0] == L'\0') return std::nullopt;
+        return ObservedAdapter{Narrow(guid), Narrow(pnp)};
+    }
+    return std::nullopt;
+}
+
+bool removeVerifiedAdapter(const std::string& tunnelName) {
+    const auto record = readOwnership(tunnelName);
+    const auto observed = observeAdapter(tunnelName);
+    if (!record || !observed || !lifecycle::MatchesOwnedAdapter(*record, tunnelName, observed->guid, observed->pnp))
+        return false;
+    DEVINST device = 0;
+    std::wstring instance = Widen(observed->pnp);
+    if (CM_Locate_DevNodeW(&device, instance.data(), CM_LOCATE_DEVNODE_NORMAL) != CR_SUCCESS) return false;
+    PNP_VETO_TYPE veto = PNP_VetoTypeUnknown;
+    wchar_t vetoName[MAX_PATH]{};
+    return CM_Query_And_Remove_SubTreeW(device, &veto, vetoName, static_cast<ULONG>(std::size(vetoName)),
+                                        CM_REMOVE_NO_RESTART) == CR_SUCCESS;
+}
+
 lifecycle::Residual residualFor(const tunnel_startup::Status& status) {
     switch (status.state) {
         case SERVICE_STOPPED: return lifecycle::Residual::Stopped;
@@ -339,15 +437,18 @@ lifecycle::HelperResult removeOwnedTunnel(const WireGuardInstallation& wireguard
             return outcome;
         }
         const auto adapter = awaitAdapterRelease(tunnelName);
+        auto finalAdapter = adapter;
+        if (adapter == lifecycle::AdapterPresence::Active && removeVerifiedAdapter(tunnelName))
+            finalAdapter = awaitAdapterRelease(tunnelName);
         status = tunnel_startup::ReadStatus(service);
         if (!tunnel_startup::Absent(status)) {
             outcome.cleanupIncomplete = true;
             outcome.residual = residualFor(status);
             outcome.error = status.error;
-        } else if (adapter != lifecycle::AdapterPresence::Absent) {
+        } else if (finalAdapter != lifecycle::AdapterPresence::Absent) {
             outcome.cleanupIncomplete = true;
-            outcome.residual = adapterResidual(adapter);
-            if (adapter == lifecycle::AdapterPresence::Active) outcome.error = ERROR_TIMEOUT;
+            outcome.residual = adapterResidual(finalAdapter);
+            if (finalAdapter == lifecycle::AdapterPresence::Active) outcome.error = ERROR_TIMEOUT;
         }
         if (!DeleteFileW(configPath.c_str()) && GetLastError() != ERROR_FILE_NOT_FOUND && GetLastError() != ERROR_PATH_NOT_FOUND) {
             outcome.cleanupIncomplete = true;
@@ -357,11 +458,24 @@ lifecycle::HelperResult removeOwnedTunnel(const WireGuardInstallation& wireguard
         outcome.cleanupIncomplete = true;
         outcome.residual = lifecycle::Residual::Unknown;
     }
-    if (!outcome.cleanupIncomplete) return {};
+    if (!outcome.cleanupIncomplete) {
+        const auto record = ownershipPath(tunnelName);
+        if (!DeleteFileW(record.c_str()) && GetLastError() != ERROR_FILE_NOT_FOUND && GetLastError() != ERROR_PATH_NOT_FOUND) {
+            outcome.cleanupIncomplete = true;
+            outcome.residual = lifecycle::Residual::Unknown;
+            return outcome;
+        }
+        return {};
+    }
     return outcome;
 }
 
 DWORD helperUp(const HelperCommand& command) {
+    // Keep this handle for the helper's full lifetime. If the UI reaches its bounded close and exits, the named
+    // event and its signalled state must remain alive until this helper observes cancellation and cleans up.
+    Handle cancellation(OpenEventW(SYNCHRONIZE, FALSE, cancellationEventName(command.cancelToken).c_str()));
+    if (!cancellation.get()) return helperCode(Stage::Arguments, GetLastError());
+    const auto cancelled = [&] { return WaitForSingleObject(cancellation.get(), 0) == WAIT_OBJECT_0; };
     WireGuardInstallation wireguard = FindWireGuard();
     if (!wireguard.installed || !wireguard.trusted) return helperCode(Stage::WireGuardUnavailable);
     std::string privateKey = receiveKey(command.keyPipe);
@@ -385,11 +499,22 @@ DWORD helperUp(const HelperCommand& command) {
 
     tunnel_startup::HelperLock lock(tunnel_startup::HelperLockName(Widen(command.tunnelName)));
     if (!lock.owned()) return helperCode(Stage::Busy);
+    if (cancelled()) return helperCode(Stage::InstallFailed, ERROR_CANCELLED);
     // An earlier instance (including one stuck in START_PENDING) must be gone, with its adapter, before reuse.
     auto earlier = removeOwnedTunnel(wireguard, command.tunnelName);
     if (earlier.cleanupIncomplete) {
         earlier.stage = Stage::ResidualTunnel;
         return lifecycle::EncodeHelperResult(earlier);
+    }
+    if (cancelled()) return helperCode(Stage::InstallFailed, ERROR_CANCELLED);
+    lifecycle::OwnershipRecord ownership{command.profileId, command.workstationId, command.tunnelName,
+        Narrow(serviceName(command.tunnelName)), "", "", command.operationId,
+        static_cast<std::uint64_t>(std::stoull(command.generation)), false};
+    try {
+        // This precedes the first installation side effect, so a crash always leaves a recovery identity.
+        saveOwnership(ownership);
+    } catch (const std::exception&) {
+        return helperCode(Stage::InstallFailed);
     }
     // Every later failure reports its own stage and Windows error together with the cleanup outcome.
     auto fail = [&](Stage stage, DWORD error) {
@@ -415,6 +540,7 @@ DWORD helperUp(const HelperCommand& command) {
         return fail(Stage::InstallFailed, 0);
     }
     if (installed.exitCode != 0) return fail(Stage::InstallFailed, 0);
+    if (cancelled()) return fail(Stage::InstallFailed, ERROR_CANCELLED);
     try {
         tunnel_startup::WaitForService(serviceName(command.tunnelName), false, budget::kServiceRegisteredMs);
     } catch (const tunnel_startup::Failure& error) {
@@ -446,6 +572,7 @@ DWORD helperUp(const HelperCommand& command) {
     } catch (const tunnel_startup::Failure& error) {
         return fail(Stage::StartFailed, error.code);
     }
+    if (cancelled()) return fail(Stage::StartFailed, ERROR_CANCELLED);
     try {
         wireguard_nt::Api api(wireguard_nt::PrepareLibrary());
         api.activateKey(Widen(command.tunnelName), privateKey);
@@ -456,6 +583,23 @@ DWORD helperUp(const HelperCommand& command) {
     } catch (const Error&) {
         return fail(Stage::DependencyFailed, 0);
     }
+    const auto identityDeadline = GetTickCount64() + budget::kActivationMs;
+    std::optional<ObservedAdapter> identity;
+    do {
+        identity = observeAdapter(command.tunnelName);
+        if (identity) break;
+        Sleep(100);
+    } while (GetTickCount64() < identityDeadline && !cancelled());
+    if (!identity) return fail(Stage::AdapterFailed, ERROR_NOT_FOUND);
+    ownership.interfaceGuid = identity->guid;
+    ownership.pnpInstanceId = identity->pnp;
+    ownership.complete = true;
+    try {
+        saveOwnership(ownership);
+    } catch (const std::exception&) {
+        return fail(Stage::AdapterFailed, ERROR_WRITE_FAULT);
+    }
+    if (cancelled()) return fail(Stage::InstallFailed, ERROR_CANCELLED);
     return kHelperOk;
 }
 
@@ -560,7 +704,33 @@ TunnelState QueryTunnel(const std::string& tunnelName) {
     }
 }
 
-bool InstallTunnel(const std::string& tunnelName, const std::string& configText) {
+TunnelCancellation::TunnelCancellation() : token_(HexEncode(RandomBytes(16))) {
+    const auto sddl = L"D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;" + Widen(CurrentUserSid()) + L")";
+    PSECURITY_DESCRIPTOR descriptor = nullptr;
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.c_str(), SDDL_REVISION_1, &descriptor, nullptr))
+        ThrowLastError("Unable to secure tunnel cancellation");
+    SECURITY_ATTRIBUTES security{sizeof(security), descriptor, FALSE};
+    event_ = CreateEventW(&security, TRUE, FALSE, cancellationEventName(token_).c_str());
+    LocalFree(descriptor);
+    if (event_ == nullptr) ThrowLastError("Unable to create tunnel cancellation event");
+}
+
+TunnelCancellation::~TunnelCancellation() {
+    if (event_ != nullptr) CloseHandle(static_cast<HANDLE>(event_));
+}
+
+void TunnelCancellation::Cancel() {
+    if (event_ != nullptr) SetEvent(static_cast<HANDLE>(event_));
+}
+
+bool TunnelCancellation::Cancelled() const {
+    return event_ != nullptr && WaitForSingleObject(static_cast<HANDLE>(event_), 0) == WAIT_OBJECT_0;
+}
+
+bool InstallTunnel(const std::string& tunnelName, const std::string& configText,
+                   const std::string& profileId, const std::string& workstationId,
+                   const std::string& operationId, std::uint64_t generation,
+                   const std::shared_ptr<TunnelCancellation>& cancellation) {
     TunnelConfig parsed = ParseTunnelStrict(configText);
     WipeTunnelKey parsedKeyWiper(parsed);
     std::string canonical = RenderBootstrapTunnel(parsed);
@@ -571,7 +741,8 @@ bool InstallTunnel(const std::string& tunnelName, const std::string& configText)
     DWORD code = 1;
     try {
         KeyPipe pipe(parsed.privateKey);
-        HelperCommand command{HelperCommand::Verb::TunnelUp, tunnelName, Narrow(path), CurrentUserSid(), pipe.token};
+        HelperCommand command{HelperCommand::Verb::TunnelUp, tunnelName, Narrow(path), CurrentUserSid(), pipe.token,
+                              profileId, workstationId, operationId, std::to_string(generation), cancellation->token()};
         code = runElevated(HelperArguments(command), &pipe);
     } catch (const HelperStillRunning&) {
         DeleteFileW(path.c_str());
@@ -590,6 +761,10 @@ bool InstallTunnel(const std::string& tunnelName, const std::string& configText)
     DeleteFileW(path.c_str());
     if (code == ERROR_CANCELLED) return false;
     if (code != kHelperOk) throw Error(lifecycle::HelperMessage(code));
+    if (cancellation->Cancelled()) {
+        RemoveTunnel(tunnelName);
+        throw Error("The connection attempt was cancelled and its tunnel was removed.");
+    }
     return true;
 }
 
@@ -632,24 +807,19 @@ void RemoveTunnel(const std::string& tunnelName) {
                 // A disconnect is complete only once the adapter is released too; the next connection depends on it.
                 const auto adapter = awaitAdapterRelease(tunnelName);
                 const auto current = tunnel_startup::ReadStatus(serviceName(tunnelName));
-                if (tunnel_startup::Absent(current) && adapter == lifecycle::AdapterPresence::Absent) return;
-                lifecycle::HelperResult result;
-                result.stage = Stage::RemoveFailed;
-                result.cleanupIncomplete = true;
-                if (!tunnel_startup::Absent(current)) {
-                    result.residual = residualFor(current);
-                    result.error = current.error;
-                } else {
-                    result.residual = adapterResidual(adapter);
-                    if (adapter == lifecycle::AdapterPresence::Active) result.error = ERROR_TIMEOUT;
+                if (tunnel_startup::Absent(current) && adapter == lifecycle::AdapterPresence::Absent) {
+                    const auto record = ownershipPath(tunnelName);
+                    if (DeleteFileW(record.c_str()) || GetLastError() == ERROR_FILE_NOT_FOUND || GetLastError() == ERROR_PATH_NOT_FOUND)
+                        return;
                 }
-                throw Error(lifecycle::HelperMessage(lifecycle::EncodeHelperResult(result)));
+                // A service-free residual adapter requires the elevated, identity-checked Configuration Manager path.
+                // Do not report timeout before that supported cleanup mechanism has been attempted.
             }
         }
     }
     lock.reset();
     DWORD code = runElevated(HelperArguments(HelperCommand{HelperCommand::Verb::TunnelDown, tunnelName, "", "", ""}));
-    if (code == ERROR_CANCELLED) throw Error("The tunnel is still connected because administrative approval was declined. Disconnect again, or stop it in WireGuard for Windows.");
+    if (code == ERROR_CANCELLED) throw Error("The tunnel may still be connected because administrative approval was declined. Disconnect again, or approve recovery at the next launch.");
     if (code != kHelperOk) throw Error(lifecycle::HelperMessage(code));
 }
 
@@ -693,42 +863,33 @@ AddressRoute RouteToAddress(const std::string& tunnelName, const std::string& ip
 }
 
 std::vector<std::string> ResidualTeliphonesTunnels(const std::vector<std::string>& installedSavedTunnels) {
-    static const std::wstring servicePrefix = L"WireGuardTunnel$";
-    std::vector<std::string> services;
-    ServiceHandle manager(OpenSCManagerW(nullptr, nullptr, SC_MANAGER_ENUMERATE_SERVICE));
-    if (manager) {
-        std::vector<BYTE> buffer;
-        DWORD resume = 0;
-        // Bounded: each pass either completes or grows the buffer to the size Windows reports.
-        for (int pass = 0; pass < 16; ++pass) {
-            DWORD needed = 0, count = 0;
-            const BOOL done = EnumServicesStatusExW(manager.get(), SC_ENUM_PROCESS_INFO, SERVICE_WIN32, SERVICE_STATE_ALL,
-                                                    buffer.empty() ? nullptr : buffer.data(),
-                                                    static_cast<DWORD>(buffer.size()), &needed, &count, &resume, nullptr);
-            if (!done && GetLastError() != ERROR_MORE_DATA) break;
-            const auto* entries = reinterpret_cast<const ENUM_SERVICE_STATUS_PROCESSW*>(buffer.data());
-            for (DWORD i = 0; i < count; ++i) {
-                const std::wstring name = entries[i].lpServiceName;
-                if (name.compare(0, servicePrefix.size(), servicePrefix) == 0)
-                    services.push_back(Narrow(name.substr(servicePrefix.size())));
+    std::set<std::string> candidates(installedSavedTunnels.begin(), installedSavedTunnels.end());
+    std::set<std::string> recorded;
+    WIN32_FIND_DATAW entry{};
+    HANDLE search = FindFirstFileW((ownershipFolder() + L"\\TELIPHONES-*.json").c_str(), &entry);
+    if (search != INVALID_HANDLE_VALUE) {
+        do {
+            const std::wstring filename(entry.cFileName);
+            if (filename.size() <= 5 || filename.substr(filename.size() - 5) != L".json") continue;
+            const std::string name = Narrow(filename.substr(0, filename.size() - 5));
+            if (readOwnership(name)) {
+                candidates.insert(name);
+                recorded.insert(name);
             }
-            if (done) break;
-            if (needed > buffer.size()) buffer.resize(needed);
-        }
+        } while (FindNextFileW(search, &entry));
+        FindClose(search);
     }
-    std::vector<lifecycle::InterfaceRow> adapters;
-    PMIB_IF_TABLE2 table = nullptr;
-    const DWORD enumeration = GetIfTable2(&table);
-    if (enumeration != NO_ERROR) ThrowLastError("Unable to enumerate residual TELIPHONES tunnel adapters", enumeration);
-    {
-        const std::unique_ptr<MIB_IF_TABLE2, decltype(&FreeMibTable)> owned(table, &FreeMibTable);
-        for (ULONG i = 0; i < table->NumEntries; ++i) {
-            const std::string alias = Narrow(table->Table[i].Alias);
-            if (lifecycle::IsTeliphonesTunnelName(alias))
-                adapters.push_back({alias, static_cast<std::uint32_t>(table->Table[i].OperStatus)});
-        }
+    std::vector<std::string> residual;
+    for (const auto& name : candidates) {
+        if (!lifecycle::IsTeliphonesTunnelName(name)) continue;
+        const auto state = QueryTunnel(name);
+        const auto adapter = TunnelAdapterPresence(name);
+        // A valid record with no remaining service/adapter is still an interrupted operation whose record must be
+        // reconciled by the privileged cleanup path. Normal successful disconnect removes the record itself.
+        if (recorded.count(name) != 0 || state != TunnelState::Absent || adapter != lifecycle::AdapterPresence::Absent)
+            residual.push_back(name);
     }
-    return lifecycle::StartupResidualTunnels(installedSavedTunnels, services, adapters);
+    return residual;
 }
 
 bool IsHelperInvocation(const std::vector<std::string>& arguments) {

@@ -1,13 +1,15 @@
 # TELIPHONES testing
 
-## Current 0.8.5 / proposed 0.8.0 source review and package boundary
+## Current Windows 0.9.0 / proposed module 0.8.1 source review and package boundary
 
-Windows 0.8.5 is independently versioned; proposed module/root broker 0.8.0
-retain protocol 12. The statically validated development candidate
-`TELIPHONES-0.8.0.tgz` and its SHA-256 sidecar are available. This is not a
-production release and does not establish live FreePBX acceptance. The
+Windows 0.9.0 is independently versioned; proposed module/root broker 0.8.1
+retain protocol 12. The development candidate
+`TELIPHONES-0.8.1.tgz` and its SHA-256 sidecar are prepared for controlled
+testing. This is not a production release and does not establish live FreePBX
+acceptance. The
 historical `TELIPHONES-0.6.7.tgz` and checksum were intentionally removed from
-this checkout and did not contain the proposed 0.8.0 changes. Source version checks run without an archive; the
+this checkout and did not contain the proposed 0.8.0 changes. Source version
+checks run without an archive; the
 package validator verifies archive/source equality, metadata and checksum.
 
 Run source version consistency independently from the repository root:
@@ -33,14 +35,15 @@ pairing behaviour, startup smoke and portable Release checks, use the
 `desktop/windows/tests/WINDOWS-READINESS.md` reference in the source repository.
 Linux checks do not substitute for Windows execution.
 
-## Proposed 0.8.0 source checks and release blockers
+## Current 0.8.1 source checks and release blockers
 
 The 0.8.0 implementation adds durable restrictive decisions, generation-fenced
 listener reconciliation, conservative firewall path verification, expiring
 management grants and bounded controller requests. The original unknown-public-IP
 FreePBX 17 requirement remains **unverified**. Native Windows validation and live
 kernel/FreePBX acceptance remain outstanding; the reported SSH console crash is
-also unresolved. Windows remains 0.8.5 and broker protocol remains 12.
+also unresolved. Windows 0.9.0 native validation remains outstanding and broker
+protocol remains 12.
 
 See [current implementation and disposable acceptance](DEVELOPMENT-0.8.0.md).
 The root development report records exact final results; earlier counts below

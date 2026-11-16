@@ -1,6 +1,6 @@
 #include "TunnelLifecycle.h"
 
-#include <set>
+#include <regex>
 
 namespace tlp {
 namespace tunnel_lifecycle {
@@ -122,17 +122,72 @@ bool IsTeliphonesTunnelName(const std::string& name) {
     return true;
 }
 
-std::vector<std::string> StartupResidualTunnels(const std::vector<std::string>& installedSavedTunnels,
-                                                const std::vector<std::string>& serviceTunnelNames,
-                                                const std::vector<InterfaceRow>& adapters) {
-    std::set<std::string> names;
-    for (const auto& name : installedSavedTunnels)
-        if (IsTeliphonesTunnelName(name)) names.insert(name);
-    for (const auto& name : serviceTunnelNames)
-        if (IsTeliphonesTunnelName(name)) names.insert(name);
-    for (const auto& row : adapters)
-        if (IsTeliphonesTunnelName(row.alias) && row.operStatus != kInterfaceOperStatusNotPresent) names.insert(row.alias);
-    return {names.begin(), names.end()};
+bool ValidOwnershipRecord(const OwnershipRecord& record) {
+    static const std::regex id("[a-f0-9]{16}");
+    static const std::regex operation("[a-f0-9]{32}");
+    static const std::regex guid("\\{[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\\}");
+    if (!std::regex_match(record.profileId, id) || record.workstationId.empty() ||
+        !IsTeliphonesTunnelName(record.tunnelName) ||
+        record.serviceName != "WireGuardTunnel$" + record.tunnelName ||
+        !std::regex_match(record.operationId, operation) || record.generation == 0) return false;
+    if (!record.complete) return record.interfaceGuid.empty() && record.pnpInstanceId.empty();
+    return std::regex_match(record.interfaceGuid, guid) && !record.pnpInstanceId.empty() &&
+           record.pnpInstanceId.size() <= 512;
+}
+
+bool MatchesOwnedAdapter(const OwnershipRecord& record, const std::string& tunnelName,
+                         const std::string& interfaceGuid, const std::string& pnpInstanceId) {
+    return ValidOwnershipRecord(record) && record.complete && record.tunnelName == tunnelName &&
+           SameWindowsPath(record.interfaceGuid, interfaceGuid) &&
+           SameWindowsPath(record.pnpInstanceId, pnpInstanceId);
+}
+
+ConnectionOperation BeginConnection(std::uint64_t generation, std::uint64_t nowMs, std::uint32_t startupMs) {
+    return {generation, ConnectionStage::Establishing, nowMs + startupMs, false};
+}
+
+bool AcceptOperationResult(const ConnectionOperation& operation, std::uint64_t generation) {
+    return !operation.cancelled && operation.generation == generation;
+}
+
+void TunnelEstablished(ConnectionOperation& operation, std::uint64_t nowMs, std::uint32_t authenticationMs) {
+    if (operation.cancelled || operation.stage != ConnectionStage::Establishing) return;
+    operation.stage = ConnectionStage::Authenticating;
+    operation.deadlineMs = nowMs + authenticationMs;
+}
+
+void AuthenticationObserved(ConnectionOperation& operation, std::uint64_t nowMs, std::uint32_t admissionMs) {
+    if (operation.cancelled || operation.stage != ConnectionStage::Authenticating) return;
+    operation.stage = ConnectionStage::Admitting;
+    operation.deadlineMs = nowMs + admissionMs;
+}
+
+void AdmissionObserved(ConnectionOperation& operation) {
+    if (!operation.cancelled && (operation.stage == ConnectionStage::Authenticating ||
+                                 operation.stage == ConnectionStage::Admitting)) {
+        operation.stage = ConnectionStage::Connected;
+        operation.deadlineMs = 0;
+    }
+}
+
+LifecycleAction CancelOperation(ConnectionOperation& operation) {
+    if (operation.stage == ConnectionStage::Disconnected) return LifecycleAction::FinishDisconnected;
+    operation.cancelled = true;
+    operation.stage = ConnectionStage::Disconnecting;
+    operation.deadlineMs = 0;
+    return LifecycleAction::BeginCleanup;
+}
+
+LifecycleAction CheckDeadline(ConnectionOperation& operation, std::uint64_t nowMs) {
+    if (!operation.cancelled && operation.deadlineMs != 0 && nowMs >= operation.deadlineMs &&
+        (operation.stage == ConnectionStage::Establishing || operation.stage == ConnectionStage::Authenticating ||
+         operation.stage == ConnectionStage::Admitting)) {
+        operation.cancelled = true;
+        operation.stage = ConnectionStage::Disconnecting;
+        operation.deadlineMs = 0;
+        return LifecycleAction::BeginCleanup;
+    }
+    return LifecycleAction::None;
 }
 
 std::uint32_t EncodeHelperResult(const HelperResult& result) {

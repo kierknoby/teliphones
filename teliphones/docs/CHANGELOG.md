@@ -8,10 +8,21 @@ repository. Portable Linux validation has been run for the broker, FreePBX modul
 Windows core; current evidence is recorded in DEVELOPMENT-0.8.0.md. Native Windows compilation/UI integration and live FreePBX
 session, migration, firewall and SSH acceptance remain outstanding.
 
+## 0.8.1, development firewall recovery package (unreleased)
+
+- Package the reviewed FreePBX firewall-regeneration recovery, order-sensitive
+  NAT shape validation, safe listener removal, and bounded restoration tests.
+- Keep broker protocol 12 and the independent Windows application version
+  0.9.0 unchanged. The upgrade path replaces root-owned helpers while retaining
+  workstation configuration, ownership records, credentials and policy files.
+- Development package only; PHP execution and live Debian 12 / FreePBX 17
+  installation and firewall restart acceptance remain outstanding.
+- Compatibility: Windows application 0.9.0, file version 0.9.0.0; protocol 12.
+
 ## 0.8.0, generation-fenced authority and fail-closed admission (unreleased)
 
 - Material authorisation and firewall behaviour changes justify 0.8.0. Module
-  and root broker match; protocol 12 and Windows 0.8.5 / 0.8.5.0 are retained.
+  and root broker match; protocol 12 and Windows 0.9.0 / 0.9.0.0 are retained.
 - Persist restrictive decisions before cleanup, prevent rollback of Closed and
   SSH revocation, release the authority lock during listener generation, cancel
   superseded helper process groups and reject obsolete completions.

@@ -12,9 +12,11 @@
 
 #include <algorithm>
 #include <cstring>
+#include <cstdio>
 #include <iostream>
 #include <iterator>
 #include <new>
+#include <memory>
 #include <vector>
 
 namespace nt = tlp::win::wireguard_nt;
@@ -145,7 +147,11 @@ void logAdapterRows(const std::string& name, const char* when) {
 
 class Tunnel {
 public:
-    const std::string name = "TELIPHONES-NT-" + std::to_string(GetCurrentProcessId());
+    const std::string name = [] {
+        char value[32]{};
+        std::snprintf(value, sizeof(value), "TELIPHONES-%012llx", static_cast<unsigned long long>(GetCurrentProcessId()));
+        return std::string(value);
+    }();
     Tunnel() { require(QueryTunnel(name) == TunnelState::Absent, "Fixture must never replace an existing tunnel"); }
     ~Tunnel() {
         try { RemoveTunnel(name); }
@@ -164,6 +170,12 @@ public:
         return KnownFolder(FOLDERID_ProgramFiles) + L"\\TELIPHONES\\Tunnels\\" + Widen(name) + L".conf";
     }
 };
+
+bool installFixture(const Tunnel& tunnel, const TunnelConfig& config) {
+    auto cancellation = std::make_shared<TunnelCancellation>();
+    return InstallTunnel(tunnel.name, RenderTunnel(config), "0123456789abcdef", "fixture-workstation",
+                         HexEncode(RandomBytes(16)), GetTickCount64() + 1, cancellation);
+}
 
 class Adapter {
 public:
@@ -209,7 +221,7 @@ void integrationTests() {
     config.allowedIps = {"192.0.2.2/32"};
     config.endpoint = "127.0.0.1:9"; // No remote peer or external network is involved.
     config.persistentKeepalive = 25;
-    require(InstallTunnel(tunnel.name, RenderTunnel(config)), "Production helper connection was cancelled");
+    require(installFixture(tunnel, config), "Production helper connection was cancelled");
     require(QueryTunnel(tunnel.name) == TunnelState::Running, "Real service must stay Running after key activation");
     const auto stored = ParseTunnelStrict(ReadSmallFile(tunnel.configPath(), 8192));
     require(IsBootstrapTunnel(stored) && stored.privateKey != config.privateKey,
@@ -265,7 +277,7 @@ void integrationTests() {
     tunnel.remove();
     // Reported 0.8.4 regression: reconnecting the same pairing immediately after a normal disconnect was refused
     // because the released adapter still had an interface row with the tunnel's name.
-    require(InstallTunnel(tunnel.name, RenderTunnel(config)), "Immediate reconnection was cancelled");
+    require(installFixture(tunnel, config), "Immediate reconnection was cancelled");
     require(QueryTunnel(tunnel.name) == TunnelState::Running, "Immediate reconnection must start the real service");
     require(TunnelAdapterPresence(tunnel.name) == tunnel_lifecycle::AdapterPresence::Active,
             "A running tunnel's adapter must be reported as active");
@@ -281,7 +293,7 @@ void integrationTests() {
     }
     tunnel.remove();
     for (int cycle = 0; cycle < 2; ++cycle) {
-        require(InstallTunnel(tunnel.name, RenderTunnel(config)), "Repeated reconnection was cancelled");
+        require(installFixture(tunnel, config), "Repeated reconnection was cancelled");
         require(QueryTunnel(tunnel.name) == TunnelState::Running, "Repeated reconnection must start the service");
         require(TunnelAdapterPresence(tunnel.name) == tunnel_lifecycle::AdapterPresence::Active,
                 "Repeated reconnection must have a present adapter");
@@ -290,7 +302,7 @@ void integrationTests() {
     {
         HiddenDependency negativeControl;
         bool rejected = false;
-        try { InstallTunnel(tunnel.name, RenderTunnel(config)); }
+        try { installFixture(tunnel, config); }
         catch (const Error& error) { rejected = std::string(error.what()).find("pinned WireGuardNT API DLL") != std::string::npos; }
         require(rejected, "Missing dependency must report explicit activation-stage failure");
         tunnel.remove();
