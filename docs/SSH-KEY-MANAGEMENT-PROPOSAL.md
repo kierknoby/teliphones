@@ -1,14 +1,14 @@
 # My PBXs managed SSH: implementation and validation
 
 The current implementation targets **Windows 0.8.5**, proposed, unreleased
-**FreePBX 0.7.0**, **root broker 0.7.0**, protocol **12**, independently
-versioned. A statically validated 0.7.0 development package is available but is
+**FreePBX 0.8.0**, **root broker 0.8.0**, protocol **12**, independently
+versioned. A statically validated 0.8.0 development package is available but is
 not production-ready or live-accepted; the historical 0.6.7 archive was removed
 from this checkout and did not contain the proposed changes. Current source retains
 the 0.6.6 nftables feedback-loop correction and adds persistent correlated
 admission diagnostics and broker responsiveness corrections. The historical
 0.6.7 archive and checksum were intentionally removed from this checkout and did
-not include the proposed 0.7.0 source;
+not include the proposed 0.8.0 source;
 the superseded 0.6.5 archive was removed; historical archives lack those new security corrections. Historical reports and the
 proposal below retain their original versions; they do not validate current source.
 

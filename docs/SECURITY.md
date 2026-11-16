@@ -1,8 +1,12 @@
 # TELIPHONES security
 
+Current 0.8.0 authority, firewall and lease changes: [implementation and acceptance](../teliphones/docs/DEVELOPMENT-0.8.0.md).
+Unknown-public-IP FreePBX 17 connectivity remains unverified. Historical evidence
+below does not validate this development candidate.
+
 This document explains proposed, unreleased source targets **FreePBX module
-0.7.0**, **root broker 0.7.0**, **protocol 12** and **Windows 0.8.5**, evidence
-and limitations. A statically validated 0.7.0 development package is available;
+0.8.0**, **root broker 0.8.0**, **protocol 12** and **Windows 0.8.5**, evidence
+and limitations. A statically validated 0.8.0 development package is available;
 it is not production-ready or live-accepted. The historical 0.6.7 archive was
 intentionally removed from this checkout and did not contain the proposed
 changes.
@@ -61,29 +65,15 @@ This documentation uses three levels of assurance. A control at one level should
 
 ## Verification evidence
 
-**Current 0.7.0 development-source verification (15 November 2026):** the
-gateway suite executed 272 tests: 244 passed, 27 were skipped, none failed, and
-one errored because the PHP checker bridge could not find `php`. The PHP
-regression runner is unavailable in this environment and was not run. The two
-wake-event failures seen before the final run were resolved by making the
-`test_support_broker.py` fixtures model already-generated FreePBX listener rules
-and matching ownership state. Both targeted tests then passed, as did 96 broker,
-listener-scheduling and concurrency tests. Their checks still assert bounded
-read-only handling, no self-wake, actual repair on changed rules, and genuine
-external nftables enforcement; this correction changes fixture setup, not
-production behavior or assertions. Isolated WireGuard and packet tests
-demonstrated admission and permission removal using management TCP fixtures,
-not actual FreePBX administration. The prior timeout and expired-lease defects
-were reproduced against the committed baseline. This supersedes the historical
-13 November 2026 report of 269 tests (267 passed, two skips) and a passing PHP
-suite; that report was for an earlier source state. The unsafe shared-method
-handover change was removed. Slow listener reconciliation still holds `wslock`
-and can delay revocation and lease expiry; 30-second lease enforcement is not
-verified. Live FreePBX 17 acceptance and PHP validation remain outstanding. See
-the [investigation and acceptance runbook](FREEPBX-FIREWALL-DIAGNOSTICS.md#pending-listener-and-admission-correction--13-november-2026).
-The historical 0.6.7 archive was intentionally removed from this checkout; it
-predated and did not contain these 0.7.0 source changes. The available 0.7.0
-development package is not production-ready or live-accepted.
+The 0.8.0 implementation adds durable restrictive decisions, generation-fenced
+listener reconciliation, conservative firewall path verification, expiring
+management grants and bounded controller requests. The original unknown-public-IP
+FreePBX 17 requirement remains **unverified**. Native Windows validation and live
+kernel/FreePBX acceptance remain outstanding; the reported SSH console crash is
+also unresolved. Windows remains 0.8.5 and broker protocol remains 12.
+
+See [current exact results](DEVELOPMENT-0.8.0-REPORT.md) and
+[protections, limitations and acceptance](../teliphones/docs/DEVELOPMENT-0.8.0.md).
 
 The historical evidence register below was reviewed on **6 November 2026**. It distinguishes
 supplied reports, current source and preserved packages from local execution.
@@ -94,7 +84,7 @@ they are not the current native-test result.
 |---|---|
 | Current source review | Windows 0.8.5 retains the verified tunnel cleanup, per-tunnel exclusion, owned `START_PENDING` recovery and shutdown corrections from 0.8.4. It adds route-aware admission failure reporting, interface-change events, PBX attempt correlation and TELIPHONES-owned residual-tunnel detection. Native compilation and platform integration have not run here. The embedded SSH console crash remains a release blocker; public-IP roaming and end-to-end reconnection are not established. No Windows binary or connectivity success is claimed. |
 | Pairing form source correction | Disabled SSH select omitted `ssh` from web-only POST. The module now submits explicit `ssh=0`, retains safe values and rejects missing/invalid choices. PHP/Node page-path tests passed; gateway suite 203 run, 202 passed, one skipped, includes actual PHP page/Unix-socket broker pairing with modelled network commands. This is not live PBX execution. |
-| Current and historical packages | Proposed module/broker 0.7.0 retains protocol 12; a statically validated development package is available, but it is not production-ready or live-accepted. The historical 0.6.7 archive was intentionally removed from this checkout and did not contain 0.7.0 listener/admission changes. No release or deployment is claimed. Exact archive/source equality is a local packaging check, not proof of live connectivity. Windows is independently 0.8.5. |
+| Current and historical packages | Proposed module/broker 0.8.0 retains protocol 12; a statically validated development package is available, but it is not production-ready or live-accepted. The historical 0.6.7 archive was intentionally removed from this checkout and did not contain 0.8.0 listener/admission changes. No release or deployment is claimed. Exact archive/source equality is a local packaging check, not proof of live connectivity. Windows is independently 0.8.5. |
 | nftables repeatability | At 0.6.3 preparation, 10/10 working-tree and 10/10 unchanged-baseline namespace runs passed after an earlier intermittent own-event-filtering failure. That failure remains undiagnosed; successful samples do not exclude recurrence. |
 | Later operator report | Earlier Windows Actions run: all eleven native SSH integrations passed; first-run GUI smoke subsequently reported successful. No matching 0.8.1 run or independently fetched evidence is supplied. |
 | Operator's latest report | A supplied historical report states successful Windows GitHub Actions builds and ten native OpenSSH integration tests passing. Another report states eleven. No run URL, commit/build hash or raw logs accompanied either report, so the counts cannot be reconciled or verified against the current source. |
@@ -271,12 +261,10 @@ locations; request/credential contents are not logged by that reporting path.
 
 ## Known limitations
 
-- **Workstation lock delay.** Listener verification remains serialized under
-  `wslock`; the pending helper may wait 150 seconds for generation (180-second
-  subprocess timeout). Admission, revocation and lease-expiry workers can wait
-  behind it. A 30-second lease is not a guaranteed kernel-enforced cutoff during
-  contention. Safe concurrency correction and delayed-generation lifecycle
-  testing remain outstanding.
+- **Bounded reconciliation, unverified live deadlines.** Foreground listener waits
+  now release the authority lock and reject superseded completion. Kernel cutoff,
+  aggregate shutdown bounds and the paused-broker/backward-clock case remain
+  acceptance limits described in the 0.8.0 development notes.
 
 - **External firewall flushes.** TELIPHONES detects and repairs external changes; it cannot prevent them. A privileged process that flushes or replaces the firewall can expose an active tunnel until the change is detected. A transient removal can pass traffic even if the rules are restored before detection. There is no guaranteed detection latency under load or resource exhaustion. This is **not** fail-closed or zero-exposure protection.
 - **Fail2Ban ordering gap.** A Fail2Ban INPUT hook externally moved after `fpbxfirewall` can be bypassed for approved flows until reconciliation withdraws integration. Hooks inserted before `fpbxfirewall` remain ahead of the internal jump without a repair window. The result is read back and an invalid concurrent change causes withdrawal. Monitor wakeups and periodic checks are not a guaranteed recovery deadline.

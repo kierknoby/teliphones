@@ -1,4 +1,8 @@
-# TELIPHONES proposed 0.7.0 workstation pairing and connection policy
+# TELIPHONES proposed 0.8.0 workstation pairing and connection policy
+
+Current 0.8.0 authority, firewall and lease changes: [implementation and acceptance](DEVELOPMENT-0.8.0.md).
+Unknown-public-IP FreePBX 17 connectivity remains unverified. Historical evidence
+below does not validate this development candidate.
 
 The current broker is protocol 12. It enforces a default maximum of one
 simultaneous admitted workstation with atomic lease admission, authenticated
@@ -8,9 +12,9 @@ admits management traffic only for an active session lease.
 
 ## Current Windows-to-FreePBX sequence
 
-Source targets: Windows **0.8.5**, proposed, unreleased module **0.7.0**, broker
-**0.7.0**, protocol **12**. These component versions are independent. The
-statically validated 0.7.0 development archive is available in this checkout;
+Source targets: Windows **0.8.5**, proposed, unreleased module **0.8.0**, broker
+**0.8.0**, protocol **12**. These component versions are independent. The
+statically validated 0.8.0 development archive is available in this checkout;
 it is not live-accepted or production-approved. The historical 0.6.7 archive
 was intentionally removed from this checkout and did not contain these source
 changes. The historical 0.6.7 milestone added bounded persistent diagnostics
@@ -18,11 +22,11 @@ correlating each recorded Windows attempt with PBX admission, response delivery,
 lock contention and controller/reconciliation state. It retained the 0.6.6
 nftables feedback-loop correction and earlier durable revocation and verified
 removal. Its historical package was removed from this checkout; it did not
-contain the proposed 0.7.0 changes. These changes and
+contain the proposed 0.8.0 changes. These changes and
 the simulated source-change tests do not prove that WireGuard endpoint roaming
 or live network-change reconnection succeeds. Repeat root bootstrap after
 Module Admin and follow
-the [0.7.0 live acceptance checklist](../README.md#current-verification-status).
+the [0.8.0 live acceptance checklist](../README.md#current-verification-status).
 
 When investigating a failed admission, compare the Windows session log's
 diagnostic ID and random attempt ID with the PBX administrator's diagnostics
@@ -133,8 +137,8 @@ request. Updated Windows builds expose a web-only or web-plus-SSH request
 choice, show explicit SSH authorisation status, and use temporary inline
 clipboard feedback instead of success dialogues. Module and Windows versions
 are independent; the current source targets are proposed, unreleased FreePBX
-**0.7.0**, root broker **0.7.0**, protocol **12** and Windows **0.8.5**. The
-statically validated 0.7.0 development package is available but not
+**0.8.0**, root broker **0.8.0**, protocol **12** and Windows **0.8.5**. The
+statically validated 0.8.0 development package is available but not
 production-ready or live-accepted; the historical 0.6.7 archive was removed
 from this checkout and did not contain these changes.
 
@@ -245,7 +249,7 @@ is not included in the module-only package.
 ## Preserved version-1 contract
 
 This section records the original v1 contract and historical lifecycle;
-current source additionally requires proposed module 0.7.0 / broker 0.7.0 / protocol 12,
+current source additionally requires proposed module 0.8.0 / broker 0.8.0 / protocol 12,
 management leases, dedicated Locked interfaces and identity-preserving updates.
 The older protocol minima and full-interface rebuild description below are not
 the current broker compatibility/admission policy.
@@ -278,7 +282,7 @@ The response is a copyable enrolment artefact, not proof that arbitrary access i
 - Temporary pairing expires at its PBX-side deadline. Persistent pairing remains until revoked.
 - The broker's approximately 15-second reconciliation loop also removes workstation network access while TELIPHONES is disabled, and startup cannot restore access while disabled. Pairing metadata is retained; after re-enabling, a broker restart or fresh approved pairing reapplies valid entries without extending expiry.
 - An administrator can revoke one workstation or all workstations in the FreePBX TELIPHONES page. Removing a local Windows profile only deletes the local key; it does not revoke the PBX peer.
-- Every update first disables `tlp-admin` and verifies that it is down or absent, before changing rules or peers. Cleanup additionally verifies interface deletion before removing the owned table. Failed disable/deletion preserves the remaining rules, key and pairing metadata, and is reported as an error, never successful revocation. **Revoke all workstations** remains available for retry. A failed revocation is incomplete; retained entries may be restored after a broker restart.
+- Every update first disables `tlp-admin` and verifies that it is down or absent, before changing rules or peers. Cleanup additionally verifies interface deletion before removing the owned table. Failed disable/deletion preserves the remaining rules, key and pairing metadata, and is reported as an error, never successful revocation. **Revoke all workstations** remains available for retry. Durably revoked authority is not restored after restart; incomplete housekeeping remains pending and access is contained.
 - Windows disconnection after revocation is detected through tunnel service and PBX reachability monitoring. There is no server-pushed Windows revocation channel in this version, so instantaneous client-side disconnect is not guaranteed. The PBX-side broker/firewall remains authoritative for access.
 - The GUI displays the last WireGuard handshake from a fixed read-only `wg show tlp-admin latest-handshakes` query, without peer keys. Zero means no handshake; an unavailable query is explicitly unverified. A past handshake is not proof of current GUI/SSH reachability. Workstation status is a page-load snapshot, separate from remote support operation polling.
 - Each pairing has a non-secret diagnostic ID `ws-` plus its existing 16-hex workstation ID. It is pairing-lifetime, not a connection-attempt ID. The administrator-only **Workstation diagnostics** panel accepts this ID, filters the PBX log to that pairing, and exports a bounded JSON record. Events are UTC-stamped PBX observations of pairing decisions, server-side peer/interface/firewall state, and compact handshake/traffic snapshots; idle peers are not called disconnected, and no Windows-side failures are fabricated. The workstation side records its own local attempts separately.
@@ -288,10 +292,10 @@ The response is a copyable enrolment artefact, not proof that arbitrary access i
 
 This also applies when upgrading from 0.2.1. Install the current module and rerun the root bootstrap before relying on the separately installed broker.
 
-For an authorized controlled-development 0.7.0 installation, use the locally available statically validated candidate only after review; it is not production approval or live acceptance. The historical `TELIPHONES-0.6.7.tgz` is not included in this checkout and did not contain the proposed changes. After authorized package installation, rerun the documented root bootstrap with no active support session and Windows tunnels disconnected. Installation does not delete `workstations.json`, `workstation-recovery.json` or `workstation-wg.key`. Valid pairings keep their identities, keys and original deadlines; a required listener migration is authenticated and coordinated rather than requiring re-pairing.
+For an authorized controlled-development 0.8.0 installation, use the locally available statically validated candidate only after review; it is not production approval or live acceptance. The historical `TELIPHONES-0.6.7.tgz` is not included in this checkout and did not contain the proposed changes. After authorized package installation, rerun the documented root bootstrap with no active support session and Windows tunnels disconnected. Installation does not delete `workstations.json`, `workstation-recovery.json` or `workstation-wg.key`. Valid pairings keep their identities, keys and original deadlines; a required listener migration is authenticated and coordinated rather than requiring re-pairing.
 
 Module Admin does not necessarily replace the root-owned broker. Proposed module
-0.7.0 requires broker 0.7.0 even if an earlier helper reports protocol 12. The bootstrap
+0.8.0 requires broker 0.8.0 even if an earlier helper reports protocol 12. The bootstrap
 copies the packaged helpers and restarts the service; confirm the component
 version and compare installed files as described in
 [Updating TELIPHONES](../README.md#updating-teliphones).
@@ -316,8 +320,8 @@ An unmarked legacy table is migrated only when its complete nft JSON exactly mat
 
 The 0.3.1 broker adds the hookless `teliphones_owner_v1` chain because Debian 12 nftables 1.0.6 drops table comments from kernel JSON readback. The operator reports that this ownership correction was tested successfully on the actual FreePBX 17 test PBX. The repository code still needs to be installed and verified on that PBX through the normal upgrade/bootstrap procedure; this document does not claim that deployment has occurred.
 
-For an authorized controlled-development 0.7.0 installation, use the available statically validated candidate only after review; it is not a release. The historical `TELIPHONES-0.6.7.tgz` is not included here and did not contain the proposed changes. Follow the current root-bootstrap instructions in the module guide. The 0.3.1 ownership correction originally kept protocol 3; protocol 12 alone likewise does not prove the installed helper's version or contents. The broker verifies the tunnel is down, safely migrates only the exact known 0.3.0 policy, restores current policy from saved state and readmits valid, unexpired pairings. Pairing identities, addresses, SSH permissions, deadlines and the PBX WireGuard key are preserved. If exact ownership cannot be established, migration is refused and recovery data remains intact.
-For an authorized controlled-development 0.7.0 installation, use the available statically validated candidate only after review; it is not a release. The historical `TELIPHONES-0.6.7.tgz` is not included here and did not contain the proposed changes. Follow the current root-bootstrap instructions in the module guide. The 0.3.1 ownership correction originally kept protocol 3; protocol 12 alone likewise does not prove the installed helper's version or contents. The broker verifies the tunnel is down, safely migrates only the exact known 0.3.0 policy, restores current policy from saved state and readmits valid, unexpired pairings. Pairing identities, addresses, SSH permissions, deadlines and the PBX WireGuard key are preserved. If exact ownership cannot be established, migration is refused and recovery data remains intact.
+For an authorized controlled-development 0.8.0 installation, use the available statically validated candidate only after review; it is not a release. The historical `TELIPHONES-0.6.7.tgz` is not included here and did not contain the proposed changes. Follow the current root-bootstrap instructions in the module guide. The 0.3.1 ownership correction originally kept protocol 3; protocol 12 alone likewise does not prove the installed helper's version or contents. The broker verifies the tunnel is down, safely migrates only the exact known 0.3.0 policy, restores current policy from saved state and readmits valid, unexpired pairings. Pairing identities, addresses, SSH permissions, deadlines and the PBX WireGuard key are preserved. If exact ownership cannot be established, migration is refused and recovery data remains intact.
+For an authorized controlled-development 0.8.0 installation, use the available statically validated candidate only after review; it is not a release. The historical `TELIPHONES-0.6.7.tgz` is not included here and did not contain the proposed changes. Follow the current root-bootstrap instructions in the module guide. The 0.3.1 ownership correction originally kept protocol 3; protocol 12 alone likewise does not prove the installed helper's version or contents. The broker verifies the tunnel is down, safely migrates only the exact known 0.3.0 policy, restores current policy from saved state and readmits valid, unexpired pairings. Pairing identities, addresses, SSH permissions, deadlines and the PBX WireGuard key are preserved. If exact ownership cannot be established, migration is refused and recovery data remains intact.
 
 ## Upgrading from 0.3.1
 
@@ -325,8 +329,8 @@ The historical 0.3.2 change added bounded diagnostics and protocol 4 without
 changing firewall permissions or pairing protocol. For a current upgrade,
 use the preserved historical 0.6.7 package only for its matching source, disconnect workstation tunnels, confirm no active support session,
 and rerun the root bootstrap. Preserve pairing state and the WireGuard key.
-Managed SSH originally required protocol 5; proposed module 0.7.0 requires broker
-0.7.0/protocol 12 and all three protected helpers even if an older broker reports
+Managed SSH originally required protocol 5; proposed module 0.8.0 requires broker
+0.8.0/protocol 12 and all three protected helpers even if an older broker reports
 protocol 12. Protocol 4 identifies historical diagnostics support only.
 Follow [current upgrade verification](../README.md#updating-teliphones).
 
@@ -374,7 +378,7 @@ marked jump is placed inside `fpbxfirewall`; the jump itself is not interface
 filtered so it can serve both the shared and dedicated listeners. Every
 TELIPHONES ACCEPT rule inside the owned chain is instead scoped to the exact
 WireGuard interface, authenticated peer tunnel address, PBX tunnel address,
-protocol and port. The chain returns for all other traffic.
+protocol and port. The chain drops remaining traffic on owned tunnel interfaces, then returns for unrelated interfaces.
 
 The old integration inserted its jump above `fpbxfirewall` in INPUT. During Windows 0.7.0 / module 0.4.0 testing, the PBX journal identified that exact rule as invading and repeatedly reset iptables, approximately every 41 seconds. Broker reconciliation restored the very rule that FreePBX rejected, creating competing management loops.
 

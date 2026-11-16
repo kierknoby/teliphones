@@ -49,8 +49,8 @@ test('all site pages have valid local links, assets and unique fragment targets'
 });
 
 test('current product and installation copy matches independent source versions', () => {
-  assert.equal(moduleVersion, '0.7.0');
-  assert.equal(brokerVersion, '0.7.0');
+  assert.equal(moduleVersion, '0.8.0');
+  assert.equal(brokerVersion, '0.8.0');
   assert.equal(version, '0.8.5');
   for (const name of ['index.html', 'windows/index.html', 'downloads/index.html',
     'freepbx/index.html', 'faq/index.html', 'about/index.html', 'roadmap/index.html']) {
@@ -65,7 +65,7 @@ test('current product and installation copy matches independent source versions'
     assert.match(html, /protocol (?:<strong>)?12/, name);
   }
   for (const [file, html] of contents) {
-    assert.doesNotMatch(html, /0\.8\.0|0\.6\.0|protocol 7|broker 0\.6\.[45]/, file);
+    assert.doesNotMatch(html, /0\.7\.0|0\.6\.0|protocol 7|broker 0\.6\.[45]/, file);
   }
 });
 
@@ -81,7 +81,7 @@ test('pairing guide distinguishes approval, current package and obsolete archive
   }
   assert.match(contents.get(path.join(site, 'downloads/index.html')), /historical TELIPHONES-0\.6\.7\.tgz and sidecar were intentionally removed from this checkout and did not contain the proposed changes/);
   assert.match(contents.get(path.join(site, 'downloads/index.html')), /statically validated development TGZ and checksum are available locally/);
-  assert.match(contents.get(path.join(site, 'downloads/index.html')), /A statically validated 0\.7\.0 development TGZ and checksum are available locally/);
+  assert.match(contents.get(path.join(site, 'downloads/index.html')), /A statically validated 0\.8\.0 development TGZ and checksum are available locally/);
   assert.match(contents.get(path.join(site, 'downloads/index.html')), /website ZIP is a separate static-site snapshot and is also unchanged/);
   assert.match(contents.get(path.join(site, 'about/index.html')), /localStorage/);
 });

@@ -26,19 +26,19 @@ def included(path):
 
 class SourceVersionTests(unittest.TestCase):
     def test_authoritative_versions(self):
-        self.assertEqual(VERSION, "0.7.0")
+        self.assertEqual(VERSION, "0.8.0")
         tree = ast.parse((MODULE / "support_broker.py").read_text())
         versions = [ast.literal_eval(node.value) for node in tree.body if isinstance(node, ast.Assign)
                     and any(isinstance(target, ast.Name) and target.id == "VERSION" for target in node.targets)]
-        self.assertEqual(versions, ["0.7.0"], "The broker patch version identifies the listener-close and admission corrections")
+        self.assertEqual(versions, ["0.8.0"], "The broker version identifies the authority and admission architecture")
         self.assertIn("BROKER_VERSION = '%s';" % versions[0], (MODULE / "WebSupport.php").read_text())
-        self.assertIn("TELIPHONES 0.7.0 requires broker version 0.7.0, broker protocol 12",
+        self.assertIn("TELIPHONES 0.8.0 requires broker version 0.8.0, broker protocol 12",
                       (MODULE / "BrokerBootstrap.php").read_text())
         windows_version = (ROOT / "desktop/windows/src/app/Version.h").read_text()
         self.assertIn("#define TELIPHONES_VERSION_MAJOR 0", windows_version)
         self.assertIn("#define TELIPHONES_VERSION_MINOR 8", windows_version)
         self.assertIn("#define TELIPHONES_VERSION_PATCH 5", windows_version)
-        self.assertIn("## 0.7.0, listener reconciliation and workstation admission (unreleased)", (MODULE / "docs/CHANGELOG.md").read_text())
+        self.assertIn("## 0.8.0, generation-fenced authority and fail-closed admission (unreleased)", (MODULE / "docs/CHANGELOG.md").read_text())
         self.assertIn("durable workstation revocation", (MODULE / "BrokerBootstrap.php").read_text())
 
 
@@ -143,9 +143,11 @@ class PackageTests(unittest.TestCase):
             instance = namespace["Broker"]()
             network = FakeNetwork().freepbx()
             instance.run = network.run
+            instance.tool = lambda name: name
             instance.iptables_tool = lambda: "iptables"
+            instance.active_sessions = lambda: {"a" * 16: {"expires_at": 2000000000}}
             state = {"subnet": "100.70.1.0/24", "listen_port": 51821, "workstations": [
-                {"address": "100.70.1.2/32", "ssh": True, "ssh_public_key": "fixture"}]}
+                {"id": "a" * 16, "address": "100.70.1.2/32", "ssh": True, "ssh_public_key": "fixture"}]}
             chain = namespace["INTEGRATION_CHAIN"]
             jumps = [namespace["iptables_arguments"](namespace["INTEGRATION_JUMP"])]
             baseline = [fail2ban_hook(name) for name in FREEPBX17_FAIL2BAN] + [["-j", "fpbxfirewall"]]
@@ -166,7 +168,7 @@ class PackageTests(unittest.TestCase):
                 stable = network.filter.copy()
                 with patch.object(instance, "ipt", wraps=instance.ipt) as ipt:
                     instance.firewall_integration(state)
-                    self.assertTrue(all(call.args[1] == "-S" for call in ipt.call_args_list))
+                    self.assertTrue(all("-S" in call.args for call in ipt.call_args_list))
                 self.assertEqual(network.filter, stable)
                 network.freepbx()
             instance.remove_integration()
@@ -212,12 +214,13 @@ class PackageTests(unittest.TestCase):
                                 "workstation-revocations.json", "def reconcile_revocations(",
                                 "def revocation_status(", "revocation_persistence_failed",
                                 'NftMonitor.signature("delete", kind, value)',
-                                "if existing is not None and policy_equal(existing, expected):",
+                                "class AuthorityLock", "class SessionServer", "def commit_restrictive_state(",
+                                "def assert_generation(", "def management_path(", "datestop",
                                 "def session_request(", "def record_session_request(",
                                 "X-Teliphones-Attempt", "reconcile.background",
                                 "controller.state", "DIAGNOSTIC_REPEAT_SECONDS"):
                     self.assertIn(feature, broker)
-                self.assertIn('VERSION = "0.7.0"', broker)
+                self.assertIn('VERSION = "0.8.0"', broker)
                 self.assertIn("PROTOCOL = 12", broker)
                 for feature in ("def listener_failure_output(", "listener_operation", "Initiating failure:",
                                 "listener_failure_output(result.stderr)", "def listener_rules_current(",

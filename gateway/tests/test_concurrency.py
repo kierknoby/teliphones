@@ -55,7 +55,7 @@ class ListenerConcurrencyTests(unittest.TestCase):
 
         def run(arguments, **kwargs):
             job = getattr(self.broker.request_context, 'listener_job', None)
-            if job is not None:
+            if job is not None and not job.get("foreground"):
                 jobs.append(job)
                 entered.set()
                 if not job['cancel'].wait(3):
@@ -92,7 +92,7 @@ class ListenerConcurrencyTests(unittest.TestCase):
 
         def run(arguments, **kwargs):
             job = getattr(self.broker.request_context, 'listener_job', None)
-            if job is not None:
+            if job is not None and not job.get("foreground"):
                 jobs.append(job)
                 if not job['cancel'].wait(3):
                     raise AssertionError('Revocation did not cancel repair')

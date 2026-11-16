@@ -1,5 +1,9 @@
 # TELIPHONES 0.8.5 for Windows (experimental)
 
+Current 0.8.0 authority, firewall and lease changes: [implementation and acceptance](../../teliphones/docs/DEVELOPMENT-0.8.0.md).
+Unknown-public-IP FreePBX 17 connectivity remains unverified. Historical evidence
+below does not validate this development candidate.
+
 **TELIPHONES is a UK registered trademark.**
 
 **TELIPHONES 0.8.5 for Windows is licensed under GPLv3.**
@@ -10,8 +14,8 @@ This guide covers installing and using the Windows application. The
 [FreePBX administration guide](../../teliphones/README.md) covers server setup.
 
 Windows **0.8.5** (file version **0.8.5.0**) is independent of proposed,
-unreleased FreePBX module/root broker **0.7.0**, protocol **12**. A statically
-validated 0.7.0 development archive is available in this checkout, but is not
+unreleased FreePBX module/root broker **0.8.0**, protocol **12**. A statically
+validated 0.8.0 development archive is available in this checkout, but is not
 a release or production approval. The historical 0.6.7 archive was intentionally
 removed from this checkout and did not contain these proposed changes. Windows
 0.8.5 adds route-aware admission-failure reporting, local network-change
@@ -187,13 +191,13 @@ During installation the dialogue cannot be closed until the worker finishes; can
 
 ## Pair an administrator workstation
 
-The 0.7.0 development package is available locally and statically validated,
+The 0.8.0 development package is available locally and statically validated,
 but is not live-accepted or approved for production use. The historical 0.6.7
 archive is not included in this checkout and predates these changes. After an
 authorized controlled-development installation or upgrade, complete the
 [root broker bootstrap](../../teliphones/README.md#complete-installation-on-freepbx-17)
 with no active support session and workstation tunnels disconnected. Verify
-that the broker reports version 0.7.0 and protocol 12; an operational socket
+that the broker reports version 0.8.0 and protocol 12; an operational socket
 alone does not confirm the required broker version.
 
 1. Select **Add my PBX...** and enter the workstation name under **Pair my PBX >
@@ -553,7 +557,7 @@ customer data in an issue.
 
 ## Verification status
 
-The FreePBX module target is proposed 0.7.0 and unreleased. Its statically
+The FreePBX module target is proposed 0.8.0 and unreleased. Its statically
 validated development archive is available locally; the historical 0.6.7
 archive was intentionally removed from this checkout and predates the proposed
 changes. Windows native build/validation is also outstanding, and the

@@ -1,10 +1,10 @@
 # Windows developer builds, testing and readiness
 
-Targets: TELIPHONES for Windows **0.8.5**, proposed, unreleased TELIPHONES for FreePBX **0.7.0**. A statically validated 0.7.0 development package is available but is not production-ready or live-accepted; the historical 0.6.7 archive was intentionally removed from this checkout and did not contain the proposed changes.
+Targets: TELIPHONES for Windows **0.8.5**, proposed, unreleased TELIPHONES for FreePBX **0.8.0**. A statically validated 0.8.0 development package is available but is not production-ready or live-accepted; the historical 0.6.7 archive was intentionally removed from this checkout and did not contain the proposed changes.
 The FreePBX connection-state policy and Windows pairing/clipboard UX are
 independently versioned; neither entry declares a published release.
 
-Proposed root broker is **0.7.0**, protocol **12**. Version.h derives Windows
+Proposed root broker is **0.8.0**, protocol **12**. Version.h derives Windows
 product 0.8.5 and file 0.8.5.0; executable resources, captions, About/licence and
 build provenance reuse it. The dependency manifest must match the product version.
 Current Release portable build/CTest and source contracts can run on Linux;

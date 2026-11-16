@@ -112,7 +112,17 @@ try {
     $reconcile([]);
     $rules = ['-A fpbxsvc-owned -p udp -m udp --dport 51821 -j ACCEPT'];
     foreach (['external', 'internal', 'other'] as $zone) $rules[] = '-A zone-' . $zone . ' -j fpbxsvc-owned';
+    $rules[] = '-A INPUT -j fpbxfirewall';
+    $rules[] = '-A fpbxfirewall -j zone-external';
     $assert(FirewallListener::rulesConverged($rules, 'fpbxsvc-owned', 51821));
+    foreach (['-A INPUT -j DROP', '-A INPUT -j REJECT', '-A INPUT -s ::/0 -j DROP',
+              '-A INPUT -s 0.0.0.0/0 -j REJECT', '-A INPUT -i eth0 -j fpbxfirewall'] as $earlier) {
+        $assert(!FirewallListener::rulesConverged(array_merge([$earlier], $rules), 'fpbxsvc-owned', 51821));
+    }
+    // IPv4 success cannot stand in for a separate blocked IPv6 snapshot.
+    $ipv6 = array_merge(['-A INPUT -j REJECT'], $rules);
+    $assert(FirewallListener::rulesMismatch($ipv6, 'fpbxsvc-owned', 51821) === 'public INPUT path blocked');
+
     $assert(!FirewallListener::rulesConverged($rules, 'fpbxsvc-owned', 51899));
     $assert(!FirewallListener::rulesConverged(array_slice($rules, 0, 3), 'fpbxsvc-owned', 51821));
     $assert(!FirewallListener::rulesConverged(array_merge($rules, [$rules[0]]), 'fpbxsvc-owned', 51821));

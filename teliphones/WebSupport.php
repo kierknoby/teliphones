@@ -106,7 +106,7 @@ class WebSupport
     public const OPERATION_STATES = ['running', 'succeeded', 'failed'];
     /** Broker status protocol this module requires (support_broker.py PROTOCOL): 2 adds live operation records, 3 adds workstation pairing. */
     public const BROKER_PROTOCOL = 3;
-    public const BROKER_VERSION = '0.7.0';
+    public const BROKER_VERSION = '0.8.0';
     public const DIAGNOSTICS_PROTOCOL = 4;
     public const SSH_PROTOCOL = 5;
     /** Protocol 6 adds the WireGuard listener firewall permit and configurable management web services. */
@@ -539,7 +539,7 @@ class WebSupport
             'peer.observation' => ['handshake_at' => 'int', 'rx_bytes' => 'int', 'tx_bytes' => 'int'],
             'interface.established' => ['listen_port' => 'int'],
             'interface.removed' => [],
-            'firewall.integration' => ['state' => ['inactive', 'active', 'not-detected', 'error'],
+            'firewall.integration' => ['state' => ['inactive', 'active', 'not-detected', 'error', 'blocked', 'unknown', 'pending'],
                 'backend' => ['nf_tables', 'legacy', null]],
             'broker.error' => ['category' => ['workstation-enforcement', 'firewall-integration', 'telemetry-unavailable', 'cleanup-unverified']],
             'session.request' => ['action' => ['heartbeat', 'release'],
@@ -695,7 +695,7 @@ class WebSupport
         }
         // Brokers before the FreePBX Firewall integration do not report it ("unknown"): rerun the root bootstrap.
         $integration = $supported && is_array($raw['firewall_integration'] ?? null) ? $raw['firewall_integration'] : [];
-        $integrationState = in_array($integration['state'] ?? null, ['inactive', 'active', 'not-detected', 'error'], true) ? $integration['state'] : 'unknown';
+        $integrationState = in_array($integration['state'] ?? null, ['inactive', 'active', 'not-detected', 'error', 'blocked', 'unknown', 'pending'], true) ? $integration['state'] : 'unknown';
         $firewallIntegration = ['state' => $integrationState,
             'message' => is_string($integration['message'] ?? null) ? substr($integration['message'], 0, 500) : '',
             'backend' => in_array($integration['backend'] ?? null, ['nf_tables', 'legacy'], true) ? $integration['backend'] : null];

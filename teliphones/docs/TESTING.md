@@ -1,13 +1,13 @@
 # TELIPHONES testing
 
-## Current 0.8.5 / proposed 0.7.0 source review and package boundary
+## Current 0.8.5 / proposed 0.8.0 source review and package boundary
 
-Windows 0.8.5 is independently versioned; proposed module/root broker 0.7.0
+Windows 0.8.5 is independently versioned; proposed module/root broker 0.8.0
 retain protocol 12. The statically validated development candidate
-`TELIPHONES-0.7.0.tgz` and its SHA-256 sidecar are available. This is not a
+`TELIPHONES-0.8.0.tgz` and its SHA-256 sidecar are available. This is not a
 production release and does not establish live FreePBX acceptance. The
 historical `TELIPHONES-0.6.7.tgz` and checksum were intentionally removed from
-this checkout and did not contain the proposed 0.7.0 changes. Source version checks run without an archive; the
+this checkout and did not contain the proposed 0.8.0 changes. Source version checks run without an archive; the
 package validator verifies archive/source equality, metadata and checksum.
 
 Run source version consistency independently from the repository root:
@@ -33,26 +33,18 @@ pairing behaviour, startup smoke and portable Release checks, use the
 `desktop/windows/tests/WINDOWS-READINESS.md` reference in the source repository.
 Linux checks do not substitute for Windows execution.
 
-## Proposed 0.7.0 source checks and release blockers
+## Proposed 0.8.0 source checks and release blockers
 
-The current gateway run (15 November 2026) executed 272 tests: 244 passed, 27
-skipped, none failed, and one errored because the PHP checker bridge could not
-find `php`. The PHP regression runner is unavailable in this environment and
-was not run. Before the final run, the two reported wake-event failures were
-reproduced and corrected by completing the FreePBX listener-rule/ownership
-fixture in `test_support_broker.py`; both targeted tests then passed, with their
-original no-mutation, idle-wake and bounded-work assertions intact. The related
-broker, concurrency and listener-scheduling tests passed (96 total). Historical
-13 November results (269 executed, 267 passed, two skipped, with PHP reported
-passing) refer to an earlier source state and are not current evidence. The
-remaining PHP environment error is not a Python test failure, but PHP validation
-is still outstanding. This test document does not authorize packaging or
-release.
+The 0.8.0 implementation adds durable restrictive decisions, generation-fenced
+listener reconciliation, conservative firewall path verification, expiring
+management grants and bounded controller requests. The original unknown-public-IP
+FreePBX 17 requirement remains **unverified**. Native Windows validation and live
+kernel/FreePBX acceptance remain outstanding; the reported SSH console crash is
+also unresolved. Windows remains 0.8.5 and broker protocol remains 12.
 
-Slow listener reconciliation still holds `wslock`; revocation and expiry may be
-delayed, and a guaranteed 30-second lease cutoff is unverified. Live FreePBX 17
-acceptance and PHP validation remain release gates. The available development
-package is not a release or production approval.
+See [current implementation and disposable acceptance](DEVELOPMENT-0.8.0.md).
+The root development report records exact final results; earlier counts below
+apply only to the historical versions in their headings.
 
 ## 0.6.7 historical admission diagnostics
 

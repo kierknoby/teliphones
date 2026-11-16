@@ -1,6 +1,8 @@
 #!/usr/bin/python3
 """Restricted local GUI-to-root bridge; no browser-selected commands or paths."""
 import base64
+from contextlib import contextmanager
+import socketserver
 import datetime
 import fcntl
 import hashlib
@@ -37,7 +39,7 @@ SOCKET = "/run/teliphones/control.sock"
 # Protocol 11 adds PBX-enforced workstation session leases and management gating.
 # Protocol 12 adds post-pair workstation policy management.
 PROTOCOL = 12
-VERSION = "0.7.0"
+VERSION = "0.8.0"
 SESSION_CONTROL_PORT = 8766
 SESSION_LEASE_SECONDS = 30
 FWCONSOLE = "/usr/sbin/fwconsole"
@@ -105,6 +107,87 @@ def listener_failure_output(output):
 
 class BrokerError(Exception):
     pass
+
+
+class Superseded(BrokerError):
+    """An obsolete transaction must never roll back newer authority."""
+
+
+class AuthorityLock:
+    """Reentrant authority lock with explicit, recursion-safe external waits."""
+    def __init__(self):
+        self.lock = threading.RLock()
+        self.local = threading.local()
+
+    def acquire(self, *args, **kwargs):
+        acquired = self.lock.acquire(*args, **kwargs)
+        if acquired:
+            self.local.depth = getattr(self.local, "depth", 0) + 1
+        return acquired
+
+    def release(self):
+        self.local.depth -= 1
+        self.lock.release()
+
+    def __enter__(self):
+        self.acquire()
+        return self
+
+    def __exit__(self, *args):
+        self.release()
+
+    @contextmanager
+    def external_wait(self):
+        depth = getattr(self.local, "depth", 0)
+        for _ in range(depth):
+            self.release()
+        try:
+            yield
+        finally:
+            for _ in range(depth):
+                self.acquire()
+
+
+CONTROLLER_TIMEOUT = 3
+CONTROLLER_WORKERS = 32
+REQUEST_MAX_AGE = 3
+
+
+class SessionServer(ThreadingHTTPServer):
+    daemon_threads = True
+    request_queue_size = 8
+
+    def __init__(self, address, handler, interface):
+        self.interface = interface
+        self.slots = threading.BoundedSemaphore(CONTROLLER_WORKERS)
+        super().__init__(address, handler)
+
+    def server_bind(self):
+        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE,
+                               self.interface.encode() + b"\0")
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address
+
+    def get_request(self):
+        connection, peer = super().get_request()
+        connection.settimeout(CONTROLLER_TIMEOUT)
+        return connection, peer
+
+    def process_request(self, connection, peer):
+        if not self.slots.acquire(blocking=False):
+            self.shutdown_request(connection)
+            return
+        try:
+            super().process_request(connection, peer)
+        except Exception:
+            self.slots.release()
+            raise
+
+    def process_request_thread(self, connection, peer):
+        try:
+            super().process_request_thread(connection, peer)
+        finally:
+            self.slots.release()
 
 
 def read_json(path):
@@ -853,12 +936,15 @@ def workstation_policy(pbx_address, ssh_sources, managed_sources=(), web_ports=(
 
 def iptables_rule(tokens):
     """Canonical form of the only match options TELIPHONES writes; anything else is not recognised (None)."""
-    options = {"-s": "s", "-d": "d", "-i": "i", "-p": "p", "--dport": "dport", "--comment": "comment", "-j": "j"}
+    options = {"-s": "s", "-d": "d", "-i": "i", "-p": "p", "--dport": "dport", "--comment": "comment", "-j": "j", "--datestop": "datestop"}
     rule, index = {}, 0
     while index < len(tokens):
         token = tokens[index]
-        if token == "-m" and index + 1 < len(tokens) and tokens[index + 1] in ("tcp", "comment"):
+        if token == "-m" and index + 1 < len(tokens) and tokens[index + 1] in ("tcp", "comment", "time"):
             index += 2
+            continue
+        if token == "--utc":
+            index += 1
             continue
         if token not in options or index + 1 >= len(tokens) or options[token] in rule:
             return None
@@ -879,6 +965,81 @@ def is_fail2ban_hook(target):
     return isinstance(target, str) and target.lower().startswith(FAIL2BAN_PREFIXES)
 
 
+def management_path(rules, packet, chain="INPUT", seen=()):
+    """Conservative interpreter for supported filter matches; never guesses unknown matches.
+
+    The result proves traversal to our gate, not application connectivity.
+    Both NEW and ESTABLISHED packets must traverse the owned chain.
+    """
+    if chain in seen or len(seen) > 32:
+        return "unknown"
+    if chain == INTEGRATION_CHAIN:
+        return "verified"
+    known = {parent for parent, _ in rules}
+    for parent, tokens in rules:
+        if parent != chain:
+            continue
+        matches, unknown, negate, target = True, False, False, None
+        index = 0
+        while index < len(tokens):
+            option = tokens[index]
+            if option == "!":
+                negate = True
+                index += 1
+                continue
+            if index + 1 >= len(tokens):
+                unknown = True
+                break
+            value = tokens[index + 1]
+            index += 2
+            result = None
+            try:
+                if option in ("-j", "-g"):
+                    target = value
+                    if option == "-g":
+                        unknown = True
+                elif option == "-m":
+                    if value not in ("tcp", "udp", "comment", "multiport", "conntrack", "state"):
+                        unknown = True
+                elif option == "--comment":
+                    pass
+                elif option == "-i":
+                    result = packet["interface"].startswith(value[:-1]) if value.endswith("+") else packet["interface"] == value
+                elif option in ("-s", "-d"):
+                    result = ipaddress.ip_address(packet["source" if option == "-s" else "destination"]) in ipaddress.ip_network(value, strict=False)
+                elif option == "-p":
+                    result = value in ("all", packet["protocol"])
+                elif option in ("--dport", "--dports"):
+                    result = any(int(part.split(":")[0]) <= packet["port"] <= int(part.split(":")[-1]) for part in value.split(","))
+                elif option in ("--ctstate", "--state"):
+                    result = packet["state"] in value.split(",")
+                else:
+                    unknown = True
+            except (ValueError, KeyError):
+                unknown = True
+            if result is not None:
+                matches = matches and (not result if negate else result)
+                negate = False
+        if not matches:
+            continue
+        if unknown or target is None:
+            return "unknown"
+        if target in ("DROP", "REJECT"):
+            return "blocked"
+        if target == "ACCEPT":
+            return "bypass"
+        if target == "RETURN":
+            return "return"
+        if target == "LOG":
+            continue
+        if target not in known and target != INTEGRATION_CHAIN:
+            return "unknown"
+        result = management_path(rules, packet, target, (*seen, chain))
+        if result != "return":
+            return result
+    return "return"
+
+
 def integration_placement_valid(hooks, bans, jumps):
     """One interface jump inside FreePBX, after INPUT's Fail2Ban hooks."""
     return jumps == [0] and bool(hooks) and all(index < hooks[0] for index in bans)
@@ -891,12 +1052,15 @@ def iptables_arguments(rule):
             arguments += [option, rule[key]]
     if "dport" in rule:
         arguments += ["-m", "tcp", "--dport", rule["dport"]]
+    if "datestop" in rule:
+        arguments += ["-m", "time", "--datestop", rule["datestop"]]
     return arguments + ["-m", "comment", "--comment", rule["comment"], "-j", rule["j"]]
 
 
-def integration_rules(pbx_address, workstations, web=DEFAULT_WEB, migration_controls=()):
+def integration_rules(pbx_address, workstations, web=DEFAULT_WEB, migration_controls=(), leases=None):
     """Per-peer management TCP and explicitly approved SSH; no public services."""
     web_ports = tuple(entry["port"] for entry in web)
+    leases = {} if leases is None else leases
     rules = []
     for item in sorted(workstations, key=lambda entry: ipaddress.IPv4Network(entry["address"])):
         source = ipaddress.IPv4Network(item["address"])
@@ -907,8 +1071,15 @@ def integration_rules(pbx_address, workstations, web=DEFAULT_WEB, migration_cont
         ports = (*web_ports, SESSION_CONTROL_PORT,
                  *((ssh.API_PORT, ssh.port(item)) if ssh.managed(item) else ((22,) if item.get("ssh") is True else ())))
         for protocol_port in ports:
-            rules.append({"s": str(source), "d": pbx, "i": interface, "p": "tcp", "dport": str(protocol_port),
-                          "comment": INTEGRATION_MARK, "j": "ACCEPT"})
+            deadline = leases.get(item.get("id"), {}).get("expires_at")
+            if protocol_port != SESSION_CONTROL_PORT and deadline is None:
+                continue
+            rule = {"s": str(source), "d": pbx, "i": interface, "p": "tcp", "dport": str(protocol_port),
+                    "comment": INTEGRATION_MARK, "j": "ACCEPT"}
+            if protocol_port != SESSION_CONTROL_PORT:
+                cutoff = min(deadline, item.get("expires_at") or deadline)
+                rule["datestop"] = datetime.datetime.fromtimestamp(cutoff - 1, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+            rules.append(rule)
     for item in migration_controls:
         source = ipaddress.IPv4Network(item["address"])
         if source.prefixlen != 32:
@@ -917,6 +1088,11 @@ def integration_rules(pbx_address, workstations, web=DEFAULT_WEB, migration_cont
         interface = item["interface"]
         rules.append({"s": str(source), "d": pbx, "i": interface, "p": "tcp",
                       "dport": str(SESSION_CONTROL_PORT), "comment": INTEGRATION_MARK, "j": "ACCEPT"})
+    # Never fall through to Trusted/ESTABLISHED rules for unleased tunnel traffic.
+    interfaces = {item.get("interface", WORKSTATION_IFACE) for item in workstations}
+    interfaces.update(item["interface"] for item in migration_controls)
+    for interface in sorted(interfaces):
+        rules.append({"i": interface, "comment": INTEGRATION_MARK, "j": "DROP"})
     rules.append({"comment": INTEGRATION_MARK, "j": "RETURN"})
     return rules
 
@@ -1035,7 +1211,7 @@ class NftMonitor:
         kind, value = next(iter(content.items()))
         if not isinstance(value, dict):
             raise BrokerError("Invalid nft monitor value.")
-        if value.get("family") == "ip" and (value.get("table") if kind != "table" else value.get("name")) == "filter":
+        if value.get("family") in ("ip", "ip6") and (value.get("table") if kind != "table" else value.get("name")) == "filter":
             # iptables-nft change (for example a FreePBX Firewall reload): re-check integration only.
             self.broker.wake.set()
             return
@@ -1145,6 +1321,8 @@ def handle_connection(broker, connection, web_uid):
                     raise BrokerError("Progress framing is available only for workstation pairing or revocation.")
             validate(request)
         except (BrokerError, ValueError, OSError) as error:
+            if isinstance(error, Superseded):
+                raise
             response = {"ok": False, "error": str(error) if isinstance(error, BrokerError) else "Invalid TELIPHONES socket request."}
             try:
                 connection.sendall(json.dumps(response).encode() + b"\n")
@@ -1193,7 +1371,10 @@ class Broker:
         # Progress of the most recent web operation, reported read-only through "status".
         self.operation = None
         # Workstation pairing is independent of support sessions and serialised separately.
-        self.wslock = threading.RLock()
+        self.wslock = AuthorityLock()
+        self.generation = uuid.uuid4().hex
+        self.stopping = threading.Event()
+        self.clock_sample = (time.time(), time.monotonic())
         self.listener_job = None
         self.request_context = threading.local()
         self.workstation_error = ""
@@ -1250,13 +1431,13 @@ class Broker:
             if isinstance(item, dict) and re.fullmatch(r"[a-f0-9]{16}", str(item.get("id", ""))):
                 self.diagnostic("ws-" + item["id"], event, **fields)
 
-    def session_request(self, action, source, destination=None, payload=None, attempt=None):
+    def session_request(self, action, source, destination=None, payload=None, attempt=None, received_at=None):
         """Runs one session-controller request and returns (HTTP status, response, trace) without raising."""
         trace = {"action": action, "attempt": attempt if isinstance(attempt, str) and
                  re.fullmatch(r"[a-f0-9]{16}", attempt) else None, "lock_wait_ms": 0}
         started = time.monotonic()
         try:
-            result = self.workstation_session(action, source, destination, payload, trace=trace)
+            result = self.workstation_session(action, source, destination, payload, trace=trace, received_at=received_at)
             response, status = {"ok": True, **result}, 200
         except BrokerError as error:
             trace.update(result="refused", reason=session_refusal_reason(str(error)))
@@ -1532,6 +1713,8 @@ class Broker:
                             or sources_request["created_at"] <= 0):
                         raise ValueError()
                 except (KeyError, TypeError, ValueError, BrokerError) as error:
+                    if isinstance(error, Superseded):
+                        raise
                     raise BrokerError("Invalid pending workstation source-list request.") from error
             valid.append(item)
         bans = stored.get("bans", [])
@@ -1580,7 +1763,7 @@ class Broker:
         if any(item["id"] in revoked or any(item["public_key"] == record["public_key"]
                                            for record in revoked.values()) for item in state["workstations"]):
             raise BrokerError("Refusing to persist revoked workstation authority.")
-        atomic(STATE / "workstations.json", json.dumps(state, indent=2, sort_keys=True))
+        atomic(STATE / "workstations.json", json.dumps(state, indent=2, sort_keys=True), durable=True)
 
     def revocations(self):
         path = STATE / "workstation-revocations.json"
@@ -1638,6 +1821,8 @@ class Broker:
             try:
                 cleanup()
             except (BrokerError, ssh.SshError, OSError, ValueError, subprocess.SubprocessError) as error:
+                if isinstance(error, Superseded):
+                    raise
                 LOGGER.error("TELIPHONES revocation containment failed: %s", type(error).__name__)
                 failures.append(type(error).__name__)
         return not failures
@@ -1657,6 +1842,8 @@ class Broker:
         try:
             state, _ = self.workstation_state()
         except (BrokerError, OSError) as error:
+            if isinstance(error, Superseded):
+                raise
             self.contain_workstations()
             message = "Revocation is durably recorded, but effective access removal remains unconfirmed; saved policy cannot be read. Immediate root recovery is required."
             journal["operation"].update(state="failed", outcome="unconfirmed", stage="", message=message,
@@ -1670,6 +1857,8 @@ class Broker:
             try:
                 operation()
             except (BrokerError, ssh.SshError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+                if isinstance(error, Superseded):
+                    raise
                 LOGGER.error("TELIPHONES revocation %s verification failed: %s", label, type(error).__name__)
                 errors.append(label)
 
@@ -1753,6 +1942,8 @@ class Broker:
                     if not self.listener_rules_current(ports):
                         self.reconcile_listener(ports)
             except (BrokerError, ssh.SshError, OSError, ValueError, subprocess.SubprocessError) as error:
+                if isinstance(error, Superseded):
+                    raise
                 LOGGER.warning("TELIPHONES revoked workstation housekeeping pending: %s", type(error).__name__)
                 outcome = "housekeeping"
             message = ("Workstation access removal confirmed; non-security housekeeping remains pending."
@@ -1768,6 +1959,8 @@ class Broker:
             self.revocation_persistence_failed = False
             self.revocation_progress = None
         except (BrokerError, OSError) as error:
+            if isinstance(error, Superseded):
+                raise
             self.revocation_persistence_failed = True
             self.contain_workstations()
             raise BrokerError("Revocation outcome persistence failed; effective removal must be reverified. Refresh status and retry.") from error
@@ -2068,20 +2261,25 @@ class Broker:
         self.start_monitor()
         expected = self.expected_policy(state)
         existing = self.owned_table()
-        if existing is not None and policy_equal(existing, expected):
-            return
-        self.mutate_policy(expected, existing)
+        if existing is None:
+            self.disable_workstations()
+        if existing is None or not policy_equal(existing, expected):
+            self.mutate_policy(expected, existing)
         if not policy_equal(self.owned_table(), expected):
-            raise BrokerError("TELIPHONES listener policy did not reconcile to the complete expected firewall state.")
+            raise BrokerError("TELIPHONES policy did not reconcile to the complete expected firewall state.")
+        self.reconcile_integration(state)
 
-    def workstation_session(self, action, source, destination=None, ssh_public_key=None, trace=None):
+    def workstation_session(self, action, source, destination=None, ssh_public_key=None, trace=None, received_at=None):
         trace = {} if trace is None else trace
         try:
             address = str(ipaddress.ip_address(source))
         except ValueError as error:
             raise BrokerError("Workstation session request has an invalid tunnel source.") from error
-        waiting = time.monotonic()
+        waiting = time.monotonic() if received_at is None else received_at
+        request_wall = time.time()
         with self.wslock:
+            if self.stopping.is_set() or time.monotonic() - waiting >= REQUEST_MAX_AGE:
+                raise BrokerError("Stale workstation request; reconnect before requesting admission.")
             trace["lock_wait_ms"] = int((time.monotonic() - waiting) * 1000)
             state, _ = self.workstation_state()
             item = next((entry for entry in state["workstations"] if entry["address"].split("/")[0] == address), None)
@@ -2100,10 +2298,11 @@ class Broker:
             trace["workstation_id"] = item["id"]
             if state["connection_state"] == "closed" or (STATE / "disabled").exists():
                 raise BrokerError("PBX Closed: workstation access is unavailable.")
-            if self.integration.get("state") == "error":
+            if self.integration.get("state") != "active":
                 raise BrokerError("FreePBX Firewall integration is unsafe; a management session cannot be admitted.")
             migration = item.get("migration")
             if action == "lock-current":
+                self.advance_generation()
                 if migration_source or migration:
                     raise BrokerError("Lock to Current IP is unavailable while listener migration is pending.")
                 updated = self.manage_workstation({"workstation_id": item["id"],
@@ -2171,10 +2370,14 @@ class Broker:
                     self.apply_workstations(state, preserve_unrelated=True)
                     self.save_workstations(state)
                 except (BrokerError, OSError, subprocess.SubprocessError) as error:
+                    if isinstance(error, Superseded):
+                        raise
                     try:
                         self.apply_workstations(previous, preserve_unrelated=True)
                         self.save_workstations(previous)
                     except (BrokerError, OSError, subprocess.SubprocessError) as rollback_error:
+                        if isinstance(rollback_error, Superseded):
+                            raise
                         self.workstation_error = "Workstation migration acknowledgement failed; both old and new management paths remain blocked: " + str(rollback_error)
                     raise BrokerError("The new workstation listener could not be acknowledged safely; the migration remains pending.") from error
             previous = self.active_sessions()
@@ -2187,7 +2390,7 @@ class Broker:
                     raise BrokerError("Session limit reached: %d of %d workstation connections are active." %
                                       (len(current), state["max_sessions"]))
                 # Keyed by workstation identity, so a reconnect from a new public address renews its own lease.
-                current[item["id"]] = {"expires_at": int(time.time()) + SESSION_LEASE_SECONDS}
+                current[item["id"]] = {"expires_at": int(request_wall) + SESSION_LEASE_SECONDS}
             else:
                 raise BrokerError("Unsupported workstation session operation.")
             outcome = "released" if action == "release" else "renewed" if item["id"] in previous else "admitted"
@@ -2195,12 +2398,21 @@ class Broker:
             try:
                 self.reconcile_policy_only(state)
             except (BrokerError, OSError, subprocess.SubprocessError) as error:
+                if isinstance(error, Superseded):
+                    raise
                 self.save_active_sessions(previous)
                 try:
                     self.disable_workstations()
                 except (BrokerError, OSError, subprocess.SubprocessError) as cleanup_error:
+                    if isinstance(cleanup_error, Superseded):
+                        raise
                     self.workstation_error = "Session firewall update failed and workstation shutdown is unverified: " + str(cleanup_error)
                 raise BrokerError("Workstation session firewall could not be verified; access was disabled.") from error
+            if action == "heartbeat" and time.monotonic() - waiting >= REQUEST_MAX_AGE:
+                self.save_active_sessions({key: value for key, value in current.items() if key != item["id"]})
+                self.disable_workstations()
+                self.wake.set()
+                raise BrokerError("Session verification exceeded the request deadline; access contained.")
             self.lease_wake.set()
             trace["result"] = outcome
             response = {"active": action == "heartbeat", "expires_at": current.get(item["id"], {}).get("expires_at"),
@@ -2257,16 +2469,41 @@ class Broker:
             broker = self
 
             class Handler(BaseHTTPRequestHandler):
+                def setup(self):
+                    self.received_at = time.monotonic()
+                    super().setup()
+                    def interrupt():
+                        try:
+                            self.connection.shutdown(socket.SHUT_RDWR)
+                        except OSError:
+                            pass
+                    self.deadline_timer = threading.Timer(REQUEST_MAX_AGE, interrupt)
+                    self.deadline_timer.daemon = True
+                    self.deadline_timer.start()
+
+                def finish(self):
+                    self.deadline_timer.cancel()
+                    try:
+                        super().finish()
+                    except OSError:
+                        pass
+
                 def do_POST(self):
                     if self.path != "/workstation/session":
                         self.send_error(404)
                         return
                     trace = {}
+                    received_at = self.received_at
                     try:
                         length = int(self.headers.get("Content-Length", "0"))
                         if not 1 <= length <= 4096:
                             raise BrokerError("Invalid workstation session request.")
-                        request = json.loads(self.rfile.read(length))
+                        if self.headers.get("Transfer-Encoding"):
+                            raise BrokerError("Transfer-Encoding is not supported.")
+                        body = self.rfile.read(length)
+                        if len(body) != length:
+                            raise BrokerError("Incomplete workstation session request.")
+                        request = json.loads(body)
                         if (not isinstance(request, dict)
                                 or set(request) != ({"action", "ssh_public_key"} if request.get("action") == "ssh-request"
                                                     else {"action", "sources"} if request.get("action") == "sources-request"
@@ -2276,8 +2513,10 @@ class Broker:
                         status, response, trace = broker.session_request(
                             request["action"], self.client_address[0], self.server.server_address[0],
                             request.get("ssh_public_key", request.get("sources")),
-                            self.headers.get("X-Teliphones-Attempt"))
-                    except (BrokerError, ValueError, TypeError) as error:
+                            self.headers.get("X-Teliphones-Attempt"), received_at=received_at)
+                    except (BrokerError, ValueError, TypeError, OSError) as error:
+                        if isinstance(error, Superseded):
+                            raise
                         response = {"ok": False, "error": str(error) if isinstance(error, BrokerError)
                                     else "Invalid workstation session request."}
                         status = 409
@@ -2302,7 +2541,11 @@ class Broker:
                     return
 
             try:
-                server = ThreadingHTTPServer((address, SESSION_CONTROL_PORT), Handler)
+                interface = next((self.locked_interface(item) for item in state["workstations"]
+                                  if (item.get("locked") and item.get("pbx_address") == address)
+                                  or (item.get("migration", {}).get("locked") and
+                                      item["migration"]["pbx_address"] == address)), WORKSTATION_IFACE)
+                server = SessionServer((address, SESSION_CONTROL_PORT), Handler, interface)
             except OSError:
                 if self.diagnostic_due(("controller.state", "failed")):
                     self.diagnostic_workstations("controller.state", state["workstations"], state="failed")
@@ -2312,6 +2555,25 @@ class Broker:
             thread.start()
             self.session_servers[address] = (server, thread)
             self.diagnostic_workstations("controller.state", state["workstations"], state="listening")
+
+    def shutdown_workstations(self):
+        """Cancel before containment; cleanup errors must not skip containment."""
+        self.stopping.set()
+        if self.listener_job is not None:
+            self.listener_job["cancel"].set()
+        try:
+            self.stop_session_servers()
+        finally:
+            with self.wslock:
+                try:
+                    self.cancel_listener_repair()
+                finally:
+                    try:
+                        self.save_active_sessions({})
+                    finally:
+                        self.contain_workstations()
+                # Retain listener ownership for startup; do not wait for generation.
+                self.remove_integration()
 
     def stop_session_servers(self):
         self.session_server_enabled = False
@@ -2331,14 +2593,30 @@ class Broker:
         try:
             self.save_workstations(state)
         except (BrokerError, OSError) as error:
+            if isinstance(error, Superseded):
+                raise
             try:
                 self.save_workstations(previous)
             except (BrokerError, OSError) as rollback_error:
+                if isinstance(rollback_error, Superseded):
+                    raise
                 self.workstation_error = "Session limit could not be saved or rolled back: " + str(rollback_error)
                 raise BrokerError(self.workstation_error) from error
             raise
         self.audit("workstation-limit", uid, "completed")
         return state["max_sessions"]
+
+    def check_clock(self):
+        with self.wslock:
+            wall, monotonic = time.time(), time.monotonic()
+            previous_wall, previous_monotonic = self.clock_sample
+            self.clock_sample = (wall, monotonic)
+            if wall - previous_wall < monotonic - previous_monotonic - 2:
+                self.save_active_sessions({})
+                self.contain_workstations()
+                self.enforcement_event.set()
+                self.wake.set()
+                raise BrokerError("Wall clock moved backwards; session authority cleared and access contained.")
 
     def expire_sessions(self):
         with self.wslock:
@@ -2355,9 +2633,13 @@ class Broker:
             try:
                 self.reconcile_policy_only(state)
             except (BrokerError, OSError, subprocess.SubprocessError) as error:
+                if isinstance(error, Superseded):
+                    raise
                 try:
                     self.disable_workstations()
                 except (BrokerError, OSError, subprocess.SubprocessError) as cleanup_error:
+                    if isinstance(cleanup_error, Superseded):
+                        raise
                     self.workstation_error = "Expired session cleanup failed and workstation shutdown is unverified: " + str(cleanup_error)
                 raise BrokerError("Expired workstation sessions could not be removed from the firewall.") from error
 
@@ -2377,13 +2659,21 @@ class Broker:
             state["bans"] = [item for item in state["bans"] if item["id"] != request["ban_id"]]
             if len(state["bans"]) == len(previous["bans"]):
                 raise BrokerError("Unknown TELIPHONES ban; it may already have been removed.")
+        if request["action"] == "workstation-ban":
+            self.commit_restrictive_state(state)
+            self.audit(request["action"], uid, "completed")
+            return state
         try:
             self.reconcile_policy_only(state)
             self.save_workstations(state)
         except (BrokerError, OSError, subprocess.SubprocessError) as error:
+            if isinstance(error, Superseded):
+                raise
             try:
                 self.reconcile_policy_only(previous)
             except (BrokerError, OSError, subprocess.SubprocessError) as rollback_error:
+                if isinstance(rollback_error, Superseded):
+                    raise
                 self.workstation_error = "Banned-list change failed and firewall rollback could not be verified: " + str(rollback_error)
                 raise BrokerError(self.workstation_error) from error
             raise
@@ -2463,7 +2753,7 @@ class Broker:
         item.pop("unlock_request", None)
         item.pop("sources_request", None)
 
-        if item.get("migration"):
+        if item.get("migration") or request["state"] == "lock":
             # Persist the transition and revoke its old management lease before
             # changing peers. A restart can therefore only restore a
             # control-channel-only old path until the same key arrives at the
@@ -2475,6 +2765,8 @@ class Broker:
             try:
                 self.reconcile_policy_only(state)
             except (BrokerError, OSError, subprocess.SubprocessError) as error:
+                if isinstance(error, Superseded):
+                    raise
                 old_interface = self.locked_interface(item) if initial_locked else WORKSTATION_IFACE
                 if self.link_state(old_interface) is not None:
                     self.run([self.tool("wg"), "set", old_interface, "peer", item["public_key"], "remove"],
@@ -2486,13 +2778,18 @@ class Broker:
             self.apply_workstations(state, preserve_unrelated=True)
             self.save_workstations(state)
         except (BrokerError, OSError, subprocess.SubprocessError) as error:
+            if isinstance(error, Superseded):
+                raise
             try:
-                if item.get("migration"):
+                if item.get("migration") or request["state"] == "lock":
                     self.save_workstations(state)
+                    self.contain_workstations()
                 else:
                     self.apply_workstations(previous, preserve_unrelated=True)
                     self.save_workstations(previous)
             except (BrokerError, OSError, subprocess.SubprocessError) as rollback_error:
+                if isinstance(rollback_error, Superseded):
+                    raise
                 self.workstation_error = "Workstation policy update and rollback failed; affected access remains blocked: " + str(rollback_error)
                 raise BrokerError(self.workstation_error) from error
             raise
@@ -2529,14 +2826,22 @@ class Broker:
             item.pop("ssh_request", None)
         else:
             item.pop("ssh_request", None)
+        if operation == "revoke":
+            self.commit_restrictive_state(state, (item["id"],))
+            self.audit("workstation-ssh-revoke", uid, "completed")
+            return item
         try:
             self.apply_workstations(state, preserve_unrelated=True)
             self.save_workstations(state)
         except (BrokerError, OSError, subprocess.SubprocessError) as error:
+            if isinstance(error, Superseded):
+                raise
             try:
                 self.apply_workstations(previous, preserve_unrelated=True)
                 self.save_workstations(previous)
             except (BrokerError, OSError, subprocess.SubprocessError) as rollback_error:
+                if isinstance(rollback_error, Superseded):
+                    raise
                 self.workstation_error = "SSH elevation change and rollback failed; workstation recovery is required: " + str(rollback_error)
                 raise BrokerError(self.workstation_error) from error
             raise
@@ -2609,6 +2914,41 @@ class Broker:
     def integration_status(self, state, message, backend=None):
         self.integration = {"state": state, "message": message, "backend": backend}
 
+    def competing_firewall(self, iptables):
+        """Refuse unanalysed base hooks and a second active iptables backend.
+
+        This deliberately supports a narrow layout. No foreign rule is changed.
+        """
+        document = json.loads(self.run([self.tool("nft"), "-j", "list", "ruleset"]))
+        objects = document.get("nftables")
+        if not isinstance(objects, list):
+            raise BrokerError("Cannot inventory native firewall hooks.")
+        for entry in objects:
+            chain = entry.get("chain", {})
+            if "hook" not in chain:
+                continue
+            if chain.get("family") == "inet" and chain.get("table") == WORKSTATION_TABLE:
+                continue
+            if (chain.get("family") in ("ip", "ip6") and chain.get("table") == "filter"
+                    and chain.get("name") in ("INPUT", "FORWARD", "OUTPUT")
+                    and chain.get("prio") == 0):
+                continue
+            return "Unknown competing native firewall hook; effective reachability is not verified."
+        backend = self.integration_backend(iptables)
+        alternate = "/usr/sbin/iptables-legacy" if backend == "nf_tables" else "/usr/sbin/iptables-nft"
+        if os.access(alternate, os.X_OK):
+            listing = self.ipt(alternate, "-S").splitlines()
+            if any(line.startswith("-A ") or line.startswith("-P ") and not line.endswith(" ACCEPT") for line in listing):
+                return "Both iptables backends contain filtering policy; effective integration is unknown."
+        # Non-filter tables can reject before INPUT or alter destination/routing.
+        for table in ("raw", "mangle", "nat", "security"):
+            listing = self.run([iptables, "-w", "5", "-t", table, "-S"], check=False)
+            if listing is None:
+                return "Cannot inspect iptables %s; effective integration is unknown." % table
+            if listing and any(line.startswith("-A ") for line in listing.splitlines()):
+                return "Unanalysed iptables %s rules; effective integration is unknown." % table
+        return ""
+
     def firewall_integration(self, state):
         """Idempotently install/verify the exact integration. Caller must have verified the nft policy first."""
         iptables = self.iptables_tool()
@@ -2616,6 +2956,13 @@ class Broker:
             self.integration_status("not-detected", "iptables is not installed, so no FreePBX Firewall hook is present; no integration rules were installed.")
             return
         backend = self.integration_backend(iptables)
+        if backend not in ("nf_tables", "legacy"):
+            self.integration_status("unknown", "Unsupported iptables backend; admission is disabled.", backend)
+            return
+        conflict = self.competing_firewall(iptables)
+        if conflict:
+            self.integration_status("unknown", conflict, backend)
+            return
         chains, rules = self.integration_inventory(iptables)
         # Withdraw the intrusive legacy hook before doing anything that might fail or return early.
         self.remove_integration_jumps(iptables, rules, parents=("INPUT",))
@@ -2655,7 +3002,7 @@ class Broker:
                 "pbx_address": migration["pbx_address"],
                 "interface": self.locked_interface(item) if migration.get("locked") else WORKSTATION_IFACE,
             })
-        expected = integration_rules(str(network[1]), integrated_workstations, web, migration_controls)
+        expected = integration_rules(str(network[1]), integrated_workstations, web, migration_controls, self.active_sessions())
         for item in state["workstations"]:
             if item.get("locked"):
                 station_network = ipaddress.IPv4Network(item["subnet"])
@@ -2687,6 +3034,19 @@ class Broker:
                 or not integration_placement_valid(hooks, bans, jumps)
                 or any(chain == "INPUT" and iptables_target(tokens) == INTEGRATION_CHAIN for chain, tokens in rules)):
             raise BrokerError("FreePBX Firewall integration could not be verified after update.")
+        for item in integrated_workstations:
+            for port in {SESSION_CONTROL_PORT, *(entry["port"] for entry in web),
+                         *((ssh.API_PORT, ssh.port(item)) if ssh.managed(item) else ())}:
+                for connection_state in ("NEW", "ESTABLISHED"):
+                    packet = {"interface": item.get("interface", WORKSTATION_IFACE),
+                              "source": item["address"].split("/")[0],
+                              "destination": item.get("pbx_address", str(network[1])),
+                              "protocol": "tcp", "port": port, "state": connection_state}
+                    path = management_path(rules, packet)
+                    if path != "verified":
+                        self.integration_status("blocked" if path == "blocked" else "unknown",
+                                                "Management INPUT path is %s; admission is disabled." % path, backend)
+                        return
         web_ports = "/".join(str(entry["port"]) for entry in web)
         self.integration_status("active", "Paired peers may reach TCP %s (session control) and configured management services %s%s "
                                 "on their PBX tunnel address inside %s; nftables permits management only while a broker lease is active, "
@@ -2788,8 +3148,33 @@ class Broker:
         values = sorted(set(ports))
         if getattr(self.request_context, "background_listener_check", False) and self.listener_rules_current(values):
             return
-        value = ",".join(str(port) for port in values) if values else "0"
-        self.run([FWCONSOLE, "teliphones", "listener", "--listen-port=" + value])
+        generation = self.generation
+        job = {"ports": tuple(values), "authority": self.listener_authority(), "foreground": True,
+               "cancel": threading.Event(), "done": threading.Event(), "error": None}
+        self.listener_job = job
+
+        def repair():
+            self.request_context.listener_job = job
+            try:
+                value = ",".join(map(str, values)) or "0"
+                self.run([FWCONSOLE, "teliphones", "listener", "--listen-port=" + value])
+            except Exception as error:
+                job["error"] = error
+            finally:
+                self.request_context.listener_job = None
+                job["done"].set()
+
+        threading.Thread(target=repair, name="teliphones-listener-transaction", daemon=True).start()
+        with self.wslock.external_wait():
+            completed = job["done"].wait(185)
+        self.assert_generation(generation)
+        if not completed:
+            self.cancel_listener_repair()
+            raise BrokerError("Listener worker did not finish; admission remains blocked.")
+        if self.listener_job is job:
+            self.listener_job = None
+        if job["error"] is not None:
+            raise BrokerError("Listener reconciliation failed: " + str(job["error"])) from job["error"]
 
     def listener_rules_current(self, ports):
         """Read-only background check; explicit admission/removal still uses the trusted PHP helper."""
@@ -2815,7 +3200,13 @@ class Broker:
         iptables = self.iptables_tool()
         if iptables is None:
             return False
-        lines = self.ipt(iptables, "-S").splitlines()
+        ipv4 = self.ipt(iptables, "-S")
+        ip6tables = iptables.replace("iptables", "ip6tables")
+        ipv6 = self.ipt(ip6tables, "-S")
+        digest = hashlib.sha256((ipv4.rstrip("\n") + "\n\0" + ipv6.rstrip("\n") + "\n").encode()).hexdigest()
+        if saved.get("verified_rules_sha256") != digest:
+            return False
+        lines = ipv4.splitlines()
         for chain, port in chains.items():
             expected = "-A %s -p udp -m udp --dport %d -j ACCEPT" % (chain, port)
             if [line for line in lines if line.startswith("-A " + chain + " ")] != [expected]:
@@ -2845,15 +3236,25 @@ class Broker:
         """Integration failure removes TELIPHONES' iptables rules (FreePBX then decides); unverifiable removal fails closed."""
         try:
             self.firewall_integration(state)
+            if self.integration.get("state") != "active":
+                raise BrokerError(self.integration.get("message") or "Firewall path is not verified.")
         except (BrokerError, OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
+            if isinstance(error, Superseded):
+                raise
             reason = str(error) if isinstance(error, BrokerError) else "integration command failed."
+            failure_state = self.integration.get("state")
             try:
                 self.remove_integration()
             except (BrokerError, OSError, ValueError, subprocess.SubprocessError) as cleanup_error:
+                if isinstance(cleanup_error, Superseded):
+                    raise
                 self.integration_status("error", "FreePBX Firewall integration could not be verified or removed: " + reason)
                 raise BrokerError("FreePBX Firewall integration could not be verified or removed: " + str(cleanup_error)) from error
-            self.integration_status("error", "FreePBX Firewall integration failed and was removed; FreePBX Firewall may now drop "
-                                    "WireGuard handshakes and tunnel HTTP/HTTPS until integration is restored: " + reason)
+            self.integration_status(failure_state if failure_state in ("blocked", "unknown", "pending") else "error",
+                                    "FreePBX Firewall integration failed and was removed: " + reason)
+            self.save_active_sessions({})
+            self.disable_workstations()
+            raise BrokerError(self.integration["message"]) from error
 
     def mutate_policy(self, expected, existing, registration_retry=True):
         nft = self.tool("nft")
@@ -2915,6 +3316,8 @@ class Broker:
         try:
             actual = self.owned_table()
         except (BrokerError, OSError, ValueError, subprocess.SubprocessError) as error:
+            if isinstance(error, Superseded):
+                raise
             raise BrokerError("Workstation firewall state could not be read back after an unacknowledged nft transaction; "
                               "access remains disabled: " + (str(error) if isinstance(error, BrokerError) else "nft list failed.")) from error
         if actual is None:
@@ -2952,6 +3355,8 @@ class Broker:
         try:
             self.reconcile_listener(0)
         except (BrokerError, OSError, subprocess.SubprocessError) as error:
+            if isinstance(error, Superseded):
+                raise
             listener_error = error
         try:
             self.ssh.reconcile({"workstations": []})
@@ -2968,6 +3373,8 @@ class Broker:
             self.remove_integration()
             integration_error = None
         except (BrokerError, OSError, ValueError, subprocess.SubprocessError) as error:
+            if isinstance(error, Superseded):
+                raise
             integration_error = error
         existing = self.owned_table()
         self.mutate_policy(None, existing)
@@ -3107,12 +3514,16 @@ class Broker:
             self.reconcile_session_servers(state)
             self.workstation_error = ""
         except (BrokerError, ssh.SshError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+            if isinstance(error, Superseded):
+                raise
             category = "firewall-integration" if self.integration.get("state") == "error" else "workstation-enforcement"
             for diagnostic_id in workstation_ids:
                 self.diagnostic(diagnostic_id, "broker.error", category=category)
             try:
                 self.teardown_workstations(state)
             except (BrokerError, OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as cleanup_error:
+                if isinstance(cleanup_error, Superseded):
+                    raise
                 self.workstation_cleanup_failed = True
                 initiating = str(error) if isinstance(error, BrokerError) else type(error).__name__
                 self.workstation_error = ("Initiating failure: " + initiating
@@ -3232,6 +3643,8 @@ class Broker:
                                     item.get("listener_port", state["listen_port"]))
             self.workstation_error = ""
         except (BrokerError, ssh.SshError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+            if isinstance(error, Superseded):
+                raise
             # Revoke only identities whose policy changed; unrelated interfaces and
             # leases remain untouched if an update cannot be verified.
             affected = set(changed_ids) | (set(previous_by_id) - set(current_by_id))
@@ -3262,10 +3675,14 @@ class Broker:
                 if changed:
                     self.save_workstations(state)
             except (BrokerError, OSError, ValueError, subprocess.SubprocessError) as error:
+                if isinstance(error, Superseded):
+                    raise
                 self.workstation_error = str(error)
                 try:
                     self.disable_workstations()
                 except (BrokerError, OSError, ValueError, subprocess.SubprocessError) as cleanup_error:
+                    if isinstance(cleanup_error, Superseded):
+                        raise
                     self.workstation_error += " Cleanup unverified: " + str(cleanup_error)
 
     def expire_workstations(self):
@@ -3280,6 +3697,16 @@ class Broker:
                                                  retry_seconds=None)
 
     def expire_workstations_locked(self):
+        if self.stopping.is_set():
+            return
+        if self.listener_job is not None and self.listener_job.get("foreground"):
+            self.expire_sessions()
+            state, changed = self.workstation_state()
+            if changed or self.enforcement_event.is_set():
+                self.advance_generation()
+                self.save_workstations(state)
+                self.contain_workstations()
+            return
         revocations = self.revocations()
         if (any(record["outcome"] != "complete" for record in revocations["records"].values())
                 or revocations.get("operation", {}).get("outcome", "complete") != "complete"):
@@ -3359,6 +3786,8 @@ class Broker:
             self.workstation_retry_at = 0.0
             self.workstation_retry_delay = 0
         except (BrokerError, ssh.SshError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+            if isinstance(error, Superseded):
+                raise
             self.workstation_error = str(error)
             self.workstation_retry_policy = retry_policy
             self.workstation_retry_delay = min(60, max(5, self.workstation_retry_delay * 2))
@@ -3374,6 +3803,8 @@ class Broker:
                 self.disable_workstations()
                 self.ssh.reconcile({"workstations": []})
             except (BrokerError, ssh.SshError, OSError, ValueError, subprocess.SubprocessError) as cleanup_error:
+                if isinstance(cleanup_error, Superseded):
+                    raise
                 self.workstation_error += " Cleanup could not be confirmed: " + str(cleanup_error)
             self.workstation_retry_at = time.monotonic() + self.workstation_retry_delay
         finally:
@@ -3473,17 +3904,22 @@ class Broker:
             pbx_public = self.server_public_key()
             self.save_workstations(state)
         except (BrokerError, OSError, subprocess.SubprocessError) as error:
+            if isinstance(error, Superseded):
+                raise
             if self.workstation_cleanup_failed:
                 atomic(STATE / "workstation-recovery.json", json.dumps(state, indent=2, sort_keys=True))
                 raise
             try:
                 self.apply_workstations(previous, preserve_unrelated=bool(previous.get("workstations")))
             except (BrokerError, OSError, subprocess.SubprocessError) as rollback_error:
+                if isinstance(rollback_error, Superseded):
+                    raise
                 initiating = str(error) if isinstance(error, BrokerError) else type(error).__name__
                 self.workstation_error = ("Initiating failure: " + initiating
                                           + " Pairing rollback failed; affected access remains blocked and recovery requires retry: "
                                           + (str(rollback_error) if isinstance(rollback_error, BrokerError) else type(rollback_error).__name__))
                 raise BrokerError(self.workstation_error) from error
+            self.workstation_error = str(error)
             raise
         for diagnostic_id in expired_ids:
             self.diagnostic(diagnostic_id, "pairing.expired", reason="deadline")
@@ -3533,6 +3969,8 @@ class Broker:
             self.save_revocations(journal)
             self.revocation_persistence_failed = False
         except (BrokerError, OSError) as error:
+            if isinstance(error, Superseded):
+                raise
             self.revocation_persistence_failed = True
             self.contain_workstations()
             self.workstation_error = "Durable workstation revocation could not be confirmed. Access removal is unconfirmed; immediate root recovery is required."
@@ -3546,60 +3984,44 @@ class Broker:
         return result
 
     def configure_web(self, request, uid):
-        """Replace the management web services and reconcile both firewall layers; no stale permits remain."""
         state, _ = self.workstation_state()
-        web = parse_web(request["web"])
-        previous = json.loads(json.dumps(state))
-        state["web"] = web
-        if state["workstations"]:
-            try:
-                self.apply_workstations(state, preserve_unrelated=True)
-                self.save_workstations(state)
-            except (BrokerError, OSError, subprocess.SubprocessError) as error:
-                if self.workstation_cleanup_failed:
-                    atomic(STATE / "workstation-recovery.json", json.dumps(state, indent=2, sort_keys=True))
-                    raise
-                try:
-                    self.apply_workstations(previous)
-                except (BrokerError, OSError, subprocess.SubprocessError) as rollback_error:
-                    self.disable_workstations()
-                    self.workstation_error = "Management update rollback failed: " + str(rollback_error)
-                    raise BrokerError(self.workstation_error) from error
-                raise
-        else:
-            self.save_workstations(state)
+        state["web"] = parse_web(request["web"])
+        self.commit_restrictive_state(state)
         self.audit("web", uid, "completed")
-        return web
+        return state["web"]
+
+    def commit_restrictive_state(self, state, removed_sessions=()):
+        """Commit administrator intent first; errors must never restore old grants."""
+        try:
+            self.save_workstations(state)
+            sessions = self.active_sessions()
+            self.save_active_sessions({key: value for key, value in sessions.items()
+                                       if key not in removed_sessions and state["connection_state"] != "closed"})
+        except (BrokerError, OSError) as error:
+            self.revocation_persistence_failed = True
+            self.contain_workstations()
+            raise BrokerError("Restrictive authority persistence failed; access contained, root recovery required.") from error
+        try:
+            # Enforce withdrawals before waiting for any external listener work.
+            if state["connection_state"] == "closed":
+                self.contain_workstations()
+            elif state["workstations"] and state["subnet"]:
+                self.reconcile_policy_only(state)
+                self.ssh.reconcile(state, start=False)
+            self.apply_workstations(state, preserve_unrelated=True)
+        except Superseded:
+            raise
+        except (BrokerError, ssh.SshError, OSError, subprocess.SubprocessError) as error:
+            self.contain_workstations()
+            self.workstation_error = "Restrictive authority is durable; access contained, reconciliation pending: " + str(error)
+            self.wake.set()
+            raise BrokerError(self.workstation_error) from error
 
     def configure_workstation_policy(self, request, uid):
         state, _ = self.workstation_state()
-        previous = json.loads(json.dumps(state))
-        previous_sessions = self.active_sessions()
         state["connection_state"] = request["state"]
-        if state["connection_state"] == "closed":
-            self.save_active_sessions({})
-        if state["connection_state"] != "closed":
-            if state["subnet"] is None:
-                state["subnet"] = self.choose_subnet()
-            if state["listen_port"] is None:
-                state["listen_port"] = 51821
-        try:
-            self.save_workstations(state)
-            self.apply_workstations(state, preserve_unrelated=True)
-        except (BrokerError, OSError, subprocess.SubprocessError) as error:
-            try:
-                self.save_active_sessions(previous_sessions)
-                self.apply_workstations(previous)
-                self.save_workstations(previous)
-            except (BrokerError, OSError, subprocess.SubprocessError) as rollback_error:
-                try:
-                    self.disable_workstations()
-                except (BrokerError, OSError, subprocess.SubprocessError) as cleanup_error:
-                    self.workstation_error = "Connection policy change and rollback failed; cleanup is unverified: " + str(cleanup_error)
-                    raise BrokerError(self.workstation_error) from error
-                self.workstation_error = "Connection policy change failed and was rolled back: " + str(rollback_error)
-                raise BrokerError(self.workstation_error) from error
-            raise
+        # Open is explicit new administrator intent, never an error rollback.
+        self.commit_restrictive_state(state)
         self.audit("workstation-policy", uid, "completed")
         return state["connection_state"]
 
@@ -3811,6 +4233,8 @@ class Broker:
             self.audit(action, uid, "completed")
             self.finish(operation_id, True, message)
         except (BrokerError, OSError, ValueError, subprocess.TimeoutExpired) as error:
+            if isinstance(error, Superseded):
+                raise
             self.error = str(error) if isinstance(error, BrokerError) else "TELIPHONES operation failed; inspect broker service logs."
             self.audit(action, uid, "failed")
             failure = self.error
@@ -3831,13 +4255,35 @@ class Broker:
             self.phase = "Disconnected"
             self.audit("revoke", uid, "completed")
         except (BrokerError, OSError) as error:
+            if isinstance(error, Superseded):
+                raise
             quarantine = True
             self.error = str(error)
             self.audit("revoke", uid, "cleanup-failed")
         if quarantine:
             atomic(STATE / "quarantine.json", json.dumps({"reason": "web-operation-or-cleanup-failed", "time": int(time.time())}))
 
+    def advance_generation(self):
+        self.generation = uuid.uuid4().hex
+        if self.listener_job is not None:
+            self.listener_job["cancel"].set()
+        return self.generation
+
+    def assert_generation(self, generation):
+        if self.stopping.is_set() or generation != self.generation:
+            raise Superseded("Workstation operation superseded; newer restrictive authority is retained.")
+
     def dispatch(self, request, uid):
+        action = validate(request)
+        if action in {"pair", "unpair", "web"} or action.startswith("workstation-"):
+            with self.wslock:
+                if self.stopping.is_set():
+                    raise BrokerError("Broker shutdown is in progress; admission is disabled.")
+                self.advance_generation()
+                return self._dispatch(request, uid)
+        return self._dispatch(request, uid)
+
+    def _dispatch(self, request, uid):
         action = validate(request)
         if action == "status":
             return {"ok": True, "status": self.status(), "error": self.error}
@@ -3997,9 +4443,7 @@ def serve():
         raise SystemExit("TELIPHONES state directory must be root-owned and private.")
     broker = Broker()
     def stop(signum, frame):
-        broker.stop_session_servers()
-        with broker.wslock:
-            broker.teardown_workstations()
+        broker.shutdown_workstations()
         if broker.monitor is not None:
             broker.monitor.close()
         raise SystemExit(0)
@@ -4052,12 +4496,17 @@ def serve():
             broker.lease_wake.wait(1)
             broker.lease_wake.clear()
             try:
+                broker.check_clock()
                 broker.expire_sessions()
             except (BrokerError, OSError, subprocess.SubprocessError) as error:
+                if isinstance(error, Superseded):
+                    raise
                 broker.workstation_error = "Workstation session lease enforcement failed: " + str(error)
                 try:
                     broker.disable_workstations()
                 except (BrokerError, OSError, subprocess.SubprocessError) as cleanup_error:
+                    if isinstance(cleanup_error, Superseded):
+                        raise
                     broker.workstation_error += " Cleanup unverified: " + str(cleanup_error)
                 return
     threading.Thread(target=lease_expiry, daemon=True).start()
@@ -4086,6 +4535,8 @@ if __name__ == "__main__":
         try:
             Broker().uninstall_workstations()
         except (BrokerError, OSError, ValueError, subprocess.SubprocessError) as error:
+            if isinstance(error, Superseded):
+                raise
             raise SystemExit("Workstation uninstall incomplete; recovery state retained: " + str(error))
     elif len(sys.argv) != 1:
         raise SystemExit("Unsupported broker arguments.")

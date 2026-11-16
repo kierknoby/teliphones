@@ -1,14 +1,18 @@
 # FreePBX 17: workstation firewall integration investigation
 
+Current 0.8.0 authority, firewall and lease changes: [implementation and acceptance](../teliphones/docs/DEVELOPMENT-0.8.0.md).
+Unknown-public-IP FreePBX 17 connectivity remains unverified. Historical evidence
+below does not validate this development candidate.
+
 This runbook records the pending listener/admission investigation, read-only
 evidence collection and historical 0.4.0/0.4.1 incident. It is not installation
 instructions or an archive-availability statement. Current targets
-are proposed, unreleased module 0.7.0, root broker 0.7.0, protocol 12 and Windows 0.8.5. A statically validated 0.7.0 development package is available, but it is not production-ready or live-accepted; the historical 0.6.7 archive was intentionally removed from this checkout and did not contain these changes. Use the
+are proposed, unreleased module 0.8.0, root broker 0.8.0, protocol 12 and Windows 0.8.5. A statically validated 0.8.0 development package is available, but it is not production-ready or live-accepted; the historical 0.6.7 archive was intentionally removed from this checkout and did not contain these changes. Use the
 [current upgrade guide](../teliphones/README.md#updating-teliphones) for bootstrap;
 account for dedicated Locked interfaces and configured management ports when
 interpreting the shared-interface/default-port examples below. The preserved
 0.6.3 archive predates the subsequent module-side web-only form correction
-and listener diagnostics included in 0.6.4. Proposed 0.7.0 source additionally
+and listener diagnostics included in 0.6.4. Proposed 0.8.0 source additionally
 contains 0.6.5 durable revocation and verified removal, the 0.6.6 nftables
 feedback-loop correction, and correlated admission diagnostics; the local
 0.6.7 archive predates and does not contain the correction documented below.
@@ -18,9 +22,9 @@ feedback-loop correction, and correlated admission diagnostics; the local
 ### Pending listener and admission correction — 13 November 2026
 
 **Unreleased development candidate; not production-ready or live-accepted.**
-A statically validated 0.7.0 development package exists locally. The historical
+A statically validated 0.8.0 development package exists locally. The historical
 0.6.7 package is not included in this checkout and is not evidence that these
-0.7.0 changes are installed.
+0.8.0 changes are installed.
 The reported failure to administer
 the affected PBX from an untrusted public IP remains unresolved in live evidence.
 A WireGuard handshake, TCP 8766 reachability or an iptables ACCEPT alone does
@@ -55,21 +59,16 @@ not establish management admission or web-server reachability.
   the background read-only fast path. Reconciliation is serialized again;
   concurrent policy changes cannot overtake an in-flight listener transaction.
 
-**Remaining concurrency limitation:** slow listener verification holds `wslock`.
-Admission, revocation and lease-expiry processing that require that lock can be
-delayed. The 30-second lease is not a guaranteed kernel-enforced cutoff during
-such a wait. Restoring serialization corrects the handover regression; it does
-not solve this latency/enforcement problem. A safe correction and tests for
-expiry/revocation during slow generation remain required before recommending
-deployment. Do not release the lock around a stale desired-port list or replace
-shared instance methods as a workaround.
+**0.8.0 correction:** generation-fenced listener jobs release the authority lock
+while waiting, cancel and reap superseded writers, and reject obsolete completions.
+See the linked development notes for current evidence and live acceptance limits.
 
 The convergence error identifies the owned chain, requested UDP port (or
 `removal`) and final rule/zone mismatch. Broker diagnostics retain only the
 sanitised structured helper output; raw rules, keys and pairing material must
 not be echoed. Capture the initiating error before cleanup changes the state.
 
-#### Local evidence
+#### Historical pre-0.8.0 local evidence
 
 An earlier 13 November 2026 working-tree run completed 269 gateway Python tests:
 267 passed and two skipped; its PHP regression runner passed. This is historical
@@ -81,9 +80,8 @@ investigation were resolved by correcting the affected test fixtures to model
 stable FreePBX listener ownership and generated firewall rules. Both targets
 passed with original assertions intact; 96 related broker, listener scheduling
 and concurrency tests also passed. This does not establish live FreePBX
-behavior. Slow listener reconciliation still holds `wslock`, can delay
-revocation/expiry, and does not prove a 30-second lease cutoff. Live FreePBX 17
-acceptance and PHP validation remain outstanding.
+behavior. That version held `wslock` during generation; 0.8.0 replaces this with generation fencing.
+See the current development notes for evidence and remaining acceptance requirements.
 
 Real WireGuard and nft/iptables-nft packet tests ran in disposable namespaces.
 They exercised untrusted-source admission, roaming, approved-IP locking,
@@ -160,7 +158,7 @@ notification stream and whether any individual command failed were not captured;
 neither asynchronous rejection nor nft transaction failure is required to
 produce the unnecessary subprocesses.
 
-The 0.6.6 broker correction, retained in historical 0.6.7 and proposed 0.7.0 source, checks desired ports
+The 0.6.6 broker correction, retained in historical 0.6.7 and proposed 0.8.0 source, checks desired ports
 against the root-owned listener journal and exact generated IPv4 service/zone
 rules before background helper invocation. It does not cache success without
 checking kernel state or bypass explicit pairing/cleanup verification. Failed
@@ -192,7 +190,7 @@ transient failure. A missing dedicated Locked listener, incomplete generation,
 or stale removal rules must be distinguished using the failed chain/port and
 matching read-only API/kernel evidence; none is yet established as the cause.
 
-Pairing dispatch holds the broker's `wslock` through admission, failure teardown
+In the investigated pre-0.8.0 implementation, pairing dispatch held `wslock` through admission, failure teardown
 and restoration of the previous policy. Background `expire_workstations()`
 acquires the same lock. The PHP listener helper additionally holds the ownership
 journal's exclusive file lock through API changes and kernel verification.
@@ -587,7 +585,7 @@ FreePBX self-checks, actual regeneration transactions or a live daemon's repair
 deadline. Those remain live diagnostic requirements.
 
 The corrected module is **0.4.1**, a patch increment from the already installed
-and tested **0.4.0**. Windows remains independently versioned at **0.7.0** because
+and tested **0.4.0**. Windows remains independently versioned at **0.8.0** because
 its application code is unchanged. The new review archive has a SHA-256 sidecar;
 the older 0.4.0 archive is preserved. No release or deployment is performed. Supply timestamped
 status, backend snapshots, relevant rule deltas and packet summaries privately

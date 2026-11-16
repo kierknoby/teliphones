@@ -1,6 +1,10 @@
 # TELIPHONES architecture
 
-This document describes proposed, unreleased **FreePBX module 0.7.0**, **root broker 0.7.0**,
+Current 0.8.0 authority, firewall and lease changes: [implementation and acceptance](../teliphones/docs/DEVELOPMENT-0.8.0.md).
+Unknown-public-IP FreePBX 17 connectivity remains unverified. Historical evidence
+below does not validate this development candidate.
+
+This document describes proposed, unreleased **FreePBX module 0.8.0**, **root broker 0.8.0**,
 **broker protocol 12** and **Windows 0.8.5** source:
 components, trust boundaries, interfaces, firewall layers and stored state.
 Architecture describes the implementation, not proof of production behaviour.
@@ -70,8 +74,8 @@ flowchart TB
 Key points:
 
 - The broker is installed by a **root bootstrap**, because Module Admin runs as the web service account and cannot create root-owned files or services. The bootstrap stages the module into a root-owned directory before executing it, so root never runs code directly from the web-writable module directory.
-- The broker reports protocol, component version and capabilities. Proposed module 0.7.0 requires broker 0.7.0 even at protocol 12; missing/malformed capabilities or an older component block workstation operations. A statically validated development package exists locally; it is not production-ready or live-accepted.
-- Pairing and revocation opt into fixed, non-secret progress frames while synchronous verification runs. PHP retains a five-second inactivity deadline; only a verified final result confirms removal. Connection loss does not cancel or redispatch the mutation. Broker 0.7.0 durably records revocation before cleanup, rejects revoked identities during recovery/admission, exposes the latest persisted outcome separately from listener housekeeping, and records correlated workstation admission outcomes in bounded persistent diagnostics. It also reconciles generated FreePBX Custom Service rules for listener ports and classifies IPv6 wildcard web listeners as indeterminate for IPv4. The historical 0.6.7 package was intentionally removed from this checkout and predates the proposed 0.7.0 listener/admission correction. Local tests do not establish live FreePBX acceptance.
+- The broker reports protocol, component version and capabilities. Proposed module 0.8.0 requires broker 0.8.0 even at protocol 12; missing/malformed capabilities or an older component block workstation operations. A statically validated development package exists locally; it is not production-ready or live-accepted.
+- Pairing and revocation opt into fixed, non-secret progress frames while synchronous verification runs. PHP retains a five-second inactivity deadline; only a verified final result confirms removal. Connection loss does not cancel or redispatch the mutation. Broker 0.8.0 durably records revocation before cleanup, rejects revoked identities during recovery/admission, exposes the latest persisted outcome separately from listener housekeeping, and records correlated workstation admission outcomes in bounded persistent diagnostics. It also reconciles generated FreePBX Custom Service rules for listener ports and classifies IPv6 wildcard web listeners as indeterminate for IPv4. The historical 0.6.7 package was intentionally removed from this checkout and predates the proposed 0.8.0 listener/admission correction. Local tests do not establish live FreePBX acceptance.
 - Like other root `fwconsole` services, this design trusts the integrity of the FreePBX application code. Anyone able to execute code as the FreePBX service account can send requests to the broker.
 
 ## Administrator workstation connections
@@ -198,14 +202,9 @@ The exact rule text, the reconciliation behaviour and the known ordering gap are
 
 ## Broker lifecycle and reconciliation
 
-Pending, unpackaged source batches listener additions/removals before waiting
-for exact FreePBX-generated rules, with one 150-second verification deadline
-and a 180-second broker subprocess timeout. The helper's ownership lock and
-the broker's `wslock` serialize their respective transactions. Shared methods
-are never temporarily replaced to defer verification. Slow reconciliation can
-still block admission, revocation and lease-expiry workers; these intervals
-are not hard enforcement deadlines. See the
-[current investigation](FREEPBX-FIREWALL-DIAGNOSTICS.md#pending-listener-and-admission-correction--13-november-2026).
+Listener jobs remain serialised, but generation-fenced foreground waits release
+the authority lock. Restrictive decisions persist before external work; obsolete
+completions cannot restore authority. See [0.8.0 architecture and limits](../teliphones/docs/DEVELOPMENT-0.8.0.md).
 
 The pending lifecycle closes listeners when the last pairing authorisation
 ends, even under Open policy. Expired transport leases remove management
@@ -217,7 +216,7 @@ the administrator's expiry. Open permits new administrator-approved pairings.
 | Startup | Disables `tlp-admin`, revalidates the owned nftables policy and FreePBX Firewall integration, then restores still-valid pairings. Interrupted support sessions are revoked. Temporary deadlines are never extended. |
 | Pairing or revocation | Applies and verifies policy while preserving unrelated established workstations when possible; full rebuild disables owned interfaces before mutation. New admission requires verified policy/listener rules and an active management-session lease. |
 | External nftables change | A `nft monitor` stream wakes the enforcement worker. It disables the interface, revalidates and re-applies the policy, then readmits peers. |
-| FreePBX Firewall reload or Fail2Ban restart | The integration is repaired without bringing peers down. With the iptables `nf_tables` backend, repair is triggered by monitor events; with `legacy`, it waits for the periodic check. |
+| FreePBX Firewall reload or Fail2Ban restart | Unverified integration withdraws leases and contains interfaces before repair. With the iptables `nf_tables` backend, repair is triggered by monitor events; with `legacy`, it waits for the periodic check. |
 | Periodic check (about every 15 seconds) | Fallback validation for both temporary and persistent pairings, expiry of temporary pairings, and removal of access while TELIPHONES is disabled. |
 | Monitor failure | Reported as an error. The broker attempts a verified shutdown of the interface; new admission requires broker repair or restart. |
 | Shutdown and uninstall | Disables and removes the interface, verifies the removal, then removes the integration and the owned table. On failure, recovery state is retained and the failure is reported. |

@@ -34,7 +34,7 @@ namespace {
         public function setCustomServiceZones($id, $zones) { $this->zones[$id] = $zones; }
         public function deleteCustomService($id) { unset($this->services[$id], $this->zones[$id]); }
         public function generate() {
-            $this->rules = [];
+            $this->rules = ['-A INPUT -j fpbxfirewall', '-A fpbxfirewall -j zone-external'];
             foreach ($this->services as $id => $service) {
                 $chain = 'fpbxsvc-' . substr($id, 0, 16);
                 $this->rules[] = '-A ' . $chain . ' -p udp -m udp --dport ' . $service['custfw']['port'] . ' -j ACCEPT';
@@ -51,7 +51,7 @@ namespace {
             $GLOBALS['generationClock'] = 0;
             $fw->period = $fw->next = $period + 5; // daemon sleep granularity and work
             FirewallListener::reconcile($fw, [51821, 52022], $state);
-            $check(count($fw->rules) === 8, 'Admission returned before both listeners converged');
+            $check(count($fw->rules) === 10, 'Admission returned before both listeners converged');
             $check($GLOBALS['generationClock'] < 150, 'Ports must share one generation cycle');
             $before = $GLOBALS['generationClock'];
             FirewallListener::reconcile($fw, [51821, 52022], $state);
@@ -59,10 +59,10 @@ namespace {
             // Normal regeneration loses the generated rules, but not the saved services.
             $fw->rules = [];
             FirewallListener::reconcile($fw, [51821, 52022], $state);
-            $check(count($fw->rules) === 8, 'Regeneration did not restore both listeners');
+            $check(count($fw->rules) === 10, 'Regeneration did not restore both listeners');
             $before = $GLOBALS['generationClock'];
             FirewallListener::reconcile($fw, [], $state);
-            $check(!$fw->rules && !is_file($state), 'Removal returned before generated permits disappeared');
+            $check(count($fw->rules) === 2 && !is_file($state), 'Removal returned before generated permits disappeared');
             $check($GLOBALS['generationClock'] - $before < 150, 'Removals must share one generation cycle');
         }
         $GLOBALS['generationClock'] = 0;

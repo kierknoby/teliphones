@@ -206,6 +206,7 @@ class RoamingTests(unittest.TestCase):
         self.assertEqual(restarted.diagnostics.read("ws-" + response["workstation_id"]), before)
         self.broker = restarted
         with patch.object(self.broker.ssh, "reconcile"):
+            self.broker.restore_workstations()
             self.roam(response, "198.51.100.77:61000")
             status, body, trace = self.request(response)
         self.assertEqual((status, trace["result"]), (200, "admitted"))
@@ -248,7 +249,7 @@ class RoamingTests(unittest.TestCase):
         self.assertEqual(self.events(response, "controller.state")[-1]["data"]["state"], "failed")
 
         class Server:
-            def __init__(self, address, handler):
+            def __init__(self, address, handler, interface):
                 self.server_address = address
 
             def serve_forever(self):
@@ -260,7 +261,7 @@ class RoamingTests(unittest.TestCase):
             def server_close(self):
                 return None
 
-        with patch.object(broker, "ThreadingHTTPServer", Server):
+        with patch.object(broker, "SessionServer", Server):
             self.broker.reconcile_session_servers()
         self.assertEqual(self.events(response, "controller.state")[-1]["data"]["state"], "listening")
         self.broker.session_servers.clear()

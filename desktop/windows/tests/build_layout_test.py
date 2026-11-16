@@ -1320,13 +1320,20 @@ endfunction()
         self.assertIn("release blocker", readme)
         workflow = (ROOT.parents[1] / ".github/workflows/windows-build.yml").read_text(encoding="utf-8")
         self.assertIn("TELIPHONES-SSH.exe", workflow)
-        self.assertIn(
-            "Windows 0.8.0 adds explicit pairing access selection",
-            " ".join(changelog.split()),
-        )
+        broker_source = (ROOT.parents[1] / "teliphones/support_broker.py").read_text(encoding="utf-8")
+        broker_version = re.search(r'^VERSION\s*=\s*["\']([^"\']+)["\']\s*$', broker_source, re.MULTILINE)
+        broker_protocol = re.search(r"^PROTOCOL\s*=\s*(\d+)\s*$", broker_source, re.MULTILINE)
+        self.assertIsNotNone(broker_version)
+        self.assertIsNotNone(broker_protocol)
         module_version = ET.parse(ROOT.parents[1] / "teliphones/module.xml").getroot().findtext("version")
         self.assertRegex(module_version or "", r"^\d+\.\d+\.\d+$")
-        self.assertIn(f"FreePBX module **{module_version}**", changelog)
+        self.assertEqual(broker_version.group(1), module_version)
+        changelog_text = " ".join(changelog.split())
+        self.assertRegex(
+            changelog_text,
+            rf"FreePBX module/root broker \*\*{re.escape(module_version)}\*\*, protocol "
+            rf"\*\*{re.escape(broker_protocol.group(1))}\*\*",
+        )
         registered = {
             item.attrib["Include"].replace("\\", "/")
             for item in project("TELIPHONES.vcxproj").findall("ms:ItemGroup/ms:ClInclude", NS)
@@ -1383,12 +1390,14 @@ endfunction()
         module_version = ET.parse(ROOT.parents[1] / "teliphones/module.xml").getroot().findtext("version")
         self.assertRegex(module_version or "", r"^\d+\.\d+\.\d+$")
         for path, statement in (
-            (ROOT / "README.md", "TELIPHONES 0.8.5 for Windows is licensed under GPLv3."),
+            (ROOT / "README.md",
+             r"TELIPHONES\s+0\.8\.5\s+for Windows[^.\n]*licensed under GPLv3"),
             (ROOT.parents[1] / "teliphones/README.md",
-             f"TELIPHONES {module_version} for FreePBX is licensed under GPLv3."),
+             rf"TELIPHONES\s+(?:proposed\s+)?{re.escape(module_version)}\s+for FreePBX"
+             r"[^.\n]*licensed under GPLv3"),
         ):
             text = path.read_text()
-            self.assertIn(statement, text)
+            self.assertRegex(text, statement)
             self.assertIn("TELIPHONES is a UK registered trademark.", text)
             self.assertIn("does not grant trademark rights", text)
 

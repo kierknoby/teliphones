@@ -253,7 +253,7 @@ class SupportBrokerTests(unittest.TestCase):
 
     def test_status_reports_live_monitoring_protocol_matching_gui(self):
         status = self.broker.status()
-        self.assertEqual(status["component_version"], "0.7.0")
+        self.assertEqual(status["component_version"], "0.8.0")
         self.assertEqual(status["protocol"], 12)
         self.assertEqual(status["protocol"], broker_module.PROTOCOL)
         self.assertIn("operation", status)
@@ -439,7 +439,9 @@ class FakeNetwork:
         if stream:
             self.process = FakeMonitorProcess()
             return self.process
-        if name == "iptables":
+        if name in ("iptables", "ip6tables"):
+            if "-t" in rest:
+                return ""
             return self.iptables(list(rest))
         if name == "ip" and rest == ["-j", "link", "show"]:
             return json.dumps([{"ifname": interface, "flags": ["UP"] if device["up"] else []}
@@ -530,6 +532,8 @@ class FakeNetwork:
                              and not 22000 <= matched(rule, "tcp", "dport")[0] <= 22999]
                 self.ruleset = broker_module.workstation_ruleset(pbx, sources, sorted(set(web_ports)))
             self.emit(notifications)
+        if name == "nft" and rest == ["-j", "list", "ruleset"]:
+            return json.dumps(self.table or {"nftables": []})
         if name == "nft" and rest == ["-j", "list", "tables"]:
             return json.dumps({"nftables": [entry for entry in self.table["nftables"] if "table" in entry] if self.table else []})
         if name == "nft" and rest == ["-j", "list", "table", "inet", broker_module.WORKSTATION_TABLE]:
@@ -567,7 +571,7 @@ class WorkstationPairingTests(unittest.TestCase):
         self.broker = broker_module.Broker()
         self.broker.audit = lambda *args: None
         self.broker.readiness = lambda: {"Gateway enrollment": True, "wg": True}
-        self.net = FakeNetwork()
+        self.net = FakeNetwork().freepbx()
         self.broker.run = self.net.run
         self.broker.tool = lambda name: name
         self.broker.iptables_tool = lambda: "iptables" if self.net.filter is not None else None
@@ -1133,6 +1137,10 @@ class WorkstationPairingTests(unittest.TestCase):
         broker_module.atomic(self.state / "firewall-listener.json",
                              json.dumps({"services": {str(port): {"id": identifier,
                                                                    "name": "TELIPHONES WireGuard listener fixture"}}}))
+        saved = broker_module.read_json(self.state / "firewall-listener.json")
+        snapshot = self.net.iptables(["-w", "5", "-S"])
+        saved["verified_rules_sha256"] = broker_module.hashlib.sha256((snapshot + "\0" + snapshot).encode()).hexdigest()
+        broker_module.atomic(self.state / "firewall-listener.json", json.dumps(saved))
         self.assertTrue(self.broker.listener_rules_current([port]))
 
     def test_unrestricted_gui_only_workstation_is_admitted_and_broker_stays_idle(self):
@@ -1165,6 +1173,8 @@ class WorkstationPairingTests(unittest.TestCase):
         self.assertTrue(renewed["active"])
         self.assertEqual(self.mutating_calls(self.net.calls[calls:]), [], "a lease renewal rewrote unchanged policy")
 
+        self.model_listener_rules(51821)
+        self.broker.wake.clear()
         calls = len(self.net.calls)
         for _ in range(3):
             self.broker.expire_workstations()
@@ -1234,7 +1244,7 @@ class WorkstationPairingTests(unittest.TestCase):
         with broker_module.socket.socket() as probe:
             probe.bind(("127.0.0.1", 0))
             port = probe.getsockname()[1]
-        with patch.object(broker_module, "SESSION_CONTROL_PORT", port):
+        with patch.object(broker_module, "SESSION_CONTROL_PORT", port), patch.object(broker_module.SessionServer, "server_bind", broker_module.ThreadingHTTPServer.server_bind):
             self.broker.session_server_enabled = True
             self.broker.reconcile_session_servers(state)
 
@@ -1479,9 +1489,9 @@ class WorkstationPairingTests(unittest.TestCase):
         with self.assertRaisesRegex(broker_module.BrokerError, "disabled"):
             self.broker.configure_workstation_policy({"state": "closed"}, 1000)
         self.assertTrue(self.net.link)
-        self.assertTrue(self.net.up)
+        self.assertFalse(self.net.up)
         self.assertIsNotNone(self.net.ruleset)
-        self.assertEqual(self.broker.workstation_state()[0]["connection_state"], "open")
+        self.assertEqual(self.broker.workstation_state()[0]["connection_state"], "closed")
         self.net.fail = None
         self.broker.configure_workstation_policy({"state": "closed"}, 1000)
         self.assertFalse(self.net.link)
@@ -1520,7 +1530,7 @@ class WorkstationPairingTests(unittest.TestCase):
         self.assertEqual(set(status), {"ready", "requirements", "error", "listen_port", "web", "gui_url", "connection_state",
                                        "firewall_integration", "pbx_address", "items", "ssh_ready", "ssh_error", "bans",
                                        "max_sessions", "connected_workstations", "ssh_accounts", "session_control_port"})
-        self.assertEqual(status["firewall_integration"]["state"], "not-detected")
+        self.assertEqual(status["firewall_integration"]["state"], "active")
         self.assertEqual([(entry["scheme"], entry["port"]) for entry in status["web"]], [("http", 80), ("https", 443)])
         self.assertEqual(status["gui_url"], "http://" + status["pbx_address"] + "/admin/")
         item = status["items"][0]
@@ -1557,7 +1567,7 @@ class WorkstationPairingTests(unittest.TestCase):
         self.assertNotIn("disconnected", json.dumps(events).lower())
         self.assertEqual({item["diagnostic_id"] for item in events}, {diagnostic_id})
         exported = self.broker.dispatch({"action": "diagnostics", "diagnostic_id": diagnostic_id}, 1000)
-        self.assertEqual(exported["component_version"], "0.7.0")
+        self.assertEqual(exported["component_version"], "0.8.0")
         self.assertEqual(exported["diagnostic_id"], diagnostic_id)
         self.assertFalse(any("public_key" in item or "token" in json.dumps(item).lower() for item in exported["events"]))
 
@@ -1571,7 +1581,7 @@ class WorkstationPairingTests(unittest.TestCase):
         self.assertIn("interface.established", names)
         self.assertIn("peer.admitted", names)
         self.assertIn("peer.observation", names)
-        self.assertTrue(all(event["source"] == "pbx" and event["component_version"] == "0.7.0" for event in events))
+        self.assertTrue(all(event["source"] == "pbx" and event["component_version"] == "0.8.0" for event in events))
         self.broker.dispatch({"action": "unpair", "workstation_id": response["workstation_id"]}, 1000)
         events = self.broker.diagnostics.read(diagnostic_id)
         self.assertEqual(events[-1]["event"], "pairing.revoked")

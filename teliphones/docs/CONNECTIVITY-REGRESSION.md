@@ -1,5 +1,9 @@
 # Connectivity investigation and release gate
 
+Current 0.8.0 authority, firewall and lease changes: [implementation and acceptance](DEVELOPMENT-0.8.0.md).
+Unknown-public-IP FreePBX 17 connectivity remains unverified. Historical evidence
+below does not validate this development candidate.
+
 ## Confirmed history
 
 The available repository history, including all local refs and pre-944c4b3
@@ -172,7 +176,7 @@ reset commands. Do not export keys or full WireGuard configuration.
 ## Versioning and limitations
 
 Module/broker 0.5.0 is a proposed feature target (configurable web ports), not a
-released build. Windows remains the unreleased 0.7.0 development target; no
+released build. Windows remains the unreleased 0.8.0 development target; no
 Windows binary was distributed. No archive from this working tree is a release.
 No live PBX was accessed or changed. Local test results must be reported
 separately from the outstanding FreePBX/watchdog, Apache and Windows-native

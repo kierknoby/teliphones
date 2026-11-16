@@ -8,7 +8,7 @@ version numbers retrospectively.
 ## 0.8.5 — Unreleased development target
 
 Windows file/product version: **0.8.5.0** / **0.8.5**. Independent source
-targets: proposed, unreleased FreePBX module/root broker **0.7.0**, protocol **12**
+targets: proposed, unreleased FreePBX module/root broker **0.8.0**, protocol **12**
 (unchanged).
 
 - Improve workstation admission failure classification. Messages distinguish

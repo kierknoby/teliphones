@@ -5,8 +5,26 @@
 Historical entries describe their versions at the time, not current behaviour
 or current test status. Windows has an independent history in the source
 repository. Portable Linux validation has been run for the broker, FreePBX module and
-Windows core; the current 0.7.0 source run is not all passing. Native Windows compilation/UI integration and live FreePBX
+Windows core; current evidence is recorded in DEVELOPMENT-0.8.0.md. Native Windows compilation/UI integration and live FreePBX
 session, migration, firewall and SSH acceptance remain outstanding.
+
+## 0.8.0, generation-fenced authority and fail-closed admission (unreleased)
+
+- Material authorisation and firewall behaviour changes justify 0.8.0. Module
+  and root broker match; protocol 12 and Windows 0.8.5 / 0.8.5.0 are retained.
+- Persist restrictive decisions before cleanup, prevent rollback of Closed and
+  SSH revocation, release the authority lock during listener generation, cancel
+  superseded helper process groups and reject obsolete completions.
+- Verify reachable management paths and both public UDP address families;
+  refuse admissions for blocked, unknown or missing integration. Add expiring
+  iptables management grants and terminal tunnel drops alongside the native gate.
+- Bound controller workers, socket lifetime and request freshness; bind the
+  controller to the intended interface. Detect running-broker clock regression.
+- Correct the documented bootstrap procedure to match the displayed upgrade
+  note without weakening its regression assertion.
+- See [implementation, evidence and acceptance](DEVELOPMENT-0.8.0.md).
+  Unknown-public-IP connectivity on FreePBX 17 remains unverified. Historical
+  counts and limitations below describe the versions in their headings.
 
 ## 0.7.0, listener reconciliation and workstation admission (unreleased)
 

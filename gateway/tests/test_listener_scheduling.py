@@ -55,7 +55,9 @@ class ListenerSchedulingTests(unittest.TestCase):
                         self.net.filter.setdefault("zone-" + zone, []).append(["-j", chain])
                 journal = self.state / "firewall-listener.json"
                 if services:
-                    broker.atomic(journal, json.dumps({"services": services}))
+                    snapshot = self.net.iptables(["-w", "5", "-S"])
+                    digest = broker.hashlib.sha256((snapshot + "\0" + snapshot).encode()).hexdigest()
+                    broker.atomic(journal, json.dumps({"services": services, "verified_rules_sha256": digest}))
                 else:
                     journal.unlink(missing_ok=True)
                 if self.broker.monitor:

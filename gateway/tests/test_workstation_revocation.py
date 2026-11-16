@@ -341,7 +341,8 @@ class RevocationTests(unittest.TestCase):
         def fail(fd):
             if stat.S_ISDIR(os.fstat(fd).st_mode):
                 directories.append(fd)
-                if len(directories) == 2:
+                journal = broker.read_json(self.state / "workstation-revocations.json")
+                if journal.get("operation", {}).get("outcome") == "complete":
                     raise OSError("outcome directory sync failure")
             return original(fd)
 
