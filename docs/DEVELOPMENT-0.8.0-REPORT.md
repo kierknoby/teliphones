@@ -146,8 +146,11 @@ Only after successful replacement validation were the 0.7.0 archive and checksum
 removed. Historical source/changelog records remain in Git history.
 
 
-- Archive: [TELIPHONES-0.8.0.tgz](../TELIPHONES-0.8.0.tgz), **232,792 bytes**, 38 regular files.
-- Checksum: [SHA-256 sidecar](../TELIPHONES-0.8.0.tgz.sha256).
+- Historical archive: `TELIPHONES-0.8.0.tgz` (**232,792 bytes**, 38 regular files).
+- Historical checksum sidecar: `TELIPHONES-0.8.0.tgz.sha256`.
+- These 0.8.0 artefacts were present when this report was written, but are no
+  longer in the repository; the 0.8.1 package superseded them. The names above
+  are historical references, not links to the current package.
 - SHA-256: `36d5fccfa02ed357f6c401dfb58973c655087f1af4752151337d20072fc33635`.
 
 ## Preservation assessment and complete working-tree status
