@@ -1402,7 +1402,7 @@ endfunction()
         self.assertRegex(module_version or "", r"^\d+\.\d+\.\d+$")
         for path, statement in ((ROOT / "README.md",
              r"TELIPHONES\s+0\.9\.0\s+for Windows[^.\n]*licensed under GPLv3"),):
-            text = path.read_text()
+            text = path.read_text(encoding="utf-8")
             self.assertRegex(text, statement)
             self.assertIn("TELIPHONES is a UK registered trademark.", text)
             self.assertIn("does not grant trademark rights", text)
