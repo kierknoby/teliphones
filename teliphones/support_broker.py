@@ -39,7 +39,7 @@ SOCKET = "/run/teliphones/control.sock"
 # Protocol 11 adds PBX-enforced workstation session leases and management gating.
 # Protocol 12 adds post-pair workstation policy management.
 PROTOCOL = 12
-VERSION = "0.8.1"
+VERSION = "0.8.2"
 SESSION_CONTROL_PORT = 8766
 SESSION_LEASE_SECONDS = 30
 FWCONSOLE = "/usr/sbin/fwconsole"
@@ -2949,6 +2949,12 @@ class Broker:
             if (chain.get("family") in ("ip", "ip6") and chain.get("table") == "filter"
                     and chain.get("name") in ("INPUT", "FORWARD", "OUTPUT")
                     and chain.get("prio") == 0):
+                continue
+            if (chain.get("family") == "ip" and chain.get("table") == "nat"
+                    and chain.get("name") == "POSTROUTING" and chain.get("type") == "nat"
+                    and chain.get("hook") == "postrouting" and chain.get("prio") == 100):
+                # FreePBX 17's IPv4 NAT postrouting hook is expected here; its
+                # exact ordered rules are still validated by freepbx_nat_state below.
                 continue
             return "Unknown competing native firewall hook; effective reachability is not verified."
         backend = self.integration_backend(iptables)

@@ -14,13 +14,16 @@ workflow for bounded support windows.
 
 | Component | Current version | Start here |
 |---|---|---|
-| FreePBX module / root broker | **0.8.1 proposed** / **0.8.1 proposed**, protocol 12 (development candidate; not a release or production-approved) | [Install](teliphones/README.md#installing-the-module) · [Upgrade](teliphones/README.md#updating-teliphones) |
-| Windows application | **0.9.0** (file version 0.9.0.0; native build pending) | [Download and requirements](desktop/windows/README.md#requirements-and-download) · [Pair a PBX](desktop/windows/README.md#pair-an-administrator-workstation) |
+| FreePBX module / root broker | **0.8.2 proposed** / **0.8.2 proposed**, protocol 12 (development candidate; not a release or production-approved) | [Install](teliphones/README.md#installing-the-module) · [Upgrade](teliphones/README.md#updating-teliphones) |
+| Windows application | **0.9.0** (file version 0.9.0.0; CI builds complete, functional acceptance outstanding) | [Download and requirements](desktop/windows/README.md#requirements-and-download) · [Pair a PBX](desktop/windows/README.md#pair-an-administrator-workstation) |
 | Reference gateway and Checker probe | Optional laboratory infrastructure | [Integration guide](teliphones/docs/INTEGRATION.md) · [Gateway](gateway/README.md) |
 
-FreePBX module **0.8.1 (proposed, unreleased)**, root broker **0.8.1** and Windows **0.9.0** are
+FreePBX module **0.8.2 (proposed, unreleased)**, root broker **0.8.2** and Windows **0.9.0** are
 independently versioned; the broker protocol remains 12. The module/broker
-update adds correlated, persistent workstation-admission diagnostics, records
+0.8.2 update adds FreePBX 17 Firewall path evaluation for public unicast UDP listener
+traffic, recognised IPv4 NAT POSTROUTING hooks and recovery after Firewall
+regeneration, retaining strict fail-closed rule handling and the 0.8.1
+workstation-admission diagnostics. The module/broker records
 lock contention and controller/reconciliation state, moves reporting work out
 of the admission lock and returns an error response for unexpected controller
 failures. The bounded diagnostics are available from the FreePBX administrator
@@ -31,7 +34,9 @@ Upgrade the module in place and rerun the root bootstrap so the separately
 installed broker is refreshed; pairings and their identities are preserved.
 Windows **0.9.0** adds bounded connect and admission lifecycle, cancellation,
 generation fencing, verified adapter ownership and startup recovery; its native
-build and live Windows validation remain pending. It also adds route-aware
+builds have completed in Windows CI but functional/native acceptance remains
+outstanding. The artifact is blocked in Chrome as “Dangerous download blocked”;
+the cause is unresolved and no protection bypass is recommended. It also adds route-aware
 admission failure reporting, local network
 change detection, correlation with PBX diagnostics and discovery of residual
 TELIPHONES-owned tunnels. It retains verified tunnel lifecycle and shutdown
@@ -161,8 +166,8 @@ Remote Support uses `wg-teliphones`, separate from My PBXs' `tlp-admin`.
 1. **Check the platform:** FreePBX 17 on Debian 12, root console access, HTTPS,
    WireGuard kernel support, `wg`, `ip`, `nft`, iptables and systemd.
    See [PBX requirements](teliphones/README.md#requirements).
-2. **Treat 0.8.1 as a development candidate only.** Its module archive has
-   passed static package validation, but live acceptance and production approval
+2. **Treat 0.8.2 as a development candidate only.** Its module archive is for
+   controlled testing; live acceptance and production approval
    remain outstanding. Package availability is not operational approval. The
    historical 0.6.7 package predates listener closure and expiry-permission
    fixes; its archive is intentionally absent from this checkout and is not a
@@ -170,12 +175,12 @@ Remote Support uses `wg-teliphones`, separate from My PBXs' `tlp-admin`.
    controlled acceptance review is complete.
 
    ```bash
-   sha256sum -c TELIPHONES-0.8.1.tgz.sha256
+   sha256sum -c TELIPHONES-0.8.2.tgz.sha256
    ```
 
    For authorized controlled-development validation only, in FreePBX choose
    **Admin > Module Admin > Upload modules**, upload
-   `TELIPHONES-0.8.1.tgz`, install TELIPHONES and apply the configuration. This
+   `TELIPHONES-0.8.2.tgz`, install TELIPHONES and apply the configuration. This
    documents the supported upload path; it does not authorize production use
    or establish acceptance.
 
@@ -235,6 +240,11 @@ kernel/FreePBX acceptance remain outstanding; the reported SSH console crash is
 also unresolved. The current Windows 0.9.0 native validation and live
 kernel/FreePBX acceptance remain outstanding; broker protocol remains 12.
 
+The 0.8.2 firewall evaluator and 0.8.1 revocation recovery remain development
+work: the confirmed listener evaluation and NAT hook fixes are under local
+regression test, but live FreePBX Firewall regeneration acceptance is not
+complete. The 0.8.2 archive is not production-approved.
+
 See the [implementation and acceptance procedure](teliphones/docs/DEVELOPMENT-0.8.0.md)
 and [exact verification report](docs/DEVELOPMENT-0.8.0-REPORT.md).
 
@@ -291,8 +301,8 @@ The [package validator](teliphones/tests/package-validation.py) checks exact
 archive/source equality. Rebuild the candidate archive after any change to
 packaged module files or documentation.
 
-The 0.8.1 development candidate is prepared in this checkout as
-`TELIPHONES-0.8.1.tgz`, with a matching checksum. It is not a release: package
+The 0.8.2 development candidate is prepared in this checkout as
+`TELIPHONES-0.8.2.tgz`, with a matching checksum. It is not a release: package
 validation does not establish production readiness or complete the outstanding
 live FreePBX, PHP, or Windows acceptance gates. Build the module-only archive
 from the repository root using the established deterministic exclusions, then
@@ -302,8 +312,8 @@ validate its contents and checksum:
 tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
   --mode='u+rwX,go+rX,go-w' --exclude='*/.*' --exclude='*/tests' \
    --exclude='*/__pycache__' --exclude='*.pyc' --exclude='*.pyo' \
-   -czf TELIPHONES-0.8.1.tgz teliphones
-sha256sum TELIPHONES-0.8.1.tgz > TELIPHONES-0.8.1.tgz.sha256
+   -czf TELIPHONES-0.8.2.tgz teliphones
+sha256sum TELIPHONES-0.8.2.tgz > TELIPHONES-0.8.2.tgz.sha256
 PYTHONDONTWRITEBYTECODE=1 python3 teliphones/tests/package-validation.py
 ```
 

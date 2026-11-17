@@ -19,6 +19,21 @@ session, migration, firewall and SSH acceptance remain outstanding.
   installation and firewall restart acceptance remain outstanding.
 - Compatibility: Windows application 0.9.0, file version 0.9.0.0; protocol 12.
 
+## 0.8.2, FreePBX firewall compatibility corrections (unreleased development)
+
+- Recognise the legitimate IPv4 NAT POSTROUTING hook and continue strict
+  validation of supported NAT configurations.
+- Evaluate public unicast UDP listener traffic through applicable FreePBX 17
+  firewall chains, including source/interface conditions, packet marks, MARK
+  operations, conditional jumps, returns and terminal rules. Ignore unrelated
+  UDP, broadcast, multicast and DHCP traffic; reject unsupported or ambiguous
+  rules and preserve Fail2Ban enforcement.
+- Recover listener integration after FreePBX Firewall regeneration; retain
+  safe workstation revocation and expiry enforcement from 0.8.1.
+- Keep protocol 12 and independently versioned Windows 0.9.0 / file version
+  0.9.0.0. Controlled-testing development package only; live PHP/FreePBX
+  acceptance is outstanding.
+
 ## 0.8.0, generation-fenced authority and fail-closed admission (unreleased)
 
 - Material authorisation and firewall behaviour changes justify 0.8.0. Module

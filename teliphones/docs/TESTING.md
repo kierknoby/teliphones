@@ -1,10 +1,10 @@
 # TELIPHONES testing
 
-## Current Windows 0.9.0 / proposed module 0.8.1 source review and package boundary
+## Current Windows 0.9.0 / proposed module 0.8.2 source review and package boundary
 
-Windows 0.9.0 is independently versioned; proposed module/root broker 0.8.1
+Windows 0.9.0 is independently versioned; proposed module/root broker 0.8.2
 retain protocol 12. The development candidate
-`TELIPHONES-0.8.1.tgz` and its SHA-256 sidecar are prepared for controlled
+`TELIPHONES-0.8.2.tgz` and its SHA-256 sidecar are prepared for controlled
 testing. This is not a production release and does not establish live FreePBX
 acceptance. The
 historical `TELIPHONES-0.6.7.tgz` and checksum were intentionally removed from
@@ -18,8 +18,11 @@ Run source version consistency independently from the repository root:
 PYTHONDONTWRITEBYTECODE=1 python3 teliphones/tests/package-validation.py SourceVersionTests
 ```
 
-The complete package validator still requires the current archive and checksum
-and fails when they are missing; it is not replaced by this source-only check.
+For complete package validation, first build `TELIPHONES-0.8.2.tgz` using the
+root `README.md` procedure, then run
+`PYTHONDONTWRITEBYTECODE=1 python3 teliphones/tests/package-validation.py`.
+The complete validator requires the archive and checksum; the source-only check
+does not replace it.
 
 Offline documentation and site validation, from the repository root:
 
@@ -35,7 +38,14 @@ pairing behaviour, startup smoke and portable Release checks, use the
 `desktop/windows/tests/WINDOWS-READINESS.md` reference in the source repository.
 Linux checks do not substitute for Windows execution.
 
-## Current 0.8.1 source checks and release blockers
+## Current 0.8.2 source checks and release blockers
+
+Current 0.8.2 firewall regression coverage exercises legitimate IPv4
+POSTROUTING recognition, public-unicast listener packet evaluation, supported
+FreePBX rule traversal and fail-closed decisions for unsupported or ambiguous
+rules. It also covers preservation of Fail2Ban and recovery following
+FreePBX Firewall regeneration. Automated models do not substitute for PHP
+execution or live FreePBX 17 / Debian 12 acceptance.
 
 The 0.8.0 implementation adds durable restrictive decisions, generation-fenced
 listener reconciliation, conservative firewall path verification, expiring

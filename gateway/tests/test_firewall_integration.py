@@ -246,6 +246,41 @@ class IntegrationTests(unittest.TestCase):
         self.assertFalse(self.net.up)
         self.assertIn("Unrecognised iptables nat", self.broker.workstation_error)
 
+    def test_native_firewall_hook_inventory_accepts_only_exact_freepbx_nat_hook(self):
+        hooks = [
+            {"chain": {"family": "ip", "table": "filter", "name": name,
+                       "type": "filter", "hook": hook, "prio": 0}}
+            for name, hook in (("INPUT", "input"), ("FORWARD", "forward"), ("OUTPUT", "output"))
+        ]
+        freepbx_nat = {"family": "ip", "table": "nat", "name": "POSTROUTING",
+                       "type": "nat", "hook": "postrouting", "prio": 100}
+        self.broker.tool = lambda name: name
+
+        def run(arguments, check=True):
+            if arguments[:3] == ["nft", "-j", "list"]:
+                return json.dumps({"nftables": hooks + [{"chain": freepbx_nat}]})
+            if arguments[-1:] == ["--version"]:
+                return "iptables v1.8.9 (nf_tables)\n"
+            if "-t" in arguments:
+                table = arguments[arguments.index("-t") + 1]
+                return self.net.nat_listing if table == "nat" else ""
+            raise AssertionError(arguments)
+
+        with patch.object(self.broker, "run", side_effect=run), patch.object(broker.os, "access", return_value=False):
+            self.assertEqual(self.broker.competing_firewall("iptables"), "")
+            self.net.nat_listing += "-A POSTROUTING -j ACCEPT\n"
+            self.assertIn("Unrecognised iptables nat", self.broker.competing_firewall("iptables"))
+            self.net.nat_listing = helpers.FREEPBX17_NAT
+            for field, value in (("family", "ip6"), ("table", "filter"), ("name", "OUTPUT"),
+                                 ("type", "filter"), ("hook", "input"), ("prio", 0)):
+                altered = dict(freepbx_nat, **{field: value})
+                with self.subTest(field=field, value=value):
+                    with patch.object(self.broker, "run", side_effect=lambda args, check=True, altered=altered:
+                                      json.dumps({"nftables": hooks + [{"chain": altered}]})
+                                      if args[:3] == ["nft", "-j", "list"] else run(args, check)):
+                        self.assertIn("Unknown competing native firewall hook",
+                                      self.broker.competing_firewall("iptables"))
+
     def test_repeated_regeneration_recovers_from_each_incomplete_snapshot(self):
         self.pair()
         stable = helpers.FREEPBX17_NAT

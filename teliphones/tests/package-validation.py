@@ -26,20 +26,21 @@ def included(path):
 
 class SourceVersionTests(unittest.TestCase):
     def test_authoritative_versions(self):
-        self.assertEqual(VERSION, "0.8.1")
+        self.assertEqual(VERSION, "0.8.2")
         tree = ast.parse((MODULE / "support_broker.py").read_text())
         versions = [ast.literal_eval(node.value) for node in tree.body if isinstance(node, ast.Assign)
                     and any(isinstance(target, ast.Name) and target.id == "VERSION" for target in node.targets)]
-        self.assertEqual(versions, ["0.8.1"], "The broker version identifies the authority and admission architecture")
+        self.assertEqual(versions, ["0.8.2"], "The broker version identifies the authority and admission architecture")
         self.assertIn("BROKER_VERSION = '%s';" % versions[0], (MODULE / "WebSupport.php").read_text())
-        self.assertIn("TELIPHONES 0.8.1 requires broker version 0.8.1, broker protocol 12",
+        self.assertIn("TELIPHONES 0.8.2 requires broker version 0.8.2, broker protocol 12",
                       (MODULE / "BrokerBootstrap.php").read_text())
         windows_version = (ROOT / "desktop/windows/src/app/Version.h").read_text()
         self.assertIn("#define TELIPHONES_VERSION_MAJOR 0", windows_version)
         self.assertIn("#define TELIPHONES_VERSION_MINOR 9", windows_version)
         self.assertIn("#define TELIPHONES_VERSION_PATCH 0", windows_version)
         self.assertIn("file version **0.9.0.0**", (ROOT / "desktop/windows/README.md").read_text())
-        self.assertIn("## 0.8.1, development firewall recovery package (unreleased)", (MODULE / "docs/CHANGELOG.md").read_text())
+        self.assertIn("## 0.8.2, FreePBX firewall compatibility corrections (unreleased development)", (MODULE / "docs/CHANGELOG.md").read_text())
+        self.assertIn("0.8.2 development archive", (MODULE / "README.md").read_text())
         self.assertIn("durable workstation revocation", (MODULE / "BrokerBootstrap.php").read_text())
 
 
@@ -221,8 +222,10 @@ class PackageTests(unittest.TestCase):
                                 "X-Teliphones-Attempt", "reconcile.background",
                                 "controller.state", "DIAGNOSTIC_REPEAT_SECONDS"):
                     self.assertIn(feature, broker)
-                self.assertIn('VERSION = "0.8.1"', broker)
-                self.assertIn("PROTOCOL = 12", broker)
+                self.assertIn('VERSION = "0.8.2"', broker)
+                self.assertIn("def freepbx_nat_state(", broker)
+                self.assertIn('chain.get("name") == "POSTROUTING"', broker)
+                self.assertIn("def firewall_integration(", broker)
                 for feature in ("def listener_failure_output(", "listener_operation", "Initiating failure:",
                                 "listener_failure_output(result.stderr)", "def listener_rules_current(",
                                 "background_listener_check", "workstation_retry_at",

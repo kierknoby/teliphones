@@ -49,8 +49,8 @@ test('all site pages have valid local links, assets and unique fragment targets'
 });
 
 test('current product and installation copy matches independent source versions', () => {
-  assert.equal(moduleVersion, '0.8.1');
-  assert.equal(brokerVersion, '0.8.1');
+  assert.equal(moduleVersion, '0.8.2');
+  assert.equal(brokerVersion, '0.8.2');
   assert.equal(version, '0.9.0');
   for (const name of ['index.html', 'windows/index.html', 'downloads/index.html',
     'freepbx/index.html', 'faq/index.html', 'about/index.html', 'roadmap/index.html']) {
@@ -59,14 +59,42 @@ test('current product and installation copy matches independent source versions'
     assert.ok(html.includes(moduleVersion), `${name}: missing module ${moduleVersion}`);
   }
   for (const name of ['downloads/index.html', 'freepbx/index.html', 'docs/getting-started/index.html',
-    'docs/troubleshooting/index.html', 'faq/index.html']) {
+    'docs/troubleshooting/index.html', 'faq/index.html', 'docs/index.html']) {
     const html = contents.get(path.join(site, name));
     assert.ok(html.includes(brokerVersion), `${name}: missing broker ${brokerVersion}`);
     assert.match(html, /protocol (?:<strong>)?12/, name);
   }
+  for (const name of ['index.html', 'about/index.html', 'downloads/index.html', 'freepbx/index.html',
+    'roadmap/index.html', 'security/index.html', 'docs/index.html', 'docs/getting-started/index.html',
+    'docs/troubleshooting/index.html', 'faq/index.html']) {
+    assert.ok(contents.get(path.join(site, name)).includes('0.8.2'), `${name}: missing current FreePBX version`);
+  }
   for (const [file, html] of contents) {
     assert.doesNotMatch(html, /0\.7\.0|0\.6\.0|protocol 7|broker 0\.6\.[45]/, file);
   }
+});
+
+test('download guidance distinguishes package, CI artifact and acceptance', () => {
+  const downloads = contents.get(path.join(site, 'downloads/index.html'));
+  assert.match(downloads, /TELIPHONES-0\.8\.2\.tgz/);
+  assert.match(downloads, /not a public release, production-ready or live-accepted/);
+  assert.match(downloads, /TELIPHONES-Windows-x64/);
+  assert.match(downloads, /43980149884/);
+  assert.match(downloads, /14281389786/);
+  assert.match(downloads, /Dangerous download blocked/);
+  assert.match(downloads, /Do not bypass browser or operating-system protections/);
+  assert.match(downloads, /PHP syntax\/listener tests/);
+  const security = contents.get(path.join(site, 'security/index.html'));
+  assert.match(security, /not rerun for 0\.8\.2/);
+  assert.match(security, /PHP CLI is unavailable/);
+  assert.match(security, /embedded SSH console crash remains a release blocker/);
+});
+
+test('site describes deployment evidence without claiming publication', () => {
+  const about = contents.get(path.join(site, 'about/index.html'));
+  assert.match(about, /No local evidence establishes the deployment target, deployed revision/);
+  assert.match(about, /deployment has not been performed/);
+  assert.match(about, /separate static-site ZIP snapshot whose contents differ/);
 });
 
 test('pairing guide distinguishes approval, current package and obsolete archive', () => {
@@ -76,13 +104,13 @@ test('pairing guide distinguishes approval, current package and obsolete archive
   for (const phrase of ['Request access', 'Complete pairing', 'Generate request', 'Copy request',
     'Save connection', 'Changing name/access', 'read-only', 'not independently signed',
     'historical 0.6.7 archive and checksum were intentionally removed from this checkout',
-    'did not include the proposed listener/admission corrections']) {
+    'did not include the proposed firewall corrections']) {
     assert.ok(pairing.includes(phrase), `Missing pairing guidance: ${phrase}`);
   }
   assert.match(contents.get(path.join(site, 'downloads/index.html')), /historical TELIPHONES-0\.6\.7\.tgz and sidecar were intentionally removed from this checkout and did not contain the proposed changes/);
-  assert.match(contents.get(path.join(site, 'downloads/index.html')), /The 0\.8\.1 development TGZ and checksum are available locally for controlled testing/);
-  assert.match(contents.get(path.join(site, 'downloads/index.html')), /not a public release or public download/);
-  assert.match(contents.get(path.join(site, 'downloads/index.html')), /website ZIP is a separate static-site snapshot and is also unchanged/);
+  assert.match(contents.get(path.join(site, 'downloads/index.html')), /TELIPHONES-0\.8\.2\.tgz/);
+  assert.match(contents.get(path.join(site, 'downloads/index.html')), /not a public release/);
+  assert.match(contents.get(path.join(site, 'downloads/index.html')), /No direct public package or executable download is asserted/);
   assert.match(contents.get(path.join(site, 'about/index.html')), /localStorage/);
 });
 

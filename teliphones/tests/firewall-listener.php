@@ -135,6 +135,66 @@ try {
     $assert(FirewallListener::publicPath(['-A INPUT -m conntrack --ctstate NEW -j ACCEPT'],
         'fpbxsvc-owned', 'INPUT', [], 51821) === 'unknown (unsupported match)');
 
+    // Captured FreePBX 17 control-flow shapes: non-unicast exclusions, DHCP
+    // ranges, Fail2Ban checks for an unrelated UDP service, packet marks, zones,
+    // source-specific blocks and the final listener service jump.
+    $freepbx17 = [
+        '-P INPUT ACCEPT',
+        '-N INPUT', '-N fpbxfirewall', '-N zone-external', '-N zone-internal', '-N zone-other',
+        '-N f2b-pbx-provisioning', '-N fpbxsvc-owned',
+        '-A INPUT -m pkttype --pkt-type broadcast -j ACCEPT',
+        '-A INPUT -m pkttype --pkt-type multicast -j ACCEPT',
+        '-A INPUT -d 255.255.255.255/32 -j ACCEPT',
+        '-A INPUT -p udp -m udp --dport 67:68 -j ACCEPT',
+        '-A INPUT -p udp -m multiport --dports 1194,1701 -j f2b-pbx-provisioning',
+        '-A INPUT -j fpbxfirewall',
+        '-A f2b-pbx-provisioning -s 198.51.100.12/32 -j REJECT',
+        '-A f2b-pbx-provisioning -j RETURN',
+        '-A INPUT -i eth0 -j zone-external',
+        '-A fpbxfirewall -i lo -j ACCEPT',
+        '-A fpbxfirewall -p udp -j MARK --set-xmark 0x2/0x2',
+        '-A fpbxfirewall -m mark --mark 0x2/0x2 -j zone-external',
+        '-A fpbxfirewall -s 203.0.113.0/24 -j zone-external',
+        '-A fpbxfirewall -j zone-external',
+        '-A zone-external -s 10.0.0.0/8 -j DROP',
+        '-A zone-external -j fpbxsvc-owned',
+        '-A fpbxsvc-owned -p udp -m udp --dport 51821 -j ACCEPT',
+        '-A zone-internal -j fpbxsvc-owned',
+        '-A zone-other -j fpbxsvc-owned',
+    ];
+    $assert(FirewallListener::publicPath($freepbx17, 'fpbxsvc-owned', 'INPUT', [], 51821) === 'verified');
+    $assert(FirewallListener::publicPath(['-A INPUT -d 255.255.255.255/32 -j ACCEPT',
+        '-A INPUT -j fpbxsvc-owned'], 'fpbxsvc-owned', 'INPUT', [], 51821) === 'verified');
+    $assert(FirewallListener::publicPath(['-A INPUT -d 224.0.0.0/4 -j ACCEPT',
+        '-A INPUT -j fpbxsvc-owned'], 'fpbxsvc-owned', 'INPUT', [], 51821) === 'verified');
+    $assert(FirewallListener::publicPath(['-A INPUT -d 0.0.0.0/1 -j ACCEPT',
+        '-A INPUT -j fpbxsvc-owned'], 'fpbxsvc-owned', 'INPUT', [], 51821)
+        === 'unknown (unsupported or ambiguous rule)');
+
+    $dhcpOnly = ['-A INPUT -p udp -m udp --dport 67:68 -j ACCEPT', '-A INPUT -j DROP'];
+    $assert(FirewallListener::publicPath($dhcpOnly, 'fpbxsvc-owned', 'INPUT', [], 51821) === 'blocked');
+    $broadAccept = ['-A INPUT -m comment --comment "known rule" -j ACCEPT'];
+    $assert(FirewallListener::publicPath($broadAccept, 'fpbxsvc-owned', 'INPUT', [], 51821)
+        === 'unknown (unsupported or ambiguous rule)');
+    $catchAllSourceDrop = ['-A INPUT -s 0.0.0.0/0 -j DROP', '-A INPUT -j fpbxsvc-owned'];
+    $assert(FirewallListener::publicPath($catchAllSourceDrop, 'fpbxsvc-owned', 'INPUT', [], 51821) === 'blocked');
+    $unknownBeforeAccept = ['-A INPUT -m recent --name dynamic --rcheck -j DROP', '-A INPUT -j fpbxsvc-owned'];
+    $assert(FirewallListener::publicPath($unknownBeforeAccept, 'fpbxsvc-owned', 'INPUT', [], 51821)
+        === 'unknown (unsupported or ambiguous rule)');
+    $otherPortFail2ban = ['-A INPUT -p udp -m multiport --dports 1194,1701 -j f2b-pbx-provisioning',
+        '-A f2b-pbx-provisioning -s 198.51.100.12/32 -j REJECT',
+        '-A f2b-pbx-provisioning -j RETURN', '-A INPUT -j fpbxsvc-owned'];
+    $assert(FirewallListener::publicPath($otherPortFail2ban, 'fpbxsvc-owned', 'INPUT', [], 51821) === 'verified');
+    $sourceBlockOnly = ['-A INPUT -s 198.51.100.12/32 -j DROP', '-A INPUT -j fpbxsvc-owned'];
+    $assert(FirewallListener::publicPath($sourceBlockOnly, 'fpbxsvc-owned', 'INPUT', [], 51821) === 'verified');
+    $mixedBlockAndListener = ['-A INPUT -s 0.0.0.0/1 -j DROP', '-A INPUT -j fpbxsvc-owned'];
+    $assert(FirewallListener::publicPath($mixedBlockAndListener, 'fpbxsvc-owned', 'INPUT', [], 51821) === 'blocked');
+    $markWithoutInitialization = ['-A INPUT -m mark --mark 0x0/0x2 -j DROP', '-A INPUT -j fpbxsvc-owned'];
+    $assert(FirewallListener::publicPath($markWithoutInitialization, 'fpbxsvc-owned', 'INPUT', [], 51821)
+        === 'unknown (unsupported or ambiguous rule)');
+    $assert(FirewallListener::publicPath(['-A INPUT -p udp -m multiport --dports 1194,1701 -j ACCEPT'],
+        'fpbxsvc-owned', 'INPUT', [], 51821) === 'blocked');
+
     $assert(!FirewallListener::rulesConverged($rules, 'fpbxsvc-owned', 51899));
     $assert(!FirewallListener::rulesConverged(array_slice($rules, 0, 3), 'fpbxsvc-owned', 51821));
     $assert(!FirewallListener::rulesConverged(array_merge($rules, [$rules[0]]), 'fpbxsvc-owned', 51821));

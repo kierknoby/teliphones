@@ -76,13 +76,13 @@ namespace {
         'Status must not expose credentials, keys or configuration.');
     $assert($status['readiness'] === ['WireGuard wg' => false, 'Gateway enrollment' => true], 'Readiness must be a boolean map.');
     $assert($status['broker_current'] === true, 'A protocol 3 broker supports live monitoring and pairing.');
-    foreach (['0.6.0', '0.6.1', '0.6.2', '0.6.3', '0.6.4', '0.6.5', '0.6.6', '0.6.7', '0.6.8', '0.8.0', '0.8.1', 'invalid', null] as $version) {
+    foreach (['0.6.0', '0.6.1', '0.6.2', '0.6.3', '0.6.4', '0.6.5', '0.6.6', '0.6.7', '0.6.8', '0.8.0', '0.8.1', '0.8.2', 'invalid', null] as $version) {
         $versioned = $ready;
         $versioned['status']['protocol'] = 12;
         if ($version === null) unset($versioned['status']['component_version']);
         else $versioned['status']['component_version'] = $version;
         $current = WebSupport::publicStatus($versioned, ['available' => true])['broker_current'];
-        $assert($current === ($version === '0.8.1'),
+        $assert($current === in_array($version, ['0.8.1', '0.8.2'], true),
             'Only brokers at or above the required patch version may report current.');
     }
     foreach ([null, 1, 2, '3', 3.0] as $protocol) {

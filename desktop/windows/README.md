@@ -14,7 +14,7 @@ This guide covers installing and using the Windows application. The
 [FreePBX administration guide](../../teliphones/README.md) covers server setup.
 
 Windows **0.9.0** (file version **0.9.0.0**) is independent of proposed,
-unreleased FreePBX module/root broker **0.8.1**, protocol **12**. A 0.8.1
+unreleased FreePBX module/root broker **0.8.2**, protocol **12**. A 0.8.2
 development archive is available in this checkout, but is not
 a release or production approval. The historical 0.6.7 archive was intentionally
 removed from this checkout and did not contain these proposed changes. Windows
@@ -108,14 +108,16 @@ risk. See the [current security limitations](#security).
 
 ### Download an existing build
 
-**0.9.0 source is prepared, but its native build and application artefact are
-blocked pending Windows CI validation. No 0.9.0 executable is supplied.**
-Do not substitute an older successful run for current-source validation.
+**Windows CI builds have completed for 0.9.0, but functional/native acceptance
+is outstanding.** The artifact from run `43980149884` (artifact
+`14281389786`) is blocked by Chrome as “Dangerous download blocked”; the cause
+is unresolved. Do not bypass browser or operating-system protection, and do not
+substitute an older run for the current source.
 
-When a matching 0.9.0 build has passed the required Windows validation, download
-**TELIPHONES-Windows-x64** from that exact successful Windows Actions run.
-Retention is 14 days; expired artefacts may be unavailable. No matching 0.9.0
-application artefact currently exists.
+The **TELIPHONES-Windows-x64** artefact is produced by the Windows Actions
+workflow; its existence does not establish functional acceptance or safe public
+download availability. Retention is 14 days; expired artefacts may be
+unavailable. No public release or direct public download is claimed.
 Extract the ZIP and keep **`TELIPHONES.exe`, `TELIPHONES-SSH.exe` and
 `wireguard.dll` together**.
 It also contains this guide, the changelog, licences and `build-info.json`,
@@ -131,16 +133,18 @@ source rather than disabling Windows protections. For source builds, see
 
 ### Upgrade the development workstation after native validation
 
-Only proceed after the exact 0.9.0 build passes native Release compilation,
-the complete CTests (including `tunnel_startup_native` with its stuck
+Windows CI builds for 0.9.0 have completed, but do not upgrade until the exact
+build passes native Release compilation, the complete CTests (including
+`tunnel_startup_native` with its stuck
 `START_PENDING` and per-tunnel lock cases, and `wireguard_nt_unit`),
 the actual official service/driver integration gate, application tests and
-startup smoke. The existing build produces a portable application bundle, not
-an MSI installer. The workflow's bundle directory is `desktop/windows/build/artifact`;
-its Actions artefact name is **TELIPHONES-Windows-x64**. No bundle has been
-produced for this pending source.
+startup smoke. CI artifact availability does not establish that these
+acceptance checks have passed. The existing build produces a portable
+application bundle, not an MSI installer. The workflow's bundle directory is
+`desktop/windows/build/artifact`; its Actions artefact name is
+**TELIPHONES-Windows-x64**.
 
-1. Disconnect in 0.8.4 and close TELIPHONES and its owned SSH console. Retain
+1. Disconnect in the previous installation and close TELIPHONES and its owned SSH console. Retain
    the old application directory for rollback; do not delete profiles,
    Credential Manager entries or application data.
    If a `WireGuardTunnel$TELIPHONES-*` service remains (for example stuck in
@@ -194,14 +198,15 @@ During installation the dialogue cannot be closed until the worker finishes; can
 
 ## Pair an administrator workstation
 
-The 0.8.1 development package is available locally for controlled testing,
-but is not live-accepted or approved for production use. Windows 0.9.0 source
-is prepared, but no native executable is supplied. The historical 0.6.7
+The 0.8.2 development package is available locally for controlled testing,
+but is not live-accepted or approved for production use. Windows CI builds for
+0.9.0 have completed, but functional/native acceptance remains outstanding.
+The CI artifact is not an accepted upgrade. The historical 0.6.7
 archive is not included in this checkout and predates these changes. After an
 authorized controlled-development installation or upgrade, complete the
 [root broker bootstrap](../../teliphones/README.md#complete-installation-on-freepbx-17)
 with no active support session and workstation tunnels disconnected. Verify
-that the broker reports version 0.8.1 and protocol 12; an operational socket
+that the broker reports version 0.8.2 and protocol 12; an operational socket
 alone does not confirm the required broker version.
 
 1. Select **Add my PBX...** and enter the workstation name under **Pair my PBX >
@@ -569,10 +574,13 @@ customer data in an issue.
 
 ## Verification status
 
-The FreePBX module target is proposed 0.8.1 and unreleased. Its development
+The FreePBX module target is proposed 0.8.2 and unreleased. Its development
 archive is available locally; the historical 0.6.7
 archive was intentionally removed from this checkout and predates the proposed
-changes. Windows native build/validation is also outstanding, and the
+changes. Windows CI builds have completed, but native and functional acceptance
+is outstanding. The artifact from run `43980149884` (artifact `14281389786`)
+is blocked by Chrome as “Dangerous download blocked”; the cause is unresolved.
+The
 embedded SSH console crash remains an unresolved release blocker. Historical
 native test-count reports are not interchangeable or independently reproduced:
 an earlier report said eleven SSH integration tests, a later report said ten,
