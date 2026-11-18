@@ -11,7 +11,7 @@ class WebSupport
         if ($version !== null) return $version;
         $metadata = simplexml_load_file(__DIR__ . '/module.xml');
         $value = $metadata ? (string)$metadata->version : '';
-        if (preg_match('/^\d+\.\d+\.\d+$/', $value) !== 1) {
+        if (preg_match('/^\d+\.\d+\.\d+(?:\.\d+)?$/', $value) !== 1) {
             throw new \RuntimeException('TELIPHONES module version is missing or invalid.');
         }
         return $version = $value;
@@ -104,9 +104,9 @@ class WebSupport
     }
 
     public const OPERATION_STATES = ['running', 'succeeded', 'failed'];
-    /** Broker status protocol this module requires (support_broker.py PROTOCOL): 2 adds live operation records, 3 adds workstation pairing. */
-    public const BROKER_PROTOCOL = 3;
-    public const BROKER_VERSION = '0.8.2';
+    /** Protocol 12 is required for the current workstation policy and session controls. */
+    public const BROKER_PROTOCOL = 12;
+    public const BROKER_VERSION = '0.8.3.12';
     public const DIAGNOSTICS_PROTOCOL = 4;
     public const SSH_PROTOCOL = 5;
     /** Protocol 6 adds the WireGuard listener firewall permit and configurable management web services. */
@@ -541,6 +541,11 @@ class WebSupport
             'interface.removed' => [],
             'firewall.integration' => ['state' => ['inactive', 'active', 'not-detected', 'error', 'blocked', 'unknown', 'pending'],
                 'backend' => ['nf_tables', 'legacy', null]],
+            'listener.reconciliation' => ['identifier' => ['firewall-inventory-failure',
+                'unsupported-firewall-predicate', 'ambiguous-packet-path', 'missing-required-listener-service',
+                'invalid-helper-execution-environment', 'root-helper-version-mismatch',
+                'listener-reconciliation-timeout', 'firewall-regeneration-in-progress',
+                'listener-reconciliation-failed']],
             'broker.error' => ['category' => ['workstation-enforcement', 'firewall-integration', 'telemetry-unavailable', 'cleanup-unverified']],
             'session.request' => ['action' => ['heartbeat', 'release'],
                 'result' => ['admitted', 'renewed', 'released', 'migration', 'refused', 'failed'],
@@ -591,13 +596,13 @@ class WebSupport
         return in_array($request['action'], self::BROKER_ACTIONS, true);
     }
 
-    /** Protocol 3 must actually report the complete workstation capability status. */
+    /** Protocol 12 must report the complete current workstation capability contract. */
     private static function supportsWorkstations(array $support): bool
     {
         $status = $support['status'] ?? null;
         if (!self::brokerOperational($support) || !is_int($status['protocol'] ?? null) || $status['protocol'] < self::BROKER_PROTOCOL
             || !is_string($status['component_version'] ?? null)
-            || preg_match('/^\d+\.\d+\.\d+$/', $status['component_version']) !== 1
+            || preg_match('/^\d+\.\d+\.\d+(?:\.\d+)?$/', $status['component_version']) !== 1
             || version_compare($status['component_version'], self::BROKER_VERSION, '<')) return false;
         $raw = $status['workstations'] ?? null;
         if (!is_array($raw) || !is_bool($raw['ready'] ?? null) || !is_array($raw['items'] ?? null) || !is_array($raw['requirements'] ?? null)) return false;

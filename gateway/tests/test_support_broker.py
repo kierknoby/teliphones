@@ -17,12 +17,22 @@ spec.loader.exec_module(broker_module)
 
 
 class SupportBrokerTests(unittest.TestCase):
+    def test_listener_failure_diagnostic_is_allowlisted_and_does_not_echo_php_output(self):
+        output = ("Listener reconciliation failed: PRIVATE-KEY-FIXTURE\n"
+                  "TLP-LISTENER-DIAGNOSTIC:listener-ipv6-verification-failed\n")
+        self.assertEqual(broker_module.listener_failure_output(output),
+                         "listener diagnostic listener-ipv6-verification-failed")
+        self.assertEqual(broker_module.listener_failure_id(output), "listener-ipv6-verification-failed")
+        self.assertIn("withheld", broker_module.listener_failure_output(
+            "TLP-LISTENER-DIAGNOSTIC:../PRIVATE-KEY-FIXTURE"))
+
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.state = Path(self.directory.name)
         self.patch = patch.object(broker_module, "STATE", self.state)
         self.patch.start()
         self.broker = broker_module.Broker()
+        self.broker.startup_recovery_complete = True
         self.broker.audit = lambda *args: None
         self.broker.readiness = lambda: {"Gateway enrollment": True, "wg": True}
         self.calls = []
@@ -52,6 +62,92 @@ class SupportBrokerTests(unittest.TestCase):
         with self.assertRaises(broker_module.BrokerError):
             self.broker.dispatch({"action": "authorise", "minutes": "5"}, 1000)
         self.assertFalse(self.broker.lock.locked())
+
+    def test_startup_recovery_gates_workstation_mutations_but_allows_status(self):
+        self.broker.startup_recovery_complete = False
+        self.assertFalse(self.broker.status()["recovery_ready"])
+        self.assertFalse(self.broker.workstation_status()["ready"])
+        with self.assertRaisesRegex(broker_module.BrokerError, "recovery is still running"):
+            self.broker.dispatch({"action": "workstation-policy", "state": "closed"}, 1000)
+        self.assertTrue(self.broker.dispatch({"action": "status"}, 1000)["ok"])
+        with self.assertRaisesRegex(broker_module.BrokerError, "startup recovery is still running"):
+            self.broker.dispatch({"action": "revoke"}, 1000)
+        self.broker.startup_recovery_complete = True
+        self.assertTrue(self.broker.status()["recovery_ready"])
+
+    def test_workstation_recovery_failure_is_reported_and_readiness_stays_closed(self):
+        self.broker.startup_recovery_complete = False
+        self.broker.workstation_error = "Recovery fixture failed; access remains disabled."
+        self.broker.disable_workstations = lambda: None
+        self.broker.apply_workstations = lambda state: (_ for _ in ()).throw(
+            broker_module.BrokerError("Recovery fixture failed; access remains disabled."))
+        self.broker.workstation_state = lambda: ({"workstations": [], "connection_state": "closed",
+                                                    "max_sessions": 1, "listen_port": 51821,
+                                                    "web": [], "bans": [], "subnet": None}, False)
+        self.assertFalse(self.broker.restore_workstations())
+        status = self.broker.workstation_status()
+        self.assertFalse(status["ready"])
+        self.assertIn("Recovery fixture failed", status["error"])
+        self.assertFalse(self.broker.status()["recovery_ready"])
+        with self.assertRaisesRegex(broker_module.BrokerError, "startup recovery is still running"):
+            self.broker.dispatch({"action": "pair", "request": pair_request(), "endpoint_host": "pbx.example.net",
+                                  "listen_port": "51821", "mode": "persistent", "ssh": "0"}, 1000)
+
+    def test_successful_workstation_recovery_restores_existing_pairing(self):
+        self.broker.startup_recovery_complete = False
+        calls = []
+        self.broker.reconcile_revocations = lambda: None
+        state = {"workstations": [{"id": "a" * 16}], "connection_state": "open", "subnet": None,
+                 "max_sessions": 1, "listen_port": 51821, "web": [], "bans": []}
+        self.broker.workstation_state = lambda: (state, False)
+        self.broker.apply_workstations = lambda restored: calls.append(restored)
+        self.assertTrue(self.broker.restore_workstations())
+        self.assertEqual(calls, [state])
+        self.broker.startup_recovery_complete = True
+        self.broker.workstation_state = lambda: ({"workstations": [], "connection_state": "closed",
+            "subnet": None, "max_sessions": 1, "listen_port": 51821, "web": [], "bans": []}, False)
+        self.assertTrue(self.broker.status()["recovery_ready"])
+
+    def test_socket_stays_responsive_while_restore_blocks_and_mutations_are_gated(self):
+        with tempfile.TemporaryDirectory() as directory:
+            socket_path = str(Path(directory) / "control.sock")
+            listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            listener.bind(socket_path)
+            listener.listen(2)
+            self.broker.startup_recovery_complete = False
+            self.broker.workstation_state = lambda: ({"workstations": [], "connection_state": "closed",
+                "subnet": None, "max_sessions": 1, "listen_port": 51821, "web": [], "bans": []}, False)
+            self.broker.apply_workstations = lambda state: None
+            recovery_entered = threading.Event()
+            release_recovery = threading.Event()
+
+            def block_restore():
+                recovery_entered.set()
+                release_recovery.wait(2)
+
+            self.broker.reconcile_revocations = block_restore
+            recovery = threading.Thread(target=lambda: setattr(
+                self.broker, "startup_recovery_complete", self.broker.restore_workstations()))
+            recovery.start()
+            self.assertTrue(recovery_entered.wait(1), "workstation restoration did not reach the blocking recovery step")
+            with patch.object(broker_module, "permitted_peer", return_value=True):
+                broker_module.start_socket_acceptor(listener, self.broker, os.getuid())
+                client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                client.settimeout(2)
+                client.connect(socket_path)
+                client.sendall(json.dumps({"action": "status"}).encode() + b"\n")
+                payload = client.recv(65536).split(b"\n", 1)[0]
+                client.close()
+            listener.close()
+            response = json.loads(payload)
+            self.assertTrue(response["ok"])
+            self.assertFalse(response["status"]["recovery_ready"])
+            with self.assertRaisesRegex(broker_module.BrokerError, "recovery is still running"):
+                self.broker.dispatch({"action": "workstation-policy", "state": "closed"}, 1000)
+            release_recovery.set()
+            recovery.join(2)
+            self.assertFalse(recovery.is_alive(), "blocked workstation restoration did not finish")
+            self.assertTrue(self.broker.startup_recovery_complete)
 
     def test_successful_connection_pipeline(self):
         self.broker.cli = lambda action, *args, **kwargs: self.calls.append(action)
@@ -253,7 +349,7 @@ class SupportBrokerTests(unittest.TestCase):
 
     def test_status_reports_live_monitoring_protocol_matching_gui(self):
         status = self.broker.status()
-        self.assertEqual(status["component_version"], "0.8.1")
+        self.assertEqual(status["component_version"], "0.8.3.12")
         self.assertEqual(status["protocol"], 12)
         self.assertEqual(status["protocol"], broker_module.PROTOCOL)
         self.assertIn("operation", status)
@@ -1167,7 +1263,11 @@ class WorkstationPairingTests(unittest.TestCase):
         self.broker.enforcement_event.clear()
         self.broker.wake.clear()
 
-        admitted = self.open_session(response)
+        # Keep the integer lease deadline identical across the renewal; wall-clock
+        # second rollover otherwise legitimately changes nft timeout policy.
+        lease_now = int(broker_module.time.time())
+        with patch.object(broker_module.time, "time", return_value=lease_now):
+            admitted = self.open_session(response)
         broker_module.time.sleep(0.1)
         self.assertTrue(admitted["active"])
         self.assertFalse(admitted["policy"]["locked"])
@@ -1183,7 +1283,8 @@ class WorkstationPairingTests(unittest.TestCase):
         self.assertTrue(self.net.up)
 
         calls = len(self.net.calls)
-        renewed = self.open_session(response)
+        with patch.object(broker_module.time, "time", return_value=lease_now):
+            renewed = self.open_session(response)
         self.assertTrue(renewed["active"])
         self.assertEqual(self.mutating_calls(self.net.calls[calls:]), [], "a lease renewal rewrote unchanged policy")
 
@@ -1541,7 +1642,7 @@ class WorkstationPairingTests(unittest.TestCase):
     def test_status_reports_workstations_without_keys(self):
         self.pair(mode="temporary", ssh="1")
         status = self.broker.status()["workstations"]
-        self.assertEqual(set(status), {"ready", "requirements", "error", "listen_port", "web", "gui_url", "connection_state",
+        self.assertEqual(set(status), {"ready", "requirements", "error", "recovery_ready", "listen_port", "web", "gui_url", "connection_state",
                                        "firewall_integration", "pbx_address", "items", "ssh_ready", "ssh_error", "bans",
                                        "max_sessions", "connected_workstations", "ssh_accounts", "session_control_port"})
         self.assertEqual(status["firewall_integration"]["state"], "active")
@@ -1581,7 +1682,7 @@ class WorkstationPairingTests(unittest.TestCase):
         self.assertNotIn("disconnected", json.dumps(events).lower())
         self.assertEqual({item["diagnostic_id"] for item in events}, {diagnostic_id})
         exported = self.broker.dispatch({"action": "diagnostics", "diagnostic_id": diagnostic_id}, 1000)
-        self.assertEqual(exported["component_version"], "0.8.1")
+        self.assertEqual(exported["component_version"], "0.8.3.12")
         self.assertEqual(exported["diagnostic_id"], diagnostic_id)
         self.assertFalse(any("public_key" in item or "token" in json.dumps(item).lower() for item in exported["events"]))
 
@@ -1595,7 +1696,7 @@ class WorkstationPairingTests(unittest.TestCase):
         self.assertIn("interface.established", names)
         self.assertIn("peer.admitted", names)
         self.assertIn("peer.observation", names)
-        self.assertTrue(all(event["source"] == "pbx" and event["component_version"] == "0.8.1" for event in events))
+        self.assertTrue(all(event["source"] == "pbx" and event["component_version"] == "0.8.3.12" for event in events))
         self.broker.dispatch({"action": "unpair", "workstation_id": response["workstation_id"]}, 1000)
         events = self.broker.diagnostics.read(diagnostic_id)
         self.assertEqual(events[-1]["event"], "pairing.revoked")

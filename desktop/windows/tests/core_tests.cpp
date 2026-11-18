@@ -1417,6 +1417,20 @@ void testTunnelLifecycle() {
               !contains(residualMessage, "Restart Windows"),
           "a present residual adapter reports the timeout and allows a fresh cleanup attempt");
 
+    lc::HelperResult rejectedRemoval;
+    rejectedRemoval.stage = lc::Stage::ResidualTunnel;
+    rejectedRemoval.error = 995;  // a representative native Configuration Manager/Win32 removal failure
+    rejectedRemoval.cleanupIncomplete = true;
+    rejectedRemoval.residual = lc::Residual::AdapterRemovalFailed;
+    const auto rejectedRemovalMessage = lc::HelperMessage(lc::EncodeHelperResult(rejectedRemoval));
+    check(lc::DecodeHelperResult(lc::EncodeHelperResult(rejectedRemoval), decoded) &&
+              decoded.residual == lc::Residual::AdapterRemovalFailed && decoded.error == 995,
+          "an identity-verified adapter removal failure preserves its native error");
+    check(contains(rejectedRemovalMessage, "Configuration Manager refused removal") &&
+              contains(rejectedRemovalMessage, "Windows error 995") &&
+              contains(rejectedRemovalMessage, "identity-verified TELIPHONES adapter"),
+          "adapter removal failure identifies the operation and owned device rather than misreporting a timeout");
+
     // A disconnected tunnel can leave a non-present interface row with its alias; that row carries no traffic.
     const std::string tunnel = "TELIPHONES-1df533523b61";
     const std::uint32_t up = 1, down = 2, notPresent = lc::kInterfaceOperStatusNotPresent;
@@ -1492,7 +1506,7 @@ void testTunnelLifecycle() {
               contains(unverifiedMessage, "Cleanup is incomplete") && contains(unverifiedMessage, "Other WireGuard tunnels were not changed") &&
               !contains(unverifiedMessage, "an active network adapter"),
           "an unverified adapter is reported, not treated as success");
-    check(!lc::DecodeHelperResult(lc::EncodeHelperResult(lc::HelperResult{lc::Stage::RemoveFailed}) | (8u << 12), decoded),
+    check(!lc::DecodeHelperResult(lc::EncodeHelperResult(lc::HelperResult{lc::Stage::RemoveFailed}) | (9u << 12), decoded),
           "unknown residual kinds are rejected");
 
     check(contains(lc::HelperMessage(lc::EncodeHelperResult(lc::HelperResult{lc::Stage::Busy})), "still in progress"),
@@ -1611,6 +1625,24 @@ void testTunnelLifecycle() {
           "an unquoted program path with spaces is rejected");
     check(!lc::IsOwnedTunnelServiceCommand("\"" + exe + "\" /tunnelservice \"" + conf + "\"\" x\"", exe, conf),
           "quote tricks cannot extend the configuration argument");
+    const std::string service = "WireGuardTunnel$" + tunnel;
+    check(lc::HasOwnedServiceConfig(true, service, service, official, exe, conf, true),
+          "persisted TELIPHONES ownership plus exact service command and valid config authorize cleanup");
+    check(!lc::HasOwnedServiceConfig(false, service, service, official, exe, conf, true) &&
+              !lc::HasOwnedServiceConfig(true, service, service, official, exe, conf, false),
+          "missing ownership or invalid config never authorizes service removal");
+    check(!lc::HasOwnedServiceConfig(true, service, service,
+                                     "C:\\Program Files\\WireGuard\\wireguard.exe /tunnelservice C:\\Other\\office.conf",
+                                     exe, conf, true),
+          "a foreign WireGuard service colliding with TELIPHONES service name is preserved");
+    check(!lc::HasOwnedServiceConfig(true, service, service + "-foreign", official, exe, conf, true),
+          "a different SCM service identity cannot be removed");
+    check(!lc::HasOwnedServiceConfig(true, service, service, official, exe, conf, false),
+          "a damaged or unparseable config cannot authorize service removal");
+    check(lc::HasOwnedServiceConfig(true, service, service, official, exe, conf, true),
+          "a valid bootstrap file is accepted when the SCM service identity proves ownership");
+    check(lc::HasOwnedServiceConfig(true, service, service, official, exe, conf, true),
+          "missing bootstrap file remains recoverable when the SCM service identity proves ownership");
     const std::vector<std::string> tricky{exe, "a \"b\" c\\", "d\\\\\"e", ""};
     check(lc::SplitServiceCommandLine(tlp::JoinCommandLine(tricky)) == tricky, "service command split inverts Windows quoting");
 

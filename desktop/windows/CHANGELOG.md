@@ -8,7 +8,7 @@ version numbers retrospectively.
 ## 0.9.0 — Unreleased lifecycle reliability target
 
 Windows file/product version: **0.9.0.0** / **0.9.0**. FreePBX module/root
-broker **0.8.2**, protocol **12**.
+broker **0.8.3.12**, protocol **12**.
 
 - Bound service establishment, WireGuard authentication and controller admission;
   stop retrying after a terminal deadline and fence obsolete operation results.

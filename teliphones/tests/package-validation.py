@@ -15,7 +15,8 @@ import xml.etree.ElementTree as ET
 ROOT = Path(__file__).resolve().parents[2]
 MODULE = ROOT / "teliphones"
 VERSION = ET.parse(MODULE / "module.xml").findtext("version")
-PACKAGE = ROOT / ("TELIPHONES-%s.tgz" % VERSION)
+PACKAGE_ID = "0.8.3.12"
+PACKAGE = ROOT / ("TELIPHONES-%s.tgz" % PACKAGE_ID)
 WINDOWS_VERSION = "0.9.0"
 
 
@@ -26,21 +27,21 @@ def included(path):
 
 class SourceVersionTests(unittest.TestCase):
     def test_authoritative_versions(self):
-        self.assertEqual(VERSION, "0.8.2")
+        self.assertEqual(VERSION, "0.8.3.12")
         tree = ast.parse((MODULE / "support_broker.py").read_text())
         versions = [ast.literal_eval(node.value) for node in tree.body if isinstance(node, ast.Assign)
                     and any(isinstance(target, ast.Name) and target.id == "VERSION" for target in node.targets)]
-        self.assertEqual(versions, ["0.8.2"], "The broker version identifies the authority and admission architecture")
+        self.assertEqual(versions, ["0.8.3.12"], "The broker version identifies the authority and admission architecture")
         self.assertIn("BROKER_VERSION = '%s';" % versions[0], (MODULE / "WebSupport.php").read_text())
-        self.assertIn("TELIPHONES 0.8.2 requires broker version 0.8.2, broker protocol 12",
+        self.assertIn("TELIPHONES 0.8.3.12 requires broker version 0.8.3.12, broker protocol 12",
                       (MODULE / "BrokerBootstrap.php").read_text())
         windows_version = (ROOT / "desktop/windows/src/app/Version.h").read_text()
         self.assertIn("#define TELIPHONES_VERSION_MAJOR 0", windows_version)
         self.assertIn("#define TELIPHONES_VERSION_MINOR 9", windows_version)
         self.assertIn("#define TELIPHONES_VERSION_PATCH 0", windows_version)
         self.assertIn("file version **0.9.0.0**", (ROOT / "desktop/windows/README.md").read_text())
-        self.assertIn("## 0.8.2, FreePBX firewall compatibility corrections (unreleased development)", (MODULE / "docs/CHANGELOG.md").read_text())
-        self.assertIn("0.8.2 development archive", (MODULE / "README.md").read_text())
+        self.assertIn("## 0.8.3.12, IPv4/IPv6 listener verification candidate (unreleased development)", (MODULE / "docs/CHANGELOG.md").read_text())
+        self.assertIn("TELIPHONES-0.8.3.12.tgz", (MODULE / "README.md").read_text())
         self.assertIn("durable workstation revocation", (MODULE / "BrokerBootstrap.php").read_text())
 
 
@@ -222,7 +223,7 @@ class PackageTests(unittest.TestCase):
                                 "X-Teliphones-Attempt", "reconcile.background",
                                 "controller.state", "DIAGNOSTIC_REPEAT_SECONDS"):
                     self.assertIn(feature, broker)
-                self.assertIn('VERSION = "0.8.2"', broker)
+                self.assertIn('VERSION = "0.8.3.12"', broker)
                 self.assertIn("def freepbx_nat_state(", broker)
                 self.assertIn('chain.get("name") == "POSTROUTING"', broker)
                 self.assertIn("def firewall_integration(", broker)

@@ -291,6 +291,15 @@ class BrokerSocketTests(unittest.TestCase):
         self.assertEqual(broker.listener_failure_output(" \n"), "empty")
         self.assertIn("withheld", broker.listener_failure_output(b"PRIVATE-KEY-FIXTURE"))
 
+    def test_listener_structured_diagnostic_is_actionable_without_echoing_php_output(self):
+        output = ("Listener reconciliation failed: PRIVATE-KEY-FIXTURE\n"
+                  "TLP-LISTENER-DIAGNOSTIC:listener-ipv6-verification-failed\n")
+        self.assertEqual(broker.listener_failure_output(output),
+                         "listener diagnostic listener-ipv6-verification-failed")
+        self.assertEqual(broker.listener_failure_id(output), "listener-ipv6-verification-failed")
+        malformed = "TLP-LISTENER-DIAGNOSTIC:../PRIVATE-KEY-FIXTURE"
+        self.assertIn("withheld", broker.listener_failure_output(malformed))
+
     def test_empty_listener_policy_rollback_failure_retains_initiating_error(self):
         original = self.broker.reconcile_listener
         failures = []

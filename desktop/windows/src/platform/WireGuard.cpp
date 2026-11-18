@@ -215,6 +215,38 @@ std::string receiveKey(const std::string& token) {
 
 std::wstring serviceName(const std::string& tunnelName) { return L"WireGuardTunnel$" + Widen(tunnelName); }
 
+std::optional<std::wstring> serviceBinaryPath(const std::wstring& name) {
+    ServiceHandle manager(OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT));
+    if (!manager) return std::nullopt;
+    ServiceHandle service(OpenServiceW(manager.get(), name.c_str(), SERVICE_QUERY_CONFIG));
+    if (!service) return std::nullopt;
+    DWORD bytes = 0;
+    QueryServiceConfigW(service.get(), nullptr, 0, &bytes);
+    if (GetLastError() != ERROR_INSUFFICIENT_BUFFER || bytes == 0 || bytes > 65536) return std::nullopt;
+    std::vector<ULONGLONG> storage(bytes / sizeof(ULONGLONG) + 1);
+    auto* config = reinterpret_cast<QUERY_SERVICE_CONFIGW*>(storage.data());
+    if (!QueryServiceConfigW(service.get(), config, static_cast<DWORD>(storage.size() * sizeof(ULONGLONG)), &bytes)
+        || config->dwServiceType != SERVICE_WIN32_OWN_PROCESS || !config->lpBinaryPathName) return std::nullopt;
+    return std::wstring(config->lpBinaryPathName);
+}
+
+bool validOwnedBootstrapConfig(const std::wstring& configPath) {
+    const DWORD attributes = GetFileAttributesW(configPath.c_str());
+    if (attributes == INVALID_FILE_ATTRIBUTES &&
+        (GetLastError() == ERROR_FILE_NOT_FOUND || GetLastError() == ERROR_PATH_NOT_FOUND)) return true;
+    if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_DIRECTORY)) return false;
+    try {
+        std::string text = ReadSmallFile(configPath, 8192);
+        WipeString wipe(text);
+        TunnelConfig config = ParseTunnelStrict(text);
+        WipeTunnelKey wipeKey(config);
+        ValidateBootstrapTunnel(config);
+        return true;
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
 std::wstring tunnelFolder() { return KnownFolder(FOLDERID_ProgramFiles) + L"\\TELIPHONES\\Tunnels"; }
 
 std::wstring stagingFolder() {
@@ -363,18 +395,25 @@ std::optional<ObservedAdapter> observeAdapter(const std::string& tunnelName) {
     return std::nullopt;
 }
 
-bool removeVerifiedAdapter(const std::string& tunnelName) {
+struct AdapterRemoval {
+    bool attempted = false;
+    DWORD error = ERROR_SUCCESS;
+};
+
+AdapterRemoval removeVerifiedAdapter(const std::string& tunnelName) {
     const auto record = readOwnership(tunnelName);
     const auto observed = observeAdapter(tunnelName);
     if (!record || !observed || !lifecycle::MatchesOwnedAdapter(*record, tunnelName, observed->guid, observed->pnp))
-        return false;
+        return {false, ERROR_NOT_FOUND};
     DEVINST device = 0;
     std::wstring instance = Widen(observed->pnp);
-    if (CM_Locate_DevNodeW(&device, instance.data(), CM_LOCATE_DEVNODE_NORMAL) != CR_SUCCESS) return false;
+    const CONFIGRET located = CM_Locate_DevNodeW(&device, instance.data(), CM_LOCATE_DEVNODE_NORMAL);
+    if (located != CR_SUCCESS) return {true, CM_MapCrToWin32Err(located, ERROR_GEN_FAILURE)};
     PNP_VETO_TYPE veto = PNP_VetoTypeUnknown;
     wchar_t vetoName[MAX_PATH]{};
-    return CM_Query_And_Remove_SubTreeW(device, &veto, vetoName, static_cast<ULONG>(std::size(vetoName)),
-                                        CM_REMOVE_NO_RESTART) == CR_SUCCESS;
+    const CONFIGRET removed = CM_Query_And_Remove_SubTreeW(device, &veto, vetoName, static_cast<ULONG>(std::size(vetoName)),
+                                                            CM_REMOVE_NO_RESTART);
+    return {true, removed == CR_SUCCESS ? ERROR_SUCCESS : CM_MapCrToWin32Err(removed, ERROR_GEN_FAILURE)};
 }
 
 lifecycle::Residual residualFor(const tunnel_startup::Status& status) {
@@ -405,8 +444,24 @@ lifecycle::HelperResult removeOwnedTunnel(const WireGuardInstallation& wireguard
     try {
         const auto service = serviceName(tunnelName);
         const auto configPath = tunnelConfigPath(tunnelName);
+        const auto record = readOwnership(tunnelName);
         auto status = tunnel_startup::ReadStatus(service);
         if (!tunnel_startup::Absent(status)) {
+            const auto binaryPath = serviceBinaryPath(service);
+            const std::string expectedService = Narrow(service);
+            const std::string expectedExe = Narrow(wireguard.wireguardExe);
+            const std::string expectedConfig = Narrow(configPath);
+            if (!binaryPath || !record ||
+                !lifecycle::HasOwnedServiceConfig(record->serviceName == expectedService,
+                    expectedService, expectedService, Narrow(*binaryPath), expectedExe,
+                    expectedConfig, validOwnedBootstrapConfig(configPath))) {
+                outcome.cleanupIncomplete = true;
+                outcome.ownershipUnverified = true;
+                outcome.residual = residualFor(status);
+                if (outcome.residual == lifecycle::Residual::None) outcome.residual = lifecycle::Residual::Unknown;
+                outcome.error = ERROR_ACCESS_DENIED;
+                return outcome;
+            }
             try {
                 RunProcess(wireguard.wireguardExe, {"/uninstalltunnelservice", tunnelName}, "", budget::kUninstallToolMs);
             } catch (const Error&) {
@@ -436,19 +491,50 @@ lifecycle::HelperResult removeOwnedTunnel(const WireGuardInstallation& wireguard
             outcome.residual = residualFor(status);
             return outcome;
         }
-        const auto adapter = awaitAdapterRelease(tunnelName);
+        if (!record) {
+            const auto adapter = TunnelAdapterPresence(tunnelName);
+            if (adapter != lifecycle::AdapterPresence::Absent) {
+                outcome.cleanupIncomplete = true;
+                outcome.ownershipUnverified = true;
+                outcome.residual = adapterResidual(adapter);
+                outcome.error = ERROR_ACCESS_DENIED;
+                return outcome;
+            }
+            // With no persisted ownership record, even a matching filename is
+            // not authority to delete a configuration or service artifact.
+            return {};
+        }
+        // The service is already absent.  Do not spend the entire release
+        // budget waiting for an adapter which is demonstrably still active:
+        // request Configuration Manager removal immediately, but only after
+        // the persisted GUID and PnP instance prove ownership.  The following
+        // bounded poll observes actual device disappearance.
+        const auto adapter = TunnelAdapterPresence(tunnelName);
         auto finalAdapter = adapter;
-        if (adapter == lifecycle::AdapterPresence::Active && removeVerifiedAdapter(tunnelName))
+        DWORD adapterRemovalError = ERROR_SUCCESS;
+        if (adapter == lifecycle::AdapterPresence::Active) {
+            const auto removal = removeVerifiedAdapter(tunnelName);
+            // A service can race the PnP removal.  Preserve a native error only
+            // if the identity-verified adapter is still present after the
+            // bounded observation window; disappearance is a successful
+            // release regardless of which component completed it.
+            adapterRemovalError = removal.error;
             finalAdapter = awaitAdapterRelease(tunnelName);
+        }
         status = tunnel_startup::ReadStatus(service);
         if (!tunnel_startup::Absent(status)) {
             outcome.cleanupIncomplete = true;
             outcome.residual = residualFor(status);
             outcome.error = status.error;
-        } else if (finalAdapter != lifecycle::AdapterPresence::Absent) {
+        } else if (!outcome.cleanupIncomplete && finalAdapter != lifecycle::AdapterPresence::Absent) {
             outcome.cleanupIncomplete = true;
-            outcome.residual = adapterResidual(finalAdapter);
-            if (finalAdapter == lifecycle::AdapterPresence::Active) outcome.error = ERROR_TIMEOUT;
+            if (adapterRemovalError != ERROR_SUCCESS) {
+                outcome.residual = lifecycle::Residual::AdapterRemovalFailed;
+                outcome.error = adapterRemovalError;
+            } else {
+                outcome.residual = adapterResidual(finalAdapter);
+                if (finalAdapter == lifecycle::AdapterPresence::Active) outcome.error = ERROR_TIMEOUT;
+            }
         }
         if (!DeleteFileW(configPath.c_str()) && GetLastError() != ERROR_FILE_NOT_FOUND && GetLastError() != ERROR_PATH_NOT_FOUND) {
             outcome.cleanupIncomplete = true;
@@ -777,46 +863,9 @@ void RemoveTunnel(const std::string& tunnelName) {
         if (failure.code != ERROR_ACCESS_DENIED) throw;
     }
     if (lock && !lock->owned()) throw Error(lifecycle::HelperMessage(helperCode(Stage::Busy)));
-    if (lock) {
-        const auto staging = KnownFolder(FOLDERID_LocalAppData) + L"\\TELIPHONES\\Staging\\" + Widen(tunnelName) + L".conf";
-        if (!DeleteFileW(staging.c_str()) && GetLastError() != ERROR_FILE_NOT_FOUND && GetLastError() != ERROR_PATH_NOT_FOUND)
-            ThrowLastError("Unable to remove the staged tunnel configuration");
-        bool removed = false;
-        {
-            ServiceHandle manager(OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT));
-            ServiceHandle service(manager ? OpenServiceW(manager.get(), serviceName(tunnelName).c_str(), SERVICE_STOP | SERVICE_QUERY_STATUS | DELETE) : nullptr);
-            if (manager && !service && GetLastError() == ERROR_SERVICE_DOES_NOT_EXIST) {
-                removed = true;
-            } else if (service) {
-                SERVICE_STATUS status{};
-                // START_PENDING rejects SERVICE_CONTROL_STOP (Windows error 1052), so waiting here cannot succeed;
-                // only the elevated helper can verify and end a stuck service process.
-                if (QueryServiceStatus(service.get(), &status) && status.dwCurrentState != SERVICE_START_PENDING) {
-                    ControlService(service.get(), SERVICE_CONTROL_STOP, &status);
-                    ULONGLONG deadline = GetTickCount64() + 15000;
-                    while (QueryServiceStatus(service.get(), &status) && status.dwCurrentState != SERVICE_STOPPED && GetTickCount64() < deadline) Sleep(250);
-                    removed = status.dwCurrentState == SERVICE_STOPPED && (DeleteService(service.get()) || GetLastError() == ERROR_SERVICE_MARKED_FOR_DELETE);
-                }
-            }
-        }
-        if (removed)
-            removed = tunnel_startup::Absent(tunnel_startup::AwaitAbsent(serviceName(tunnelName), budget::kDeletionWaitMs));
-        if (removed) {
-            if (DeleteFileW((tunnelFolder() + L"\\" + Widen(tunnelName) + L".conf").c_str()) || GetLastError() == ERROR_FILE_NOT_FOUND ||
-                GetLastError() == ERROR_PATH_NOT_FOUND) {
-                // A disconnect is complete only once the adapter is released too; the next connection depends on it.
-                const auto adapter = awaitAdapterRelease(tunnelName);
-                const auto current = tunnel_startup::ReadStatus(serviceName(tunnelName));
-                if (tunnel_startup::Absent(current) && adapter == lifecycle::AdapterPresence::Absent) {
-                    const auto record = ownershipPath(tunnelName);
-                    if (DeleteFileW(record.c_str()) || GetLastError() == ERROR_FILE_NOT_FOUND || GetLastError() == ERROR_PATH_NOT_FOUND)
-                        return;
-                }
-                // A service-free residual adapter requires the elevated, identity-checked Configuration Manager path.
-                // Do not report timeout before that supported cleanup mechanism has been attempted.
-            }
-        }
-    }
+    // All service removal is performed by the elevated helper after it proves
+    // the persisted TELIPHONES record and exact SCM binary/config identity.
+    // A same-name foreign WireGuard service is never stopped or deleted here.
     lock.reset();
     DWORD code = runElevated(HelperArguments(HelperCommand{HelperCommand::Verb::TunnelDown, tunnelName, "", "", ""}));
     if (code == ERROR_CANCELLED) throw Error("The tunnel may still be connected because administrative approval was declined. Disconnect again, or approve recovery at the next launch.");

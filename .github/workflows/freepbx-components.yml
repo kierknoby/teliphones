@@ -1,0 +1,42 @@
+name: FreePBX component regressions
+
+on:
+  push:
+    paths:
+      - 'teliphones/**'
+      - 'gateway/**'
+      - '.github/workflows/freepbx-components.yml'
+  pull_request:
+    paths:
+      - 'teliphones/**'
+      - 'gateway/**'
+      - '.github/workflows/freepbx-components.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  linux-components:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: PHP syntax and behavioural regressions
+        run: |
+          find teliphones -type f -name '*.php' -print0 | xargs -0 -n1 php -l
+          XDEBUG_MODE=off php teliphones/tests/run.php
+      - name: Python syntax, unit and security regressions
+        run: |
+          python3 -m compileall -q teliphones gateway
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s gateway/tests -v
+      - name: Package and documentation integrity
+        run: |
+          tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
+            --mode='u+rwX,go+rX,go-w' --exclude='*/.*' --exclude='*/tests' \
+            --exclude='*/__pycache__' --exclude='*.pyc' --exclude='*.pyo' \
+            -czf TELIPHONES-0.8.3.10.tgz teliphones
+          sha256sum TELIPHONES-0.8.3.10.tgz > TELIPHONES-0.8.3.10.tgz.sha256
+          PYTHONDONTWRITEBYTECODE=1 python3 teliphones/tests/package-validation.py
+          PYTHONDONTWRITEBYTECODE=1 python3 teliphones/tests/documentation-links.py

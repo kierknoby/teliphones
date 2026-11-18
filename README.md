@@ -14,7 +14,7 @@ workflow for bounded support windows.
 
 | Component | Current version | Start here |
 |---|---|---|
-| FreePBX module / root broker | **0.8.2 proposed** / **0.8.2 proposed**, protocol 12 (development candidate; not a release or production-approved) | [Install](teliphones/README.md#installing-the-module) · [Upgrade](teliphones/README.md#updating-teliphones) |
+| FreePBX module / root broker | **0.8.3.12 proposed** / **0.8.3.12 proposed**, protocol 12 (development candidate; not a release or production-approved) | [Install](teliphones/README.md#installing-the-module) · [Upgrade](teliphones/README.md#updating-teliphones) |
 | Windows application | **0.9.0** (file version 0.9.0.0; CI builds complete, functional acceptance outstanding) | [Download and requirements](desktop/windows/README.md#requirements-and-download) · [Pair a PBX](desktop/windows/README.md#pair-an-administrator-workstation) |
 | Reference gateway and Checker probe | Optional laboratory infrastructure | [Integration guide](teliphones/docs/INTEGRATION.md) · [Gateway](gateway/README.md) |
 
@@ -50,11 +50,11 @@ SSH accounts are response-derived. It retains 0.8.0's password protection, PBX
 policy requests, listener migration and post-pair SSH elevation.
 The Windows application is not included in the Module Admin package.
 
-The historical `TELIPHONES-0.6.7.tgz` and checksum have been intentionally
-removed from this checkout; do not restore them. The 0.8.1 development
-candidate is packaged for controlled testing, not live acceptance or
-production approval. The 0.6.7 package predates and does not contain the
-listener/admission corrections.
+The uploaded historical `TELIPHONES-0.6.7.tgz` and checksum are retained at the
+repository root and checksum-verified for this comparison. Candidate 0.8.3.12
+is for controlled testing, not live acceptance or production approval. The
+0.6.7 package predates and does not contain the newer listener/admission
+corrections.
 The superseded 0.6.5 archive and checksum have been removed from the repository root.
 The historical `TELIPHONES-0.6.3.tgz`
 contains broker 0.6.2 and predates the form and listener diagnostic corrections.

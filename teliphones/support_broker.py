@@ -39,7 +39,7 @@ SOCKET = "/run/teliphones/control.sock"
 # Protocol 11 adds PBX-enforced workstation session leases and management gating.
 # Protocol 12 adds post-pair workstation policy management.
 PROTOCOL = 12
-VERSION = "0.8.2"
+VERSION = "0.8.3.12"
 SESSION_CONTROL_PORT = 8766
 SESSION_LEASE_SECONDS = 30
 FWCONSOLE = "/usr/sbin/fwconsole"
@@ -49,7 +49,12 @@ ACTIONS = {"status", "authorise", "revoke", "dependencies", "evidence", "configu
            "workstation-ssh-revoke", "workstation-unlock-approve", "workstation-unlock-reject",
            "workstation-sources-approve", "workstation-sources-reject",
            "diagnostics"}
-ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C", "HOME": "/root", "DEBIAN_FRONTEND": "noninteractive", "TZ": "UTC"}
+# Do not inherit the web/server environment.  fwconsole's FreePBX bootstrap
+# requires a coherent root login identity; the three identity variables are an
+# explicit compatibility allowlist, not a pass-through of os.environ.
+ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C", "HOME": "/root",
+       "DEBIAN_FRONTEND": "noninteractive", "TZ": "UTC", "USER": "root",
+       "LOGNAME": "root", "SHELL": "/bin/bash"}
 # Administrator-owned workstation pairing (TELIPHONES Windows application). Separate from the support interface.
 WORKSTATION_IFACE = "tlp-admin"
 WORKSTATION_TABLE = "teliphones_workstations"
@@ -95,6 +100,9 @@ def listener_failure_output(output):
         output = output.decode("utf-8", errors="replace")
     if not output or not output.strip():
         return "empty"
+    diagnostic = re.search(r"TLP-LISTENER-DIAGNOSTIC:([a-z0-9-]{3,80})(?=\s|$)", output)
+    if diagnostic:
+        return "listener diagnostic " + diagnostic.group(1)
     mismatch = (r"(?:UDP ACCEPT missing|service rules remain \(\d+\)|"
                 r"service rules differ \(rules=\d+, exact ACCEPTs=\d+\)|"
                 r"zone-(?:external|internal|other|reject|trusted) jump (?:missing|remains))")
@@ -103,6 +111,35 @@ def listener_failure_output(output):
         r"(?: fpbxsvc-[a-f0-9]{16} (?:UDP \d{1,5}|removal): " + mismatch
         + r"(?:; " + mismatch + r")*)?(?=\s*$)", output)
     return match.group(0) if match else "unrecognised output withheld; inspect private FreePBX diagnostics"
+
+
+def listener_failure_id(output, timed_out=False):
+    """Map only recognised listener failures to stable, non-sensitive IDs."""
+    if timed_out:
+        return "listener-reconciliation-timeout"
+    text = output.decode("utf-8", errors="replace") if isinstance(output, bytes) else (output or "")
+    diagnostic = re.search(r"TLP-LISTENER-DIAGNOSTIC:([a-z0-9-]{3,80})(?=\s|$)", text)
+    if diagnostic:
+        return diagnostic.group(1)
+    if "TLP-LISTENER-FIREWALL-INVENTORY" in text:
+        return "firewall-inventory-failure"
+    if "TLP-LISTENER-UNSUPPORTED-PREDICATE" in text:
+        return "unsupported-firewall-predicate"
+    if "TLP-LISTENER-AMBIGUOUS-PATH" in text:
+        return "ambiguous-packet-path"
+    if "TLP-LISTENER-MISSING-SERVICE" in text:
+        return "missing-required-listener-service"
+    if "TLP-LISTENER-REGENERATING" in text:
+        return "firewall-regeneration-in-progress"
+    if "TLP-LISTENER-ROOT-HELPER-MISMATCH" in text:
+        return "root-helper-version-mismatch"
+    if "TLP-LISTENER-BLOCKED-PATH" in text:
+        return "listener-firewall-path-blocked"
+    if "TLP-LISTENER-UNSAFE-INTEGRATION" in text:
+        return "listener-firewall-path-unverified"
+    if "UDP ACCEPT missing" in text:
+        return "missing-required-listener-service"
+    return "listener-reconciliation-failed"
 
 
 class BrokerError(Exception):
@@ -268,6 +305,17 @@ class DiagnosticLog:
         "interface.removed": {},
         "firewall.integration": {"state": ("enum", ("inactive", "active", "not-detected", "pending", "unknown", "blocked", "error")),
                                  "backend": ("nullable_enum", ("nf_tables", "legacy"))},
+        "listener.reconciliation": {"identifier": ("enum", ("firewall-inventory-failure",
+            "unsupported-firewall-predicate", "ambiguous-packet-path", "missing-required-listener-service",
+            "invalid-helper-execution-environment", "root-helper-version-mismatch",
+            "listener-reconciliation-timeout", "firewall-regeneration-in-progress",
+            "listener-reconciliation-failed", "listener-helper-validation-failed", "listener-input-invalid",
+            "listener-ownership-state-failed", "listener-service-ownership-conflict",
+            "listener-service-creation-failed", "listener-service-configuration-failed",
+            "listener-service-removal-failed", "listener-firewall-path-blocked",
+            "listener-firewall-path-unverified", "listener-ipv4-verification-failed",
+            "listener-ipv6-verification-failed", "listener-family-inspection-failed",
+            "listener-unexpected-failure"))},
         "broker.error": {"category": ("enum", ("workstation-enforcement", "firewall-integration",
                                                 "telemetry-unavailable", "cleanup-unverified"))},
         # One workstation session-controller request. processing_ms beyond the Windows 5 s receive timeout, or
@@ -1364,6 +1412,21 @@ def handle_connection(broker, connection, web_uid):
             LOGGER.error("TELIPHONES socket closed before final response could be delivered; operation outcome must be checked")
 
 
+def start_socket_acceptor(server, broker, web_uid):
+    """Start serving the protected status/recovery socket without blocking startup recovery."""
+    def accept_connections():
+        while True:
+            try:
+                connection, _ = server.accept()
+            except OSError:
+                return
+            threading.Thread(target=handle_connection, args=(broker, connection, web_uid), daemon=True).start()
+
+    thread = threading.Thread(target=accept_connections, daemon=True)
+    thread.start()
+    return thread
+
+
 class Broker:
     def __init__(self):
         self.lock = threading.Lock()
@@ -1382,6 +1445,9 @@ class Broker:
         self.listener_job = None
         self.request_context = threading.local()
         self.workstation_error = ""
+        # Directly constructed brokers (including maintenance/tests) are ready;
+        # serve() closes this gate before exposing the socket during recovery.
+        self.startup_recovery_complete = True
         self.monitor = None
         self.enforcement_event = threading.Event()
         self.lease_wake = threading.Event()
@@ -1581,7 +1647,7 @@ class Broker:
                 "session": {key: session[key] for key in ("session_id", "state", "expires_at") if key in session},
                 "access_verified": phase == "Connected",
                 "engineer": fingerprint, "challenge": read_json(STATE / "checker-challenge.json") if session.get("state") == "locally_verified" else None,
-                "workstations": self.workstation_status()}
+                "workstations": self.workstation_status(), "recovery_ready": self.startup_recovery_complete}
 
     # ----- Administrator-owned workstation pairing -----
 
@@ -1625,6 +1691,8 @@ class Broker:
                 LOGGER.error("TELIPHONES listener %s timed out: ports=%s stdout=%s stderr=%s",
                              listener_operation, listener_ports,
                              listener_failure_output(error.stdout), listener_failure_output(error.stderr))
+                self.diagnostic_workstations("listener.reconciliation",
+                                             identifier=listener_failure_id(None, timed_out=True))
             raise BrokerError("Workstation %s timed out after %d seconds." % (command, timeout)) from error
         if result.returncode and check:
             if listener:
@@ -1632,6 +1700,8 @@ class Broker:
                 stderr = listener_failure_output(result.stderr)
                 LOGGER.error("TELIPHONES listener %s failed: ports=%s exit=%d stdout=%s stderr=%s",
                              listener_operation, listener_ports, result.returncode, stdout, stderr)
+                identifier = listener_failure_id((result.stderr or "") + "\n" + (result.stdout or ""))
+                self.diagnostic_workstations("listener.reconciliation", identifier=identifier)
                 detail = " Listener %s ports=%s exit=%d. stdout: %s; stderr: %s" % (
                     listener_operation, listener_ports, result.returncode, stdout, stderr)
             else:
@@ -3769,11 +3839,13 @@ class Broker:
             try:
                 result = self.reconcile_revocations()
                 if result and not result["ok"]:
-                    return
+                    self.workstation_error = result.get("message") or "Workstation revocation recovery is incomplete."
+                    return False
                 state, changed = self.workstation_state()
                 self.apply_workstations(state)
                 if changed:
                     self.save_workstations(state)
+                return True
             except (BrokerError, OSError, ValueError, subprocess.SubprocessError) as error:
                 if isinstance(error, Superseded):
                     raise
@@ -3784,6 +3856,7 @@ class Broker:
                     if isinstance(cleanup_error, Superseded):
                         raise
                     self.workstation_error += " Cleanup unverified: " + str(cleanup_error)
+                return False
 
     def expire_workstations(self):
         with self.wslock:
@@ -4217,7 +4290,9 @@ class Broker:
             if item.get("locked"):
                 effective, failed = resolve_source_restrictions(item["sources"], cache=self.source_cache)
                 source_status[item["id"]] = {"effective": effective, "failed": failed}
-        return {"ready": all(requirements.values()) and not error and not (STATE / "disabled").exists(), "requirements": requirements, "error": error,
+        return {"ready": self.startup_recovery_complete and all(requirements.values())
+            and not error and not (STATE / "disabled").exists(), "requirements": requirements, "error": error,
+            "recovery_ready": self.startup_recovery_complete,
                 "ssh_ready": not ssh_error, "ssh_error": ssh_error,
                 "connection_state": state["connection_state"],
                 "max_sessions": state["max_sessions"],
@@ -4388,6 +4463,8 @@ class Broker:
 
     def dispatch(self, request, uid):
         action = validate(request)
+        if not self.startup_recovery_complete and action not in {"status", "diagnostics"}:
+            raise BrokerError("Broker startup recovery is still running; refresh status and retry when recovery is complete.")
         if action in {"pair", "unpair", "web"} or action.startswith("workstation-"):
             with self.wslock:
                 if self.stopping.is_set():
@@ -4559,19 +4636,40 @@ def serve():
     if STATE.is_symlink() or STATE.stat().st_uid != 0 or STATE.stat().st_mode & 0o077:
         raise SystemExit("TELIPHONES state directory must be root-owned and private.")
     broker = Broker()
+    broker.startup_recovery_complete = False
+    Path("/run/teliphones").mkdir(mode=0o750, exist_ok=True)
+    if Path("/run/teliphones").is_symlink() or Path("/run/teliphones").stat().st_uid != 0:
+        raise SystemExit("TELIPHONES socket directory must be root-owned.")
+    os.chown("/run/teliphones", 0, user.pw_gid)
+    os.chmod("/run/teliphones", 0o750)
+    if os.path.lexists(SOCKET):
+        os.unlink(SOCKET)
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(SOCKET)
+    os.chown(SOCKET, 0, user.pw_gid)
+    os.chmod(SOCKET, 0o660)
+    server.listen(8)
     def stop(signum, frame):
+        broker.startup_recovery_complete = False
         broker.shutdown_workstations()
         if broker.monitor is not None:
             broker.monitor.close()
+        server.close()
+        if os.path.lexists(SOCKET):
+            os.unlink(SOCKET)
         raise SystemExit(0)
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
+    start_socket_acceptor(server, broker, user.pw_uid)
     try:
         broker.disable_workstations()
         with broker.wslock:
             broker.ssh.reconcile({"workstations": []})
     except (BrokerError, OSError, ValueError, subprocess.SubprocessError) as error:
         broker.workstation_error = "Initial workstation shutdown unverified: " + str(error)
+        recovery_ok = False
+    else:
+        recovery_ok = True
     # Interrupted broker jobs never resume/open access implicitly.
     broker.cleanup(0, quarantine=(STATE / "session.json").exists() or (STATE / "connect.json").exists())
     # Workstation access exists only while the broker runs and can enforce expiry.
@@ -4579,14 +4677,17 @@ def serve():
         broker.start_monitor()
     except (BrokerError, OSError):
         broker.workstation_error = "Workstation nft monitor unavailable; pairing cannot be admitted."
+        recovery_ok = False
     broker.save_active_sessions({})
-    broker.restore_workstations()
+    recovery_ok = broker.restore_workstations() and recovery_ok
     broker.session_server_enabled = True
     try:
         broker.reconcile_session_servers()
     except (OSError, BrokerError) as error:
         broker.workstation_error = "Private workstation session-control listener could not start: " + str(error)
         broker.disable_workstations()
+        recovery_ok = False
+    broker.startup_recovery_complete = recovery_ok
 
     def expiry():
         while True:
@@ -4627,22 +4728,8 @@ def serve():
                     broker.workstation_error += " Cleanup unverified: " + str(cleanup_error)
                 return
     threading.Thread(target=lease_expiry, daemon=True).start()
-    Path("/run/teliphones").mkdir(mode=0o750, exist_ok=True)
-    if Path("/run/teliphones").is_symlink() or Path("/run/teliphones").stat().st_uid != 0:
-        raise SystemExit("TELIPHONES socket directory must be root-owned.")
-    os.chown("/run/teliphones", 0, user.pw_gid)
-    os.chmod("/run/teliphones", 0o750)
-    if os.path.lexists(SOCKET):
-        os.unlink(SOCKET)
-    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    server.bind(SOCKET)
-    os.chown(SOCKET, 0, user.pw_gid)
-    os.chmod(SOCKET, 0o660)
-    server.listen(8)
-
     while True:
-        connection, _ = server.accept()
-        threading.Thread(target=handle_connection, args=(broker, connection, user.pw_uid), daemon=True).start()
+        signal.pause()
 
 
 if __name__ == "__main__":

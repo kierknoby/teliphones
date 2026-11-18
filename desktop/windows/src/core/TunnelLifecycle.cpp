@@ -73,6 +73,9 @@ std::string residualText(const HelperResult& result) {
         case Residual::AdapterUnverified:
             return " The WireGuard tunnel service was removed, but Windows could not report whether its network "
                    "adapter was released.";
+        case Residual::AdapterRemovalFailed:
+            return " The WireGuard tunnel service was removed, but Configuration Manager refused removal of the "
+                   "identity-verified TELIPHONES adapter.";
         case Residual::Unknown: return " The state of the WireGuard tunnel service could not be read.";
         case Residual::None: break;
     }
@@ -205,7 +208,7 @@ bool DecodeHelperResult(std::uint32_t code, HelperResult& result) {
     if (code & 0xc0000000u) return false;
     const std::uint32_t stage = code & 0xffu;
     const std::uint32_t residual = (code >> 12) & 0xfu;
-    if (!knownStage(stage) || residual > static_cast<std::uint32_t>(Residual::AdapterUnverified)) return false;
+    if (!knownStage(stage) || residual > static_cast<std::uint32_t>(Residual::AdapterRemovalFailed)) return false;
     result = HelperResult{};
     result.stage = static_cast<Stage>(stage);
     result.cleanupIncomplete = (code & kCleanupIncomplete) != 0;
@@ -291,6 +294,22 @@ bool IsOwnedTunnelServiceCommand(const std::string& commandLine, const std::stri
     const auto arguments = SplitServiceCommandLine(commandLine);
     return arguments.size() == 3 && SameWindowsPath(arguments[0], wireguardExe) &&
            arguments[1] == "/tunnelservice" && SameWindowsPath(arguments[2], configPath);
+}
+
+bool MayRemoveTunnelService(bool ownedRecordPresent, const std::string& serviceName,
+                const std::string& expectedServiceName, const std::string& binaryPath,
+                const std::string& wireguardExe, const std::string& configPath) {
+    return ownedRecordPresent && SameWindowsPath(serviceName, expectedServiceName) &&
+        IsOwnedTunnelServiceCommand(binaryPath, wireguardExe, configPath);
+}
+
+bool HasOwnedServiceConfig(bool ownedRecordPresent, const std::string& serviceName,
+                  const std::string& expectedServiceName, const std::string& binaryPath,
+                  const std::string& wireguardExe, const std::string& configPath,
+                  bool configValidOrMissing) {
+    return configValidOrMissing && MayRemoveTunnelService(ownedRecordPresent, serviceName,
+                                  expectedServiceName, binaryPath,
+                                  wireguardExe, configPath);
 }
 
 }  // namespace tunnel_lifecycle

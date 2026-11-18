@@ -1,16 +1,14 @@
 # TELIPHONES testing
 
-## Current Windows 0.9.0 / proposed module 0.8.2 source review and package boundary
+## Current Windows 0.9.0 / proposed module 0.8.3.12 source review and package boundary
 
-Windows 0.9.0 is independently versioned; proposed module/root broker 0.8.2
-retain protocol 12. The development candidate
-`TELIPHONES-0.8.2.tgz` and its SHA-256 sidecar are prepared for controlled
-testing. This is not a production release and does not establish live FreePBX
-acceptance. The
-historical `TELIPHONES-0.6.7.tgz` and checksum were intentionally removed from
-this checkout and did not contain the proposed 0.8.0 changes. Source version
-checks run without an archive; the
-package validator verifies archive/source equality, metadata and checksum.
+Windows 0.9.0 is independently versioned; proposed module/root broker 0.8.3.12
+retain protocol 12. The development candidate archive is built only after the
+source and regression checks pass. This is not a production release and does
+not establish live FreePBX acceptance. The historical `TELIPHONES-0.6.7.tgz`
+and checksum are present at the repository root and verified before comparison.
+Source version checks run without an archive; the package validator verifies
+archive/source equality, metadata and checksum.
 
 Run source version consistency independently from the repository root:
 
@@ -18,8 +16,8 @@ Run source version consistency independently from the repository root:
 PYTHONDONTWRITEBYTECODE=1 python3 teliphones/tests/package-validation.py SourceVersionTests
 ```
 
-For complete package validation, first build `TELIPHONES-0.8.2.tgz` using the
-root `README.md` procedure, then run
+For complete package validation, first build `TELIPHONES-0.8.3.12.tgz` using the
+root `README.md` procedure after verification, then run
 `PYTHONDONTWRITEBYTECODE=1 python3 teliphones/tests/package-validation.py`.
 The complete validator requires the archive and checksum; the source-only check
 does not replace it.
@@ -38,9 +36,14 @@ pairing behaviour, startup smoke and portable Release checks, use the
 `desktop/windows/tests/WINDOWS-READINESS.md` reference in the source repository.
 Linux checks do not substitute for Windows execution.
 
-## Current 0.8.2 source checks and release blockers
+## Current 0.8.3.12 source checks and release blockers
 
-Current 0.8.2 firewall regression coverage exercises legitimate IPv4
+Current 0.8.3.12 firewall regression coverage exercises IPv4 listener convergence,
+IPv6-closed fallback under representative FreePBX rules, and rejection of
+unknown or broad IPv6 ACCEPT paths.
+The PHP suite runs with the isolated PHP 8.4 CLI in the development environment;
+it does not modify a host firewall.
+Coverage exercises legitimate IPv4
 POSTROUTING recognition, public-unicast listener packet evaluation, supported
 FreePBX rule traversal and fail-closed decisions for unsupported or ambiguous
 rules. It also covers preservation of Fail2Ban and recovery following
@@ -534,5 +537,15 @@ Before the first authorisation, capture:
 ```bash
 fwconsole teliphones baseline > /root/teliphones-before.json
 ```
+
+## Listener admission failures
+
+If workstation pairing fails while FreePBX is admitting its generated UDP listener, inspect the root-only record before changing firewall state:
+
+```bash
+sudo cat /var/lib/teliphones/firewall-listener-diagnostic.json
+```
+
+The record contains only `operation`, `stage`, and a stable `identifier`; it never copies command output, source addresses, workstation material, or credentials. The browser receives only the identifier, and rollback does not remove the record. It identifies helper validation, Custom Service ownership or zone setup, IPv4/IPv6 generation, final verification, and structurally blocked or unverified FreePBX paths. It is diagnostic evidence, not proof of packet-path reachability.
 
 After revoke (and again after uninstall where practical), capture the same command to a different file and compare the `system` sections. Timestamp and TELIPHONES session metadata naturally change. Unexpected persistent interfaces, routes, rules or listeners are a stop condition. The baseline command is observational only and deliberately excludes secrets and configuration-file contents.

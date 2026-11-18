@@ -1,5 +1,6 @@
 import json
 import secrets
+import shutil
 import socket
 import subprocess
 import sys
@@ -15,6 +16,7 @@ from checker_probe import connect_probe, run_checks, sign, tcp_probe
 from wireguard_namespace_lab import php_checker_action
 
 
+@unittest.skipUnless(shutil.which("php"), "PHP is required for the checker bridge")
 class PhpCheckerBridgeTests(unittest.TestCase):
     def test_module_accepts_signed_evidence_from_real_local_probe(self):
         with tempfile.TemporaryDirectory(prefix="teliphones-php-checker-test-") as temporary:

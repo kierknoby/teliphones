@@ -51,6 +51,21 @@ Configuration Manager removal path runs only when the current alias, GUID and
 PnP ID exactly match a complete record. Pending, missing, malformed and
 inconsistent records cannot authorise device removal.
 
+Service uninstall is separately guarded by a valid persisted record, exact
+SCM service name, own-process service type, WireGuard executable/config command
+line, and a valid bootstrap config when that file remains. A missing config may
+be part of interrupted cleanup; a malformed or damaged config is not trusted.
+If a service remains but its record is missing or damaged, automatic cleanup
+refuses to stop/delete it and reports recovery required. Do not delete a
+same-named service or adapter manually based only on its name. Export the
+TELIPHONES session log and use a controlled Windows administrator recovery:
+verify the service's SCM binary path and config path against the saved TELIPHONES
+profile and the signed WireGuard executable; preserve the service/config and
+record until ownership is established. If it cannot be established, leave the
+service and adapter untouched and seek a TELIPHONES recovery build/operator
+review. Legacy records with a different schema are currently treated as
+unverified, not migrated or removed automatically.
+
 Startup recovery considers saved-profile tunnel names and valid records only.
 It no longer scans the generic WireGuard namespace. A valid interrupted record
 is reconciled even if its service already disappeared; completed records are
@@ -337,6 +352,34 @@ cmake -S . -B build/core
 cmake --build build/core
 ctest --test-dir build/core --output-on-failure
 ```
+
+### Controlled Windows acceptance: connection, cleanup, reconnect and SSH
+
+This is a manual, destructive-to-the-owned-test-tunnel procedure. It must run
+only on a disposable or explicitly approved Windows workstation, against a
+disposable authorised PBX profile. It does not authorise changes to a production
+PBX, the working 0.6.7 installation, another WireGuard tunnel, or an unrelated
+network adapter.
+
+Before selecting **Connect**, the operator must explicitly authorise this exact
+test tunnel lifecycle run and record the profile ID, the TELIPHONES tunnel name,
+the time, and every pre-existing WireGuard adapter/service. Do not proceed on
+implicit approval or merely because the executable was built.
+
+1. In an x64 Visual Studio 2022 Developer PowerShell, run `.uild.ps1 -Configuration Release -Platform x64` from `desktop\windows`, then run `TeliphonesCoreTests.exe`, `SessionDiagnosticsTests.exe`, and the native WireGuard integration command documented below. Record every exit code.
+2. Start the newly built `build\Release\TELIPHONES.exe`; do not replace, alter, or start the 0.6.7 baseline installation. Select PowerShell as the SSH terminal. Confirm the UI says **Open SSH**, not **SSH Console**.
+3. Record `Get-NetAdapter`, `Get-Service -Name 'WireGuardTunnel$*'`, and `Get-Process wireguard -ErrorAction SilentlyContinue` before connecting. Identify only the new exact `TELIPHONES-<12 lowercase hex>` resource created by this test.
+4. Connect using the disposable approved profile. Confirm the exact TELIPHONES service is running and its exact adapter is present; do not infer PBX reachability solely from a running service.
+5. Select **Disconnect**. Confirm that exact service is absent, the exact named adapter is absent or `NotPresent`, and no owned `wireguard.exe` remains. If cleanup reports a Configuration Manager error, preserve its native error number and the exact service/adapter state; do not remove a device manually or reset networking.
+6. Connect again without restarting Windows, repeat Disconnect, and record whether error 1460 occurs. Verify every adapter/service recorded in step 3 is unchanged.
+7. While connected, select **Open SSH**. Confirm PowerShell opens separately, TELIPHONES remains running, and the tunnel remains present. Close PowerShell and confirm TELIPHONES and the tunnel remain running. PuTTY preferences must remain unchanged; managed My PBXs SSH must report its existing OpenSSH-agent limitation rather than falling back insecurely.
+8. With one active test connection, close TELIPHONES. Confirm the exact owned service and adapter are removed, then relaunch the new executable and complete one more Connect → Disconnect cycle.
+
+Any failure in steps 4–8 is an acceptance failure. Export the TELIPHONES session
+log and record service state, adapter alias/GUID/PnP instance, process IDs, and
+the native error before further investigation. Never use a broad WireGuard
+uninstaller, `pnputil` wildcard, network reset, or service restart as a test
+remedy.
 
 ### Reproducible native Windows build and validation
 

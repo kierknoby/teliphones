@@ -28,7 +28,6 @@
 #include "PairDlg.h"
 #include "SupportDlg.h"
 #include "SessionLogDlg.h"
-#include "SshTerminalDlg.h"
 #include "resource.h"
 #include "Version.h"
 
@@ -53,8 +52,6 @@ struct OperationResult {
     bool policyLocked = false;
     bool unlockRequestPending = false;
     bool sourcesRequestPending = false;
-    std::shared_ptr<tlp::win::ManagedSshConsole> sshConsole;
-    std::optional<tlp::Profile> sshProfile;
     UINT_PTR generation = 0;
 };
 
@@ -610,7 +607,7 @@ void CMainDlg::UpdateButtons() {
     GetDlgItem(IDC_OPEN_SSH)->EnableWindow(verified && sshAllowed);
     GetDlgItem(IDC_OPEN_SSH)->SetWindowTextW(activeProfile != nullptr && activeProfile->kind == ProfileKind::Administrator &&
         !activeProfile->pairing.ssh ? L"Request SSH" :
-        activeProfile != nullptr && activeProfile->kind == ProfileKind::Administrator ? L"SSH Console" : L"Open SSH");
+        L"Open SSH");
     const bool mayChangeWorkstationPolicy = connected && verified && activeProfile != nullptr &&
         activeProfile->kind == ProfileKind::Administrator &&
         (!activePolicyLocked_ || !unlockRequestPending_);
@@ -1062,17 +1059,6 @@ void CMainDlg::OnOpenSsh() {
     try {
         const auto profile = *FindProfile(active_->profileId);
         if (profile.kind == ProfileKind::Administrator) tlp::win::RequireManagedSsh(profile);
-        if (profile.kind == ProfileKind::Administrator) {
-            busy_ = true;
-            UpdateButtons();
-            LogEvent("ssh_requested", "info", "Starting the built-in TELIPHONES SSH console over the admitted WireGuard session.");
-            RunInBackground(m_hWnd, OperationKind::Ssh, "", [profile](OperationResult& result) {
-                result.sshConsole = tlp::win::StartManagedSshConsole(profile);
-                result.sshProfile = profile;
-                return true;
-            });
-            return;
-        }
         const auto session = active_->sessionId;
         auto preferences = CurrentPreferences();
         try {
@@ -1602,28 +1588,7 @@ LRESULT CMainDlg::OnOperationDone(WPARAM, LPARAM lparam) {
                 LogEvent("ssh_failed", "error", result->error);
                 ShowError(result->error);
             } else {
-                if (result->sshConsole && result->sshProfile) {
-                    LogEvent("ssh_launched", "info", "Built-in SSH console opened; authentication status is reported by the SSH client.");
-                    const std::string sshProfileId = result->sshProfile->id;
-                    try {
-                        CSshTerminalDlg terminal(*result->sshProfile, std::move(result->sshConsole), this);
-                        terminal.DoModal();
-                    } catch (const std::exception& error) {
-                        LogEvent("ssh_console_failed", "error", error.what());
-                        ShowError(std::string("The SSH console could not be shown: ") + error.what());
-                    }
-                    // However the console closed, its owned SSH processes and credential must be gone.
-                    try {
-                        tlp::win::CloseManagedSsh(sshProfileId);
-                        LogEvent("ssh_ended", "info", "Built-in TELIPHONES SSH console closed.");
-                    } catch (const std::exception& error) {
-                        LogEvent("ssh_teardown_failed", "error", error.what());
-                        ShowError(std::string("The SSH console closed, but its SSH session could not be verified as ended: ") +
-                                  error.what() + " Disconnect from the PBX to end the tunnel.");
-                    }
-                } else {
-                    LogEvent("ssh_launched", "info", "SSH terminal process launched; authentication is not yet observed.");
-                }
+                LogEvent("ssh_launched", "info", "Selected external SSH terminal process launched; authentication is not yet observed.");
                 if (!result->warning.empty()) SetState("SSH request submitted", result->warning);
             }
             break;

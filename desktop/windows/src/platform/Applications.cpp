@@ -202,6 +202,10 @@ void OpenFreePbx(const Profile& profile, const std::string& sessionId, const Pre
 
 void OpenSsh(const Profile& profile, const std::string& sessionId, const Preferences& preferences) {
     if (profile.kind == ProfileKind::Administrator) {
+        // The in-process Custom Console is intentionally disabled. Use the
+        // selected external OpenSSH terminal so certificate-backed
+        // administrator access keeps its pinned-host and disposable-agent
+        // security boundary.
         StartManagedSsh(profile, preferences);
         return;
     }

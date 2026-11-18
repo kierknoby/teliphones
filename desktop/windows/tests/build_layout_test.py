@@ -87,7 +87,11 @@ class BuildLayoutTests(unittest.TestCase):
                          "JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE"):
             self.assertIn(contract, session)
         main = (ROOT / "src/app/MainDlg.cpp").read_text()
-        self.assertIn("result.sshConsole = tlp::win::StartManagedSshConsole(profile)", main)
+        # Preserve the retired implementation, but never launch the Custom
+        # Console from the application window.
+        self.assertNotIn("StartManagedSshConsole", main)
+        self.assertNotIn("CSshTerminalDlg", main)
+        self.assertIn("tlp::win::OpenSsh(profile, session, preferences)", main)
         native_host = (ROOT / "tests/ssh_native_host.cpp").read_text()
         native_test = (ROOT / "tests/ssh_native_check.py").read_text()
         self.assertIn("--production-console", native_host)
@@ -124,8 +128,7 @@ class BuildLayoutTests(unittest.TestCase):
         update = main.split("void CMainDlg::UpdateButtons() {", 1)[1].split("\n}\n", 1)[0]
         open_ssh_label = update.split("GetDlgItem(IDC_OPEN_SSH)->SetWindowTextW(", 1)[1].split(";", 1)[0]
         # No connection is active at startup, so the fallback label must not dereference activeProfile.
-        self.assertIn('activeProfile != nullptr && activeProfile->kind == ProfileKind::Administrator ? L"SSH Console"',
-                      open_ssh_label)
+        self.assertIn('L"Open SSH"', open_ssh_label)
         self.assertNotIn(': activeProfile->', " ".join(open_ssh_label.split()))
         workflow = (ROOT.parents[1] / ".github/workflows/windows-build.yml").read_text(encoding="utf-8")
         self.assertIn("python -u desktop/windows/tests/gui_startup_smoke.py desktop/windows/build/Release/TELIPHONES.exe --local-dumps",
@@ -392,8 +395,9 @@ class BuildLayoutTests(unittest.TestCase):
         self.assertNotIn("TerminateProcess", wait)
         install = wireguard.split("bool InstallTunnel(", 1)[1].split("void RemoveTunnel(", 1)[0]
         self.assertLess(install.index("catch (const HelperStillRunning&)"), install.index("RemoveTunnel(tunnelName)"))
-        remove = wireguard.split("void RemoveTunnel(", 1)[1].split("bool IsHelperInvocation(", 1)[0]
-        self.assertIn("status.dwCurrentState != SERVICE_START_PENDING", remove)
+        remove = wireguard.split("lifecycle::HelperResult removeOwnedTunnel(", 1)[1].split("DWORD helperUp(", 1)[0]
+        self.assertIn("if (!tunnel_startup::Absent(status) && status.processId != 0)", remove)
+        self.assertIn("HasOwnedServiceConfig", remove)
         main = (ROOT / "src/app/MainDlg.cpp").read_text()
         shutdown = main.split("void CMainDlg::OnCancel()", 1)[1]
         self.assertIn("shutdown_with_recovery_state", shutdown)
@@ -419,11 +423,10 @@ class BuildLayoutTests(unittest.TestCase):
         self.assertNotIn("return false", presence)
         self.assertIn("IfOperStatusNotPresent) == lifecycle::kInterfaceOperStatusNotPresent", wireguard)
         # Normal disconnect verifies adapter release instead of leaving the next connection to discover it.
-        remove = wireguard.split("void RemoveTunnel(", 1)[1].split("lifecycle::AdapterPresence TunnelAdapterPresence(", 1)[0]
-        removed = remove.split("if (removed) {", 1)[1].split("runElevated(", 1)[0]
-        self.assertLess(removed.index("DeleteFileW("), removed.index("awaitAdapterRelease(tunnelName)"))
-        self.assertIn("service-free residual adapter", remove)
-        self.assertIn("runElevated", remove)
+        remove = wireguard.split("lifecycle::HelperResult removeOwnedTunnel(", 1)[1].split("DWORD helperUp(", 1)[0]
+        self.assertLess(remove.index("removeVerifiedAdapter(tunnelName)"), remove.index("awaitAdapterRelease(tunnelName)"))
+        self.assertIn("DeleteFileW(configPath.c_str())", remove)
+        self.assertIn("runElevated", wireguard.split("void RemoveTunnel(", 1)[1].split("lifecycle::AdapterPresence TunnelAdapterPresence(", 1)[0])
         # The fixed release budget is unchanged; the fix is classification, not a longer wait.
         lifecycle = (ROOT / "src/core/TunnelLifecycle.h").read_text()
         self.assertIn("kAdapterReleaseMs = 5000", lifecycle)
@@ -438,15 +441,19 @@ class BuildLayoutTests(unittest.TestCase):
     def test_disconnect_serialises_removal_and_rechecks_service_after_adapter_wait(self):
         wireguard = (ROOT / "src/platform/WireGuard.cpp").read_text()
         remove = wireguard.split("void RemoveTunnel(", 1)[1].split("lifecycle::AdapterPresence TunnelAdapterPresence(", 1)[0]
-        self.assertLess(remove.index("HelperLockName("), remove.index("DeleteFileW(staging"))
-        self.assertLess(remove.index("lock->owned()"), remove.index("OpenServiceW("))
+        self.assertLess(remove.index("HelperLockName("), remove.index("runElevated("))
+        self.assertLess(remove.index("lock->owned()"), remove.index("runElevated("))
         self.assertLess(remove.index("lock.reset()"), remove.index("runElevated("))
-        final = remove.split("const auto adapter = awaitAdapterRelease(tunnelName);", 1)[1]
-        self.assertLess(final.index("ReadStatus("), final.index("return;"))
-        self.assertIn("tunnel_startup::Absent(current)", final)
-        self.assertIn("tunnel_startup::AwaitAbsent(serviceName(tunnelName), budget::kDeletionWaitMs)", remove)
+        helper_removal = wireguard.split("lifecycle::HelperResult removeOwnedTunnel(", 1)[1].split("DWORD helperUp(", 1)[0]
+        self.assertIn("tunnel_startup::ReadStatus(service)", helper_removal)
+        self.assertIn("tunnel_startup::AwaitAbsent(service, budget::kDeletionWaitMs)", helper_removal)
         elevated = wireguard.split("lifecycle::HelperResult removeOwnedTunnel(", 1)[1].split("DWORD helperUp(", 1)[0]
-        final = elevated.split("const auto adapter = awaitAdapterRelease(tunnelName);", 1)[1]
+        # Request identity-verified PnP removal before waiting for the
+        # asynchronous device lifecycle, and retain its native failure code.
+        self.assertLess(elevated.index("removeVerifiedAdapter(tunnelName)"), elevated.index("awaitAdapterRelease(tunnelName)"))
+        self.assertIn("CM_MapCrToWin32Err", wireguard)
+        self.assertIn("Residual::AdapterRemovalFailed", elevated)
+        final = elevated.split("finalAdapter = awaitAdapterRelease(tunnelName);", 1)[1]
         self.assertIn("ReadStatus(service)", final)
         self.assertIn("tunnel_startup::Absent(status)", final)
         self.assertIn("if (!outcome.cleanupIncomplete)", final)
@@ -561,10 +568,10 @@ class BuildLayoutTests(unittest.TestCase):
         self.assertIn("GetTickCount64() + 5000", exit_path)
         self.assertIn("FinishClose()", exit_path)
         self.assertIn("void CloseAllManagedSsh()", session)
-        # Console failures stay inside the window procedure and the session is verified closed afterwards.
-        console = main.split("CSshTerminalDlg terminal(", 1)[1].split("break;", 1)[0]
-        self.assertIn("catch (const std::exception& error)", console)
-        self.assertIn("tlp::win::CloseManagedSsh(sshProfileId);", console)
+        # The Custom Console remains in source for future work, but must not
+        # be invokable from the main application or participate in shutdown.
+        self.assertNotIn("StartManagedSshConsole", main)
+        self.assertNotIn("CSshTerminalDlg", main)
         terminal = (ROOT / "src/app/SshTerminalDlg.cpp").read_text()
         init = terminal.split("BOOL CSshTerminalDlg::OnInitDialog()", 1)[1].split("BOOL CSshTerminalDlg::InitializeConsole()", 1)[0]
         self.assertIn("return InitializeConsole();", init)
@@ -1337,7 +1344,7 @@ endfunction()
         self.assertIsNotNone(broker_version)
         self.assertIsNotNone(broker_protocol)
         module_version = ET.parse(ROOT.parents[1] / "teliphones/module.xml").getroot().findtext("version")
-        self.assertRegex(module_version or "", r"^\d+\.\d+\.\d+$")
+        self.assertRegex(module_version or "", r"^\d+\.\d+\.\d+(?:\.\d+)?$")
         self.assertEqual(broker_version.group(1), module_version)
         changelog_text = " ".join(changelog.split())
         self.assertRegex(
@@ -1399,7 +1406,7 @@ endfunction()
         self.assertNotIn('"TELIPHONES is a UK registered trademark.\\r\\n"', layout)
         self.assertIn("desktop/windows/build/artifact/LICENSE", workflow)
         module_version = ET.parse(ROOT.parents[1] / "teliphones/module.xml").getroot().findtext("version")
-        self.assertRegex(module_version or "", r"^\d+\.\d+\.\d+$")
+        self.assertRegex(module_version or "", r"^\d+\.\d+\.\d+(?:\.\d+)?$")
         for path, statement in ((ROOT / "README.md",
              r"TELIPHONES\s+0\.9\.0\s+for Windows[^.\n]*licensed under GPLv3"),):
             text = path.read_text(encoding="utf-8")
@@ -1539,6 +1546,10 @@ endfunction()
         self.assertIn("tlp::win::CloseManagedSsh(managedSshProfile)", main)
         action = main[main.index("void CMainDlg::OnOpenSsh()"):main.index("void CMainDlg::OnTimer(")]
         self.assertLess(action.index("RequireManagedSsh(profile)"), action.index("tlp::ResolveApp("))
+        self.assertIn("tlp::win::OpenSsh(profile, session, preferences)", action)
+        ssh_result = main[main.index("case OperationKind::Ssh:"):main.index("case OperationKind::Policy:")]
+        self.assertNotIn("StartDisconnect(", ssh_result)
+        self.assertNotIn("FinishClose(", ssh_result)
 
     def test_connection_health_popout_and_integrated_panel_are_wired(self):
         resource = (ROOT / "src/app/TELIPHONES.rc").read_text()

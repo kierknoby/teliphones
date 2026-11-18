@@ -11,7 +11,7 @@ $recorder = new class extends WebSupport {
     public array $reply = ['ok' => true, 'message' => 'paired', 'pairing_response' => 'TELIPHONES-PAIR-RESPONSE-1:eyJzY2hlbWEiOiJ0ZWxpcGhvbmVzIn0'];
     public function request(array $request): array
     {
-        if ($request['action'] === 'status') return ['ok' => true, 'status' => ['protocol' => 4, 'component_version' => '0.8.2', 'phase' => 'Ready',
+        if ($request['action'] === 'status') return ['ok' => true, 'status' => ['protocol' => 12, 'component_version' => '0.8.3.12', 'phase' => 'Ready',
             'workstations' => ['ready' => true, 'requirements' => ['wg' => true, 'ip' => true, 'nft' => true], 'items' => []]]];
         $this->sent[] = $request;
         return $this->reply;
@@ -36,27 +36,31 @@ $assert(!$olderResult['dispatched'] && $recorder->sent === $before
     && strpos($olderResult['notice']['error'], 'root broker') !== false,
     'Broker 0.6.1 must not receive pairing even if operational and reporting protocol 12.');
 $sourceLockedPost = ['sources' => '198.51.100.24'] + $post;
-$lockedResult = WebSupport::handleAction($recorder, $sourceLockedPost, 'known', $operational, $https);
+$preSourceLockBroker = $operational;
+$preSourceLockBroker['status']['protocol'] = 7;
+$lockedResult = WebSupport::handleAction($recorder, $sourceLockedPost, 'known', $preSourceLockBroker, $https);
 $assert(!$lockedResult['dispatched'], 'Source-lock requests must not be sent to a pre-protocol-8 broker.');
 $sourceBroker = $operational;
-$sourceBroker['status']['protocol'] = 8;
+$sourceBroker['status']['protocol'] = 12;
 $recorder->sent = [];
 $lockedResult = WebSupport::handleAction($recorder, $sourceLockedPost, 'known', $sourceBroker, $https);
 $assert($lockedResult['dispatched'] && $recorder->sent[0]['sources'] === '198.51.100.24',
     'Source restrictions must be forwarded only to a compatible broker.');
 
 $modern = $operational;
-$modern['status']['protocol'] = 5;
+$modern['status']['protocol'] = 12;
+$modern['status']['component_version'] = '0.8.3.12';
 $modern['status']['workstations']['ssh_ready'] = true;
 $webBroker = $modern;
-$webBroker['status']['protocol'] = 6;
 $recorder->sent = [];
 $result = WebSupport::handleAction($recorder, ['web' => 'https:8443'] + $post, 'known', $webBroker,
     ['HTTPS' => 'on', 'SERVER_PORT' => '8443']);
 $assert($result['dispatched'] && $recorder->sent[0]['web'] === 'https:8443',
     'Custom HTTPS management ports must reach a compatible broker unchanged.');
 $recorder->sent = [];
-$result = WebSupport::handleAction($recorder, ['web' => 'https:8443'] + $post, 'known', $modern, $https);
+$oldWebBroker = $modern;
+$oldWebBroker['status']['protocol'] = 5;
+$result = WebSupport::handleAction($recorder, ['web' => 'https:8443'] + $post, 'known', $oldWebBroker, $https);
 $assert(!$result['dispatched'] && $recorder->sent === [], 'An old broker must not silently discard configured web permissions.');
 $managedPost = ['request' => 'TELIPHONES-PAIR-REQUEST-2:abc', 'ssh_user' => 'root'] + $post;
 $sshRequestPayload = json_encode(['schema' => 'teliphones-pair-request/2', 'workstation' => 'ADMIN-PC',
@@ -66,11 +70,13 @@ $managedPost['request'] = 'TELIPHONES-PAIR-REQUEST-2:' . rtrim(strtr(base64_enco
 $managedPost['ssh'] = '1';
 $sourceBroker['status']['workstations']['ssh_ready'] = true;
 $lockedManaged = ['sources' => '198.51.100.24'] + $managedPost;
+$lockedSshBroker = $sourceBroker;
+$lockedSshBroker['status']['protocol'] = 8;
 $recorder->sent = [];
-$result = WebSupport::handleAction($recorder, $lockedManaged, 'known', $sourceBroker, $https);
+$result = WebSupport::handleAction($recorder, $lockedManaged, 'known', $lockedSshBroker, $https);
 $assert(!$result['dispatched'] && $recorder->sent === [],
     'A protocol-8 broker must not receive Locked SSH approval.');
-$sourceBroker['status']['protocol'] = 9;
+$sourceBroker['status']['protocol'] = 12;
 $recorder->sent = [];
 $result = WebSupport::handleAction($recorder, $lockedManaged, 'known', $sourceBroker, $https);
 $assert($result['dispatched'] && $recorder->sent[0]['ssh'] === '1' && $recorder->sent[0]['sources'] === '198.51.100.24',
@@ -96,7 +102,7 @@ $assert($result['dispatched'], 'Missing SSH prerequisites must not disable web-o
 $result = WebSupport::handleAction($recorder, ['ssh' => '1'] + $post, 'known', $modern, $https);
 $assert(!$result['dispatched'] && strpos($result['notice']['error'], 'did not include SSH capability') !== false,
     'A version-1 web-only request must never receive SSH permission.');
-$policyStatus = ['ok' => true, 'status' => ['protocol' => 8, 'component_version' => '0.8.2', 'workstations' => [
+$policyStatus = ['ok' => true, 'status' => ['protocol' => 12, 'component_version' => '0.8.3.12', 'workstations' => [
     'ready' => true, 'items' => [], 'requirements' => ['wg' => true, 'ip' => true, 'nft' => true],
     'connection_state' => 'closed']]];
 $assert(WebSupport::supportsWorkstationPolicy($policyStatus), 'Protocol 8 must expose connection-state controls.');
@@ -105,7 +111,7 @@ $recorder->sent = [];
 $result = WebSupport::handleAction($recorder, $policyPost, 'known', $policyStatus, $https);
 $assert($result['dispatched'] && $recorder->sent[0] === ['action' => 'workstation-policy', 'state' => 'frozen'],
     'Connection-state changes must forward only the selected state.');
-$sessionStatus = ['ok' => true, 'status' => ['protocol' => 11, 'component_version' => '0.8.2', 'workstations' => [
+$sessionStatus = ['ok' => true, 'status' => ['protocol' => 12, 'component_version' => '0.8.3.12', 'workstations' => [
     'ready' => true, 'items' => [], 'requirements' => ['wg' => true, 'ip' => true, 'nft' => true],
     'max_sessions' => 1, 'connected_workstations' => 1]]];
 $assert(WebSupport::supportsWorkstationSessions($sessionStatus), 'Protocol 11 must report enforced workstation session capacity.');
@@ -124,7 +130,9 @@ $assert($result['dispatched'] && $recorder->sent[0] === ['action' => 'workstatio
     'workstation_id' => '0123456789abcdef', 'state' => 'lock', 'sources' => 'current'],
     'Post-pair source management must forward the workstation identity and selected restrictions.');
 $recorder->sent = [];
-$result = WebSupport::handleAction($recorder, $managePost, 'known', $sessionStatus, $https);
+$preManagementStatus = $sessionStatus;
+$preManagementStatus['status']['protocol'] = 11;
+$result = WebSupport::handleAction($recorder, $managePost, 'known', $preManagementStatus, $https);
 $assert(!$result['dispatched'] && $recorder->sent === [],
     'A broker without post-pair policy support must not receive workstation management actions.');
 $sshStatus = $manageStatus;
@@ -239,11 +247,15 @@ $recorder->reply['events'] = [$admission,
         'source' => 'pbx', 'event' => 'controller.state', 'data' => ['state' => 'listening']],
     ['timestamp_utc' => '2026-11-02T19:00:02Z', 'unix_time' => 1793646002, 'diagnostic_id' => $diagnosticId,
         'source' => 'pbx', 'event' => 'reconcile.background',
-        'data' => ['result' => 'failed', 'duration_ms' => 61000, 'retry_seconds' => 5]]];
+        'data' => ['result' => 'failed', 'duration_ms' => 61000, 'retry_seconds' => 5]],
+    ['timestamp_utc' => '2026-11-02T19:00:03Z', 'unix_time' => 1793646003, 'diagnostic_id' => $diagnosticId,
+        'source' => 'pbx', 'event' => 'listener.reconciliation',
+        'data' => ['identifier' => 'root-helper-version-mismatch']]];
 $ajax = WebSupport::ajax('diagnostics', 'POST', $diagnosticPost, $session, $admin, $https, $recorder);
 $events = $ajax['body']['diagnostics']['events'];
-$assert(array_column($events, 'event') === ['session.request', 'controller.state', 'reconcile.background']
-    && $events[0]['data'] === $admission['data'] && $events[2]['data']['retry_seconds'] === 5,
+$assert(array_column($events, 'event') === ['session.request', 'controller.state', 'reconcile.background', 'listener.reconciliation']
+    && $events[0]['data'] === $admission['data'] && $events[2]['data']['retry_seconds'] === 5
+    && $events[3]['data']['identifier'] === 'root-helper-version-mismatch',
     'Admission, controller and reconciliation evidence must reach the administrator with malformed values dropped.');
 $recorder->sent = [];
 $ajax = WebSupport::ajax('diagnostics', 'POST', ['diagnostic_id' => $diagnosticId], $session, $admin, $https, $recorder);
@@ -272,7 +284,7 @@ $item = ['id' => '0123456789abcdef', 'name' => 'ADMIN-PC', 'address' => '100.70.
     'created_at' => 1, 'expires_at' => 2000000000, 'last_handshake' => 0,
     'verified_endpoint' => ['address' => '2001:db8::24', 'port' => 51821],
     'fingerprint' => 'SHA256:abcdefghijklmnop', 'public_key' => 'LEAKED-PUBLIC-KEY'];
-$status = ['ok' => true, 'status' => ['protocol' => 4, 'component_version' => '0.8.2', 'phase' => 'Ready', 'workstations' => ['ready' => true, 'requirements' => ['wg' => true, 'ip' => true, 'nft' => true],
+$status = ['ok' => true, 'status' => ['protocol' => 12, 'component_version' => '0.8.3.12', 'phase' => 'Ready', 'workstations' => ['ready' => true, 'requirements' => ['wg' => true, 'ip' => true, 'nft' => true],
     'error' => '', 'listen_port' => 51821, 'pbx_address' => '100.70.1.1', 'items' => [$item, ['id' => '../../x', 'name' => 'bad']]]]];
 $workstations = WebSupport::workstations($status);
 $assert($workstations['supported'] && $workstations['ready'] && count($workstations['items']) === 1 && !isset($workstations['items'][0]['public_key']), 'Workstation status must be allowlisted.');

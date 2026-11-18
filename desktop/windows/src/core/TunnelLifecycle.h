@@ -37,6 +37,7 @@ enum class Residual : std::uint32_t {
     Unknown = 5,
     AdapterOnly = 6,        // the service is gone but an active adapter with the tunnel's exact alias still exists
     AdapterUnverified = 7,  // the service is gone but Windows could not enumerate network interfaces
+    AdapterRemovalFailed = 8, // identity-checked Configuration Manager removal was refused or failed
 };
 
 struct HelperResult {
@@ -63,6 +64,15 @@ std::vector<std::string> SplitServiceCommandLine(const std::string& commandLine)
 // TELIPHONES tunnel's protected configuration file. Paths compare ASCII case-insensitively.
 bool IsOwnedTunnelServiceCommand(const std::string& commandLine, const std::string& wireguardExe,
                                  const std::string& configPath);
+
+bool MayRemoveTunnelService(bool ownedRecordPresent, const std::string& serviceName,
+                            const std::string& expectedServiceName, const std::string& binaryPath,
+                            const std::string& wireguardExe, const std::string& configPath);
+
+bool HasOwnedServiceConfig(bool ownedRecordPresent, const std::string& serviceName,
+                           const std::string& expectedServiceName, const std::string& binaryPath,
+                           const std::string& wireguardExe, const std::string& configPath,
+                           bool configValidOrMissing);
 bool SameWindowsPath(const std::string& left, const std::string& right);
 
 // Whether this tunnel's WireGuardNT adapter still exists, from Windows' interface table (GetIfTable2).

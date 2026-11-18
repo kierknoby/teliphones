@@ -8,6 +8,53 @@ repository. Portable Linux validation has been run for the broker, FreePBX modul
 Windows core; current evidence is recorded in DEVELOPMENT-0.8.0.md. Native Windows compilation/UI integration and live FreePBX
 session, migration, firewall and SSH acceptance remain outstanding.
 
+## 0.8.3.12, IPv4/IPv6 listener verification candidate (unreleased development)
+
+- Compare the listener verifier against the checksum-verified 0.6.7 package and
+  add exact FreePBX zone traversal checks for blocks before the generated UDP
+  service jump. Keep the post-hook INPUT DROP conclusion withdrawn because the
+  accepted service chain terminates traversal.
+- Preserve IPv4-only FreePBX Custom Service compatibility when IPv6 is closed;
+  recognize only exact multicast/broadcast ACCEPT rules as irrelevant in the
+  relevant fallback path.
+- Bind the protected control socket before workstation recovery and gate
+  state-changing broker actions until recovery completes. Status remains
+  available and workstation readiness remains false during recovery.
+- Enforce broker protocol 12 as the module minimum and preserve existing
+  authority/session protections. Keep this candidate unreleased pending live
+  FreePBX and native Windows acceptance.
+
+- Keep the verified IPv4 listener as the pairing admission requirement. If no
+  IPv6 Custom Service was generated, accept that absence only when IPv6 INPUT
+  policy is DROP and ordered rule traversal proves no unicast UDP ACCEPT path.
+- Ignore recognized IPv6-only traffic, established-only rules, unrelated UDP
+  ports, multicast/broadcast traffic and opaque terminal denies; unknown
+  potential ACCEPT paths, unsupported control flow and broad IPv6 exposure
+  remain fail-closed.
+- Correct FreePBX external-zone ordered traversal so harmless multicast rules
+  do not make a later generated listener ACCEPT appear unreachable.
+- Retain IPv4 and IPv6 snapshots, generated IPv6 service verification when
+  present, broker startup readiness gating and Windows lifecycle protections.
+- Not a release; PHP source regressions must pass before controlled FreePBX
+  functional acceptance.
+
+## 0.8.3.10, numeric listener recovery candidate (superseded development)
+
+- Restore narrow FreePBX-managed Custom Service listener verification, including
+  FreePBX 17 `fpbxinterfaces` routing, asynchronous regeneration and ownership
+  recovery.
+- Correct the 0.8.0 regression that made IPv6 generated service rules mandatory
+  for an IPv4 pairing. A missing IPv6 service is accepted only when the
+  supported FreePBX traversal falls through to `INPUT DROP`; an IPv6 ACCEPT,
+  block, unsupported traversal or non-DROP policy remains a failure.
+- Preserve source-specific Fail2Ban exclusions while rejecting relevant terminal
+  UDP blocks, broad unsafe acceptance, incomplete public-interface coverage and
+  unsupported structural conditions.
+- Shipped numeric module/broker metadata 0.8.3.10 for monotonic upgrade from installed
+  0.8.3; the historical installation archive is `0.8.3.10`.
+- Retain protocol 12 and independently versioned Windows 0.9.0. This candidate
+  is not a release or evidence of live pairing acceptance.
+
 ## 0.8.1, development firewall recovery package (unreleased)
 
 - Package the reviewed FreePBX firewall-regeneration recovery, order-sensitive

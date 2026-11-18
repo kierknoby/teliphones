@@ -59,11 +59,16 @@ class Teliphones extends Command
 
         $action = strtolower((string)$input->getArgument('action'));
         if ($action === 'listener') {
+            $stateFile = self::STATE_DIR . '/firewall-listener.json';
             try {
                 $helper = '/usr/local/lib/teliphones-broker/FirewallListener.php';
                 if (is_link($helper) || !is_file($helper) || fileowner($helper) !== 0
                     || (fileperms($helper) & 0022) !== 0) {
                     throw new \RuntimeException('Rerun the root bootstrap to install the trusted firewall helper.');
+                }
+                $moduleHelper = dirname(__DIR__) . '/FirewallListener.php';
+                if (!is_file($moduleHelper) || !hash_equals(hash_file('sha256', $moduleHelper), hash_file('sha256', $helper))) {
+                    throw new \RuntimeException('TLP-LISTENER-ROOT-HELPER-MISMATCH: Root firewall helper version mismatch; rerun the root bootstrap.');
                 }
                 require_once $helper;
                 $rawPorts = explode(',', (string)$input->getOption('listen-port'));
@@ -74,15 +79,19 @@ class Teliphones extends Command
                     if ($port !== 0) $ports[] = $port;
                     elseif (count($rawPorts) !== 1) throw new \RuntimeException('Zero cannot be combined with listener ports.');
                 }
-                $stateFile = self::STATE_DIR . '/firewall-listener.json';
                 if (!is_file('/var/www/html/admin/modules/firewall/Firewall.class.php')) {
                     if (is_file($stateFile)) throw new \RuntimeException('Restore FreePBX Firewall to remove its owned listener service.');
                     return Command::SUCCESS;
                 }
                 \FreePBX\modules\Teliphones\FirewallListener::reconcile(\FreePBX::Firewall(), $ports, $stateFile);
                 return Command::SUCCESS;
-            } catch (\Exception $error) {
-                $output->writeln('<error>Listener reconciliation failed: ' . htmlspecialchars($error->getMessage(), ENT_QUOTES) . '</error>');
+            } catch (\Throwable $error) {
+                // The browser receives only a stable identifier.  The helper keeps
+                // the stage record root-only so rollback cannot discard evidence.
+                $record = class_exists('\\FreePBX\\modules\\Teliphones\\FirewallListener')
+                    ? \FreePBX\modules\Teliphones\FirewallListener::recordFailure($stateFile, $ports ?? [], $error)
+                    : self::listenerFailureRecord($stateFile, 'listener-helper-validation-failed');
+                $output->writeln('<error>TLP-LISTENER-DIAGNOSTIC:' . $record['identifier'] . '</error>');
                 return Command::FAILURE;
             }
         }
@@ -113,6 +122,30 @@ class Teliphones extends Command
                 $output->writeln('<error>Unknown action. Use status, baseline, check, authorise, connect-request, provision, connect-confirm, peer, attest, checker-request, checker-accept, open, console-handoff, revoke, enable, disable or reconcile.</error>');
                 return Command::INVALID;
         }
+    }
+
+    /** Minimal fallback for failures before the trusted helper can be loaded. */
+    private static function listenerFailureRecord(string $stateFile, string $identifier): array
+    {
+        $record = ['version' => 1, 'at' => time(), 'operation' => 'admission',
+                   'stage' => 'root-helper-validation', 'identifier' => $identifier];
+        $directory = dirname($stateFile);
+        $temporary = null;
+        try {
+            if (!is_dir($directory) && !mkdir($directory, 0700, true) && !is_dir($directory)) return $record;
+            $temporary = tempnam($directory, '.listener-diagnostic-');
+            if ($temporary === false || !chmod($temporary, 0600)
+                || file_put_contents($temporary, json_encode($record, JSON_THROW_ON_ERROR)) === false) return $record;
+            $handle = fopen($temporary, 'r+');
+            if ($handle === false) return $record;
+            try { if (!fsync($handle)) return $record; } finally { fclose($handle); }
+            rename($temporary, $directory . '/firewall-listener-diagnostic.json');
+        } catch (\Throwable $ignored) {
+            // Do not turn an already-failed, fail-closed admission into success.
+        } finally {
+            if ($temporary !== null && is_file($temporary)) unlink($temporary);
+        }
+        return $record;
     }
 
     private function authorise(InputInterface $input, OutputInterface $output): int

@@ -171,11 +171,17 @@ time.sleep(30)
             self.assertEqual(len(errors), 1)
             self.assertIsInstance(errors[0], broker.BrokerError)
             status = Path('/proc') / child_pid.read_text() / 'stat'
+            def reaped_or_zombie():
+                try:
+                    return not status.exists() or status.read_text().split()[2] == 'Z'
+                except (FileNotFoundError, ProcessLookupError):
+                    # The process exited between the existence and read checks;
+                    # that is the successful reaped state being asserted.
+                    return True
             deadline = time.monotonic() + 1
-            while status.exists() and status.read_text().split()[2] != 'Z' and time.monotonic() < deadline:
+            while not reaped_or_zombie() and time.monotonic() < deadline:
                 time.sleep(0.01)
-            self.assertTrue(not status.exists() or status.read_text().split()[2] == 'Z',
-                            'Cancelled descendant remains runnable')
+            self.assertTrue(reaped_or_zombie(), 'Cancelled descendant remains runnable')
         finally:
             job['cancel'].set()
             worker.join(3)

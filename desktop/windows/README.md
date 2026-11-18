@@ -14,10 +14,10 @@ This guide covers installing and using the Windows application. The
 [FreePBX administration guide](../../teliphones/README.md) covers server setup.
 
 Windows **0.9.0** (file version **0.9.0.0**) is independent of proposed,
-unreleased FreePBX module/root broker **0.8.2**, protocol **12**. A 0.8.2
-development archive is available in this checkout, but is not
-a release or production approval. The historical 0.6.7 archive was intentionally
-removed from this checkout and did not contain these proposed changes. Windows
+unreleased FreePBX module/root broker **0.8.3.12**, protocol **12**. The
+development archive is prepared for controlled review, not a release or
+production approval. The checksum-verified historical 0.6.7 archive is at the
+repository root and does not contain these newer changes. Windows
 0.9.0 bounds tunnel establishment, authentication and controller admission;
 allows Disconnect and Close during Connect; and persists exact tunnel ownership
 for safe next-launch recovery. Its elevated cleanup can remove a residual
@@ -286,25 +286,21 @@ real-PBX validation.
    account and approves it. No account is selected automatically and no root
    default is implied. Rejection leaves web access unchanged.
 3. Connect and wait for verified PBX reachability.
-4. Select **SSH Console**. TELIPHONES requests a certificate for a fresh in-memory
-   session key, checks certificate/host bindings and opens the built-in console
-   over the admitted WireGuard connection. The approved account and port come
-   from the pairing; there is no manual password or fingerprint-acceptance
-   fallback.
-5. Use the built-in VT console for interactive input, ANSI/VT screen updates,
-   cursor movement, colours, scrollback, clipboard actions and remote PTY
-   resizing. The console reports authentication only after OpenSSH confirms it.
-   The portable emulator tests cover VT parsing, keyboard encoding, UTF-8,
-   resizing and scrollback; full-screen program behaviour still requires native
-   Windows and live SSH validation.
-6. Close the console to end that owned SSH session, or **Disconnect** to close
-   owned managed SSH processes and remove the tunnel. The session signing key is
+4. Select **Open SSH**. TELIPHONES requests a certificate for a fresh in-memory
+   session key, checks certificate/host bindings and opens the selected external
+   OpenSSH terminal over the admitted WireGuard connection. The approved account
+   and port come from the pairing; there is no manual password or
+   fingerprint-acceptance fallback.
+5. The Custom Console is disabled and is not launched by **Open SSH**. Use a
+   selected external terminal instead.
+6. Close the external terminal independently, or **Disconnect** to close owned
+   managed SSH processes and remove the tunnel. The session signing key is
    destroyed earlier, immediately after its single authentication signature.
 
 | Terminal | Managed My PBXs SSH | Remote Support |
 |---|---|---|
-| Built-in TELIPHONES console | Default managed SSH experience; VT/ConPTY integration is experimental | Not used |
-| Windows PowerShell / PowerShell 7 / Windows Terminal / Command Prompt | Not used for managed SSH | Supported launch options |
+| Built-in TELIPHONES console | Disabled pending independent native validation | Not used |
+| Windows PowerShell / PowerShell 7 / Windows Terminal / Command Prompt | Supported launch options | Supported launch options |
 | PuTTY | Not used for managed certificates | Supported by the separate workflow |
 
 The built-in console uses the existing managed certificate, pinned host key,
@@ -401,7 +397,7 @@ TELIPHONES opens the FreePBX interface and SSH sessions with applications you ch
 The first time TELIPHONES starts for a Windows user, a **Welcome to TELIPHONES** dialogue asks for:
 
 - **Default Browser**: the Windows default browser, plus whichever of Google Chrome, Microsoft Edge, Mozilla Firefox, Brave and Vivaldi are installed.
-- **Default SSH Terminal**: whichever of Windows PowerShell, PowerShell 7, Windows Terminal, PuTTY and Command Prompt are installed; this preference is not used by managed My PBXs SSH, which opens the built-in console.
+- **Default SSH Terminal**: whichever of Windows PowerShell, PowerShell 7, Windows Terminal, PuTTY and Command Prompt are installed. Managed My PBXs SSH uses the selected OpenSSH-backed terminal; the Custom Console is disabled.
 
 Only applications found on the computer are listed. Google Chrome is preselected when installed, otherwise the Windows default browser. Windows PowerShell is preselected when installed, otherwise Command Prompt, otherwise the first terminal found.
 
@@ -434,7 +430,7 @@ for renderer, accessibility and new-dialogue implementation details.
 |---|---|
 | Windows default browser | The PBX address through the Windows registered URL handler, as in earlier releases |
 | Chrome, Edge, Firefox, Brave, Vivaldi | The detected browser executable, with the PBX address as its only argument |
-| Windows PowerShell / PowerShell 7 / Windows Terminal / Command Prompt | Available for the separate Remote Support workflow; managed My PBXs uses the built-in console |
+| Windows PowerShell / PowerShell 7 / Windows Terminal / Command Prompt | The selected external terminal runs managed My PBXs SSH or the separate Remote Support workflow |
 | PuTTY (Remote Support only) | PuTTY with `-ssh`, the tunnel address, the approved SSH port (`-P`), the user name (`-l`) and a per-PBX `-loghost` name for host-key checking; not managed My PBXs certificate authentication |
 
 The FreePBX address uses the approved HTTP/HTTPS scheme and management port
@@ -452,7 +448,7 @@ If a selected browser or terminal has been uninstalled or moved, TELIPHONES says
 - For a missing browser, choose **Yes** to switch to the Windows default browser, **No** to choose another in Settings, or **Cancel**.
 - For a missing terminal, choose **OK** to choose another in Settings.
 
-A missing selection stays visible in Settings, marked **(not found)**, until replaced. Remote Support can use PuTTY without OpenSSH. Managed My PBXs requires Windows OpenSSH and its adjacent TELIPHONES console helper; missing prerequisites produce an explicit error, never a fallback.
+A missing selection stays visible in Settings, marked **(not found)**, until replaced. Remote Support can use PuTTY without OpenSSH. Managed My PBXs requires Windows OpenSSH; missing prerequisites produce an explicit error, never a fallback.
 
 ### Where preferences are stored
 
@@ -552,13 +548,13 @@ still need Windows validation; portable success is not that evidence.
 | WireGuard missing, unverified or installation cancelled | Use **Settings... > Connectivity > Check Again** or retry **Install WireGuard**; investigate signature/proxy errors, never bypass them |
 | No WireGuard handshake | Check approved pairing, endpoint DNS/IP and router/host UDP policy; a relay is not provided |
 | Handshake but FreePBX unreachable | Check **Connection Health**, the PBX's **FreePBX Firewall integration** status and the [module troubleshooting guide](../../teliphones/README.md#troubleshooting); confirm the installed broker version and helper contents match the authorized module package |
-| **Open SSH** unavailable or rejected | Confirm explicit SSH approval, the approved account, Windows system OpenSSH and adjacent `TELIPHONES-SSH.exe`; choose an OpenSSH-backed terminal, not PuTTY |
+| **Open SSH** unavailable or rejected | Confirm explicit SSH approval, the approved account, Windows system OpenSSH and the selected external terminal. Managed My PBXs requires an OpenSSH-backed terminal; PuTTY remains available for the separate Remote Support workflow. |
 | Host/CA/certificate mismatch | Stop and investigate; re-pair only after verifying the PBX identity through a trusted channel, never accept an unverified key |
 | Browser/terminal missing | Choose a supported installed application in Settings; no silent substitution occurs |
 | Connect or Disconnect reports **Cleanup incomplete** | Choose **Disconnect** again or close and relaunch TELIPHONES to approve recovery. TELIPHONES uses the protected ownership record and removes an adapter only after its current alias, interface GUID and PnP instance all match. It never asks you to use Device Manager, `pnputil` or an administrator shell. Export the session log if recovery remains unresolved |
 | Startup reports **Recovery required** | Approve the offered cleanup. If Windows still refuses the exact owned service or adapter, TELIPHONES preserves the record and remains closable; collect the session log and controlled Windows test evidence before changing the device manually |
 | Startup or Disconnect reports **Temporary SSH files could not be removed** | Saved connections are still loaded and the SSH session has ended. The message names the remaining path under `%LOCALAPPDATA%\TELIPHONES\SSH`; these files hold no private keys. Close any program holding that file (for example an editor viewing `ssh.log`); TELIPHONES retries at the next disconnect or start. A file TELIPHONES did not create is left for inspection, never deleted |
-| TELIPHONES closes unexpectedly while opening the embedded SSH console | This remains an unresolved release blocker; do not assume the console is reliable. Preserve the session diagnostic export, Event Viewer **Windows Logs > Application** event 1000 (Application Error), and any Windows Error Reporting entry for `TELIPHONES.exe` (exception code and faulting module) for investigation. The application must not be treated as having passed the console lifecycle until native Windows regression testing covers the failure and restart path |
+| TELIPHONES closes unexpectedly while opening SSH | The Custom Console is disabled. Preserve the session diagnostic export, Event Viewer **Windows Logs > Application** event 1000 (Application Error), and any Windows Error Reporting entry for `TELIPHONES.exe` (exception code and faulting module). A failed external terminal launch must report an error without closing TELIPHONES or tearing down its tunnel. |
 | Starting TELIPHONES reports it **is already running … but it has no open window** | The earlier process is still closing connections or showing an error. Wait and start again. If it stays without a window, end that process ID in Task Manager. The next start removes any tunnel or temporary SSH files it left; saved connections, credentials and pairings are not affected |
 | **Admission unavailable** and the diagnostic says the handshake could not be read | Whether the tunnel is authenticated is unknown; do not infer an authentication failure or success. Export **View Session Log** and compare it with the PBX diagnostic view. Check approved endpoint DNS and UDP reachability, then inspect `wg show tlp-admin latest-handshakes endpoints` on the PBX (a Locked workstation uses its dedicated interface) |
 | **Admission unavailable** after the handshake was read | A recent handshake alone does not prove that tunnel routing, TCP 8766, or admission works. Use the diagnostic's last confirmed stage and attempt identifier; compare **View Session Log** with the PBX's bounded diagnostics. On the PBX, check `ss -ltnp 'sport = :8766'`, `fwconsole teliphones status`, and `journalctl -u teliphones-broker --since -30min`. The diagnostics distinguish controller transport/timeouts from a broker admission rejection when that evidence is available |

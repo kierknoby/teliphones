@@ -54,10 +54,15 @@ def main():
     with tempfile.TemporaryDirectory() as directory:
         state, enrollment = Path(directory) / "state", Path(directory) / "enrollment"
         state.mkdir(mode=0o700)
-        network = broker_tests.FakeNetwork()
+        # This contract check drives the real broker admission transaction.
+        # Give its privileged-command double the supported FreePBX 17 layout,
+        # exactly as the broker integration tests do; an empty fake has no
+        # firewall backend and correctly fails closed.
+        network = broker_tests.FakeNetwork().freepbx()
         with patch.object(broker, "STATE", state), patch.object(broker, "ENROLLMENT", enrollment):
             instance = broker.Broker()
             instance.run, instance.tool = network.run, lambda name: name
+            instance.iptables_tool = lambda: "iptables" if network.filter is not None else None
             instance.audit = lambda *args: None
             instance.save_workstations({"subnet": None, "listen_port": None, "web": broker.DEFAULT_WEB,
                                         "connection_state": "open", "workstations": []})
@@ -106,9 +111,12 @@ def main():
                     failures.append("C++ core accepted a response bound to another workstation key")
                 instance.dispatch({"action": "unpair", "workstation_id": response["workstation_id"]}, 1000)
                 state_now, _ = instance.workstation_state()
-                if network.peers or not network.link or not broker.policy_equal(
-                        network.table, instance.expected_policy(state_now)):
-                    failures.append("Open-mode revocation did not retain an empty listener with the expected policy")
+                # Final revocation removes TELIPHONES-owned resources. Retaining
+                # an empty listener after the last authority was revoked would
+                # contradict the broker's lifecycle and leave an unnecessary
+                # network resource behind.
+                if network.peers or network.link or network.ruleset is not None:
+                    failures.append("Final revocation did not remove TELIPHONES-owned listener and policy resources")
                 revoked.append(pairing_request)
             try:
                 instance.dispatch({"action": "pair", "request": revoked[0], "endpoint_host": "PBX.Example.NET",

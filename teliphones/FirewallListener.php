@@ -153,7 +153,7 @@ final class FirewallListener
                 if ($verify !== null) $verify($id, $port);
                 else {
                     self::verifyRules($id, $port, '/sbin/iptables', $deadline);
-                    self::verifyRules($id, $port, '/sbin/ip6tables', $deadline);
+                    self::verifyIpv6Rules($id, $port, $deadline);
                 }
             }
             if ($verify === null) {
@@ -163,11 +163,15 @@ final class FirewallListener
                 foreach (['/sbin/iptables', '/sbin/ip6tables'] as $binary) {
                     $lines = [];
                     exec(escapeshellarg($binary) . ' -w 1 -t filter -S 2>&1', $lines, $result);
-                    if ($result !== 0) throw new \RuntimeException('Cannot verify both public address families.');
+                    $family = strpos($binary, 'ip6tables') !== false ? 'IPV6' : 'IPV4';
+                    if ($result !== 0) throw new \RuntimeException('TLP-LISTENER-' . $family
+                        . '-FINAL: Cannot verify both public address families.');
                     foreach ($pending as $id => $port) {
                         $chain = 'fpbxsvc-' . substr(str_replace('-', '', $id), 0, 16);
                         $mismatch = self::rulesMismatch($lines, $chain, $port);
-                        if ($mismatch !== '') throw new \RuntimeException('Final listener path verification failed: ' . $mismatch);
+                        if ($mismatch !== '' && !($family === 'IPV6'
+                                && self::ipv6ListenerFailsClosed($lines, $chain, $port))) throw new \RuntimeException('TLP-LISTENER-' . $family
+                            . '-FINAL: Final listener path verification failed: ' . $mismatch);
                     }
                     $snapshots[] = implode("\n", $lines) . "\n";
                 }
@@ -184,6 +188,100 @@ final class FirewallListener
         } finally {
             flock($lock, LOCK_UN);
             fclose($lock);
+        }
+    }
+
+    /**
+     * Store a deliberately small, root-only failure record.  This is separate
+     * from ownership state: pairing rollback may remove an interface or a
+     * service, but must never erase the evidence of why admission failed.
+     * No command output, addresses, keys, or firewall rules are retained.
+     */
+    public static function recordFailure(string $stateFile, $ports, \Throwable $error): array
+    {
+        $message = $error->getMessage();
+        $stage = 'listener-reconciliation';
+        $identifier = 'listener-unexpected-failure';
+        if (strpos($message, 'ROOT-HELPER-MISMATCH') !== false) {
+            $stage = 'root-helper-validation'; $identifier = 'root-helper-version-mismatch';
+        } elseif (strpos($message, 'Invalid TELIPHONES WireGuard listener port') !== false) {
+            $stage = 'input-validation'; $identifier = 'listener-input-invalid';
+        } elseif (strpos($message, 'lock TELIPHONES listener ownership') !== false
+                  || strpos($message, 'ownership state') !== false
+                  || strpos($message, 'ownership transaction') !== false
+                  || strpos($message, 'persist TELIPHONES listener ownership') !== false) {
+            $stage = 'listener-ownership-state'; $identifier = 'listener-ownership-state-failed';
+        } elseif (strpos($message, 'inventory FreePBX custom services') !== false) {
+            $stage = 'custom-service-inventory'; $identifier = 'firewall-inventory-failure';
+        } elseif (strpos($message, 'Conflicting TELIPHONES') !== false
+                  || strpos($message, 'Duplicate TELIPHONES') !== false) {
+            $stage = 'custom-service-ownership'; $identifier = 'listener-service-ownership-conflict';
+        } elseif (strpos($message, 'did not save a TELIPHONES') !== false) {
+            $stage = 'custom-service-creation'; $identifier = 'listener-service-creation-failed';
+        } elseif (strpos($message, 'service configuration could not be verified') !== false) {
+            $stage = 'custom-service-zone-assignment'; $identifier = 'listener-service-configuration-failed';
+        } elseif (strpos($message, 'service removal could not be verified') !== false) {
+            $stage = 'custom-service-removal'; $identifier = 'listener-service-removal-failed';
+        } elseif (strpos($message, 'IPV4') !== false) {
+            $stage = strpos($message, 'FINAL') !== false ? 'final-ipv4-verification' : 'ipv4-rule-generation';
+            $identifier = strpos($message, 'PENDING') !== false ? 'firewall-regeneration-in-progress'
+                : (strpos($message, 'BLOCKED-PATH') !== false ? 'listener-firewall-path-blocked'
+                : (strpos($message, 'UNSAFE-INTEGRATION') !== false ? 'listener-firewall-path-unverified' : 'listener-ipv4-verification-failed'));
+        } elseif (strpos($message, 'IPV6') !== false) {
+            $stage = strpos($message, 'FINAL') !== false ? 'final-ipv6-verification' : 'ipv6-rule-generation';
+            $identifier = strpos($message, 'PENDING') !== false ? 'firewall-regeneration-in-progress'
+                : (strpos($message, 'BLOCKED-PATH') !== false ? 'listener-firewall-path-blocked'
+                : (strpos($message, 'UNSAFE-INTEGRATION') !== false ? 'listener-firewall-path-unverified' : 'listener-ipv6-verification-failed'));
+        } elseif (strpos($message, 'TLP-LISTENER-BLOCKED-PATH') !== false) {
+            $stage = 'firewall-path-verification'; $identifier = 'listener-firewall-path-blocked';
+        } elseif (strpos($message, 'TLP-LISTENER-UNSAFE-INTEGRATION') !== false) {
+            $stage = 'firewall-path-verification'; $identifier = 'listener-firewall-path-unverified';
+        } elseif (strpos($message, 'both public address families') !== false) {
+            $stage = 'final-family-verification'; $identifier = 'listener-family-inspection-failed';
+        }
+        $values = is_array($ports) ? $ports : [$ports];
+        $operation = count($values) === 1 && (int)$values[0] === 0 ? 'removal' : 'admission';
+        $record = ['version' => 1, 'at' => time(), 'operation' => $operation,
+                   'stage' => $stage, 'identifier' => $identifier];
+        self::writeDiagnostic($stateFile, $record);
+        return $record;
+    }
+
+    public static function lastDiagnostic(string $stateFile): ?array
+    {
+        $path = dirname($stateFile) . '/firewall-listener-diagnostic.json';
+        try {
+            $record = json_decode((string)file_get_contents($path), true, 8, JSON_THROW_ON_ERROR);
+            if (!is_array($record)
+                || !preg_match('/^[a-z0-9-]{3,80}$/D', (string)($record['identifier'] ?? ''))
+                || !preg_match('/^[a-z0-9-]{3,80}$/D', (string)($record['stage'] ?? ''))
+                || !in_array($record['operation'] ?? null, ['admission', 'removal'], true)) return null;
+            return $record;
+        } catch (\Throwable $ignored) {
+            return null;
+        }
+    }
+
+    private static function writeDiagnostic(string $stateFile, array $record): void
+    {
+        $directory = dirname($stateFile);
+        $path = $directory . '/firewall-listener-diagnostic.json';
+        try {
+            if (!is_dir($directory) && !mkdir($directory, 0700, true) && !is_dir($directory)) return;
+            $temporary = tempnam($directory, '.listener-diagnostic-');
+            if ($temporary === false) return;
+            try {
+                if (!chmod($temporary, 0600)
+                    || file_put_contents($temporary, json_encode($record, JSON_THROW_ON_ERROR)) === false) return;
+                $handle = fopen($temporary, 'r+');
+                if ($handle === false) return;
+                try { if (!fsync($handle)) return; } finally { fclose($handle); }
+                rename($temporary, $path);
+            } finally {
+                if (isset($temporary) && is_file($temporary)) unlink($temporary);
+            }
+        } catch (\Throwable $ignored) {
+            // Diagnostics are evidence only; they must never weaken fail-closed admission.
         }
     }
 
@@ -211,39 +309,135 @@ final class FirewallListener
     {
         $chain = 'fpbxsvc-' . substr(str_replace('-', '', $id), 0, 16);
         $deadline = $deadline ?? hrtime(true) / 1e9 + 150;
-        $lastMismatch = '';
         do {
             $lines = [];
             exec(escapeshellarg($iptables) . ' -w 1 -t filter -S 2>&1', $lines, $result);
-            if ($result !== 0) throw new \RuntimeException('Cannot inspect FreePBX generated listener rules.');
-            if (self::rulesConverged($lines, $chain, $port)) return;
-            $lastMismatch = self::rulesMismatch($lines, $chain, $port);
-            if ($port !== 0) {
-                $path = self::publicPath($lines, $chain, 'INPUT', [], $port);
-                // Only an absent INPUT chain or an empty, explicitly declared
-                // chain is a recognised FreePBX regeneration state. Unknown
-                // targets, arbitrary undeclared chains, unsupported matches,
-                // and proven blocks remain immediate failures.
-                $retryable = $path === 'unknown (undeclared chain INPUT)'
-                    || preg_match('/^unknown \(empty declared chain (?:INPUT|fpbxfirewall|zone-(?:external|internal|other))\)$/D', $path);
-                if ($path === 'blocked' || (strpos($path, 'unknown') === 0 && !$retryable)) {
-                    throw new \RuntimeException('Public listener path ' . $path . '; no effective integration is claimed.');
-                }
+            if ($result !== 0) throw new \RuntimeException('TLP-LISTENER-' .
+                (strpos($iptables, 'ip6tables') !== false ? 'IPV6' : 'IPV4') . '-INSPECTION: Cannot inspect FreePBX generated listener rules.');
+            $mismatch = self::rulesMismatch($lines, $chain, $port);
+            if ($mismatch === '') return;
+            // Generated service rules arrive asynchronously.  Only reject a
+            // completed-looking service when the surrounding FreePBX hook is
+            // demonstrably unsafe; missing generated links remain retryable.
+            $integration = $port === 0 ? 'verified' : self::listenerIntegration($lines, $port, [], $chain);
+            if ($integration === 'blocked' || $integration === 'unsafe') {
+                throw new \RuntimeException('TLP-LISTENER-' . (strpos($iptables, 'ip6tables') !== false ? 'IPV6-' : 'IPV4-')
+                    . ($integration === 'blocked' ? 'BLOCKED-PATH' : 'UNSAFE-INTEGRATION')
+                    . ': FreePBX listener integration is ' . $integration . '; no effective integration is claimed.');
             }
             if (hrtime(true) / 1e9 >= $deadline) break;
             usleep(500000);
         } while (true);
-        throw new \RuntimeException('FreePBX generated listener rules have not converged; reconciliation will retry. '
+        throw new \RuntimeException('TLP-LISTENER-' . (strpos($iptables, 'ip6tables') !== false ? 'IPV6' : 'IPV4') . '-PENDING: '
+            . 'FreePBX generated listener rules have not converged; reconciliation will retry. '
             . $chain . ' ' . ($port === 0 ? 'removal' : 'UDP ' . $port) . ': '
-            . $lastMismatch);
+            . self::rulesMismatch($lines, $chain, $port));
     }
 
-    public static function rulesConverged(array $lines, string $chain, int $port): bool
+    /**
+     * FreePBX 17 can generate a Custom Service only in its IPv4 ruleset.
+     * That must not make an IPv4 WireGuard pairing depend on an IPv6 ACCEPT
+     * which will never arrive.  Accept the absence only when the inspected
+     * IPv6 path is demonstrably closed for this UDP port; otherwise retain the
+     * normal generated-rule requirement and fail closed.
+     */
+    private static function verifyIpv6Rules(string $id, int $port, float $deadline): void
     {
-        return self::rulesMismatch($lines, $chain, $port) === '';
+        $chain = 'fpbxsvc-' . substr(str_replace('-', '', $id), 0, 16);
+        do {
+            $lines = [];
+            exec(escapeshellarg('/sbin/ip6tables') . ' -w 1 -t filter -S 2>&1', $lines, $result);
+            if ($result !== 0) throw new \RuntimeException('TLP-LISTENER-IPV6-INSPECTION: Cannot inspect FreePBX generated listener rules.');
+            $mismatch = self::rulesMismatch($lines, $chain, $port);
+            if ($mismatch === '' || self::ipv6ListenerFailsClosed($lines, $chain, $port)) return;
+            $integration = $port === 0 ? 'verified' : self::listenerIntegration($lines, $port, [], $chain);
+            if ($integration === 'blocked' || $integration === 'unsafe') {
+                throw new \RuntimeException('TLP-LISTENER-IPV6-' . ($integration === 'blocked' ? 'BLOCKED-PATH' : 'UNSAFE-INTEGRATION')
+                    . ': FreePBX listener integration is ' . $integration . '; no effective integration is claimed.');
+            }
+            if (hrtime(true) / 1e9 >= $deadline) break;
+            usleep(500000);
+        } while (true);
+        throw new \RuntimeException('TLP-LISTENER-IPV6-PENDING: FreePBX generated listener rules have not converged; reconciliation will retry. '
+            . $chain . ' UDP ' . $port . ': ' . self::rulesMismatch($lines, $chain, $port));
     }
 
-    public static function rulesMismatch(array $lines, string $chain, int $port): string
+    /**
+     * A missing IPv6 service is safe only for the narrow layout below: there
+     * is no generated permit for this service, the supported INPUT traversal
+     * falls through, and the INPUT policy is DROP.  Any broad ACCEPT, explicit
+     * block, unsupported matcher, or non-DROP policy remains unverified.
+     */
+    private static function ipv6ListenerFailsClosed(array $lines, string $chain, int $port): bool
+    {
+        if ($port === 0) return false;
+        foreach ($lines as $line) {
+            if (strpos($line, '-A ' . $chain . ' ') === 0
+                || preg_match('/^-A [^ ]+ (?:-i [^ ]+ )?-j ' . preg_quote($chain, '/') . '$/D', $line)) {
+                return false;
+            }
+        }
+        if (!in_array('-P INPUT DROP', $lines, true)) return false;
+        return self::ipv6UnicastHasNoAccept($lines, 'INPUT', $port);
+    }
+
+    /**
+     * With the IPv6 INPUT policy verified as DROP and no generated service
+     * chain/jump, prove there is no earlier rule that can ACCEPT a new unicast
+     * WireGuard datagram. Known non-matching IPv6 traffic (ICMPv6, loopback,
+     * established-only, multicast/broadcast and other UDP ports) is ignored.
+     * Interface dispatch is traversed as a possible branch. Unknown ACCEPTs
+    * and unknown ACCEPT paths fail closed; a missing IPv6 service alone does
+     * not make a verified IPv4 service depend on IPv6 rule generation.
+     */
+    private static function ipv6UnicastHasNoAccept(array $lines, string $chain, int $port, array $seen = []): bool
+    {
+        if (in_array($chain, $seen, true) || count($seen) > 32) return false;
+        $seen[] = $chain;
+        foreach ($lines as $line) {
+            $prefix = '-A ' . $chain . ' ';
+            if (strpos($line, $prefix) !== 0) continue;
+            $rule = substr($line, strlen($prefix));
+            // A terminal deny cannot expose IPv6, regardless of whether its
+            // selector uses an extension we otherwise do not need to parse.
+            if (preg_match('/(?:^| )-j (DROP|REJECT)(?: .*)?$/D', $rule)) continue;
+            if (preg_match('/(?:^| )-i lo(?: |$)/', $rule)) continue;
+            if (preg_match('/(?:^| )-p ([^ ]+)(?: |$)/', $rule, $protocol) && $protocol[1] !== 'udp') continue;
+            if (preg_match('/(?:^| )--(?:dport|dports|destination-port) ([^ ]+)(?: |$)/', $rule, $destination)) {
+                $matches = self::portInSpecification($destination[1], $port);
+                if ($matches === false) continue;
+                if ($matches === null) return false;
+            }
+            if (preg_match('/(?:^| )--(?:ctstate|state) ([^ ]+)(?: |$)/', $rule, $state)
+                && preg_match('/^(?:RELATED,ESTABLISHED|ESTABLISHED,RELATED|ESTABLISHED)$/D', $state[1])) continue;
+            if (preg_match('/(?:^| )--pkt-type (multicast|broadcast)(?: |$)/', $rule)) continue;
+            if (preg_match('/(?:^| )--dst-type (MULTICAST|BROADCAST)(?: |$)/i', $rule)) continue;
+
+            // A comment match changes no packet selection and is common in
+            // FreePBX-generated rules; strip only that metadata before parsing.
+            $rule = preg_replace('/(?:^| )-m comment --comment (?:"[^"]*"|[^ ]+)/', '', $rule);
+            if (!preg_match('/(?:^| )-j ([A-Za-z0-9_-]+)(?: |$)/', trim($rule), $targetMatch)) {
+                return false;
+            }
+            $target = $targetMatch[1];
+            if (in_array($target, ['ACCEPT'], true)) return false;
+            // These targets do not terminate packet traversal. Their match
+            // predicates may be opaque without creating an IPv6 admission.
+            if (in_array($target, ['LOG', 'NFLOG', 'ULOG', 'TRACE', 'MARK', 'CONNMARK', 'SECMARK', 'CLASSIFY'], true)) continue;
+            if ($target === 'RETURN') continue;
+            if (!self::ipv6UnicastHasNoAccept($lines, $target, $port, $seen)) return false;
+        }
+        // Falling off a user chain returns to the caller; falling off INPUT
+        // reaches the already-checked DROP policy.
+        return true;
+    }
+
+    public static function rulesConverged(array $lines, string $chain, int $port, array $publicInterfaces = []): bool
+    {
+        return self::rulesMismatch($lines, $chain, $port, $publicInterfaces) === '';
+    }
+
+    public static function rulesMismatch(array $lines, string $chain, int $port, array $publicInterfaces = []): string
     {
         $accept = '-A ' . $chain . ' -p udp -m udp --dport ' . $port . ' -j ACCEPT';
         $rules = array_values(array_filter($lines, static function ($line) use ($chain) {
@@ -263,342 +457,224 @@ final class FirewallListener
             if ($present !== $required) $mismatches[] = 'zone-' . $zone . ($required ? ' jump missing' : ' jump remains');
         }
         if ($port !== 0 && !$mismatches) {
-            $path = self::publicPath($lines, $chain, 'INPUT', [], $port);
-            if ($path !== 'verified') $mismatches[] = 'public INPUT path ' . $path;
+            $integration = self::listenerIntegration($lines, $port, $publicInterfaces, $chain);
+            if ($integration !== 'verified') $mismatches[] = 'FreePBX listener integration ' . $integration;
         }
         return implode('; ', $mismatches);
     }
 
-    /** Evaluate the filter rules for a NEW public unicast UDP listener packet.
-     * Source- and interface-specific drops remain exclusions; unknown rules that
-     * could permit traffic outside the owned service chain are never accepted.
-     * This is a ruleset proof, not a live packet probe.
+    /** Conservative supported-layout proof for NEW public UDP traffic.
+     * Explicit source bans remain authoritative exclusions. Unknown classifiers
+     * are not interpreted as permission. This is not a live packet probe.
      */
-    public static function publicPath(array $lines, string $service, string $chain = 'INPUT', array $seen = [], int $port = 0, ?array $declared = null): string
+    public static function publicPath(array $lines, string $service, string $chain = 'INPUT', array $seen = [], int $port = 0): string
     {
-        if ($port < 1 || $port > 65535) return 'unknown (invalid listener port)';
-        if ($declared === null) {
-            $declared = [];
-            $policies = [];
-            foreach ($lines as $line) {
-                if (preg_match('/^-(?:N|P) ([A-Za-z0-9_-]+)(?: |$)/', $line, $match)) $declared[$match[1]] = true;
-                elseif (preg_match('/^-A ([A-Za-z0-9_-]+) /', $line, $match)) $declared[$match[1]] = true;
-                if (preg_match('/^-P ([A-Za-z0-9_-]+) (ACCEPT|DROP|REJECT)$/', $line, $match)) $policies[$match[1]] = $match[2];
-            }
-        } else {
-            $policies = [];
-            foreach ($lines as $line) {
-                if (preg_match('/^-P ([A-Za-z0-9_-]+) (ACCEPT|DROP|REJECT)$/', $line, $match)) $policies[$match[1]] = $match[2];
-            }
-        }
-        if (!isset($declared[$chain])) {
-            return $chain === 'INPUT' ? 'unknown (undeclared chain INPUT)' : 'unknown (undeclared chain ' . $chain . ')';
-        }
-        $initialMark = ['value' => 0, 'known' => 0];
-        $outcomes = self::evaluateChain($lines, $service, $chain, $port, $initialMark, [], $declared, $policies);
-        foreach ($outcomes as $outcome) {
-            if (str_starts_with($outcome, 'unknown-chain:')) {
-                return 'unknown (undeclared chain ' . substr($outcome, strlen('unknown-chain:')) . ')';
-            }
-        }
-        if (in_array('unknown', $outcomes, true)) return 'unknown (unsupported or ambiguous rule)';
-        if (in_array('blocked', $outcomes, true)) return 'blocked';
-        if (in_array('verified', $outcomes, true)) return 'verified';
-        if (in_array('excluded', $outcomes, true)) return 'blocked';
-        if (in_array('empty', $outcomes, true)) return 'unknown (empty declared chain ' . $chain . ')';
-        return 'unknown (no verified listener path)';
-    }
-
-    /** @return string[] possible terminal outcomes for the packet classifier. */
-    private static function evaluateChain(array $lines, string $service, string $chain, int $port, array $mark,
-        array $stack, array $declared, array $policies): array
-    {
-        if ($chain === $service) return ['verified']; // The exact UDP ACCEPT is separately enforced by rulesMismatch().
-        if (!isset($declared[$chain])) return ['unknown-chain:' . $chain];
-        if (in_array($chain, $stack, true) || count($stack) >= 32) return ['unknown'];
-        $stack[] = $chain;
-        $rules = [];
+        if ($chain === $service) return 'verified';
+        if (in_array($chain, $seen, true) || count($seen) > 32) return 'unknown (cycle)';
+        $seen[] = $chain;
         foreach ($lines as $line) {
-            if (preg_match('/^-A ' . preg_quote($chain, '/') . ' (.+)$/', $line, $match)) $rules[] = $match[1];
+            $prefix = '-A ' . $chain . ' ';
+            if (strpos($line, $prefix) !== 0) continue;
+            $rule = substr($line, strlen($prefix));
+            if (preg_match('/^-p udp -m udp --dport ([0-9]+) -j ACCEPT$/D', $rule, $udp) && (int)$udp[1] !== $port) continue;
+            // These rules cannot admit a new public WireGuard datagram.
+            if (preg_match('/^-i lo(?: |$)/', $rule)
+                || preg_match('/^-p (tcp|icmp|ipv6-icmp)(?: |$)/', $rule)
+                || preg_match('/^.*--(?:ctstate|state) (?:RELATED,ESTABLISHED|ESTABLISHED,RELATED|ESTABLISHED) -j ACCEPT$/', $rule)) continue;
+            // An administrator's explicit source rejection is an exclusion from
+            // permitted sources, never something this integration overrides.
+            if (preg_match('/^-s (?:0\.0\.0\.0\/0|::\/0)(?: .* )?-j (DROP|REJECT)(?: |$)/', $rule)) return 'blocked';
+            if (preg_match('/^-s [0-9a-fA-F:.\/]+(?: .* )?-j (DROP|REJECT)(?: |$)/', $rule)) continue;
+            // FreePBX 17 dispatches the firewall zone through an interface
+            // selector.  It is a supported structural route, not a permit by
+            // itself; continue into its target so a missing service can fall
+            // through to the INPUT DROP policy below.
+            if (!preg_match('/^(?:-i [A-Za-z0-9_.:-]+ )?-j ([A-Za-z0-9_-]+)$/D', $rule, $match)) return 'unknown (unsupported match)';
+            $target = $match[1];
+            if (in_array($target, ['DROP', 'REJECT'], true)) return 'blocked';
+            if ($target === 'ACCEPT') return 'unknown (bypasses owned listener)';
+            if ($target === 'RETURN') return 'return';
+            // This exception belongs only to the FreePBX zone-chain proof.
+            // Exact packet-type multicast/broadcast ACCEPTs cannot match a
+            // new unicast WireGuard packet; all other predicates stay unknown.
+            if (in_array($target, ['zone-external', 'zone-internal', 'zone-other'], true)) {
+                $result = self::freepbxZonePath($lines, $service, $target, $seen, $port);
+                if ($result !== 'return') return $result;
+                continue;
+            }
+            $result = self::publicPath($lines, $service, $target, $seen, $port);
+            if ($result !== 'return') return $result;
         }
-        if (!$rules) {
-            if (isset($policies[$chain])) return [$policies[$chain] === 'DROP' || $policies[$chain] === 'REJECT' ? 'blocked' : 'unknown'];
-            return count($stack) === 1 ? ['empty'] : ['return'];
-        }
-        return self::evaluateRules($lines, $service, $chain, $rules, 0, $port, $mark, $stack, $declared, $policies);
+        return 'return';
     }
 
-    private static function evaluateRules(array $lines, string $service, string $chain, array $rules, int $index, int $port,
-        array $mark, array $stack, array $declared, array $policies): array
+    private static function freepbxZonePath(array $lines, string $service, string $chain, array $seen, int $port): string
     {
-        if ($index >= count($rules)) {
-            if (isset($policies[$chain])) return [$policies[$chain] === 'DROP' || $policies[$chain] === 'REJECT' ? 'blocked' : 'unknown'];
-            return ['return'];
-        }
-        $parsed = self::parsePacketRule($rules[$index], $port, $mark);
-        if ($parsed === null) return ['unknown'];
-        $next = static function (array $nextMark) use ($lines, $service, $chain, $rules, $index, $port, $stack, $declared, $policies, $parsed) {
-            if ($parsed['mark'] !== null) $nextMark = $parsed['mark'];
-            return self::evaluateRules($lines, $service, $chain, $rules, $index + 1, $port, $nextMark, $stack, $declared, $policies);
-        };
-        $matched = static function (array $currentMark) use ($lines, $service, $chain, $rules, $index, $port, $stack, $declared, $policies, $parsed, $next) {
-            $target = $parsed['target'];
-            if ($target === 'RETURN') return ['return'];
-            if ($target === 'ACCEPT') return ['unknown'];
-            if ($target === 'DROP' || $target === 'REJECT') return ['blocked'];
-            if ($target === 'MARK') {
-                if ($parsed['mark'] === null) return ['unknown'];
-                return $next($parsed['mark']);
+        if ($chain === $service) return 'verified';
+        if (in_array($chain, $seen, true) || count($seen) > 32) return 'unknown (cycle)';
+        $seen[] = $chain;
+        foreach ($lines as $line) {
+            $prefix = '-A ' . $chain . ' ';
+            if (strpos($line, $prefix) !== 0) continue;
+            $rule = substr($line, strlen($prefix));
+            if (preg_match('/^(?:-i [A-Za-z0-9_.:-]+ )?-m pkttype --pkt-type (?:multicast|broadcast) -j ACCEPT$/D', $rule)) continue;
+            if (preg_match('/^-p udp -m udp --dport ([0-9]+) -j ACCEPT$/D', $rule, $udp) && (int)$udp[1] !== $port) continue;
+            if (!preg_match('/^(?:-i [A-Za-z0-9_.:-]+ )?-j ([A-Za-z0-9_-]+)$/D', $rule, $match)) {
+                return 'unknown (unsupported match)';
             }
-            if (!isset($declared[$target])) return ['unknown'];
-            $results = self::evaluateChain($lines, $service, $target, $port, $currentMark, $stack, $declared, $policies);
-            $outcomes = [];
-            foreach ($results as $result) {
-                if ($result === 'return' && $parsed['jump'] === '-j') {
-                    $outcomes = array_merge($outcomes, $next($currentMark));
-                } elseif ($result === 'return' && $parsed['jump'] === '-g') {
-                    $outcomes[] = 'return';
-                } else $outcomes[] = $result;
-            }
-            return array_values(array_unique($outcomes));
-        };
-        $condition = $parsed['condition'];
-        if ($condition === false) return $next($mark);
-        $onMatch = $matched($mark);
-        if ($condition === true) return array_values(array_unique($onMatch));
-        // Only known source/address/interface selectors may scope a block to a
-        // subset of public packets. Unsupported predicates are never downgraded.
-        if ($parsed['safeExclusion']) {
-            $onMatch = array_map(static function ($outcome) {
-                return $outcome === 'blocked' ? 'excluded' : $outcome;
-            }, $onMatch);
+            $target = $match[1];
+            if (in_array($target, ['DROP', 'REJECT'], true)) return 'blocked';
+            if ($target === 'ACCEPT') return 'unknown (bypasses owned listener)';
+            if ($target === 'RETURN') return 'return';
+            $result = self::freepbxZonePath($lines, $service, $target, $seen, $port);
+            if ($result !== 'return') return $result;
         }
-        return array_values(array_unique(array_merge($onMatch, $next($mark))));
+        return 'return';
     }
 
-    /** Parse the supported iptables -S predicates for a new unicast UDP packet.
-     * null means a malformed/unsupported rule; condition null means it may match.
+    /**
+     * A deliberately narrow generated-service integration check.  FreePBX
+     * owns packet policy: TELIPHONES verifies that its generated service is
+     * reachable through INPUT and the external zone, while refusing obvious
+     * broad blocks or unowned ACCEPTs.  This is not a firewall interpreter.
      */
-    private static function parsePacketRule(string $rule, int $port, array $mark): ?array
+    private static function listenerIntegration(array $lines, int $port, array $publicInterfaces = [], string $chain = ''): string
     {
-        preg_match_all('/"(?:\\\\.|[^"\\\\])*"|\'(?:\\\\.|[^\'\\\\])*\'|\\S+/', $rule, $matches);
-        $tokens = array_map(static function ($token) {
-            if (strlen($token) >= 2 && ($token[0] === '"' || $token[0] === "'")) return stripcslashes(substr($token, 1, -1));
-            return $token;
-        }, $matches[0]);
-        $target = null;
-        $jump = null;
-        $conditions = [];
-        $setMark = null;
-        $unknown = false;
-        $safeExclusion = true;
-        $hasUncertainCondition = false;
-        $negate = false;
-        for ($i = 0; $i < count($tokens); ++$i) {
-            $token = $tokens[$i];
-            if ($token === '!') { $negate = true; continue; }
-            if ($token === '-j' || $token === '--jump' || $token === '-g' || $token === '--goto') {
-                if (!isset($tokens[$i + 1]) || $target !== null) return null;
-                $jump = in_array($token, ['-g', '--goto'], true) ? '-g' : '-j';
-                $target = $tokens[++$i];
+        // This is intentionally a verifier for two documented FreePBX layouts,
+        // not a general iptables evaluator.  It proves generated integration,
+        // never arbitrary packet-path reachability.
+        $inputRules = [];
+        $sawInputHook = false;
+        foreach ($lines as $line) {
+            if (!preg_match('/^-A INPUT (.*)$/D', $line, $match)) continue;
+            if (preg_match('/^(?:-i ([A-Za-z0-9_.:-]+) )?-j fpbxfirewall$/D', $match[1], $jump)) {
+                $sawInputHook = true;
+                $inputRules[$jump[1] ?? ''] = true;
                 continue;
             }
-            if (in_array($token, ['-m', '--match'], true)) {
-                if (!isset($tokens[++$i])) return null;
-                $module = $tokens[$i];
-                if (!in_array($module, ['udp','tcp','icmp','icmp6','ipv6-icmp','multiport','comment','conntrack','state','pkttype','addrtype','mark','limit','hashlimit','recent','mac','physdev'], true)) $unknown = true;
-                continue;
-            }
-            if (in_array($token, ['-p','--protocol','-s','--source','-d','--destination','-i','--in-interface','-o','--out-interface',
-                '--dport','--dports','--destination-port','--sport','--sports','--source-port','--ports','--ctstate','--state',
-                '--pkt-type','--mark','--dst-type','--src-type','--comment','--set-xmark','--set-mark','--and-mark','--or-mark','--xor-mark'], true)) {
-                if (!isset($tokens[++$i])) return null;
-                $value = $tokens[$i];
-                $item = ['option' => $token, 'value' => $value, 'negate' => $negate];
-                $negate = false;
-                if (in_array($token, ['--set-xmark','--set-mark','--and-mark','--or-mark','--xor-mark'], true)) $setMark = $item;
-                elseif ($token === '--comment') continue;
-                else $conditions[] = $item;
-                continue;
-            }
-            if (in_array($token, ['-f','--fragment'], true)) { $conditions[] = ['option' => $token, 'value' => '', 'negate' => $negate]; $negate = false; continue; }
-            // Rule counters and comments do not change packet selection; unknown extensions/options do.
-            if (in_array($token, ['-c','--set-counters'], true)) { $i += 2; continue; }
-            if (str_starts_with($token, '--comment=')) continue;
-            $unknown = true;
+            if ($sawInputHook) continue;
+            $outcome = self::precedingRuleOutcome($lines, $match[1], $port, $publicInterfaces);
+            if ($outcome !== 'irrelevant' && $outcome !== 'excluded') return $outcome;
         }
-        if ($target === null || $negate) return null;
-        $result = $unknown ? null : true;
-        $markBeforeRule = $mark;
-        $markConditionsMatch = true;
-        foreach ($conditions as $condition) {
-            $value = self::packetCondition($condition['option'], $condition['value'], $port, $mark);
-            if ($condition['negate']) $value = $value === null ? null : !$value;
-            if ($condition['option'] === '--mark' && $value !== true) $markConditionsMatch = false;
-            if ($value === false) { $result = false; break; }
-            if ($value === null) {
-                $result = null;
-                $hasUncertainCondition = true;
-                $addressSelector = !$condition['negate'] && in_array($condition['option'], ['-s','--source'], true)
-                    && self::selectorNarrowsPublicRange($condition['value']);
-                if (!$addressSelector) $safeExclusion = false;
+        if (!$inputRules) return 'pending';
+        if ($publicInterfaces && !isset($inputRules[''])) {
+            foreach ($publicInterfaces as $interface) {
+                if (!isset($inputRules[$interface])) {
+                    return 'unverified (public interface ' . $interface . ' has no INPUT jump to fpbxfirewall)';
+                }
             }
         }
-        if ($unknown || !$hasUncertainCondition || $result === false) $safeExclusion = false;
-        $newMark = null;
-        if ($setMark !== null && !$unknown && $markConditionsMatch) {
-            $newMark = self::applyMark($markBeforeRule, $setMark['option'], $setMark['value']);
+
+        // FreePBX 17 normally dispatches by interface.  Older supported
+        // installations jump straight from fpbxfirewall to zone-external.
+        $interfaces = [];
+        $allInterfaces = false;
+        $legacyExternal = false;
+        foreach ($lines as $line) {
+            if ($line === '-A fpbxfirewall -j zone-external') $legacyExternal = true;
+            if ($line === '-A fpbxfirewall -j fpbxinterfaces') {
+                foreach ($lines as $route) {
+                    if ($route === '-A fpbxinterfaces -j zone-external') $allInterfaces = true;
+                    if (preg_match('/^-A fpbxinterfaces -i ([A-Za-z0-9_.:-]+) -j zone-external$/D', $route, $match)) {
+                        $interfaces[$match[1]] = true;
+                    }
+                }
+            }
         }
-        return ['target' => $target, 'condition' => $result, 'mark' => $newMark,
-            'jump' => $jump ?? '-j', 'unsupported' => $unknown, 'safeExclusion' => $safeExclusion];
+        if (!$legacyExternal && !$allInterfaces && !$interfaces) return 'pending';
+        foreach ($publicInterfaces as $interface) {
+            if (!$allInterfaces && !$legacyExternal && !isset($interfaces[$interface])) {
+                return 'unverified (public interface ' . $interface . ' is not routed to zone-external)';
+            }
+        }
+        // A zone jump is only useful if its rules reach the owned service
+        // jump. A prior terminal DROP/REJECT in zone-external makes the
+        // structurally present generated ACCEPT unreachable for matching UDP.
+        if ($chain !== '') {
+            $zoneServiceJump = '-A zone-external -j ' . $chain;
+            $reachedService = false;
+            foreach ($lines as $line) {
+                if (strpos($line, '-A zone-external ') !== 0) continue;
+                if ($line === $zoneServiceJump) { $reachedService = true; break; }
+                $outcome = self::precedingRuleOutcome($lines,
+                    substr($line, strlen('-A zone-external ')), $port, $publicInterfaces);
+                if (in_array($outcome, ['return', 'irrelevant', 'excluded'], true)) continue;
+                return $outcome;
+            }
+            if (!$reachedService && in_array($zoneServiceJump, $lines, true)) return 'unverified (external zone service jump is unreachable)';
+        }
+        // Without caller-supplied public-interface knowledge, this establishes
+        // only that FreePBX owns at least one external ingress route.
+        return 'verified';
     }
 
-    private static function packetCondition(string $option, string $value, int $port, array $mark): ?bool
+    /** Classify only a preceding terminal rule relevant to a new UDP datagram. */
+    private static function precedingRuleOutcome(array $lines, string $rule, int $port, array $publicInterfaces, array $seen = []): string
     {
-        if ($option === '-p' || $option === '--protocol') {
-            if (in_array(strtolower($value), ['udp','17'], true)) return true;
-            if (strtolower($value) === 'all') return true;
-            if (in_array(strtolower($value), ['tcp','6','icmp','1','icmpv6','icmp6','ipv6-icmp','58'], true)) return false;
-            return null;
+        if (preg_match('/(?:^| )-i ([^ ]+)(?: |$)/', $rule, $interface)) {
+            if ($interface[1] === 'lo') return 'irrelevant';
+            if ($publicInterfaces && !in_array($interface[1], $publicInterfaces, true)) return 'irrelevant';
+            if (!$publicInterfaces) return 'unverified (interface-specific preceding rule without public interface knowledge)';
         }
-        if (in_array($option, ['--dport','--dports','--destination-port'], true)) return self::portMatches($value, $port);
-        if (in_array($option, ['--sport','--sports','--source-port'], true)) return null;
-        if ($option === '--ports') return null;
-        if ($option === '-i' || $option === '--in-interface') {
-            if (in_array($value, ['lo','tlp-admin'], true)) return false;
-            return null;
+        if (preg_match('/(?:^| )-p ([^ ]+)(?: |$)/', $rule, $protocol)
+            && $protocol[1] !== 'udp') return 'irrelevant';
+        if (preg_match('/--(?:dport|dports|destination-port) ([^ ]+)(?: |$)/', $rule, $destination)) {
+            $matches = self::portInSpecification($destination[1], $port);
+            if ($matches === null) return 'unverified (unsupported destination-port specification)';
+            if (!$matches) return 'irrelevant';
         }
-        if ($option === '-o' || $option === '--out-interface') return null;
-        if ($option === '-d' || $option === '--destination') return self::addressCouldBePublicUnicast($value);
-        if ($option === '-s' || $option === '--source') return self::sourceCouldMatchPublic($value);
-        if ($option === '--pkt-type') {
-            if (in_array(strtolower($value), ['broadcast','multicast'], true)) return false;
-            if (strtolower($value) === 'unicast') return true;
-            return null;
+        if (preg_match('/--(?:state|ctstate) ([^ ]+)(?: |$)/', $rule, $state)
+            && strpos($state[1], 'NEW') === false) return 'irrelevant';
+        if (preg_match('/(?:^| )-s ([^ ]+)(?: |$)/', $rule, $source)
+            && !in_array($source[1], ['0.0.0.0/0', '::/0'], true)) {
+            if (self::isBroadSourceRestriction($source[1])) return 'unverified (broad source restriction)';
+            return 'excluded';
         }
-        if ($option === '--dst-type') {
-            if (strtoupper($value) === 'BROADCAST') return null;
-            if (strtoupper($value) === 'MULTICAST') return false;
-            if (strtoupper($value) === 'UNICAST') return true;
-            if (strtoupper($value) === 'LOCAL') return null;
-            return null;
+        if (preg_match('/-j (DROP|REJECT)$/D', $rule)) return 'blocked';
+        if (preg_match('/-j ACCEPT$/D', $rule)) return 'unsafe';
+        if (!preg_match('/^-j ([A-Za-z0-9_-]+)$/D', $rule, $jump)) return 'unverified (unsupported preceding INPUT rule)';
+        $chain = $jump[1];
+        if ($chain === 'RETURN') return 'return';
+        if ($chain === 'fpbxfirewall') return 'irrelevant';
+        if (in_array($chain, $seen, true) || count($seen) >= 4) return 'unverified (preceding chain cycle)';
+        $seen[] = $chain;
+        $matched = false;
+        foreach ($lines as $line) {
+            $prefix = '-A ' . $chain . ' ';
+            if (strpos($line, $prefix) !== 0) continue;
+            $matched = true;
+            $outcome = self::precedingRuleOutcome($lines, substr($line, strlen($prefix)), $port, $publicInterfaces, $seen);
+            if ($outcome === 'return') return 'irrelevant';
+            if ($outcome !== 'irrelevant' && $outcome !== 'excluded') return $outcome;
         }
-        if ($option === '--src-type') {
-            if (in_array(strtoupper($value), ['BROADCAST','MULTICAST'], true)) return null;
-            return null;
-        }
-        if ($option === '--ctstate' || $option === '--state') {
-            $states = array_map('strtoupper', explode(',', $value));
-            if (in_array('NEW', $states, true)) return true;
-            return in_array('ESTABLISHED', $states, true) || in_array('RELATED', $states, true) ? null : false;
-        }
-        if ($option === '--mark') {
-            if (!preg_match('/^(0x[0-9a-f]+|[0-9]+)(?:\/(0x[0-9a-f]+|[0-9]+))?$/i', $value, $match)) return null;
-            $wanted = intval($match[1], 0);
-            $mask = isset($match[2]) ? intval($match[2], 0) : 0xffffffff;
-            if (($mark['known'] & $mask) !== $mask) return null;
-            return ($mark['value'] & $mask) === ($wanted & $mask);
-        }
-        if ($option === '-f' || $option === '--fragment') return false;
-        if ($option === '--comment') return true;
-        return null;
+        // Falling off a user-defined chain returns to its caller. If every
+        // rule was unrelated or source-excluded, that is a verified fallthrough.
+        return $matched ? 'return' : 'unverified (unknown preceding chain)';
     }
 
-    private static function portMatches(string $expression, int $port): ?bool
+    /** @return bool|null true/false for a supported iptables single/list/range port specification. */
+    private static function portInSpecification(string $specification, int $port): ?bool
     {
-        foreach (explode(',', $expression) as $part) {
-            if (preg_match('/^(\d+)(?::(\d*))?$/', $part, $match)) {
-                $low = (int)$match[1];
-                $high = isset($match[2]) && $match[2] !== '' ? (int)$match[2] : $low;
-                if ($port >= min($low, $high) && $port <= max($low, $high)) return true;
-            } elseif (preg_match('/^:(\d+)$/', $part, $match)) {
-                if ($port <= (int)$match[1]) return true;
-            } else return null;
+        foreach (explode(',', $specification) as $part) {
+            if (preg_match('/^([0-9]+)$/D', $part, $match)) {
+                if ((int) $match[1] === $port) return true;
+                continue;
+            }
+            if (preg_match('/^([0-9]+):([0-9]+)$/D', $part, $match)) {
+                if ((int) $match[1] > (int) $match[2]) return null;
+                if ($port >= (int) $match[1] && $port <= (int) $match[2]) return true;
+                continue;
+            }
+            return null;
         }
         return false;
     }
 
-    private static function addressCouldBePublicUnicast(string $expression): ?bool
+    private static function isBroadSourceRestriction(string $source): bool
     {
-        return self::addressRangeCouldMatch($expression, true);
-    }
-
-    private static function sourceCouldMatchPublic(string $expression): ?bool
-    {
-        $parts = explode('/', $expression, 2);
-        if (!isset($parts[1]) || !ctype_digit($parts[1])) return null;
-        $bits = filter_var($parts[0], FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false ? 32
-            : (filter_var($parts[0], FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) !== false ? 128 : 0);
-        if ($bits === 0 || (int)$parts[1] > $bits) return null;
-        return (int)$parts[1] === 0 ? true : null;
-    }
-
-    private static function addressRangeCouldMatch(string $expression, bool $destination): ?bool
-    {
-        $parts = explode('/', $expression, 2);
-        $address = $parts[0];
-        $ipv4 = filter_var($address, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false;
-        $ipv6 = filter_var($address, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) !== false;
-        if (!$ipv4 && !$ipv6) return null;
-        $bits = $ipv4 ? 32 : 128;
-        if (isset($parts[1]) && (!ctype_digit($parts[1]) || (int)$parts[1] > $bits)) return null;
-        $prefix = isset($parts[1]) ? (int)$parts[1] : $bits;
-        if ($prefix === 0) return true;
-        if ($ipv4) {
-            $number = ip2long($address);
-            if ($number === false) return null;
-            $number = (int)sprintf('%u', $number);
-            $mask = $prefix === 0 ? 0 : ((0xffffffff << (32 - $prefix)) & 0xffffffff);
-            $network = $number & $mask;
-            $end = $network | (~$mask & 0xffffffff);
-            if ($destination) {
-                // Exclude a range proven entirely multicast/broadcast; partial
-                // overlap is ambiguous because the rule can match both classes.
-                if ($network >= 0xe0000000 && $end <= 0xefffffff) return false;
-                if ($network <= 0xefffffff && $end >= 0xe0000000) return null;
-                if ($network === 0xffffffff && $end === 0xffffffff) return false;
-                if ($end === 0xffffffff) return null;
-                if ($network === 0) return null; // 0.0.0.0 is not a unicast host destination.
-            }
-            return true;
-        }
-        $packed = inet_pton($address);
-        if ($packed === false) return null;
-        if ($destination && $prefix < 8) return null;
-        if ($destination && ord($packed[0]) === 0xff) return false;
-        return true;
-    }
-
-    private static function selectorNarrowsPublicRange(string $expression): bool
-    {
-        $parts = explode('/', $expression, 2);
-        if (filter_var($parts[0], FILTER_VALIDATE_IP) === false) return false;
-        if (!isset($parts[1])) return true;
-        if (!ctype_digit($parts[1])) return false;
-        $bits = filter_var($parts[0], FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false ? 32 : 128;
-        $prefix = (int)$parts[1];
-        return $prefix > 0 && $prefix <= $bits;
-    }
-
-    private static function applyMark(array $current, string $operation, string $expression): ?array
-    {
-        if (!preg_match('/^(0x[0-9a-f]+|[0-9]+)(?:\/(0x[0-9a-f]+|[0-9]+))?$/i', $expression, $match)) return null;
-        $value = intval($match[1], 0);
-        $mask = isset($match[2]) ? intval($match[2], 0) : 0xffffffff;
-        $known = $current['known'];
-        $bits = $current['value'];
-        if ($operation === '--set-xmark' || $operation === '--set-mark') {
-            return ['value' => ($bits & (~$mask)) | ($value & $mask), 'known' => ($known & (~$mask)) | $mask];
-        }
-        if ($operation === '--and-mark') {
-            $knownZero = (~$value) & 0xffffffff;
-            return ['value' => $bits & $value, 'known' => ($known & $value) | $knownZero];
-        }
-        if ($operation === '--or-mark') {
-            return ['value' => $bits | $value, 'known' => $known | $value];
-        }
-        if ($operation === '--xor-mark') return ['value' => $bits ^ $value, 'known' => $known];
-        return null;
+        if (preg_match('/^([0-9.]+)\/([0-9]+)$/D', $source, $match)) return (int) $match[2] < 24;
+        if (preg_match('/^[0-9a-fA-F:]+\/([0-9]+)$/D', $source, $match)) return (int) $match[1] < 64;
+        return false;
     }
 
     private static function service(string $id, int $port, string $name = self::NAME): array
