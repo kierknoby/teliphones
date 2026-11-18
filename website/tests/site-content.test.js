@@ -21,6 +21,8 @@ const moduleVersion = fs.readFileSync(path.join(root, 'teliphones/module.xml'), 
   .match(/<version>([^<]+)<\/version>/)[1];
 const brokerVersion = fs.readFileSync(path.join(root, 'teliphones/support_broker.py'), 'utf8')
   .match(/^VERSION = "([^"]+)"/m)[1];
+const publishedModuleVersion = '0.8.2';
+const publishedBrokerVersion = '0.8.2';
 
 test('all site pages have valid local links, assets and unique fragment targets', () => {
   const ids = new Map();
@@ -49,25 +51,27 @@ test('all site pages have valid local links, assets and unique fragment targets'
 });
 
 test('current product and installation copy matches independent source versions', () => {
-  assert.equal(moduleVersion, '0.8.2');
-  assert.equal(brokerVersion, '0.8.2');
+  assert.equal(moduleVersion, brokerVersion, 'Module and broker source versions must match');
+  assert.notEqual(moduleVersion, publishedModuleVersion,
+    'The current unreleased source candidate must remain distinct from the published website version');
   assert.equal(version, '0.9.0');
   for (const name of ['index.html', 'windows/index.html', 'downloads/index.html',
     'freepbx/index.html', 'faq/index.html', 'about/index.html', 'roadmap/index.html']) {
     const html = contents.get(path.join(site, name));
     assert.ok(html.includes(version), `${name}: missing Windows ${version}`);
-    assert.ok(html.includes(moduleVersion), `${name}: missing module ${moduleVersion}`);
+    assert.ok(html.includes(publishedModuleVersion), `${name}: missing published module ${publishedModuleVersion}`);
   }
   for (const name of ['downloads/index.html', 'freepbx/index.html', 'docs/getting-started/index.html',
     'docs/troubleshooting/index.html', 'faq/index.html', 'docs/index.html']) {
     const html = contents.get(path.join(site, name));
-    assert.ok(html.includes(brokerVersion), `${name}: missing broker ${brokerVersion}`);
+    assert.ok(html.includes(publishedBrokerVersion), `${name}: missing published broker ${publishedBrokerVersion}`);
     assert.match(html, /protocol (?:<strong>)?12/, name);
   }
   for (const name of ['index.html', 'about/index.html', 'downloads/index.html', 'freepbx/index.html',
     'roadmap/index.html', 'security/index.html', 'docs/index.html', 'docs/getting-started/index.html',
     'docs/troubleshooting/index.html', 'faq/index.html']) {
-    assert.ok(contents.get(path.join(site, name)).includes('0.8.2'), `${name}: missing current FreePBX version`);
+    assert.ok(contents.get(path.join(site, name)).includes(publishedModuleVersion),
+      `${name}: missing published FreePBX version ${publishedModuleVersion}`);
   }
   for (const [file, html] of contents) {
     assert.doesNotMatch(html, /0\.7\.0|0\.6\.0|protocol 7|broker 0\.6\.[45]/, file);
