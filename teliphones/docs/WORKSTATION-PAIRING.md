@@ -1,4 +1,4 @@
-# TELIPHONES proposed 0.8.3.12 workstation pairing and connection policy
+# TELIPHONES proposed 0.8.3.15 workstation pairing and connection policy
 
 The 0.8.0 authority, firewall and lease implementation is documented in the
 [development and acceptance report](DEVELOPMENT-0.8.0.md).
@@ -13,9 +13,9 @@ admits management traffic only for an active session lease.
 
 ## Current Windows-to-FreePBX sequence
 
-Source targets: Windows **0.9.0**, proposed, unreleased module **0.8.3.12**, broker
-**0.8.3.12**, protocol **12**. These component versions are independent. The
-0.8.3.12 development archive is available in this checkout;
+Source targets: Windows **0.9.0**, proposed, unreleased module **0.8.3.15**, broker
+**0.8.3.15**, protocol **12**. These component versions are independent. The
+0.8.3.15 development archive is available in this checkout;
 it is not live-accepted or production-approved. The historical 0.6.7 archive
 was intentionally removed from this checkout and did not contain these source
 changes. The historical 0.6.7 milestone added bounded persistent diagnostics
@@ -138,8 +138,8 @@ request. Updated Windows builds expose a web-only or web-plus-SSH request
 choice, show explicit SSH authorisation status, and use temporary inline
 clipboard feedback instead of success dialogues. Module and Windows versions
 are independent; the current source targets are proposed, unreleased FreePBX
-**0.8.3.12**, root broker **0.8.3.12**, protocol **12** and Windows **0.9.0**. The
-0.8.3.12 development package is available but not
+**0.8.3.15**, root broker **0.8.3.15**, protocol **12** and Windows **0.9.0**. The
+0.8.3.15 development package is available but not
 production-ready or live-accepted; the historical 0.6.7 archive was removed
 from this checkout and did not contain these changes.
 
@@ -250,7 +250,7 @@ is not included in the module-only package.
 ## Preserved version-1 contract
 
 This section records the original v1 contract and historical lifecycle;
-current source additionally requires proposed module 0.8.3.12 / broker 0.8.3.12 / protocol 12,
+current source additionally requires proposed module 0.8.3.15 / broker 0.8.3.15 / protocol 12,
 management leases, dedicated Locked interfaces and identity-preserving updates.
 The older protocol minima and full-interface rebuild description below are not
 the current broker compatibility/admission policy.
@@ -296,7 +296,7 @@ This also applies when upgrading from 0.2.1. Install the current module and reru
 For an authorized controlled-development 0.8.3 RC1 installation, use the local development candidate only after review; it is not production approval or live acceptance. The historical `TELIPHONES-0.6.7.tgz` is not included in this checkout and did not contain the proposed changes. After authorized package installation, rerun the documented root bootstrap with no active support session and Windows tunnels disconnected. Installation does not delete `workstations.json`, `workstation-recovery.json` or `workstation-wg.key`. Valid pairings keep their identities, keys and original deadlines; a required listener migration is authenticated and coordinated rather than requiring re-pairing.
 
 Module Admin does not necessarily replace the root-owned broker. Proposed module
-0.8.3.12 requires broker 0.8.3.12 even if an earlier helper reports protocol 12. The bootstrap
+0.8.3.15 requires broker 0.8.3.15 even if an earlier helper reports protocol 12. The bootstrap
 copies the packaged helpers and restarts the service; confirm the component
 version and compare installed files as described in
 [Updating TELIPHONES](../README.md#updating-teliphones).
@@ -330,8 +330,8 @@ The historical 0.3.2 change added bounded diagnostics and protocol 4 without
 changing firewall permissions or pairing protocol. For a current upgrade,
 use the preserved historical 0.6.7 package only for its matching source, disconnect workstation tunnels, confirm no active support session,
 and rerun the root bootstrap. Preserve pairing state and the WireGuard key.
-Managed SSH originally required protocol 5; the proposed module 0.8.3.12 requires
-broker version 0.8.3.12, protocol 12 and all three protected helpers, even if an older broker reports
+Managed SSH originally required protocol 5; the proposed module 0.8.3.15 requires
+broker version 0.8.3.15, protocol 12 and all three protected helpers, even if an older broker reports
 protocol 12. Protocol 4 identifies historical diagnostics support only.
 Follow [current upgrade verification](../README.md#updating-teliphones).
 

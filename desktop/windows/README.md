@@ -14,7 +14,7 @@ This guide covers installing and using the Windows application. The
 [FreePBX administration guide](../../teliphones/README.md) covers server setup.
 
 Windows **0.9.0** (file version **0.9.0.0**) is independent of proposed,
-unreleased FreePBX module/root broker **0.8.3.12**, protocol **12**. The
+unreleased FreePBX module/root broker **0.8.3.15**, protocol **12**. The
 development archive is prepared for controlled review, not a release or
 production approval. The checksum-verified historical 0.6.7 archive is at the
 repository root and does not contain these newer changes. Windows

@@ -106,7 +106,7 @@ class WebSupport
     public const OPERATION_STATES = ['running', 'succeeded', 'failed'];
     /** Protocol 12 is required for the current workstation policy and session controls. */
     public const BROKER_PROTOCOL = 12;
-    public const BROKER_VERSION = '0.8.3.12';
+    public const BROKER_VERSION = '0.8.3.15';
     public const DIAGNOSTICS_PROTOCOL = 4;
     public const SSH_PROTOCOL = 5;
     /** Protocol 6 adds the WireGuard listener firewall permit and configurable management web services. */

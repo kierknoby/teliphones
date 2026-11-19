@@ -1,6 +1,6 @@
 # TELIPHONES for FreePBX 17: module guide
 
-Current source prepares numeric module **0.8.3.12** and root broker **0.8.3.12**,
+Current source prepares numeric module **0.8.3.15** and root broker **0.8.3.15**,
 retaining protocol **12**; Windows remains independently **0.9.0**. The
 numeric module version is greater than installed `0.8.3`, so Module Admin can
 recognise an in-place upgrade; its metadata remains monotonic. This source
@@ -38,8 +38,8 @@ inactivity bound while accepted cleanup continues independently of the browser.
 Do not delete the revocation journal or restore an older copy to resolve errors:
 that would discard security decisions. Live FreePBX 17 / Debian 12 validation
 of these unreleased corrections is still required. Module and broker source now
-identify this proposed version as 0.8.3.12; Windows remains independently 0.9.0. The
-0.8.3.12 development package is for controlled review, not production
+identify this proposed version as 0.8.3.15; Windows remains independently 0.9.0. The
+0.8.3.15 development package is for controlled review, not production
 installation or live acceptance.
 
 **Review before installation:** the operator confirmed a listener subprocess
@@ -50,14 +50,14 @@ owned listener readback and backs off failures. No live CPU or connectivity
 success is claimed. Follow the controlled observation procedure below.
 
 Approve private access to your PBX from the FreePBX interface. TELIPHONES
-**0.8.3.12 (proposed, unreleased)** pairs Windows workstations over WireGuard, with web access and,
+**0.8.3.15 (proposed, unreleased)** pairs Windows workstations over WireGuard, with web access and,
 when explicitly approved, temporary SSH certificates for an existing account.
 This is the authoritative guide to installing, upgrading and operating the
 FreePBX module and its separately installed root broker.
 
 **TELIPHONES is a UK registered trademark.**
 
-**TELIPHONES proposed 0.8.3.12 for FreePBX is licensed under GPLv3.**
+**TELIPHONES proposed 0.8.3.15 for FreePBX is licensed under GPLv3.**
 
 The software grant is GPL version 3 or later; the product footer uses the
 GPLv3 wording above. Software licensing does not grant trademark rights.
@@ -197,21 +197,21 @@ TELIPHONES is a community module and is not listed in the FreePBX online module 
 
 ### Install through Module Admin (recommended)
 
-The proposed 0.8.3.12 development package is `TELIPHONES-0.8.3.12.tgz`;
-verify it against `TELIPHONES-0.8.3.12.tgz.sha256` before upload. This archive is not a
+The proposed 0.8.3.15 development package is `TELIPHONES-0.8.3.15.tgz`;
+verify it against `TELIPHONES-0.8.3.15.tgz.sha256` before upload. This archive is not a
 production approval or evidence of live FreePBX acceptance. Upgrading the
 module in place and refreshing the root broker preserves workstation
 configuration, ownership information, credentials and existing security
 policy; do not uninstall TELIPHONES first.
 
-To install the 0.8.3.12 development package through FreePBX Module Admin, verify:
+To install the 0.8.3.15 development package through FreePBX Module Admin, verify:
 
 ```bash
-sha256sum -c TELIPHONES-0.8.3.12.tgz.sha256
+sha256sum -c TELIPHONES-0.8.3.15.tgz.sha256
 ```
 
 Then open **Admin > Module Admin**, choose **Upload modules**, upload
-`TELIPHONES-0.8.3.12.tgz`, install TELIPHONES and apply the configuration. Continue
+`TELIPHONES-0.8.3.15.tgz`, install TELIPHONES and apply the configuration. Continue
 with [Complete Installation on FreePBX 17](#complete-installation-on-freepbx-17)
 to refresh the separately installed root broker. These steps describe the
 Module Admin package path only; do not install on a production PBX, and do not
@@ -323,8 +323,8 @@ On success, `systemctl status` shows `Loaded: loaded (/etc/systemd/system/teliph
 
 Update TELIPHONES in place. Do not uninstall the module first: uninstalling removes workstation pairings.
 
-**Proposed upgrade to 0.8.3.12 development candidate:** verify
-`TELIPHONES-0.8.3.12.tgz` and its checksum, then use the Module Admin upload
+**Proposed upgrade to 0.8.3.15 development candidate:** verify
+`TELIPHONES-0.8.3.15.tgz` and its checksum, then use the Module Admin upload
 workflow above for an in-place upgrade and rerun the root broker bootstrap.
 Static package validation does not establish live acceptance or production
 readiness. Do not upgrade from a historical 0.6.7 package expecting the newer
@@ -478,9 +478,9 @@ Do not declare connectivity fixed until the complete sequence succeeds.
 
 ### After upgrading TELIPHONES
 
-A Module Admin upgrade updates the FreePBX module files but does not necessarily update the separately installed, root-owned broker. TELIPHONES 0.8.3.12 requires broker version 0.8.3.12, broker protocol 12 and both `/usr/local/lib/teliphones-broker/support_broker.py` and `/usr/local/lib/teliphones-broker/ssh_authority.py`; an older broker or a missing SSH helper cannot provide the current FreePBX firewall compatibility corrections, durable workstation revocation, verified access removal, persisted operation outcomes, pairing transport and error-handling corrections, nftables transaction acknowledgement, session-admission diagnostics, bounded correlated diagnostic history, generation-fenced listener reconciliation, durable restrictive policy, bounded controller requests, safe workstation cleanup recovery, managed SSH, connection-state policy, source-locked pairing, post-pair workstation policy, identity-preserving listener migration, Windows policy requests, post-pair SSH elevation, manual listener bans or enforced workstation session limits. Confirm that no support session is active (as root: `fwconsole teliphones status`), disconnect Windows tunnels and expect existing TELIPHONES-managed SSH sessions to terminate, then rerun the root bootstrap from an existing root shell. The bootstrap retains the previous helper files and broker unit, validates the installed helpers, and enables and restarts `teliphones-broker.service`. Verify that service is active, `/run/teliphones/control.sock` exists, and the refreshed Connectivity > TELIPHONES page reports broker version 0.8.3.12, protocol 12 and managed SSH readiness. On failure, rollback attempts to restore prior files and the previous enabled/active state; an incomplete rollback is an error requiring recovery from the existing root shell. Do not restart, reconfigure or disable the normal system SSH service or change administrator accounts. Valid pairings retain their original deadlines and cryptographic identities during listener migration.
-**Proposed 0.8.3.12 is an unreleased development candidate.** The TGZ and checksum are prepared for controlled testing but are not production approval or live acceptance.
-**Proposed 0.8.3.12 is an unreleased development candidate.** The TGZ and checksum are prepared for controlled testing but are not production approval or live acceptance.
+A Module Admin upgrade updates the FreePBX module files but does not necessarily update the separately installed, root-owned broker. TELIPHONES 0.8.3.15 requires broker version 0.8.3.15, broker protocol 12 and both `/usr/local/lib/teliphones-broker/support_broker.py` and `/usr/local/lib/teliphones-broker/ssh_authority.py`; an older broker or a missing SSH helper cannot provide the current FreePBX firewall compatibility corrections, durable workstation revocation, verified access removal, persisted operation outcomes, pairing transport and error-handling corrections, nftables transaction acknowledgement, session-admission diagnostics, bounded correlated diagnostic history, generation-fenced listener reconciliation, durable restrictive policy, bounded controller requests, safe workstation cleanup recovery, managed SSH, connection-state policy, source-locked pairing, post-pair workstation policy, identity-preserving listener migration, Windows policy requests, post-pair SSH elevation, manual listener bans or enforced workstation session limits. Confirm that no support session is active (as root: `fwconsole teliphones status`), disconnect Windows tunnels and expect existing TELIPHONES-managed SSH sessions to terminate, then rerun the root bootstrap from an existing root shell. The bootstrap retains the previous helper files and broker unit, validates the installed helpers, and enables and restarts `teliphones-broker.service`. Verify that service is active, `/run/teliphones/control.sock` exists, and the refreshed Connectivity > TELIPHONES page reports broker version 0.8.3.15, protocol 12 and managed SSH readiness. On failure, rollback attempts to restore prior files and the previous enabled/active state; an incomplete rollback is an error requiring recovery from the existing root shell. Do not restart, reconfigure or disable the normal system SSH service or change administrator accounts. Valid pairings retain their original deadlines and cryptographic identities during listener migration.
+**Proposed 0.8.3.15 is an unreleased development candidate.** The TGZ and checksum are prepared for controlled testing but are not production approval or live acceptance.
+**Proposed 0.8.3.15 is an unreleased development candidate.** The TGZ and checksum are prepared for controlled testing but are not production approval or live acceptance.
 
 Protocol 5 identifies the certificate endpoint and managed SSH contract shared
 by 0.4.0 and 0.4.1; it does not identify the firewall correction.
@@ -1117,7 +1117,7 @@ Never include private keys, credentials, pairing requests or responses, gateway 
 
 TELIPHONES is a UK registered trademark.
 
-TELIPHONES proposed 0.8.3.12 for FreePBX is licensed under GPLv3.
+TELIPHONES proposed 0.8.3.15 for FreePBX is licensed under GPLv3.
 
 The software grant is **GPL version 3 or, at your option, any later version
 (GPL-3.0-or-later)**, expressed as `GPLv3+` in module metadata. The product
@@ -1142,7 +1142,7 @@ The human contributor remains solely responsible for the contribution. AI tools 
 
 ## Release History
 
-The complete [FreePBX module change history](docs/CHANGELOG.md) is bundled with the independently verified R3 FreePBX listener recovery, retaining protocol 12 and requiring root broker 0.8.3.12. Proposed 0.8.3.12 is a development candidate, not live acceptance or production approval. Windows is independently versioned at 0.9.0. No release or deployment is claimed.
+The complete [FreePBX module change history](docs/CHANGELOG.md) is bundled with the independently verified R3 FreePBX listener recovery, retaining protocol 12 and requiring root broker 0.8.3.15. Proposed 0.8.3.15 is a development candidate, not live acceptance or production approval. Windows is independently versioned at 0.9.0. No release or deployment is claimed.
 
 The administration page groups System Readiness, Remote Support, Windows
 Workstation Access, Paired Workstations and Security & Access Restrictions.
@@ -1171,7 +1171,7 @@ redirects from an authorised peer. A listening socket alone is not proof.
 The [historical root-cause report and read-only live-PBX verification procedure](docs/CONNECTIVITY-REGRESSION.md)
 describe confirmed evidence, hypotheses and outstanding release gates.
 Do not install an earlier review archive expecting these source changes.
-The uploaded historical 0.6.7 archive is retained at repository root and its checksum is verified during this review. The 0.8.3.12 development package is not live-accepted. The historical
+The uploaded historical 0.6.7 archive is retained at repository root and its checksum is verified during this review. The 0.8.3.15 development package is not live-accepted. The historical
 0.6.6 archive remains an older package; the obsolete root-level 0.6.5 pair was
 removed. Historical release references are not download availability claims.
 Older packages lack the admission diagnostics and responsiveness corrections.

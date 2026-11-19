@@ -363,73 +363,212 @@ final class FirewallListener
     }
 
     /**
-     * A missing IPv6 service is safe only for the narrow layout below: there
-     * is no generated permit for this service, the supported INPUT traversal
-     * falls through, and the INPUT policy is DROP.  Any broad ACCEPT, explicit
-     * block, unsupported matcher, or non-DROP policy remains unverified.
+     * A missing IPv6 service is safe only when no rule/jump for the owned
+     * service remains and every possible new external unicast UDP path through
+     * INPUT ends at DROP/REJECT. INPUT may default to ACCEPT only when the
+     * complete FreePBX traversal demonstrably reaches a terminal deny first.
      */
     private static function ipv6ListenerFailsClosed(array $lines, string $chain, int $port): bool
     {
         if ($port === 0) return false;
         foreach ($lines as $line) {
             if (strpos($line, '-A ' . $chain . ' ') === 0
-                || preg_match('/^-A [^ ]+ (?:-i [^ ]+ )?-j ' . preg_quote($chain, '/') . '$/D', $line)) {
+                || preg_match('/(?:^| )-[jg] ' . preg_quote($chain, '/') . '(?: |$)/', $line)) {
                 return false;
             }
         }
-        if (!in_array('-P INPUT DROP', $lines, true)) return false;
-        return self::ipv6UnicastHasNoAccept($lines, 'INPUT', $port);
+        $policies = array_values(array_filter($lines, static function ($line) {
+            return strpos($line, '-P INPUT ') === 0;
+        }));
+        if (count($policies) !== 1 || !preg_match('/^-P INPUT (ACCEPT|DROP)$/D', $policies[0], $policy)) return false;
+        return !self::ipv6PacketMayBeAccepted($lines, 'INPUT', $port, null, $policy[1]);
     }
 
     /**
-     * With the IPv6 INPUT policy verified as DROP and no generated service
-     * chain/jump, prove there is no earlier rule that can ACCEPT a new unicast
-     * WireGuard datagram. Known non-matching IPv6 traffic (ICMPv6, loopback,
-     * established-only, multicast/broadcast and other UDP ports) is ignored.
-     * Interface dispatch is traversed as a possible branch. Unknown ACCEPTs
-    * and unknown ACCEPT paths fail closed; a missing IPv6 service alone does
-     * not make a verified IPv4 service depend on IPv6 rule generation.
+     * Explore iptables jump/return/fallthrough semantics for a new unicast UDP
+     * datagram. A NULL interface makes each interface selector a possible
+     * branch, so all FreePBX interface paths must be safe. Unknown matches
+     * explore both branches; unknown targets/control flow fail closed.
      */
-    private static function ipv6UnicastHasNoAccept(array $lines, string $chain, int $port, array $seen = []): bool
+    private static function ipv6PacketMayBeAccepted(array $lines, string $chain, int $port, ?string $interface,
+        string $inputPolicy, array $continuations = [], array $active = []): bool
     {
-        if (in_array($chain, $seen, true) || count($seen) > 32) return false;
-        $seen[] = $chain;
+        if (in_array($chain, $active, true) || count($active) > 32) return true;
+        $active[] = $chain;
+        $rules = [];
+        $declared = $chain === 'INPUT';
         foreach ($lines as $line) {
-            $prefix = '-A ' . $chain . ' ';
-            if (strpos($line, $prefix) !== 0) continue;
-            $rule = substr($line, strlen($prefix));
-            // A terminal deny cannot expose IPv6, regardless of whether its
-            // selector uses an extension we otherwise do not need to parse.
-            if (preg_match('/(?:^| )-j (DROP|REJECT)(?: .*)?$/D', $rule)) continue;
-            if (preg_match('/(?:^| )-i lo(?: |$)/', $rule)) continue;
-            if (preg_match('/(?:^| )-p ([^ ]+)(?: |$)/', $rule, $protocol) && $protocol[1] !== 'udp') continue;
-            if (preg_match('/(?:^| )--(?:dport|dports|destination-port) ([^ ]+)(?: |$)/', $rule, $destination)) {
-                $matches = self::portInSpecification($destination[1], $port);
-                if ($matches === false) continue;
-                if ($matches === null) return false;
-            }
-            if (preg_match('/(?:^| )--(?:ctstate|state) ([^ ]+)(?: |$)/', $rule, $state)
-                && preg_match('/^(?:RELATED,ESTABLISHED|ESTABLISHED,RELATED|ESTABLISHED)$/D', $state[1])) continue;
-            if (preg_match('/(?:^| )--pkt-type (multicast|broadcast)(?: |$)/', $rule)) continue;
-            if (preg_match('/(?:^| )--dst-type (MULTICAST|BROADCAST)(?: |$)/i', $rule)) continue;
-
-            // A comment match changes no packet selection and is common in
-            // FreePBX-generated rules; strip only that metadata before parsing.
-            $rule = preg_replace('/(?:^| )-m comment --comment (?:"[^"]*"|[^ ]+)/', '', $rule);
-            if (!preg_match('/(?:^| )-j ([A-Za-z0-9_-]+)(?: |$)/', trim($rule), $targetMatch)) {
-                return false;
-            }
-            $target = $targetMatch[1];
-            if (in_array($target, ['ACCEPT'], true)) return false;
-            // These targets do not terminate packet traversal. Their match
-            // predicates may be opaque without creating an IPv6 admission.
-            if (in_array($target, ['LOG', 'NFLOG', 'ULOG', 'TRACE', 'MARK', 'CONNMARK', 'SECMARK', 'CLASSIFY'], true)) continue;
-            if ($target === 'RETURN') continue;
-            if (!self::ipv6UnicastHasNoAccept($lines, $target, $port, $seen)) return false;
+            if (preg_match('/^-A ' . preg_quote($chain, '/') . ' (.+)$/D', $line, $match)) $rules[] = $match[1];
+            if ($line === '-N ' . $chain) $declared = true;
         }
-        // Falling off a user chain returns to the caller; falling off INPUT
-        // reaches the already-checked DROP policy.
-        return true;
+        // An iptables jump to a declared empty user chain returns to its
+        // caller. An undeclared target is not assumed to have those semantics.
+        if (!$rules && $chain !== 'INPUT') {
+            if (!$declared) return true;
+            return self::ipv6ResumeAfterReturn($lines, $port, $interface, $inputPolicy, $continuations, $active);
+        }
+        return self::ipv6RulesMayBeAccepted($lines, $rules, $chain, 0, $port, $interface,
+            $inputPolicy, $continuations, $active);
+    }
+
+    private static function ipv6RulesMayBeAccepted(array $lines, array $rules, string $chain, int $index, int $port,
+        ?string $interface, string $inputPolicy, array $continuations, array $active): bool
+    {
+        for ($count = count($rules); $index < $count; ++$index) {
+            $tokens = self::ipv6RuleTokens($rules[$index]);
+            if ($tokens === null) return true;
+            $match = self::ipv6RuleMatch($tokens, $port, $interface);
+            if ($match === false) continue;
+            $target = self::ipv6RuleTarget($tokens);
+            if ($target === null) return true;
+            $targetMayAccept = self::ipv6TargetMayAccept($lines, $target[0], $target[1], $rules, $chain,
+                $index + 1, $port, $interface, $inputPolicy, $continuations, $active);
+            if ($targetMayAccept) return true;
+            if ($match === null) {
+                return self::ipv6RulesMayBeAccepted($lines, $rules, $chain, $index + 1, $port,
+                    $interface, $inputPolicy, $continuations, $active);
+            }
+            return false;
+        }
+        return self::ipv6ResumeAfterReturn($lines, $port, $interface, $inputPolicy, $continuations, $active);
+    }
+
+    private static function ipv6RuleTarget(array $tokens): ?array
+    {
+        $targetIndex = null;
+        $goto = false;
+        foreach ($tokens as $index => $token) {
+            if ($token !== '-j' && $token !== '-g') continue;
+            if ($targetIndex !== null || !isset($tokens[$index + 1])) return null;
+            $targetIndex = $index;
+            $goto = $token === '-g';
+        }
+        if ($targetIndex === null) return null;
+        $target = $tokens[$targetIndex + 1];
+        if ($goto) $target = '@goto:' . $target;
+        return [$target, implode(' ', array_slice($tokens, $targetIndex + 2))];
+    }
+
+    private static function ipv6TargetMayAccept(array $lines, string $target, string $arguments, array $parentRules,
+        string $parentChain, int $nextIndex, int $port, ?string $interface, string $inputPolicy,
+        array $continuations, array $active): bool
+    {
+        if (strpos($target, '@goto:') === 0) return true;
+        if ($target === 'ACCEPT') return true;
+        if ($target === 'DROP' || $target === 'REJECT') return false;
+        if ($target === 'RETURN') {
+            if ($arguments !== '') return true;
+            return self::ipv6ResumeAfterReturn($lines, $port, $interface, $inputPolicy, $continuations, $active);
+        }
+        if (in_array($target, ['MARK'], true)) {
+            if (!preg_match('/^--set-xmark (?:0x[0-9A-Fa-f]+|[0-9]+)\/(?:0x[0-9A-Fa-f]+|[0-9]+)$/D', $arguments)) return true;
+            return self::ipv6RulesMayBeAccepted($lines, $parentRules, $parentChain, $nextIndex, $port,
+                $interface, $inputPolicy, $continuations, $active);
+        }
+        if (in_array($target, ['LOG', 'NFLOG', 'ULOG', 'TRACE'], true)) {
+            return self::ipv6RulesMayBeAccepted($lines, $parentRules, $parentChain, $nextIndex, $port,
+                $interface, $inputPolicy, $continuations, $active);
+        }
+        // Goto, extension targets, and any other target are deliberately not
+        // treated as ordinary jumps: their return/control semantics are not
+        // needed to prove this supported FreePBX path.
+        if ($arguments !== '' || !preg_match('/^[A-Za-z0-9_-]+$/D', $target)) return true;
+        $childContinuations = $continuations;
+        $childContinuations[] = [$parentRules, $parentChain, $nextIndex, $active];
+        return self::ipv6PacketMayBeAccepted($lines, $target, $port, $interface, $inputPolicy,
+            $childContinuations, $active);
+    }
+
+    private static function ipv6ResumeAfterReturn(array $lines, int $port, ?string $interface, string $inputPolicy,
+        array $continuations, array $active): bool
+    {
+        if (!$continuations) return $inputPolicy === 'ACCEPT';
+        [$rules, $chain, $index, $parentActive] = array_pop($continuations);
+        return self::ipv6RulesMayBeAccepted($lines, $rules, $chain, $index, $port, $interface,
+            $inputPolicy, $continuations, $parentActive);
+    }
+
+    private static function ipv6RuleTokens(string $rule): ?array
+    {
+        $rule = preg_replace('/(?:^| )-m comment --comment (?:"[^"]*"|\'[^\']*\'|[^ ]+)/', '', $rule);
+        if (!preg_match_all('/"[^"]*"|\'[^\']*\'|[^\s]+/', $rule, $matches)) return null;
+        return array_map(static function ($token) {
+            return strlen($token) >= 2 && (($token[0] === '"' && substr($token, -1) === '"')
+                || ($token[0] === "'" && substr($token, -1) === "'")) ? substr($token, 1, -1) : $token;
+        }, $matches[0]);
+    }
+
+    /** Return true, false, or null when a supported rule selector is uncertain. */
+    private static function ipv6RuleMatch(array $tokens, int $port, ?string $interface): ?bool
+    {
+        $uncertain = false;
+        for ($index = 0, $count = count($tokens); $index < $count; ++$index) {
+            $token = $tokens[$index];
+            // Negated predicates require both match and non-match traversal;
+            // don't let a later selector incorrectly prune either branch.
+            if ($token === '!') return null;
+            if (in_array($token, ['-j', '-g'], true)) {
+                if (!isset($tokens[++$index])) return null;
+                if ($token === '-g') $uncertain = true;
+                continue;
+            }
+            if ($token === '-m') {
+                if (!isset($tokens[++$index]) || !in_array($tokens[$index],
+                    ['udp', 'state', 'conntrack', 'multiport', 'pkttype', 'addrtype', 'set', 'mark', 'comment'], true)) {
+                    $uncertain = true;
+                }
+                continue;
+            }
+            if (in_array($token, ['-i', '-p', '-s', '-d', '--dport', '--dports', '--destination-port',
+                '--ctstate', '--state', '--pkt-type', '--dst-type', '--match-set', '--mark', '--sport', '--sports'], true)) {
+                if (!isset($tokens[$index + 1])) { $uncertain = true; continue; }
+                $value = $tokens[++$index];
+                if ($token === '-i') {
+                    if ($value === 'lo') return false;
+                    if ($interface !== null && $value !== $interface) return false;
+                    if ($interface === null) $uncertain = true;
+                } elseif ($token === '-p') {
+                    if (in_array($value, ['tcp', 'icmp', 'ipv6-icmp', 'icmpv6', '6', '58'], true)) return false;
+                    if (!in_array($value, ['udp', '17', 'all'], true)) $uncertain = true;
+                } elseif (in_array($token, ['--dport', '--dports', '--destination-port'], true)) {
+                    $ports = self::portInSpecification($value, $port);
+                    if ($ports === false) return false;
+                    if ($ports === null) $uncertain = true;
+                } elseif (in_array($token, ['--ctstate', '--state'], true)) {
+                    $states = explode(',', $value);
+                    if (!array_diff($states, ['NEW', 'RELATED', 'ESTABLISHED', 'INVALID', 'UNTRACKED'])
+                        && !in_array('NEW', $states, true)) return false;
+                    if (array_diff($states, ['NEW', 'RELATED', 'ESTABLISHED', 'INVALID', 'UNTRACKED'])) $uncertain = true;
+                } elseif ($token === '--pkt-type') {
+                    if (in_array($value, ['multicast', 'broadcast'], true)) return false;
+                    if ($value !== 'unicast') $uncertain = true;
+                } elseif ($token === '--dst-type') {
+                    if (in_array(strtoupper($value), ['MULTICAST', 'BROADCAST'], true)) return false;
+                    if (!in_array(strtoupper($value), ['UNICAST', 'LOCAL'], true)) $uncertain = true;
+                } elseif (in_array($token, ['-s', '-d'], true)) {
+                    if (in_array($value, ['::/0', '0.0.0.0/0'], true)) continue;
+                    $uncertain = true;
+                } else {
+                    $uncertain = true;
+                }
+                continue;
+            }
+            if (in_array($token, ['--set-xmark', '--set-mark', '--reject-with', '--log-level', '--log-prefix'], true)) {
+                if (!isset($tokens[++$index])) $uncertain = true;
+                continue;
+            }
+            if ($token === '--syn' || $token === '--tcp-flags') { $uncertain = true; if ($token === '--tcp-flags') ++$index; continue; }
+            if (in_array($token, ['--uid-owner', '--gid-owner', '--limit', '--limit-burst', '--physdev-in', '--physdev-is-in'], true)) {
+                $uncertain = true;
+                if (in_array($token, ['--uid-owner', '--gid-owner', '--limit', '--limit-burst', '--physdev-in'], true)) ++$index;
+                continue;
+            }
+            if ($token === '-j' || $token === '-g') continue;
+            // Target name is consumed by its option; any other syntax could
+            // alter packet selection and therefore needs both-path analysis.
+            $uncertain = true;
+        }
+        return $uncertain ? null : true;
     }
 
     public static function rulesConverged(array $lines, string $chain, int $port, array $publicInterfaces = []): bool
@@ -554,7 +693,9 @@ final class FirewallListener
             }
             if ($sawInputHook) continue;
             $outcome = self::precedingRuleOutcome($lines, $match[1], $port, $publicInterfaces);
-            if ($outcome !== 'irrelevant' && $outcome !== 'excluded') return $outcome;
+            // A user-chain RETURN or natural fallthrough resumes the next
+            // INPUT rule; it does not terminate the caller's traversal.
+            if (!in_array($outcome, ['irrelevant', 'excluded', 'return'], true)) return $outcome;
         }
         if (!$inputRules) return 'pending';
         if ($publicInterfaces && !isset($inputRules[''])) {
@@ -630,8 +771,21 @@ final class FirewallListener
             if (self::isBroadSourceRestriction($source[1])) return 'unverified (broad source restriction)';
             return 'excluded';
         }
-        if (preg_match('/-j (DROP|REJECT)$/D', $rule)) return 'blocked';
-        if (preg_match('/-j ACCEPT$/D', $rule)) return 'unsafe';
+        // Fail2Ban set matches select a changing subset of source addresses.
+        // Keep the restriction in the ruleset and continue evaluating later
+        // chain rules for unbanned sources; do not mistake this for a global
+        // block or an unknown target.
+        if (preg_match('/^-m set --match-set [A-Za-z0-9_.:-]+ src -j (?:DROP|REJECT)(?: --reject-with [A-Za-z0-9_-]+)?$/D', $rule)) {
+            return 'excluded';
+        }
+        if (preg_match('/(?:^| )-j (DROP|REJECT)(?: --reject-with [A-Za-z0-9_-]+)?$/D', $rule)) return 'blocked';
+        if (preg_match('/(?:^| )-j ACCEPT(?:$| --comment [^ ]+$)/D', $rule)) return 'unsafe';
+        // FreePBX 17 can mark packets before its firewall hook. MARK is
+        // non-terminating; recognize only the exact generated xmark form so
+        // other targets/options remain subject to the fail-closed parser.
+        if (preg_match('/^-j MARK --set-xmark (?:0x[0-9A-Fa-f]+|[0-9]+)\/(?:0x[0-9A-Fa-f]+|[0-9]+)$/D', $rule)) {
+            return 'irrelevant';
+        }
         if (!preg_match('/^-j ([A-Za-z0-9_-]+)$/D', $rule, $jump)) return 'unverified (unsupported preceding INPUT rule)';
         $chain = $jump[1];
         if ($chain === 'RETURN') return 'return';
@@ -647,9 +801,11 @@ final class FirewallListener
             if ($outcome === 'return') return 'irrelevant';
             if ($outcome !== 'irrelevant' && $outcome !== 'excluded') return $outcome;
         }
-        // Falling off a user-defined chain returns to its caller. If every
-        // rule was unrelated or source-excluded, that is a verified fallthrough.
-        return $matched ? 'return' : 'unverified (unknown preceding chain)';
+        // Falling off an existing user-defined chain returns to its caller,
+        // including a declared chain with no rules. An absent target is not
+        // assumed to be an empty chain: iptables -S emits -N for real chains.
+        $declared = in_array('-N ' . $chain, $lines, true);
+        return ($matched || $declared) ? 'return' : 'unverified (unknown preceding chain)';
     }
 
     /** @return bool|null true/false for a supported iptables single/list/range port specification. */

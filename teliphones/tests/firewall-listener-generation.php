@@ -133,6 +133,40 @@ namespace {
             'An IPv6-closed, IPv4-admitted FreePBX listener must not wait for an ungenerated IPv6 service.');
         $check(is_file($state), 'IPv6-closed admission lost listener ownership state');
 
+        // Production FreePBX 17 reports INPUT ACCEPT, but its ordered hook,
+        // interface routing, non-terminating zone MARK, existing service
+        // chain fallthrough, reject RETURN and terminal logdrop DROP prove
+        // that a new external unicast UDP 51821 packet cannot reach policy.
+        $fw->rulesV6 = [
+            '-P INPUT ACCEPT',
+            '-N fpbxfirewall', '-N fpbxinterfaces', '-N fpbxreject', '-N fpbxlogdrop',
+            '-N zone-external', '-N zone-internal', '-N zone-other', '-N fpbxsvc-vpn',
+            '-A INPUT -j fail2ban-SIP',
+            '-A INPUT -j fail2ban-SSH',
+            '-A INPUT -j fpbxfirewall',
+            '-A fail2ban-SIP -m set --match-set fail2ban-sip src -j REJECT --reject-with icmp6-port-unreachable',
+            '-A fail2ban-SIP -j RETURN',
+            '-A fail2ban-SSH -m set --match-set fail2ban-ssh src -j REJECT --reject-with icmp6-port-unreachable',
+            '-A fail2ban-SSH -j RETURN',
+            '-A fpbxfirewall -j fpbxinterfaces',
+            '-A fpbxfirewall -j fpbxreject',
+            '-A fpbxfirewall -j fpbxlogdrop',
+            '-A fpbxinterfaces -i eth0 -j zone-external',
+            '-A fpbxinterfaces -i eth1 -j zone-external',
+            '-A fpbxlogdrop -j DROP',
+            '-A zone-external -j MARK --set-xmark 0x10/0x10',
+            '-A zone-external -j fpbxsvc-vpn',
+            '-A zone-internal -j fpbxsvc-vpn',
+            '-A zone-other -j fpbxsvc-vpn',
+            '-A fpbxsvc-vpn -p udp -m udp --dport 1194 -j ACCEPT',
+        ];
+        $check(!in_array('-P INPUT DROP', $fw->rulesV6, true),
+            'The production-path fixture must use the reported INPUT ACCEPT policy.');
+        $before = $GLOBALS['generationClock'];
+        FirewallListener::reconcile($fw, [51821], $state);
+        $check($GLOBALS['generationClock'] === $before,
+            'A proven FreePBX terminal DROP must not wait for an ungenerated IPv6 service.');
+
         // An unsupported classifier ending in ACCEPT could expose the
         // unbound-family WireGuard listener; never infer safety from absence
         // of the generated IPv6 Custom Service alone.

@@ -8,6 +8,41 @@ repository. Portable Linux validation has been run for the broker, FreePBX modul
 Windows core; current evidence is recorded in DEVELOPMENT-0.8.0.md. Native Windows compilation/UI integration and live FreePBX
 session, migration, firewall and SSH acceptance remain outstanding.
 
+## 0.8.3.15, FreePBX generated listener chain verification (unreleased development)
+
+- Recognize declared empty user chains in `iptables -S` as normal RETURN/fallthrough
+  when checking rules preceding the FreePBX INPUT hook; undeclared targets remain
+  unverified.
+- Preserve scoped Fail2Ban source-set DROP/REJECT behavior, and accept the actual
+  iptables `REJECT --reject-with` syntax without treating a ban as a global block.
+- Add production-excerpt IPv4/IPv6 generated-service checks for UDP 51821, zone
+  jumps, MARK ordering, empty Fail2Ban chains, explicit RETURN, unsupported rules
+  and early terminal verdicts. The full ordered production snapshot and live
+  behavior still require operator verification.
+
+## 0.8.3.14, IPv6 FreePBX terminal-path verification candidate (unreleased development)
+
+- Accept a missing IPv6 listener service with INPUT ACCEPT only when ordered
+  traversal proves new external unicast UDP traffic reaches a terminal DROP or
+  REJECT before policy fallthrough.
+- Model FreePBX INPUT, Fail2Ban, interface dispatch, `fpbxreject`, external-zone
+  MARK/service traversal, RETURN and `fpbxlogdrop` using actual rule syntax.
+- Keep ACCEPT, missing/unreachable DROP, unsafe RETURN, unknown targets and
+  unsupported matchers fail-closed. Retain IPv4 listener verification and
+  protocol 12; live FreePBX 17 packet-path verification remains required.
+
+## 0.8.3.13, IPv4 listener MARK compatibility candidate (unreleased development)
+
+- Recognize FreePBX 17's non-terminating `MARK --set-xmark` operation before
+  the generated UDP listener jump without accepting blocking rules, unowned
+  terminal ACCEPTs or unknown targets.
+- Add a regression using the production `-A zone-external -j MARK
+  --set-xmark 0x10/0x10` rule syntax and negative cases for DROP, ACCEPT and
+  unknown targets. The historical 0.6.7 implementation accepts the positive
+  fixture; the previous verifier rejected it as unsupported.
+- Retain protocol 12 and all existing IPv6 listener exposure checks. This
+  candidate remains unreleased pending controlled FreePBX 17 functional tests.
+
 ## 0.8.3.12, IPv4/IPv6 listener verification candidate (unreleased development)
 
 - Compare the listener verifier against the checksum-verified 0.6.7 package and

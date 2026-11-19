@@ -32,7 +32,7 @@ namespace {
     $session = ['AMP_user' => 'admin', 'teliphones_token' => 'known-token'];
     $operation = ['id' => 'abc123', 'action' => 'dependencies', 'state' => 'running', 'stage' => 'Installing WireGuard tools',
         'message' => '', 'started_at' => 1000, 'finished_at' => null];
-    $ready = ['ok' => true, 'error' => null, 'status' => ['protocol' => 12, 'component_version' => '0.8.3.12', 'phase' => 'Missing dependency', 'enabled' => true, 'can_authorise' => false,
+    $ready = ['ok' => true, 'error' => null, 'status' => ['protocol' => 12, 'component_version' => '0.8.3.15', 'phase' => 'Missing dependency', 'enabled' => true, 'can_authorise' => false,
         'workstations' => ['ready' => false, 'requirements' => ['wg' => false, 'ip' => true, 'nft' => true], 'items' => []],
         'readiness' => ['WireGuard wg' => false, 'Gateway enrollment' => true], 'session' => null, 'server_time' => 1010, 'operation' => $operation,
         'private_key' => '-----BEGIN PRIVATE KEY-----secret', 'gateway' => ['certificate' => 'secret-cert']]];
@@ -76,13 +76,13 @@ namespace {
         'Status must not expose credentials, keys or configuration.');
     $assert($status['readiness'] === ['WireGuard wg' => false, 'Gateway enrollment' => true], 'Readiness must be a boolean map.');
     $assert($status['broker_current'] === true, 'A protocol 12 broker supports live monitoring and pairing.');
-    foreach (['0.6.0', '0.6.1', '0.6.2', '0.6.3', '0.6.4', '0.6.5', '0.6.6', '0.6.7', '0.6.8', '0.8.0', '0.8.1', '0.8.2', '0.8.3', '0.8.3.7', '0.8.3.8', '0.8.3.9', '0.8.3.10', '0.8.3.12', 'invalid', null] as $version) {
+    foreach (['0.6.0', '0.6.1', '0.6.2', '0.6.3', '0.6.4', '0.6.5', '0.6.6', '0.6.7', '0.6.8', '0.8.0', '0.8.1', '0.8.2', '0.8.3', '0.8.3.7', '0.8.3.8', '0.8.3.9', '0.8.3.10', '0.8.3.12', '0.8.3.13', '0.8.3.14', '0.8.3.15', 'invalid', null] as $version) {
         $versioned = $ready;
         $versioned['status']['protocol'] = 12;
         if ($version === null) unset($versioned['status']['component_version']);
         else $versioned['status']['component_version'] = $version;
         $current = WebSupport::publicStatus($versioned, ['available' => true])['broker_current'];
-        $assert($current === ($version === '0.8.3.12'),
+        $assert($current === ($version === '0.8.3.15'),
             'Only brokers at or above the required patch version may report current.');
     }
     foreach (array_merge([null, 1, 2, '3', 3.0], range(3, 11)) as $protocol) {
@@ -91,7 +91,7 @@ namespace {
         $assert(WebSupport::publicStatus($legacy, ['available' => true])['broker_current'] === false, 'Protocols below 12 or malformed broker protocol must not be treated as current.');
     }
     $fivePart = $ready;
-    $fivePart['status']['component_version'] = '0.8.3.12.1';
+    $fivePart['status']['component_version'] = '0.8.3.15.1';
     $assert(WebSupport::publicStatus($fivePart, ['available' => true])['broker_current'] === false,
         'A version with more than four numeric components must not be accepted.');
     $assert(WebSupport::publicStatus($ready, ['available' => false])['broker_current'] === false, 'Unavailable broker is never current.');

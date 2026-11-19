@@ -1,8 +1,8 @@
 # TELIPHONES testing
 
-## Current Windows 0.9.0 / proposed module 0.8.3.12 source review and package boundary
+## Current Windows 0.9.0 / proposed module 0.8.3.15 source review and package boundary
 
-Windows 0.9.0 is independently versioned; proposed module/root broker 0.8.3.12
+Windows 0.9.0 is independently versioned; proposed module/root broker 0.8.3.15
 retain protocol 12. The development candidate archive is built only after the
 source and regression checks pass. This is not a production release and does
 not establish live FreePBX acceptance. The historical `TELIPHONES-0.6.7.tgz`
@@ -16,7 +16,7 @@ Run source version consistency independently from the repository root:
 PYTHONDONTWRITEBYTECODE=1 python3 teliphones/tests/package-validation.py SourceVersionTests
 ```
 
-For complete package validation, first build `TELIPHONES-0.8.3.12.tgz` using the
+For complete package validation, first build `TELIPHONES-0.8.3.15.tgz` using the
 root `README.md` procedure after verification, then run
 `PYTHONDONTWRITEBYTECODE=1 python3 teliphones/tests/package-validation.py`.
 The complete validator requires the archive and checksum; the source-only check
@@ -36,11 +36,14 @@ pairing behaviour, startup smoke and portable Release checks, use the
 `desktop/windows/tests/WINDOWS-READINESS.md` reference in the source repository.
 Linux checks do not substitute for Windows execution.
 
-## Current 0.8.3.12 source checks and release blockers
+## Current 0.8.3.15 source checks and release blockers
 
-Current 0.8.3.12 firewall regression coverage exercises IPv4 listener convergence,
-IPv6-closed fallback under representative FreePBX rules, and rejection of
-unknown or broad IPv6 ACCEPT paths.
+Current 0.8.3.15 firewall regression coverage exercises IPv4 and IPv6 generated
+listener convergence, declared-empty Fail2Ban chains, scoped active restrictions,
+RETURN/fallthrough, the FreePBX zone MARK and service jumps, and rejection of
+unknown targets, unsupported rules and early terminal verdicts. Production
+fixtures use the supplied service ID and rule excerpts; the complete ordered PBX
+snapshot was not available in this checkout.
 The PHP suite runs with the isolated PHP 8.4 CLI in the development environment;
 it does not modify a host firewall.
 Coverage exercises legitimate IPv4

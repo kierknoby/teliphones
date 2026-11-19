@@ -14,11 +14,11 @@ workflow for bounded support windows.
 
 | Component | Current version | Start here |
 |---|---|---|
-| FreePBX module / root broker | **0.8.3.12 proposed** / **0.8.3.12 proposed**, protocol 12 (development candidate; not a release or production-approved) | [Install](teliphones/README.md#installing-the-module) · [Upgrade](teliphones/README.md#updating-teliphones) |
+| FreePBX module / root broker | **0.8.3.15 proposed** / **0.8.3.15 proposed**, protocol 12 (development candidate; not a release or production-approved) | [Install](teliphones/README.md#installing-the-module) · [Upgrade](teliphones/README.md#updating-teliphones) |
 | Windows application | **0.9.0** (file version 0.9.0.0; CI builds complete, functional acceptance outstanding) | [Download and requirements](desktop/windows/README.md#requirements-and-download) · [Pair a PBX](desktop/windows/README.md#pair-an-administrator-workstation) |
 | Reference gateway and Checker probe | Optional laboratory infrastructure | [Integration guide](teliphones/docs/INTEGRATION.md) · [Gateway](gateway/README.md) |
 
-FreePBX module **0.8.2 (proposed, unreleased)**, root broker **0.8.2** and Windows **0.9.0** are
+FreePBX module **0.8.3.15 (proposed, unreleased)**, root broker **0.8.3.15** and Windows **0.9.0** are
 independently versioned; the broker protocol remains 12. The module/broker
 0.8.2 update adds FreePBX 17 Firewall path evaluation for public unicast UDP listener
 traffic, recognised IPv4 NAT POSTROUTING hooks and recovery after Firewall
@@ -51,7 +51,7 @@ policy requests, listener migration and post-pair SSH elevation.
 The Windows application is not included in the Module Admin package.
 
 The uploaded historical `TELIPHONES-0.6.7.tgz` and checksum are retained at the
-repository root and checksum-verified for this comparison. Candidate 0.8.3.12
+repository root and checksum-verified for this comparison. Candidate 0.8.3.15
 is for controlled testing, not live acceptance or production approval. The
 0.6.7 package predates and does not contain the newer listener/admission
 corrections.
@@ -312,8 +312,8 @@ validate its contents and checksum:
 tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
   --mode='u+rwX,go+rX,go-w' --exclude='*/.*' --exclude='*/tests' \
    --exclude='*/__pycache__' --exclude='*.pyc' --exclude='*.pyo' \
-   -czf TELIPHONES-0.8.2.tgz teliphones
-sha256sum TELIPHONES-0.8.2.tgz > TELIPHONES-0.8.2.tgz.sha256
+   -czf TELIPHONES-0.8.3.15.tgz teliphones
+sha256sum TELIPHONES-0.8.3.15.tgz > TELIPHONES-0.8.3.15.tgz.sha256
 PYTHONDONTWRITEBYTECODE=1 python3 teliphones/tests/package-validation.py
 ```
 
