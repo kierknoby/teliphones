@@ -37,6 +37,7 @@ protected:
     afx_msg void OnAddSupport();
     afx_msg void OnUpdateGrant();
     afx_msg void OnRemove();
+    afx_msg void OnEditManagementHostname();
     afx_msg void OnConnect();
     afx_msg void OnDisconnect();
     afx_msg void OnOpenGui();
@@ -44,6 +45,7 @@ protected:
     afx_msg void OnLockWorkstation();
     afx_msg void OnRequestSources();
     afx_msg void OnSettings();
+    afx_msg void OnRecover();
     afx_msg void OnConnectionHealth();
     afx_msg void OnSessionLog();
     afx_msg void OnInlineHistoryChanged();

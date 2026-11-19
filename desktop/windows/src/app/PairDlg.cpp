@@ -157,6 +157,9 @@ tlp::PairResponse CPairDlg::ValidatedResponse() {
         throw tlp::Error("The PBX returned legacy SSH permission. Upgrade its TELIPHONES broker and approve again.");
     if (pairing.ssh && !tlp::IsLinuxUser(pairing.sshUser))
         throw tlp::Error("The PBX must supply the explicitly approved Linux SSH account.");
+    const std::string hostname = GetEdit(this, IDC_PAIR_TLS_HOSTNAME);
+    if (!hostname.empty() && (pairing.guiUrl.rfind("https://", 0) != 0 || !tlp::IsHostname(hostname)))
+        throw tlp::Error("Enter only a DNS hostname (no scheme, port or path), and only when the paired primary management service is HTTPS.");
     return pairing;
 }
 
@@ -266,6 +269,7 @@ void CPairDlg::OnOK() {
         if (profile.name.size() > 128) profile.name.resize(128);
         profile.sshUser = pairing.ssh ? sshUser : std::string();
         profile.pairing = std::move(pairing);
+        profile.managementTlsHostname = GetEdit(this, IDC_PAIR_TLS_HOSTNAME);
         CDialogEx::OnOK();
     } catch (const std::exception& e) {
         tlp::ui::ShowMessage(tlp::win::Widen(e.what()).c_str(), MB_ICONERROR);

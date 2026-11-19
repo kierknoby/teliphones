@@ -40,6 +40,8 @@ struct Profile {
     // Administrator ("My PBXs") profiles
     std::string workstationName;
     PairResponse pairing;
+    // Local-only DNS name expected by the primary HTTPS certificate; never supplied by the public WG endpoint.
+    std::string managementTlsHostname;
     std::string sshUser;
     bool connectPasswordSkippedPermanently = false;
     // Remote Support profiles: the engineer key is created first and enrolled by the gateway operator,

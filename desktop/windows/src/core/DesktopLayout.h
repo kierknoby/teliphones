@@ -11,7 +11,7 @@ struct LayoutRect {
 };
 
 enum class DesktopSlot {
-    PbxHeading, Profiles, Add, Remove, Support, Grant, SessionLabel, Session,
+    PbxHeading, Profiles, Add, Remove, Support, Grant, Hostname, SessionLabel, Session,
     Details, LockWorkstation, AllowedSourcesLabel, AllowedSources, RequestSources,
     ConnectionHeading, State, Guidance, Summary, History, Plot, Graph,
     PopOut, Log, Count
@@ -19,7 +19,7 @@ enum class DesktopSlot {
 
 struct DesktopLayout {
     std::array<LayoutRect, static_cast<int>(DesktopSlot::Count)> content{};
-    std::array<LayoutRect, 6> actions{};
+    std::array<LayoutRect, 7> actions{};
     LayoutRect viewport;
     LayoutRect wireguard;
     LayoutRect disclaimer;
@@ -31,12 +31,12 @@ inline DesktopLayout ArrangeDesktop(int width, int height) {
     DesktopLayout layout;
     const int margin = 12, gap = 8;
     const int actionWidth = std::max(1, width - margin * 2);
-    const int columns = std::clamp((actionWidth + gap) / 120, 1, 6);
-    const int rows = (6 + columns - 1) / columns;
+    const int columns = std::clamp((actionWidth + gap) / 120, 1, 7);
+    const int rows = (7 + columns - 1) / columns;
     const int disclaimerHeight = 30;
     const int footerHeight = rows * 32 + (rows - 1) * gap + margin * 2 + disclaimerHeight;
     layout.disclaimer = {margin, height - margin / 2 - disclaimerHeight, actionWidth, disclaimerHeight};
-    for (int i = 0; i < 6; ++i) {
+    for (int i = 0; i < 7; ++i) {
         const int col = i % columns, row = i / columns;
         const int cell = (actionWidth - (columns - 1) * gap) / columns;
         layout.actions[i] = {margin + col * (cell + gap), height - footerHeight + margin + row * 40, cell, 32};
@@ -52,20 +52,21 @@ inline DesktopLayout ArrangeDesktop(int width, int height) {
     auto place = [&](DesktopSlot slot, int x, int y, int w, int h) {
         layout.content[static_cast<int>(slot)] = {x, y, w, h};
     };
-    const int listHeight = leftHeight - 300;
+    const int listHeight = leftHeight - 338;
     place(DesktopSlot::PbxHeading, margin, 8, leftWidth, 24);
     place(DesktopSlot::Profiles, margin, 40, leftWidth, listHeight);
     const int management = 48 + listHeight;
-    const int leftContentBottom = management + 240;
+    const int leftContentBottom = management + 278;
     const int rightTop = landscape ? 0 : std::max(leftHeight, leftContentBottom) + 16;
     const int half = (leftWidth - gap) / 2;
     place(DesktopSlot::Add, margin, management, half, 30);
     place(DesktopSlot::Remove, margin + half + gap, management, half, 30);
     place(DesktopSlot::Support, margin, management + 38, half, 30);
     place(DesktopSlot::Grant, margin + half + gap, management + 38, half, 30);
-    place(DesktopSlot::SessionLabel, margin, management + 80, leftWidth, 20);
-    place(DesktopSlot::Session, margin, management + 104, leftWidth, 28);
-    place(DesktopSlot::Details, margin, management + 140, leftWidth, 100);
+    place(DesktopSlot::Hostname, margin, management + 76, half, 30);
+    place(DesktopSlot::SessionLabel, margin, management + 118, leftWidth, 20);
+    place(DesktopSlot::Session, margin, management + 142, leftWidth, 28);
+    place(DesktopSlot::Details, margin, management + 178, leftWidth, 100);
     const int policyButtonWidth = (rightWidth - gap) / 2;
     place(DesktopSlot::ConnectionHeading, rightX, rightTop + 8, rightWidth, 24);
     place(DesktopSlot::State, rightX, rightTop + 40, rightWidth, 28);

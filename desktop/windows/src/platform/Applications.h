@@ -24,6 +24,9 @@ std::string OpenSshClient();
 // Open the FreePBX GUI / SSH with the preferred application. Throw tlp::AppUnavailable when the selected application
 // is missing, and never fall back to a different application.
 void OpenFreePbx(const Profile& profile, const std::string& sessionId, const Preferences& preferences);
+// Called only after disconnect has been requested; closes only tracked TELIPHONES Edge processes for this profile.
+void CloseSecureBrowserSessions(const std::string& profileId);
+void CloseAllSecureBrowserSessions();
 void OpenSsh(const Profile& profile, const std::string& sessionId, const Preferences& preferences);
 
 }  // namespace win

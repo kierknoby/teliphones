@@ -21,8 +21,8 @@ const moduleVersion = fs.readFileSync(path.join(root, 'teliphones/module.xml'), 
   .match(/<version>([^<]+)<\/version>/)[1];
 const brokerVersion = fs.readFileSync(path.join(root, 'teliphones/support_broker.py'), 'utf8')
   .match(/^VERSION = "([^"]+)"/m)[1];
-const publishedModuleVersion = '0.8.2';
-const publishedBrokerVersion = '0.8.2';
+const currentModuleVersion = '0.8.3.15';
+const currentBrokerVersion = '0.8.3.15';
 
 test('all site pages have valid local links, assets and unique fragment targets', () => {
   const ids = new Map();
@@ -52,69 +52,111 @@ test('all site pages have valid local links, assets and unique fragment targets'
 
 test('current product and installation copy matches independent source versions', () => {
   assert.equal(moduleVersion, brokerVersion, 'Module and broker source versions must match');
-  assert.notEqual(moduleVersion, publishedModuleVersion,
-    'The current unreleased source candidate must remain distinct from the published website version');
-  assert.equal(version, '0.9.0');
+  assert.equal(moduleVersion, currentModuleVersion,
+    'The website module version must match the currently tested installation');
+  assert.equal(version, '0.10.0');
   for (const name of ['index.html', 'windows/index.html', 'downloads/index.html',
     'freepbx/index.html', 'faq/index.html', 'about/index.html', 'roadmap/index.html']) {
     const html = contents.get(path.join(site, name));
     assert.ok(html.includes(version), `${name}: missing Windows ${version}`);
-    assert.ok(html.includes(publishedModuleVersion), `${name}: missing published module ${publishedModuleVersion}`);
-  }
-  for (const name of ['downloads/index.html', 'freepbx/index.html', 'docs/getting-started/index.html',
-    'docs/troubleshooting/index.html', 'faq/index.html', 'docs/index.html']) {
-    const html = contents.get(path.join(site, name));
-    assert.ok(html.includes(publishedBrokerVersion), `${name}: missing published broker ${publishedBrokerVersion}`);
-    assert.match(html, /protocol (?:<strong>)?12/, name);
+    assert.ok(html.includes(currentModuleVersion), `${name}: missing module ${currentModuleVersion}`);
   }
   for (const name of ['index.html', 'about/index.html', 'downloads/index.html', 'freepbx/index.html',
     'roadmap/index.html', 'security/index.html', 'docs/index.html', 'docs/getting-started/index.html',
     'docs/troubleshooting/index.html', 'faq/index.html']) {
-    assert.ok(contents.get(path.join(site, name)).includes(publishedModuleVersion),
-      `${name}: missing published FreePBX version ${publishedModuleVersion}`);
+    assert.ok(contents.get(path.join(site, name)).includes(currentModuleVersion),
+      `${name}: missing FreePBX version ${currentModuleVersion}`);
   }
   for (const [file, html] of contents) {
-    assert.doesNotMatch(html, /0\.7\.0|0\.6\.0|protocol 7|broker 0\.6\.[45]/, file);
+    assert.doesNotMatch(html, /0\.7\.0|0\.6\.0|protocol 7|broker 0\.6\.[45]|0\.9\.0/, file);
+    assert.doesNotMatch(html, /TELIPHONES-0\.8\.2\.tgz|TELIPHONES-0\.6\.7\.tgz|historical 0\.6\.7/, file);
   }
+  for (const name of ['index.html', 'features/index.html', 'downloads/index.html',
+    'freepbx/index.html', 'faq/index.html', 'about/index.html', 'roadmap/index.html',
+    'docs/index.html', 'docs/getting-started/index.html', 'docs/troubleshooting/index.html']) {
+    assert.doesNotMatch(contents.get(path.join(site, name)), /0\.8\.2/, `${name}: stale module version`);
+  }
+  for (const name of ['index.html', 'windows/index.html', 'downloads/index.html',
+    'freepbx/index.html', 'faq/index.html', 'about/index.html', 'roadmap/index.html',
+    'security/index.html', 'docs/index.html', 'docs/getting-started/index.html',
+    'docs/troubleshooting/index.html']) {
+    const html = contents.get(path.join(site, name));
+    assert.match(html, /0\.10\.0/, `${name}: missing Windows development target`);
+    assert.match(html, /0\.8\.3\.15/, `${name}: missing current module version`);
+  }
+  const windowsPage = contents.get(path.join(site, 'windows/index.html'));
+  for (const phrase of ['certificate-validated', 'HTTPS as the primary management service',
+    'Microsoft Edge', 'private WireGuard address', 'No engineer public-IP trust',
+    'permanent Windows DNS/hosts-file change', 'universal browser network isolation',
+    'HTTPS Hostname...', 'disconnected', 'regardless of the general browser preference',
+    'Normal TLS certificate validation remains enabled',
+    'independently of saved PBX profiles', 'unrelated WireGuard/VPN connections',
+    '1168 remains unconfirmed']) {
+    assert.ok(windowsPage.includes(phrase), `Windows page missing 0.10.0 guidance: ${phrase}`);
+  }
+  for (const name of ['index.html', 'windows/index.html', 'features/index.html',
+    'roadmap/index.html', 'faq/index.html', 'docs/getting-started/index.html',
+    'security/index.html']) {
+    const html = contents.get(path.join(site, name));
+    assert.match(html, /selected external OpenSSH-backed terminal|selected external OpenSSH terminal|external managed SSH terminal|external-terminal path/i,
+      `${name}: must identify the active external managed SSH path`);
+  }
+  const troubleshooting = contents.get(path.join(site, 'docs/troubleshooting/index.html'));
+  assert.match(troubleshooting, /Open SSH[\s\S]*selected external terminal/);
+  for (const name of ['windows/index.html', 'features/index.html', 'roadmap/index.html',
+    'faq/index.html', 'security/index.html']) {
+    const html = contents.get(path.join(site, name));
+    assert.match(html, /disabled on (?:the )?(?:current|this) (?:managed SSH|Open SSH) path|disabled on the current Open SSH path/i,
+      `${name}: must identify the experimental built-in console as disabled`);
+  }
+  assert.match(contents.get(path.join(site, 'windows/index.html')), /While the workstation is disconnected[\s\S]*HTTPS Hostname\.\.\./i);
+  assert.match(contents.get(path.join(site, 'windows/index.html')), /Secure HTTPS administration always launches Microsoft Edge[\s\S]*regardless of the general browser preference/i);
+  assert.match(contents.get(path.join(site, 'windows/index.html')), /never bypass certificate errors/i);
+  const windowsConnect = contents.get(path.join(site, 'windows/index.html'))
+    .slice(contents.get(path.join(site, 'windows/index.html')).indexOf('<section id="connect">'),
+      contents.get(path.join(site, 'windows/index.html')).indexOf('<section id="ssh">'));
+  assert.match(windowsConnect, /configure certificate-validated <strong>HTTPS as the primary management service<\/strong>/i);
+  assert.match(windowsConnect, /While the workstation is disconnected[\s\S]*HTTPS Hostname\.\.\./i);
+  for (const name of ['docs/getting-started/index.html', 'docs/troubleshooting/index.html',
+    'features/index.html', 'faq/index.html', 'freepbx/index.html']) {
+    const html = contents.get(path.join(site, name));
+    assert.ok(html.includes('HTTPS Hostname...'), `${name}: missing hostname setup control`);
+    assert.match(html, /Microsoft Edge[\s\S]*browser preference|browser preference[\s\S]*Microsoft Edge/i,
+      `${name}: must distinguish the secure Edge launch from browser preference`);
+  }
+  assert.doesNotMatch(windowsPage, /0\.10\.0 (?:is )?(?:released|signed|production-ready|publicly downloadable)/i);
 });
 
 test('download guidance distinguishes package, CI artifact and acceptance', () => {
   const downloads = contents.get(path.join(site, 'downloads/index.html'));
-  assert.match(downloads, /TELIPHONES-0\.8\.2\.tgz/);
-  assert.match(downloads, /not a public release, production-ready or live-accepted/);
-  assert.match(downloads, /TELIPHONES-Windows-x64/);
-  assert.match(downloads, /43980149884/);
-  assert.match(downloads, /14281389786/);
-  assert.match(downloads, /Dangerous download blocked/);
-  assert.match(downloads, /Do not bypass browser or operating-system protections/);
-  assert.match(downloads, /PHP syntax\/listener tests/);
+  assert.match(downloads, /No 0\.10\.0 build is available/);
+  assert.match(downloads, /preserve existing published download links and version information/i);
+  assert.doesNotMatch(downloads, /TELIPHONES-Windows-x64|43980149884|14281389786/);
+  assert.match(downloads, /does not announce a new public release or provide an approved 0\.10\.0 download/);
   const security = contents.get(path.join(site, 'security/index.html'));
-  assert.match(security, /not rerun for 0\.8\.2/);
-  assert.match(security, /PHP CLI is unavailable/);
-  assert.match(security, /embedded SSH console crash remains a release blocker/);
+  assert.match(security, /No 0\.10\.0 build is available/);
+  assert.match(security, /crash report for the experimental built-in console remains unresolved/i);
+  assert.match(security, /does not describe the selected external-terminal path/i);
 });
 
 test('site describes deployment evidence without claiming publication', () => {
   const about = contents.get(path.join(site, 'about/index.html'));
-  assert.match(about, /No local evidence establishes the deployment target, deployed revision/);
+  assert.match(about, /no local evidence establishes the deployment target, deployed revision/);
   assert.match(about, /deployment has not been performed/);
-  assert.match(about, /separate static-site ZIP snapshot whose contents differ/);
+  assert.match(about, /separate static-site ZIP snapshot differ/);
 });
 
-test('pairing guide distinguishes approval, current package and obsolete archive', () => {
+test('pairing guide distinguishes approval and independent product versions', () => {
   const html = contents.get(path.join(site, 'windows/index.html'));
   const pairing = html.slice(html.indexOf('<section id="pair">'), html.indexOf('<section id="connect">'));
   assert.equal((pairing.match(/<li>/g) || []).length, 8);
   for (const phrase of ['Request access', 'Complete pairing', 'Generate request', 'Copy request',
     'Save connection', 'Changing name/access', 'read-only', 'not independently signed',
-    'historical 0.6.7 archive and checksum were intentionally removed from this checkout',
-    'did not include the proposed firewall corrections']) {
+    'currently tested FreePBX module installation', '0.8.3.15']) {
     assert.ok(pairing.includes(phrase), `Missing pairing guidance: ${phrase}`);
   }
-  assert.match(contents.get(path.join(site, 'downloads/index.html')), /historical TELIPHONES-0\.6\.7\.tgz and sidecar were intentionally removed from this checkout and did not contain the proposed changes/);
-  assert.match(contents.get(path.join(site, 'downloads/index.html')), /TELIPHONES-0\.8\.2\.tgz/);
-  assert.match(contents.get(path.join(site, 'downloads/index.html')), /not a public release/);
-  assert.match(contents.get(path.join(site, 'downloads/index.html')), /No direct public package or executable download is asserted/);
+  assert.match(contents.get(path.join(site, 'downloads/index.html')), /currently tested FreePBX module package is <strong>0\.8\.3\.15/);
+  assert.match(contents.get(path.join(site, 'downloads/index.html')), /No 0\.10\.0 build is available/);
   assert.match(contents.get(path.join(site, 'about/index.html')), /localStorage/);
 });
 

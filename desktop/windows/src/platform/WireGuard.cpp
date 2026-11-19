@@ -18,11 +18,14 @@
 
 #include <memory>
 #include <set>
+#include <sstream>
+#include <filesystem>
 
 #include "../core/CommandLine.h"
 #include "../core/Json.h"
 #include "../core/TunnelConfig.h"
 #include "../core/TunnelLifecycle.h"
+#include "../core/SessionDiagnostics.h"
 #include "../core/Validation.h"
 
 namespace tlp {
@@ -398,22 +401,43 @@ std::optional<ObservedAdapter> observeAdapter(const std::string& tunnelName) {
 struct AdapterRemoval {
     bool attempted = false;
     DWORD error = ERROR_SUCCESS;
+    const char* stage = "not_attempted";
+    CONFIGRET configRet = CR_SUCCESS;
+    PNP_VETO_TYPE veto = PNP_VetoTypeUnknown;
+    std::wstring vetoName;
+    std::string interfaceGuid;
+    std::string pnpInstanceId;
 };
 
 AdapterRemoval removeVerifiedAdapter(const std::string& tunnelName) {
     const auto record = readOwnership(tunnelName);
     const auto observed = observeAdapter(tunnelName);
     if (!record || !observed || !lifecycle::MatchesOwnedAdapter(*record, tunnelName, observed->guid, observed->pnp))
-        return {false, ERROR_NOT_FOUND};
+        return {false, ERROR_ACCESS_DENIED, "identity_verification", CR_SUCCESS, PNP_VetoTypeUnknown, {}, {}, {}};
     DEVINST device = 0;
     std::wstring instance = Widen(observed->pnp);
     const CONFIGRET located = CM_Locate_DevNodeW(&device, instance.data(), CM_LOCATE_DEVNODE_NORMAL);
-    if (located != CR_SUCCESS) return {true, CM_MapCrToWin32Err(located, ERROR_GEN_FAILURE)};
+    if (located != CR_SUCCESS) return {true, CM_MapCrToWin32Err(located, ERROR_GEN_FAILURE), "CM_Locate_DevNodeW", located,
+                                       PNP_VetoTypeUnknown, {}, observed->guid, observed->pnp};
     PNP_VETO_TYPE veto = PNP_VetoTypeUnknown;
     wchar_t vetoName[MAX_PATH]{};
     const CONFIGRET removed = CM_Query_And_Remove_SubTreeW(device, &veto, vetoName, static_cast<ULONG>(std::size(vetoName)),
                                                             CM_REMOVE_NO_RESTART);
-    return {true, removed == CR_SUCCESS ? ERROR_SUCCESS : CM_MapCrToWin32Err(removed, ERROR_GEN_FAILURE)};
+    return {true, removed == CR_SUCCESS ? ERROR_SUCCESS : CM_MapCrToWin32Err(removed, ERROR_GEN_FAILURE),
+            "CM_Query_And_Remove_SubTreeW", removed, veto,
+            removed == CR_SUCCESS ? std::wstring() : std::wstring(vetoName), observed->guid, observed->pnp};
+}
+
+std::string adapterRemovalDetail(const AdapterRemoval& removal) {
+    std::ostringstream detail;
+        detail << "Adapter removal stage=" << removal.stage << ", attempted=" << (removal.attempted ? "yes" : "no")
+            << ", win32_error=" << removal.error;
+        if (removal.attempted) detail << ", CONFIGRET=" << static_cast<unsigned long>(removal.configRet)
+                          << ", veto_type=" << static_cast<unsigned long>(removal.veto);
+    if (!removal.vetoName.empty()) detail << ", veto_name=" << Narrow(removal.vetoName);
+    if (!removal.interfaceGuid.empty()) detail << ", interface_guid=" << removal.interfaceGuid;
+    if (!removal.pnpInstanceId.empty()) detail << ", pnp_instance_id=" << removal.pnpInstanceId;
+    return SanitizeDiagnosticDetail(detail.str());
 }
 
 lifecycle::Residual residualFor(const tunnel_startup::Status& status) {
@@ -426,8 +450,51 @@ lifecycle::Residual residualFor(const tunnel_startup::Status& status) {
     }
 }
 
+struct AdapterReadback {
+    lifecycle::AdapterPresence interfacePresence = lifecycle::AdapterPresence::Unverified;
+    lifecycle::RecordedDeviceState pnpState = lifecycle::RecordedDeviceState::Unknown;
+    lifecycle::AdapterPresence combined = lifecycle::AdapterPresence::Unverified;
+};
+
+AdapterReadback readAdapterState(const std::string& tunnelName) {
+    AdapterReadback result;
+    result.interfacePresence = TunnelAdapterPresence(tunnelName);
+    const auto record = readOwnership(tunnelName);
+    if (!record || !record->complete) {
+        result.combined = lifecycle::ReconcileAdapterPresence(result.interfacePresence, lifecycle::RecordedDeviceState::Unknown);
+        return result;
+    }
+    DEVINST device = 0;
+    std::wstring instance = Widen(record->pnpInstanceId);
+    const CONFIGRET located = CM_Locate_DevNodeW(&device, instance.data(), CM_LOCATE_DEVNODE_PHANTOM);
+    if (located == CR_SUCCESS) {
+        ULONG status = 0, problem = 0;
+        const CONFIGRET queried = CM_Get_DevNode_Status(&status, &problem, device, 0);
+        if (queried == CR_SUCCESS) {
+            result.pnpState = (status & DN_PRESENT) != 0 ? lifecycle::RecordedDeviceState::Present
+                                                         : lifecycle::RecordedDeviceState::NonPresent;
+        }
+    } else if (located == CR_NO_SUCH_DEVNODE) {
+        result.pnpState = lifecycle::RecordedDeviceState::Missing;
+    }
+    result.combined = lifecycle::ReconcileAdapterPresence(result.interfacePresence, result.pnpState);
+    return result;
+}
+
+bool TunnelRemovalVerified(const std::string& tunnelName) {
+    if (!lifecycle::IsTeliphonesTunnelName(tunnelName)) return false;
+    const auto record = readOwnership(tunnelName);
+    if (!record || !record->complete) return false;
+    const auto service = tunnel_startup::ReadStatus(serviceName(tunnelName));
+    if (!tunnel_startup::Absent(service)) return false;
+    const auto readback = readAdapterState(tunnelName);
+    return lifecycle::MayClearActiveRecovery(true, true, true, true, readback.interfacePresence,
+                                              readback.pnpState);
+}
+
 lifecycle::AdapterPresence awaitAdapterRelease(const std::string& tunnelName) {
-    return lifecycle::AwaitAdapterRelease([&] { return TunnelAdapterPresence(tunnelName); }, [] { return GetTickCount64(); },
+    const auto probe = [&] { return readAdapterState(tunnelName).combined; };
+    return lifecycle::AwaitAdapterRelease(probe, [] { return GetTickCount64(); },
                                           [](std::uint32_t ms) { Sleep(ms); }, budget::kAdapterReleaseMs);
 }
 
@@ -504,6 +571,67 @@ lifecycle::HelperResult removeOwnedTunnel(const WireGuardInstallation& wireguard
             // not authority to delete a configuration or service artifact.
             return {};
         }
+        const auto initialReadback = readAdapterState(tunnelName);
+        const auto initialInterface = record->complete ? initialReadback.interfacePresence : TunnelAdapterPresence(tunnelName);
+        if (!record->complete && lifecycle::MayClearIncompleteOwnershipRecord(
+            true, false, true, initialInterface)) {
+            const auto serviceReadback = tunnel_startup::ReadStatus(service);
+            if (!tunnel_startup::Absent(serviceReadback) ||
+                TunnelAdapterPresence(tunnelName) != lifecycle::AdapterPresence::Absent) {
+                outcome.cleanupIncomplete = true;
+                outcome.residual = !tunnel_startup::Absent(serviceReadback) ? residualFor(serviceReadback) :
+                    lifecycle::Residual::AdapterOnly;
+                outcome.error = serviceReadback.error;
+                return outcome;
+            }
+            if (!DeleteFileW(configPath.c_str()) && GetLastError() != ERROR_FILE_NOT_FOUND &&
+                GetLastError() != ERROR_PATH_NOT_FOUND) {
+                outcome.cleanupIncomplete = true;
+                outcome.configRemains = true;
+                outcome.residual = lifecycle::Residual::Unknown;
+                outcome.error = GetLastError();
+                return outcome;
+            }
+            if (!DeleteFileW(ownershipPath(tunnelName).c_str()) && GetLastError() != ERROR_FILE_NOT_FOUND &&
+                GetLastError() != ERROR_PATH_NOT_FOUND) {
+                outcome.cleanupIncomplete = true;
+                outcome.residual = lifecycle::Residual::Unknown;
+                outcome.error = GetLastError();
+                return outcome;
+            }
+            try {
+                SessionDiagnostics(std::filesystem::path(
+                    EnsureDirectory(KnownFolder(FOLDERID_LocalAppData) + L"\\TELIPHONES") + L"\\Diagnostics"))
+                    .Write("application", "", "tunnel_ownership_reconciled", "info",
+                           "Incomplete pre-install ownership record and bootstrap file removed after service and interface absence checks; no PnP identity had been recorded.");
+            } catch (const std::exception&) {}
+            return outcome;
+        }
+        if (lifecycle::MayClearOwnershipRecord(true, true, initialReadback.interfacePresence,
+                            initialReadback.pnpState)) {
+            if (!DeleteFileW(configPath.c_str()) && GetLastError() != ERROR_FILE_NOT_FOUND &&
+                GetLastError() != ERROR_PATH_NOT_FOUND) {
+                outcome.cleanupIncomplete = true;
+                outcome.configRemains = true;
+                outcome.residual = lifecycle::Residual::Unknown;
+                outcome.error = GetLastError();
+                return outcome;
+            }
+            if (!DeleteFileW(ownershipPath(tunnelName).c_str()) && GetLastError() != ERROR_FILE_NOT_FOUND &&
+                GetLastError() != ERROR_PATH_NOT_FOUND) {
+                outcome.cleanupIncomplete = true;
+                outcome.residual = lifecycle::Residual::Unknown;
+                outcome.error = GetLastError();
+                return outcome;
+            }
+            try {
+                SessionDiagnostics(std::filesystem::path(
+                    EnsureDirectory(KnownFolder(FOLDERID_LocalAppData) + L"\\TELIPHONES") + L"\\Diagnostics"))
+                    .Write("application", "", "tunnel_ownership_reconciled", "info",
+                           "Stale ownership record and its bootstrap file were removed after independent absent readbacks; service=absent, interface=absent, recorded_pnp=absent.");
+            } catch (const std::exception&) {}
+            return outcome;
+        }
         // The service is already absent.  Do not spend the entire release
         // budget waiting for an adapter which is demonstrably still active:
         // request Configuration Manager removal immediately, but only after
@@ -512,6 +640,7 @@ lifecycle::HelperResult removeOwnedTunnel(const WireGuardInstallation& wireguard
         const auto adapter = TunnelAdapterPresence(tunnelName);
         auto finalAdapter = adapter;
         DWORD adapterRemovalError = ERROR_SUCCESS;
+        AdapterRemoval adapterRemoval;
         if (adapter == lifecycle::AdapterPresence::Active) {
             const auto removal = removeVerifiedAdapter(tunnelName);
             // A service can race the PnP removal.  Preserve a native error only
@@ -519,6 +648,7 @@ lifecycle::HelperResult removeOwnedTunnel(const WireGuardInstallation& wireguard
             // bounded observation window; disappearance is a successful
             // release regardless of which component completed it.
             adapterRemovalError = removal.error;
+            adapterRemoval = removal;
             finalAdapter = awaitAdapterRelease(tunnelName);
         }
         status = tunnel_startup::ReadStatus(service);
@@ -528,7 +658,21 @@ lifecycle::HelperResult removeOwnedTunnel(const WireGuardInstallation& wireguard
             outcome.error = status.error;
         } else if (!outcome.cleanupIncomplete && finalAdapter != lifecycle::AdapterPresence::Absent) {
             outcome.cleanupIncomplete = true;
-            if (adapterRemovalError != ERROR_SUCCESS) {
+            if (!adapterRemoval.attempted) {
+                const auto readback = readAdapterState(tunnelName);
+                outcome.residual = readback.pnpState == lifecycle::RecordedDeviceState::Missing &&
+                    readback.interfacePresence == lifecycle::AdapterPresence::Active
+                    ? lifecycle::Residual::AdapterRemovalIdentityMismatch
+                    : lifecycle::Residual::AdapterIdentityUnverified;
+                outcome.error = adapterRemoval.error;
+            } else if (adapterRemovalError == ERROR_NOT_FOUND) {
+                const auto readback = readAdapterState(tunnelName);
+                outcome.residual = readback.pnpState == lifecycle::RecordedDeviceState::Missing &&
+                    readback.interfacePresence == lifecycle::AdapterPresence::Active
+                    ? lifecycle::Residual::AdapterRemovalIdentityMismatch
+                    : lifecycle::Residual::AdapterRemovalFailed;
+                outcome.error = adapterRemoval.error;
+            } else if (adapterRemovalError != ERROR_SUCCESS) {
                 outcome.residual = lifecycle::Residual::AdapterRemovalFailed;
                 outcome.error = adapterRemovalError;
             } else {
@@ -536,9 +680,41 @@ lifecycle::HelperResult removeOwnedTunnel(const WireGuardInstallation& wireguard
                 if (finalAdapter == lifecycle::AdapterPresence::Active) outcome.error = ERROR_TIMEOUT;
             }
         }
+        if (adapter == lifecycle::AdapterPresence::Active) {
+            const auto adapterReadback = readAdapterState(tunnelName);
+            try {
+                SessionDiagnostics(std::filesystem::path(
+                    EnsureDirectory(KnownFolder(FOLDERID_LocalAppData) + L"\\TELIPHONES") + L"\\Diagnostics"))
+                    .Write("application", "", "tunnel_adapter_removal",
+                           adapterRemoval.attempted && adapterRemovalError == ERROR_SUCCESS ? "info" : "error",
+                           adapterRemovalDetail(adapterRemoval) + ", interface_readback=" +
+                           (adapterReadback.interfacePresence == lifecycle::AdapterPresence::Absent ? "absent" :
+                            adapterReadback.interfacePresence == lifecycle::AdapterPresence::Active ? "present" : "unverified") +
+                           ", pnp_readback=" +
+                           (adapterReadback.pnpState == lifecycle::RecordedDeviceState::Present ? "present" :
+                            adapterReadback.pnpState == lifecycle::RecordedDeviceState::NonPresent ? "non_present" :
+                            adapterReadback.pnpState == lifecycle::RecordedDeviceState::Missing ? "missing" : "unknown") +
+                           ", service_readback=" + (tunnel_startup::Absent(status) ? "absent" : "present_or_unknown"));
+            } catch (const std::exception&) {
+                // Diagnostic failure must not mask or alter the cleanup result.
+            }
+        }
         if (!DeleteFileW(configPath.c_str()) && GetLastError() != ERROR_FILE_NOT_FOUND && GetLastError() != ERROR_PATH_NOT_FOUND) {
             outcome.cleanupIncomplete = true;
             outcome.configRemains = true;
+        }
+        if (!outcome.cleanupIncomplete) {
+            status = tunnel_startup::ReadStatus(service);
+            const auto finalReadback = readAdapterState(tunnelName);
+            if (!lifecycle::MayClearOwnershipRecord(true, tunnel_startup::Absent(status),
+                                                   finalReadback.interfacePresence, finalReadback.pnpState)) {
+                outcome.cleanupIncomplete = true;
+                outcome.residual = !tunnel_startup::Absent(status) ? residualFor(status) :
+                    finalReadback.combined == lifecycle::AdapterPresence::Active
+                        ? lifecycle::Residual::AdapterOnly : lifecycle::Residual::AdapterUnverified;
+                if (!outcome.error) outcome.error = status.error;
+                return outcome;
+            }
         }
     } catch (const std::exception&) {
         outcome.cleanupIncomplete = true;
@@ -914,6 +1090,7 @@ AddressRoute RouteToAddress(const std::string& tunnelName, const std::string& ip
 std::vector<std::string> ResidualTeliphonesTunnels(const std::vector<std::string>& installedSavedTunnels) {
     std::set<std::string> candidates(installedSavedTunnels.begin(), installedSavedTunnels.end());
     std::set<std::string> recorded;
+    bool invalidOwnershipRecord = false;
     WIN32_FIND_DATAW entry{};
     HANDLE search = FindFirstFileW((ownershipFolder() + L"\\TELIPHONES-*.json").c_str(), &entry);
     if (search != INVALID_HANDLE_VALUE) {
@@ -924,10 +1101,21 @@ std::vector<std::string> ResidualTeliphonesTunnels(const std::vector<std::string
             if (readOwnership(name)) {
                 candidates.insert(name);
                 recorded.insert(name);
+            } else if (lifecycle::IsTeliphonesTunnelName(name)) {
+                invalidOwnershipRecord = true;
             }
         } while (FindNextFileW(search, &entry));
+        const DWORD enumerationError = GetLastError();
         FindClose(search);
+        if (enumerationError != ERROR_NO_MORE_FILES)
+            ThrowLastError("Unable to finish enumerating TELIPHONES ownership records", enumerationError);
+    } else {
+        const DWORD error = GetLastError();
+        if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND)
+            ThrowLastError("Unable to enumerate TELIPHONES ownership records", error);
     }
+    if (invalidOwnershipRecord)
+        throw Error("A TELIPHONES ownership record is malformed or unreadable. It was preserved, and no cleanup was authorized for it.");
     std::vector<std::string> residual;
     for (const auto& name : candidates) {
         if (!lifecycle::IsTeliphonesTunnelName(name)) continue;

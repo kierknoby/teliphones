@@ -1,18 +1,22 @@
 # Windows developer builds, testing and readiness
 
-Targets: TELIPHONES for Windows **0.9.0**, proposed, unreleased TELIPHONES for FreePBX **0.8.0**. A statically validated 0.8.0 development package is available but is not production-ready or live-accepted; the historical 0.6.7 archive was intentionally removed from this checkout and did not contain the proposed changes.
-The FreePBX connection-state policy and Windows pairing/clipboard UX are
-independently versioned; neither entry declares a published release.
+Targets: TELIPHONES for Windows **0.10.0**, an unreleased development target, and
+the currently tested TELIPHONES FreePBX module installation **0.8.3.15**. These
+products are independently versioned. No Windows 0.10.0 build is available;
+native Windows build and acceptance tests remain outstanding. Existing published
+module download information is unchanged by this Windows work.
 
-Proposed root broker is **0.8.0**, protocol **12**. Version.h derives Windows
-product 0.9.0 and file 0.9.0.0; executable resources, captions, About/licence and
-build provenance reuse it. The dependency manifest must match the product version.
+The module's root broker version is tracked separately from the module package;
+verify it against the trusted source. Protocol **12** remains in use. `Version.h`
+derives Windows product 0.10.0 and file 0.10.0.0; executable resources, captions,
+About/licence and build provenance reuse it. The dependency manifest must match
+the product version.
 Current Release portable build/CTest and source contracts can run on Linux;
 native MFC pairing tests, executable metadata and startup smoke are registered
-in the Windows workflow. No current native 0.9.0 execution is claimed.
+in the Windows workflow. No current native 0.10.0 execution is claimed.
 The custom SSH console remains part of the intended Windows distribution.
 Opening it unexpectedly closing TELIPHONES is an unresolved release blocker;
-no source or test result here establishes that crash is fixed. No 0.9.0 binary
+no source or test result here establishes that crash is fixed. No 0.10.0 binary
 or application bundle has been produced.
 
 Native compilation, SCM/WireGuardNT execution and artefact creation are
@@ -33,9 +37,9 @@ Live acceptance is pending.
 
 ## Current evidence
 
-### Tunnel lifecycle and owned-adapter recovery (0.9.0)
+### Tunnel lifecycle and owned-adapter recovery (0.10.0)
 
-Version 0.9.0 adds a bounded connection operation with separate establishment,
+Version 0.10.0 retains the bounded connection operation with separate establishment,
 authentication and controller-admission deadlines. Disconnect cancels an
 in-progress Connect, obsolete generations cannot publish success, and Close
 has a five-second UI bound. If cleanup cannot finish inside that window, the
@@ -66,13 +70,79 @@ service and adapter untouched and seek a TELIPHONES recovery build/operator
 review. Legacy records with a different schema are currently treated as
 unverified, not migrated or removed automatically.
 
-Startup recovery considers saved-profile tunnel names and valid records only.
-It no longer scans the generic WireGuard namespace. A valid interrupted record
-is reconciled even if its service already disappeared; completed records are
-deleted only after the service, adapter and bootstrap configuration are verified
-absent. Portable lifecycle and source-contract tests pass on Linux. MSVC/MFC,
-SCM, registry discovery, Configuration Manager removal, UAC cancellation and
-the controlled orphan-adapter fixture remain native Windows gates.
+Startup recovery considers saved-profile tunnel names and valid protected
+records only. The always-visible **Recover TELIPHONES** action works with no
+saved profiles and after PBX pairing revocation. It does not enumerate generic
+WireGuard VPNs. Recovery requires confirmation and invokes the same elevated,
+per-tunnel-locked helper used by Disconnect.
+The helper requires the protected ownership journal plus exact SCM executable/config
+identity before service removal, and exact recorded interface GUID/PnP identity
+before device removal. An incomplete pre-install journal uses a separate
+service-absent and interface-absent reconciliation path and never authorizes
+device removal.
+
+After a cleanup failure TELIPHONES performs a fresh read-only reconciliation
+and leaves recovery actionable in the UI. A valid stale journal and its
+bootstrap file are cleared only when SCM reports the exact service absent,
+IP Helper reports no active exact-alias interface, and Configuration Manager
+reports the exact recorded PnP instance absent. Unknown or disagreeing probes
+retain the journal. Malformed records are preserved and block cleanup; they
+never authorize removal. No generic PnP device, route, VPN, Winsock/TCP/IP
+setting or network stack operation is part of recovery.
+
+Adapter-removal diagnostics identify whether `CM_Locate_DevNodeW` or
+`CM_Query_And_Remove_SubTreeW` failed, retain the raw CONFIGRET, mapped Win32
+error and veto information, and record independent service/interface/PnP
+readbacks plus the exact recorded interface GUID/PnP instance. A 1168 result is
+not proof of absence by itself. If the exact recorded PnP instance is absent
+while IP Helper still reports the alias, TELIPHONES reports an identity
+mismatch and retains the interface and journal. Incomplete pre-install journals
+are reconciled only after exact service and interface absence checks, and
+multi-candidate recovery continues after an individual failure. For an active
+session retry, post-removal SSH artifact cleanup is reported separately from
+tunnel removal; UI connection state is cleared only when removal succeeds or a
+fresh read-only scan confirms no owned residual.
+
+Portable lifecycle and source-contract tests can run on Linux. Native Windows
+acceptance remains required and should include: (1) revoke pairing and remove
+the saved profile while leaving an owned active service/adapter, then recover
+from the app with an empty profile list; (2) interrupt cleanup after service
+deletion and verify stale journal reconciliation and repeated idempotent retry;
+(3) force `CM_Locate_DevNodeW` to return CR_NO_SUCH_DEVNODE while IP Helper
+still reports the alias, and verify no adapter/journal deletion; (4) exercise a
+ConfigMgr veto and capture stage/CONFIGRET/veto/post-check data; (5) make either
+readback fail and verify fail-closed retention; (6) run with an unrelated
+WireGuard tunnel and prove its service, adapter, routes and traffic remain
+unchanged; (7) accept and cancel UAC; and (8) recover, reconnect, then
+disconnect normally. MSVC/MFC, SCM, registry discovery, real WireGuardNT
+removal and the controlled orphan-adapter fixture are not executable in this
+Linux workspace.
+
+### Paired primary management URL and HTTPS (0.10.0)
+
+Portable policy checks the scheme of the exact primary URL received in the
+pairing. Configured service order remains authoritative: HTTP primaries are
+rejected with instructions for an explicitly approved administrator-side
+configuration change. The administrator must configure HTTPS as the primary
+service and use a certificate valid for the configured management hostname.
+That hostname is mapped to the paired tunnel IP inside the dedicated Edge
+profile; the certificate does not need an IP subjectAltName for the private
+WireGuard address. After approval, the operator explicitly pairs again to
+receive the HTTPS primary URL. TELIPHONES does not
+select a later HTTPS service, rewrite existing pairings, or alter firewall
+permissions. HTTPS launch requires the explicit local `management_tls_hostname`
+value supplied or confirmed by the PBX administrator. It starts Microsoft Edge
+with a unique profile, maps that hostname to the paired tunnel IPv4, blocks
+other hostnames in that profile's resolver configuration, disables proxies and
+preserves normal TLS validation. Launch requires a Running tunnel service,
+route selection through that interface and a fresh successful management TCP
+probe. A dedicated kill-on-close job owns the launched process tree and is
+closed when disconnect is requested or tunnel verification is lost. This is
+not universal network confinement: IP literals, redirects, browser/OS
+networking and races during tunnel loss are not guaranteed blocked. Native
+Windows/Edge behavior, certificate validation, redirects, job assignment and
+disconnect cleanup remain mandatory acceptance gates. TELIPHONES must not
+infer a TLS hostname from the public WireGuard endpoint or bypass browser errors.
 
 ### Historical tunnel lifecycle (0.8.4)
 

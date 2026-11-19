@@ -139,11 +139,15 @@ std::string SerializeProfiles(const std::vector<Profile>& profiles) {
     for (const Profile& profile : profiles) {
         Value::Object item{{"id", profile.id}, {"name", profile.name}, {"created_at", profile.createdAt}};
         if (profile.kind == ProfileKind::Administrator) {
+            if (!profile.managementTlsHostname.empty() &&
+                (!IsHostname(profile.managementTlsHostname) || profile.pairing.guiUrl.rfind("https://", 0) != 0))
+                throw Error("An HTTPS certificate hostname requires a valid hostname and an HTTPS primary management URL.");
             item["kind"] = "administrator";
             item["workstation_name"] = profile.workstationName;
             item["ssh_user"] = profile.sshUser;
             item["connect_password_skipped_permanently"] = profile.connectPasswordSkippedPermanently;
             item["pairing"] = pairingToJson(profile.pairing);
+            if (!profile.managementTlsHostname.empty()) item["management_tls_hostname"] = profile.managementTlsHostname;
         } else {
             item["kind"] = "support";
             item["engineer_public_key"] = profile.engineerPublicKey;
@@ -170,18 +174,20 @@ std::vector<Profile> ParseProfiles(const std::string& text) {
             throw Error("The profile store contains an invalid profile.");
         }
         if (kind == "administrator") {
-            if (item.has("connect_password_skipped_permanently")) {
-                json::RequireExactKeys(item, {"id", "name", "created_at", "kind", "workstation_name", "ssh_user", "pairing",
-                                              "connect_password_skipped_permanently"}, "An administrator profile");
-            } else {
-                json::RequireExactKeys(item, {"id", "name", "created_at", "kind", "workstation_name", "ssh_user", "pairing"},
-                                       "An administrator profile");
-            }
+            std::vector<std::string> administratorKeys{"id", "name", "created_at", "kind", "workstation_name", "ssh_user", "pairing"};
+            if (item.has("connect_password_skipped_permanently")) administratorKeys.emplace_back("connect_password_skipped_permanently");
+            if (item.has("management_tls_hostname")) administratorKeys.emplace_back("management_tls_hostname");
+            json::RequireExactKeys(item, administratorKeys, "An administrator profile");
             profile.kind = ProfileKind::Administrator;
             profile.workstationName = requireString(item, "workstation_name");
             profile.sshUser = requireString(item, "ssh_user");
             if (item.has("connect_password_skipped_permanently"))
                 profile.connectPasswordSkippedPermanently = item.at("connect_password_skipped_permanently").asBool();
+            if (item.has("management_tls_hostname")) {
+                profile.managementTlsHostname = requireString(item, "management_tls_hostname");
+                if (!profile.managementTlsHostname.empty() && !IsHostname(profile.managementTlsHostname))
+                    throw Error("An administrator profile has an invalid HTTPS certificate hostname.");
+            }
             profile.pairing = pairingFromJson(item.at("pairing"));
             if (!IsWorkstationName(profile.workstationName) ||
                 (profile.pairing.ssh ? !IsLinuxUser(profile.sshUser) : !profile.sshUser.empty()) ||

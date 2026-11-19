@@ -458,6 +458,21 @@ class BuildLayoutTests(unittest.TestCase):
         self.assertIn("tunnel_startup::Absent(status)", final)
         self.assertIn("if (!outcome.cleanupIncomplete)", final)
         self.assertIn("DeleteFileW(record.c_str())", final)
+        self.assertIn("CM_Locate_DevNodeW", wireguard)
+        self.assertIn("CM_Query_And_Remove_SubTreeW", wireguard)
+        self.assertIn('"tunnel_adapter_removal"', wireguard)
+        self.assertIn('", CONFIGRET="', wireguard)
+        self.assertIn('", veto_type="', wireguard)
+        self.assertIn('", interface_readback="', wireguard)
+        self.assertIn('", pnp_readback="', wireguard)
+        self.assertIn('", service_readback="', wireguard)
+        self.assertIn("MayClearOwnershipRecord(true, tunnel_startup::Absent(status)", wireguard)
+        lifecycle = (ROOT / "src/core/TunnelLifecycle.cpp").read_text()
+        self.assertIn("ReconcileAdapterPresence", lifecycle)
+        self.assertIn("MayClearOwnershipRecord", lifecycle)
+        self.assertIn("interfacePresence == AdapterPresence::Absent", lifecycle)
+        self.assertIn("pnpObservationKnown && !pnpPresent", lifecycle)
+        self.assertIn("Residual::AdapterRemovalIdentityMismatch", lifecycle)
         residual = wireguard.split("std::vector<std::string> ResidualTeliphonesTunnels(", 1)[1].split("bool IsHelperInvocation(", 1)[0]
         self.assertIn("readOwnership(name)", residual)
         self.assertIn("TunnelAdapterPresence(name)", residual)
@@ -529,6 +544,13 @@ class BuildLayoutTests(unittest.TestCase):
         stale = main.split("void CMainDlg::RemoveStaleTunnels() {", 1)[1].split("\n}\n", 1)[0]
         self.assertLess(stale.index("ResidualTeliphonesTunnels(saved)"), stale.index("ShowMessage("))
         self.assertIn("Other WireGuard tunnels are not changed.", stale)
+        recovery = main.split("void CMainDlg::OnRecover()", 1)[1].split("void CMainDlg::OnSelectionChanged", 1)[0]
+        self.assertIn("ResidualTeliphonesTunnels({})", recovery)
+        self.assertIn('IDC_RECOVER', main)
+        self.assertIn("Use Recover TELIPHONES", main)
+        self.assertIn("to retry.", main)
+        self.assertIn('"recovery_reconcile"', main)
+        self.assertIn("if (busy_) return", recovery)
         # Network changes are recorded and offered as context; they do not start another reconnect loop.
         changed = main.split("LRESULT CMainDlg::OnNetworkChanged(", 1)[1].split("\n}\n", 1)[0]
         self.assertIn('LogEvent("network_changed"', changed)
@@ -1323,8 +1345,8 @@ endfunction()
         base = ".".join(map(str, parts[:3]))
         product = base
         numeric = ".".join(map(str, parts))
-        self.assertEqual(product, "0.9.0")
-        self.assertEqual(numeric, "0.9.0.0")
+        self.assertEqual(product, "0.10.0")
+        self.assertEqual(numeric, "0.10.0.0")
         self.assertIn(f'"version-string": "{product}"', (ROOT / "vcpkg.json").read_text(encoding="utf-8"))
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
@@ -1408,7 +1430,7 @@ endfunction()
         module_version = ET.parse(ROOT.parents[1] / "teliphones/module.xml").getroot().findtext("version")
         self.assertRegex(module_version or "", r"^\d+\.\d+\.\d+(?:\.\d+)?$")
         for path, statement in ((ROOT / "README.md",
-             r"TELIPHONES\s+0\.9\.0\s+for Windows[^.\n]*licensed under GPLv3"),):
+             r"TELIPHONES\s+0\.10\.0\s+for Windows[^.\n]*licensed under GPLv3"),):
             text = path.read_text(encoding="utf-8")
             self.assertRegex(text, statement)
             self.assertIn("TELIPHONES is a UK registered trademark.", text)
@@ -1473,7 +1495,7 @@ endfunction()
             if identifier == "IDC_PAIR_ACCESS":
                 height = 18  # Resource height includes the expanded dropdown list, not its closed face.
             previous_bottom = y + height
-            self.assertLessEqual(previous_bottom, 394)
+            self.assertLessEqual(previous_bottom, 432)
             if identifier in ("IDC_PAIR_COPY", "IDC_PAIR_RESPONSE", "IDOK"):
                 self.assertIn("WS_DISABLED", match.group(5))
         self.assertRegex(dialog, r'IDC_PAIR_SSHUSER,[^\n]*ES_READONLY[^\n]*NOT WS_VISIBLE')
@@ -1624,6 +1646,23 @@ endfunction()
             self.assertIn(feature, native)
         app_sources = [node.get("Include") for node in project("HealthWindowTests.vcxproj").findall("ms:ItemGroup/ms:ClCompile", NS)]
         self.assertIn("src\\app\\DesktopLayout.cpp", app_sources)
+
+    def test_secure_edge_profile_cleanup_is_owned_and_inactive_only(self):
+        source = (ROOT / "src/platform/Applications.cpp").read_text()
+        for invariant in (
+            'L"\\\\SecureBrowser"',
+            'L".teliphones-profile-owner"',
+            'L".teliphones-profile-lock"',
+            'TELIPHONES-SECURE-EDGE-PROFILE/1',
+            "isSecureProfileLeaf(path.substr(root.size() + 1))",
+            "FILE_ATTRIBUTE_REPARSE_POINT",
+            "FILE_FLAG_OPEN_REPARSE_POINT",
+            "accounting.ActiveProcesses != 0",
+            "removeOwnedSecureProfileDirectory(session.userDataDirectory)",
+        ):
+            self.assertIn(invariant, source)
+        self.assertIn("CreateFileW((path + L\"\\\\.teliphones-profile-lock\").c_str()", source)
+        self.assertIn("if (lock == INVALID_HANDLE_VALUE) return false", source)
 
     def test_website_demo_disclaimer_and_keyboard_focus_survive_responsive_layout(self):
         website = ROOT.parents[1] / "website"

@@ -74,8 +74,18 @@ std::string residualText(const HelperResult& result) {
             return " The WireGuard tunnel service was removed, but Windows could not report whether its network "
                    "adapter was released.";
         case Residual::AdapterRemovalFailed:
-            return " The WireGuard tunnel service was removed, but Configuration Manager refused removal of the "
-                   "identity-verified TELIPHONES adapter.";
+             return " The WireGuard tunnel service was removed, but the identity-verified TELIPHONES adapter removal "
+                 "request failed or was vetoed by Configuration Manager.";
+        case Residual::AdapterIdentityUnverified:
+            return " A matching TELIPHONES interface remains, but its current GUID/PnP identity could not be verified "
+                   "against the protected ownership record; TELIPHONES did not request device removal.";
+        case Residual::AdapterRemovalIdentityMismatch:
+            return " Configuration Manager no longer locates the exact recorded PnP instance (Windows error 1168), "
+                   "but IP Helper still reports a TELIPHONES interface. The interface was retained because its "
+                   "identity no longer matches the recorded device.";
+        case Residual::StaleOwnershipRecord:
+            return " The service, interface table and exact recorded PnP instance were independently absent; "
+                   "TELIPHONES reconciled the stale ownership record without removing another device.";
         case Residual::Unknown: return " The state of the WireGuard tunnel service could not be read.";
         case Residual::None: break;
     }
@@ -94,7 +104,8 @@ std::string cleanupText(const HelperResult& result) {
     } else if (result.ownershipUnverified) {
         text += " TELIPHONES did not force it to stop because the service could not be verified as this TELIPHONES "
                 "tunnel. Check it with sc.exe qc before removing it.";
-    } else if (result.residual == Residual::AdapterOnly) {
+    } else if (result.residual == Residual::AdapterOnly || result.residual == Residual::AdapterIdentityUnverified ||
+               result.residual == Residual::AdapterRemovalIdentityMismatch) {
         text += " Adapter release did not complete within the cleanup timeout. Try Disconnect or Connect again; "
                 "TELIPHONES rechecks the service and adapter before starting a new tunnel.";
     } else {
@@ -113,6 +124,35 @@ AdapterPresence ClassifyTunnelAdapter(bool enumerated, const std::vector<Interfa
         if (row.alias == tunnelName && row.operStatus != kInterfaceOperStatusNotPresent) return AdapterPresence::Active;
     }
     return AdapterPresence::Absent;
+}
+
+AdapterPresence ReconcileAdapterPresence(AdapterPresence interfacePresence, RecordedDeviceState pnpState) {
+    if (interfacePresence == AdapterPresence::Active || pnpState == RecordedDeviceState::Present ||
+        pnpState == RecordedDeviceState::NonPresent) return AdapterPresence::Active;
+    if (interfacePresence == AdapterPresence::Unverified || pnpState == RecordedDeviceState::Unknown)
+        return AdapterPresence::Unverified;
+    return AdapterPresence::Absent;
+}
+
+bool MayClearOwnershipRecord(bool ownershipValid, bool serviceAbsent, AdapterPresence interfacePresence,
+                             RecordedDeviceState pnpState) {
+    return ownershipValid && serviceAbsent && interfacePresence == AdapterPresence::Absent &&
+           pnpState == RecordedDeviceState::Missing;
+}
+
+bool MayClearIncompleteOwnershipRecord(bool ownershipValid, bool recordComplete, bool serviceAbsent,
+                                       AdapterPresence interfacePresence) {
+    return ownershipValid && !recordComplete && serviceAbsent && interfacePresence == AdapterPresence::Absent;
+}
+
+bool MayClearActiveRecovery(bool activeContext, bool ownershipValid, bool completeRecord, bool serviceAbsent,
+                            AdapterPresence interfacePresence, RecordedDeviceState pnpState) {
+    return activeContext && ownershipValid && completeRecord && serviceAbsent &&
+           interfacePresence == AdapterPresence::Absent && pnpState == RecordedDeviceState::Missing;
+}
+
+bool IsRecordedPnpMissing(bool pnpObservationKnown, bool pnpPresent) {
+    return pnpObservationKnown && !pnpPresent;
 }
 
 bool IsTeliphonesTunnelName(const std::string& name) {
@@ -199,7 +239,8 @@ std::uint32_t EncodeHelperResult(const HelperResult& result) {
     if (result.processSurvived) code |= kProcessSurvived;
     if (result.ownershipUnverified) code |= kOwnershipUnverified;
     if (result.configRemains) code |= kConfigRemains;
-    code |= (static_cast<std::uint32_t>(result.residual) & 0xfu) << 12;
+    const auto residual = static_cast<std::uint32_t>(result.residual);
+    code |= (residual <= 0xfu ? residual : static_cast<std::uint32_t>(Residual::Unknown)) << 12;
     const std::uint32_t error = result.error > kMaxEncodedError ? kMaxEncodedError : result.error;
     return code | (error << 16);
 }
@@ -208,7 +249,7 @@ bool DecodeHelperResult(std::uint32_t code, HelperResult& result) {
     if (code & 0xc0000000u) return false;
     const std::uint32_t stage = code & 0xffu;
     const std::uint32_t residual = (code >> 12) & 0xfu;
-    if (!knownStage(stage) || residual > static_cast<std::uint32_t>(Residual::AdapterRemovalFailed)) return false;
+    if (!knownStage(stage) || residual > static_cast<std::uint32_t>(Residual::StaleOwnershipRecord)) return false;
     result = HelperResult{};
     result.stage = static_cast<Stage>(stage);
     result.cleanupIncomplete = (code & kCleanupIncomplete) != 0;

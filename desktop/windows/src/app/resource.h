@@ -10,6 +10,7 @@
 #define IDD_SESSION_LOG             107
 #define IDD_APP_MESSAGE             108
 #define IDD_SSH_TERMINAL             109
+#define IDD_MANAGEMENT_HOSTNAME      110
 
 #define IDC_WG_STATUS               1000
 #define IDC_PROFILES                1001
@@ -41,6 +42,7 @@
 #define IDC_ALLOWED_SOURCES          1028
 #define IDC_REQUEST_SOURCES           1029
 #define IDC_ALLOWED_SOURCES_LABEL     1030
+#define IDC_RECOVER                   1032
 
 #define IDC_PAIR_NAME               1100
 #define IDC_PAIR_WORKSTATION        1101
@@ -53,6 +55,9 @@
 #define IDC_PAIR_ACCESS             1108
 #define IDC_PAIR_STATUS             1109
 #define IDC_PAIR_SSHLABEL           1110
+#define IDC_PAIR_TLS_HOSTNAME       1111
+#define IDC_MANAGEMENT_HOSTNAME     1056
+#define IDC_EDIT_MANAGEMENT_HOSTNAME 1057
 
 #define IDC_SUP_NAME                1200
 #define IDC_SUP_GENERATE            1201

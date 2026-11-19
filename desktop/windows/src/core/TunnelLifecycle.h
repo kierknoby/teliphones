@@ -38,6 +38,9 @@ enum class Residual : std::uint32_t {
     AdapterOnly = 6,        // the service is gone but an active adapter with the tunnel's exact alias still exists
     AdapterUnverified = 7,  // the service is gone but Windows could not enumerate network interfaces
     AdapterRemovalFailed = 8, // identity-checked Configuration Manager removal was refused or failed
+    AdapterIdentityUnverified = 9, // exact adapter identity could not be correlated to the protected record
+    AdapterRemovalIdentityMismatch = 10, // exact recorded device is absent, while a same-alias interface remains
+    StaleOwnershipRecord = 11, // service, interface and recorded PnP device are all independently absent
 };
 
 struct HelperResult {
@@ -50,7 +53,7 @@ struct HelperResult {
     Residual residual = Residual::None;
 };
 
-// Bits 0-7 stage, 8-11 cleanup flags, 12-15 residual, 16-29 Win32 error (system errors are below 16000).
+// Bits 0-7 stage, 8-11 cleanup flags, 12-15 residual, 16-29 bounded Win32 error (values are saturated).
 // Bits 30-31 are always clear, so NTSTATUS-style process termination codes are never mistaken for a result.
 constexpr std::uint32_t kMaxEncodedError = 0x3fff;
 std::uint32_t EncodeHelperResult(const HelperResult& result);
@@ -86,6 +89,19 @@ struct InterfaceRow {
 };
 enum class AdapterPresence { Absent, Active, Unverified };
 AdapterPresence ClassifyTunnelAdapter(bool enumerated, const std::vector<InterfaceRow>& rows, const std::string& tunnelName);
+enum class RecordedDeviceState { Unknown, Present, NonPresent, Missing };
+// Reconcile IP Helper and exact recorded devnode state. A registered phantom devnode is not a removed record.
+AdapterPresence ReconcileAdapterPresence(AdapterPresence interfacePresence, RecordedDeviceState pnpState);
+bool MayClearOwnershipRecord(bool ownershipValid, bool serviceAbsent, AdapterPresence interfacePresence,
+                             RecordedDeviceState pnpState);
+bool MayClearIncompleteOwnershipRecord(bool ownershipValid, bool recordComplete, bool serviceAbsent,
+                                       AdapterPresence interfacePresence);
+// The active recovery UI may be cleared only after service, interface and exact recorded PnP identity
+// are independently absent. Missing/invalid ownership evidence is not proof of absence.
+bool MayClearActiveRecovery(bool activeContext, bool ownershipValid, bool completeRecord, bool serviceAbsent,
+                            AdapterPresence interfacePresence, RecordedDeviceState pnpState);
+// Transitional compatibility predicate for recorded PnP readback; true only for an explicit Missing result.
+bool IsRecordedPnpMissing(bool pnpObservationKnown, bool pnpPresent);
 
 // Persisted before installation and completed from identifiers reported by Windows.  The
 // generic adapter description is deliberately absent: it is not proof of ownership.

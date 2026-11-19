@@ -54,6 +54,8 @@ bool InstallTunnel(const std::string& tunnelName, const std::string& configText,
 void RemoveTunnel(const std::string& tunnelName);
 // Whether an active network adapter with this tunnel's exact name exists (read-only interface table snapshot).
 tunnel_lifecycle::AdapterPresence TunnelAdapterPresence(const std::string& tunnelName);
+// Exact, read-only teardown reconciliation for active UI state. False means unknown or still present.
+bool TunnelRemovalVerified(const std::string& tunnelName);
 // Which interface Windows currently selects for traffic to this IPv4 address (GetBestInterfaceEx), compared with the
 // tunnel's adapter alias. Read-only; Unknown whenever the route or interface cannot be read.
 struct AddressRoute {

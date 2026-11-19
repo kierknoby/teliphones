@@ -1,12 +1,23 @@
 #include "Applications.h"
 #include "Win.h"
 #include "Ssh.h"
+#include "Services.h"
+#include "WireGuard.h"
+#include "../core/Encoding.h"
+#include "../core/SecureBrowser.h"
 
 #include <shellapi.h>
+#include <iphlpapi.h>
+#include <objbase.h>
 
 #include <cctype>
+#include <cstring>
 #include <cwchar>
 #include <iterator>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <set>
 #include <vector>
 
 #include "../core/Validation.h"
@@ -14,6 +25,25 @@
 namespace tlp {
 namespace win {
 namespace {
+
+struct SecureBrowserSession {
+    std::string profileId;
+    std::wstring tunnelName;
+    std::wstring pnpInstanceId;
+    HANDLE job = nullptr;
+    HANDLE process = nullptr;
+    HANDLE profileLock = nullptr;
+    std::wstring userDataDirectory;
+    ~SecureBrowserSession() {
+        if (job) CloseHandle(job);
+        if (process) CloseHandle(process);
+        if (profileLock) CloseHandle(profileLock);
+    }
+};
+
+std::mutex secureBrowserMutex;
+std::vector<std::unique_ptr<SecureBrowserSession>> secureBrowserSessions;
+std::set<std::string> disconnectedSecureBrowserProfiles;
 
 std::wstring preferencesFile() { return EnsureDirectory(KnownFolder(FOLDERID_LocalAppData) + L"\\TELIPHONES") + L"\\preferences.json"; }
 
@@ -99,6 +129,325 @@ std::string systemDirectory() {
     UINT length = GetSystemDirectoryW(system, MAX_PATH);
     if (length == 0 || length >= MAX_PATH) ThrowLastError("Unable to locate Windows");
     return Narrow(system);
+}
+
+class ProcessHandle {
+public:
+    explicit ProcessHandle(HANDLE value) : value_(value) {}
+    ~ProcessHandle() { if (value_) CloseHandle(value_); }
+    ProcessHandle(const ProcessHandle&) = delete;
+    ProcessHandle& operator=(const ProcessHandle&) = delete;
+    HANDLE get() const { return value_; }
+private:
+    HANDLE value_;
+};
+
+bool isSecureProfileLeaf(const std::wstring& leaf) {
+    if (leaf.size() != 32) return false;
+    for (wchar_t c : leaf) {
+        if (!((c >= L'0' && c <= L'9') || (c >= L'a' && c <= L'f'))) return false;
+    }
+    return true;
+}
+
+bool plainDirectory(const std::wstring& path);
+
+std::wstring secureBrowserRoot() {
+    const std::wstring base = EnsureDirectory(KnownFolder(FOLDERID_LocalAppData) + L"\\TELIPHONES");
+    return EnsureDirectory(base + L"\\SecureBrowser");
+}
+
+std::wstring createSecureProfileDirectory(HANDLE& profileLock) {
+    const std::wstring folder = secureBrowserRoot();
+    for (int attempt = 0; attempt < 8; ++attempt) {
+        const std::wstring leaf = Widen(HexEncode(RandomBytes(16)));
+        const std::wstring path = folder + L"\\" + leaf;
+        if (CreateDirectoryW(path.c_str(), nullptr)) {
+            HANDLE marker = INVALID_HANDLE_VALUE;
+            try {
+                static constexpr char kMarker[] = "TELIPHONES-SECURE-EDGE-PROFILE/1\n";
+                marker = CreateFileW((path + L"\\.teliphones-profile-owner").c_str(), GENERIC_WRITE, 0, nullptr,
+                                     CREATE_NEW, FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_NOT_CONTENT_INDEXED, nullptr);
+                if (marker == INVALID_HANDLE_VALUE) ThrowLastError("Unable to mark the isolated Edge profile as TELIPHONES-owned");
+                DWORD written = 0;
+                const BOOL markerWritten = WriteFile(marker, kMarker, sizeof(kMarker) - 1, &written, nullptr) && written == sizeof(kMarker) - 1;
+                CloseHandle(marker);
+                marker = INVALID_HANDLE_VALUE;
+                if (!markerWritten) ThrowLastError("Unable to write the isolated Edge profile ownership marker");
+                profileLock = CreateFileW((path + L"\\.teliphones-profile-lock").c_str(), GENERIC_READ | GENERIC_WRITE, 0,
+                                          nullptr, CREATE_NEW, FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_NOT_CONTENT_INDEXED, nullptr);
+                if (profileLock == INVALID_HANDLE_VALUE) ThrowLastError("Unable to lock the isolated Edge profile");
+                return path;
+            } catch (...) {
+                if (marker != INVALID_HANDLE_VALUE) CloseHandle(marker);
+                if (profileLock && profileLock != INVALID_HANDLE_VALUE) {
+                    CloseHandle(profileLock);
+                    profileLock = nullptr;
+                }
+                if (plainDirectory(path)) {
+                    WIN32_FIND_DATAW entry{};
+                    HANDLE cleanup = FindFirstFileW((path + L"\\*").c_str(), &entry);
+                    if (cleanup != INVALID_HANDLE_VALUE) {
+                        do {
+                            const std::wstring child(entry.cFileName);
+                            if (child == L"." || child == L"..") continue;
+                            if ((entry.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) == 0)
+                                DeleteFileW((path + L"\\" + child).c_str());
+                        } while (FindNextFileW(cleanup, &entry));
+                        FindClose(cleanup);
+                    }
+                    RemoveDirectoryW(path.c_str());
+                }
+                throw;
+            }
+        }
+        if (GetLastError() != ERROR_ALREADY_EXISTS) ThrowLastError("Unable to create an isolated Edge profile");
+        continue;
+    }
+    throw Error("Unable to create a unique isolated Edge profile.");
+}
+
+bool plainDirectory(const std::wstring& path) {
+    const DWORD attributes = GetFileAttributesW(path.c_str());
+    return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0 &&
+           (attributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0;
+}
+
+bool removeProfileContents(const std::wstring& path, bool topLevel) {
+    WIN32_FIND_DATAW item{};
+    HANDLE search = FindFirstFileW((path + L"\\*").c_str(), &item);
+    if (search == INVALID_HANDLE_VALUE) return GetLastError() == ERROR_FILE_NOT_FOUND;
+    bool ok = true;
+    do {
+        const std::wstring name(item.cFileName);
+        if (name == L"." || name == L".." || (topLevel && (name == L".teliphones-profile-owner" || name == L".teliphones-profile-lock"))) continue;
+        const std::wstring child = path + L"\\" + name;
+        const DWORD attributes = GetFileAttributesW(child.c_str());
+        if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+            ok = false;  // Never traverse or delete reparse points from an Edge profile.
+            break;
+        }
+        if ((attributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+            if (!removeProfileContents(child, false) || !RemoveDirectoryW(child.c_str())) {
+                ok = false;
+                break;
+            }
+        } else if (!DeleteFileW(child.c_str())) {
+            ok = false;
+            break;
+        }
+    } while (FindNextFileW(search, &item));
+    const DWORD enumerationError = GetLastError();
+    FindClose(search);
+    return ok && (enumerationError == ERROR_NO_MORE_FILES || enumerationError == ERROR_SUCCESS);
+}
+
+bool removeOwnedSecureProfileDirectory(const std::wstring& path) {
+    if (!plainDirectory(secureBrowserRoot()) || !plainDirectory(path)) return false;
+    const std::wstring root = secureBrowserRoot();
+    if (path.compare(0, root.size() + 1, root + L"\\") != 0 || !isSecureProfileLeaf(path.substr(root.size() + 1))) return false;
+    const DWORD markerAttributes = GetFileAttributesW((path + L"\\.teliphones-profile-owner").c_str());
+    const DWORD lockAttributes = GetFileAttributesW((path + L"\\.teliphones-profile-lock").c_str());
+    if (markerAttributes == INVALID_FILE_ATTRIBUTES || lockAttributes == INVALID_FILE_ATTRIBUTES ||
+        (markerAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0 ||
+        (lockAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0) return false;
+    HANDLE lock = CreateFileW((path + L"\\.teliphones-profile-lock").c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
+                              OPEN_EXISTING, FILE_ATTRIBUTE_HIDDEN | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    if (lock == INVALID_HANDLE_VALUE) return false;  // Missing or actively held locks are not removable.
+    const std::wstring marker = path + L"\\.teliphones-profile-owner";
+    HANDLE file = CreateFileW(marker.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                              FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        CloseHandle(lock);
+        return false;
+    }
+    char contents[40]{};
+    DWORD read = 0;
+    const BOOL readOk = ReadFile(file, contents, sizeof(contents), &read, nullptr);
+    CloseHandle(file);
+    static constexpr char kMarker[] = "TELIPHONES-SECURE-EDGE-PROFILE/1\n";
+    if (!readOk || read != sizeof(kMarker) - 1 || memcmp(contents, kMarker, sizeof(kMarker) - 1) != 0) {
+        CloseHandle(lock);
+        return false;
+    }
+    const bool contentsRemoved = removeProfileContents(path, true);
+    CloseHandle(lock);
+    if (!contentsRemoved || !DeleteFileW(marker.c_str())) return false;
+    if (!DeleteFileW((path + L"\\.teliphones-profile-lock").c_str())) return false;
+    return RemoveDirectoryW(path.c_str()) != FALSE;
+}
+
+void cleanupCompletedSecureProfiles() {
+    const std::wstring root = secureBrowserRoot();
+    if (!plainDirectory(root)) return;
+    std::set<std::wstring> trackedProfiles;
+    {
+        std::lock_guard<std::mutex> lock(secureBrowserMutex);
+        for (const auto& session : secureBrowserSessions) trackedProfiles.insert(session->userDataDirectory);
+    }
+    WIN32_FIND_DATAW item{};
+    HANDLE search = FindFirstFileW((root + L"\\*").c_str(), &item);
+    if (search == INVALID_HANDLE_VALUE) return;
+    do {
+        const std::wstring leaf(item.cFileName);
+        const std::wstring profilePath = root + L"\\" + leaf;
+        if (trackedProfiles.find(profilePath) == trackedProfiles.end() && isSecureProfileLeaf(leaf) &&
+            (item.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0 &&
+            (item.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0)
+            (void)removeOwnedSecureProfileDirectory(profilePath);
+    } while (FindNextFileW(search, &item));
+    FindClose(search);
+}
+
+void removeEmptySecureProfileDirectory(const std::wstring& path) {
+    if (path.empty()) return;
+    const DWORD attributes = GetFileAttributesW(path.c_str());
+    if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 ||
+        (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0) return;
+    WIN32_FIND_DATAW entry{};
+    HANDLE search = FindFirstFileW((path + L"\\*").c_str(), &entry);
+    if (search == INVALID_HANDLE_VALUE) return;
+    bool onlyMarkers = true;
+    do {
+        const std::wstring name(entry.cFileName);
+        if (name == L"." || name == L".." || name == L".teliphones-profile-owner" || name == L".teliphones-profile-lock") continue;
+        onlyMarkers = false;
+        break;
+    } while (FindNextFileW(search, &entry));
+    FindClose(search);
+    if (onlyMarkers) (void)removeOwnedSecureProfileDirectory(path);
+}
+
+std::wstring adapterPnpInstance(const std::string& tunnelName) {
+    PMIB_IF_TABLE2 table = nullptr;
+    if (GetIfTable2(&table) != NO_ERROR) throw Error("Windows could not verify the WireGuard tunnel interface.");
+    std::unique_ptr<MIB_IF_TABLE2, decltype(&FreeMibTable)> owned(table, &FreeMibTable);
+    const std::wstring alias = Widen(tunnelName);
+    std::wstring pnp;
+    for (ULONG i = 0; i < table->NumEntries; ++i) {
+        const auto& row = table->Table[i];
+        if (row.Alias != alias || row.OperStatus == IfOperStatusNotPresent) continue;
+        wchar_t guid[64]{};
+        if (!StringFromGUID2(row.InterfaceGuid, guid, static_cast<int>(std::size(guid))))
+            throw Error("Windows could not identify the WireGuard tunnel interface.");
+        const std::wstring key = L"SYSTEM\\CurrentControlSet\\Control\\Network\\{4D36E972-E325-11CE-BFC1-08002BE10318}\\" +
+                     std::wstring(guid) + L"\\Connection";
+        HKEY opened = nullptr;
+        if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, key.c_str(), 0, KEY_QUERY_VALUE, &opened) != ERROR_SUCCESS)
+            throw Error("Windows could not verify the WireGuard device identity.");
+        wchar_t value[512]{};
+        DWORD type = 0, bytes = sizeof(value);
+        const LONG result = RegQueryValueExW(opened, L"PnpInstanceID", nullptr, &type,
+                                              reinterpret_cast<BYTE*>(value), &bytes);
+        RegCloseKey(opened);
+        if (result != ERROR_SUCCESS || type != REG_SZ || value[0] == L'\0')
+            throw Error("Windows could not read the WireGuard device identity.");
+        if (!pnp.empty()) throw Error("Multiple interfaces have the TELIPHONES tunnel alias; secure browser launch was refused.");
+        pnp = value;
+    }
+    if (pnp.empty()) throw Error("The exact TELIPHONES WireGuard interface is not present.");
+    return pnp;
+}
+
+bool closeBrowserSession(SecureBrowserSession& session) {
+    if (session.job) {
+        TerminateJobObject(session.job, ERROR_CANCELLED);
+        const ULONGLONG deadline = GetTickCount64() + 5000;
+        JOBOBJECT_BASIC_ACCOUNTING_INFORMATION accounting{};
+        while (GetTickCount64() < deadline) {
+            if (!QueryInformationJobObject(session.job, JobObjectBasicAccountingInformation,
+                                           &accounting, sizeof(accounting), nullptr)) return false;
+            if (accounting.ActiveProcesses == 0) break;
+            Sleep(25);
+        }
+        if (!QueryInformationJobObject(session.job, JobObjectBasicAccountingInformation,
+                                       &accounting, sizeof(accounting), nullptr) || accounting.ActiveProcesses != 0) return false;
+        CloseHandle(session.job);  // The owned process tree is confirmed empty before profile cleanup.
+        session.job = nullptr;
+    } else if (session.process && WaitForSingleObject(session.process, 0) == WAIT_TIMEOUT) {
+        // Process ownership is established by the retained handle and suspended CreateProcess launch.
+        TerminateProcess(session.process, ERROR_CANCELLED);
+        WaitForSingleObject(session.process, 5000);
+    }
+    if (session.process) {
+        if (WaitForSingleObject(session.process, 0) == WAIT_TIMEOUT) return false;
+        CloseHandle(session.process);
+        session.process = nullptr;
+    }
+    if (session.profileLock) {
+        CloseHandle(session.profileLock);
+        session.profileLock = nullptr;
+    }
+    (void)removeOwnedSecureProfileDirectory(session.userDataDirectory);
+    return true;
+}
+
+void pruneSecureBrowserSessions() {
+    std::lock_guard<std::mutex> lock(secureBrowserMutex);
+    for (auto it = secureBrowserSessions.begin(); it != secureBrowserSessions.end();) {
+        bool remove = !(*it)->process || WaitForSingleObject((*it)->process, 0) == WAIT_OBJECT_0;
+        if (remove) {
+            if (closeBrowserSession(**it)) it = secureBrowserSessions.erase(it);
+            else ++it;
+        } else ++it;  // Tunnel-loss cleanup is driven by the main connection monitor; never infer it from lookup failure here.
+    }
+}
+
+void launchSecureEdge(const std::string& profileId, const std::string& tunnelName, const std::wstring& pnpInstanceId,
+                      const LaunchPlan& plan, const std::wstring& userDataDirectory, HANDLE& profileLock) {
+    auto session = std::make_unique<SecureBrowserSession>();
+    session->profileId = profileId;
+    session->tunnelName = Widen(tunnelName);
+    session->pnpInstanceId = pnpInstanceId;
+    session->userDataDirectory = userDataDirectory;
+    session->job = CreateJobObjectW(nullptr, nullptr);
+    if (!session->job) ThrowLastError("Unable to create the secure browser process job");
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if (!SetInformationJobObject(session->job, JobObjectExtendedLimitInformation, &limits, sizeof(limits)))
+        ThrowLastError("Unable to configure the secure browser process job");
+    std::wstring program = Widen(plan.program);
+    std::wstring commandLine = Widen(plan.commandLine);
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION process{};
+    if (!CreateProcessW(program.c_str(), &commandLine[0], nullptr, nullptr, FALSE, CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP,
+                        nullptr, nullptr, &startup, &process)) ThrowLastError("Unable to launch isolated Microsoft Edge");
+    session->process = process.hProcess;
+    ProcessHandle thread(process.hThread);
+    if (!AssignProcessToJobObject(session->job, process.hProcess)) {
+        const DWORD error = GetLastError();
+        TerminateProcess(process.hProcess, ERROR_CANCELLED);
+        WaitForSingleObject(process.hProcess, 5000);
+        ThrowLastError("Unable to assign isolated Edge to its TELIPHONES session job", error);
+    }
+    DWORD resumeError = ERROR_SUCCESS;
+    {
+        session->profileLock = profileLock;
+        try {
+            std::lock_guard<std::mutex> lock(secureBrowserMutex);
+            secureBrowserSessions.push_back(std::move(session));
+            profileLock = nullptr;
+            SecureBrowserSession& tracked = *secureBrowserSessions.back();
+            if (disconnectedSecureBrowserProfiles.find(profileId) != disconnectedSecureBrowserProfiles.end()) {
+                (void)closeBrowserSession(tracked);
+                secureBrowserSessions.pop_back();
+                resumeError = ERROR_CANCELLED;
+            } else if (ResumeThread(thread.get()) == static_cast<DWORD>(-1)) {
+                resumeError = GetLastError();
+                (void)closeBrowserSession(tracked);
+                secureBrowserSessions.pop_back();
+            }
+        } catch (...) {
+            if (session) {
+                profileLock = session->profileLock;
+                session->profileLock = nullptr;
+                (void)closeBrowserSession(*session);
+            }
+            throw;
+        }
+    }
+    if (resumeError != ERROR_SUCCESS) ThrowLastError("Unable to start the isolated Edge process", resumeError);
 }
 
 std::string knownFolder(const KNOWNFOLDERID& id) {
@@ -194,10 +543,69 @@ std::string OpenSshClient() {
 }
 
 void OpenFreePbx(const Profile& profile, const std::string& sessionId, const Preferences& preferences) {
-    // Only a URL built from the validated tunnel address is opened; never a URL supplied by a remote party.
-    std::string url = FreePbxUrl(profile, sessionId);
+    const std::string pairedUrl = FreePbxUrl(profile, sessionId);
+    if (profile.kind == ProfileKind::Administrator && pairedUrl.rfind("https://", 0) == 0) {
+        SecureManagementTarget target = BuildSecureManagementTarget(pairedUrl, profile.pairing.pbxAddress,
+                                                                    profile.managementTlsHostname);
+        const std::string tunnelName = TunnelNameFor(profile);
+        const TunnelState service = QueryTunnel(tunnelName);
+        const AddressRoute route = RouteToAddress(tunnelName, target.tunnelAddress);
+        const auto port = target.port;
+        const auto probe = MeasureTcpProbe(target.tunnelAddress, port, 2500);
+        const bool tunnelVerified = service == TunnelState::Running && route.route == RouteEvidence::ViaTunnel;
+        if (!SecureBrowserMayLaunch(tunnelVerified, probe.known, probe.succeeded))
+            throw Error("TELIPHONES requires the exact tunnel service to be Running, the management route to select that tunnel, and the paired management TCP port to answer a fresh probe. No browser was opened.");
+        const std::string executable = ResolveApp(AppKind::Browser, "edge", DetectApps(AppKind::Browser, preferences));
+        const std::wstring pnp = adapterPnpInstance(tunnelName);
+        pruneSecureBrowserSessions();
+        {
+            std::lock_guard<std::mutex> lock(secureBrowserMutex);
+            disconnectedSecureBrowserProfiles.erase(profile.id);
+        }
+        HANDLE profileLock = nullptr;
+        cleanupCompletedSecureProfiles();
+        const std::wstring userDataDirectory = createSecureProfileDirectory(profileLock);
+        try {
+            LaunchPlan plan = SecureEdgeLaunch(executable, target, Narrow(userDataDirectory));
+            launchSecureEdge(profile.id, tunnelName, pnp, plan, userDataDirectory, profileLock);
+        } catch (...) {
+            if (profileLock) CloseHandle(profileLock);
+            removeEmptySecureProfileDirectory(userDataDirectory);
+            throw;
+        }
+        return;
+    }
+    if (profile.kind == ProfileKind::Administrator)
+        throw Error("The paired primary management service is HTTP. TELIPHONES will not launch it in an ordinary browser or silently change PBX service order. Ask the PBX administrator to explicitly approve HTTPS as the primary service, then explicitly pair again.");
+    std::string url = pairedUrl;
     std::string executable = ResolveApp(AppKind::Browser, preferences.browser, DetectApps(AppKind::Browser, preferences));
     launch(BrowserLaunch(preferences.browser, executable, url), AppKind::Browser, preferences.browser);
+}
+
+void CloseSecureBrowserSessions(const std::string& profileId) {
+    std::lock_guard<std::mutex> lock(secureBrowserMutex);
+    disconnectedSecureBrowserProfiles.insert(profileId);
+    for (auto it = secureBrowserSessions.begin(); it != secureBrowserSessions.end();) {
+        if ((*it)->profileId == profileId) {
+            if (closeBrowserSession(**it)) it = secureBrowserSessions.erase(it);
+            else {
+                if ((*it)->job) TerminateJobObject((*it)->job, ERROR_CANCELLED);
+                ++it;
+            }
+        } else ++it;
+    }
+}
+
+void CloseAllSecureBrowserSessions() {
+    std::lock_guard<std::mutex> lock(secureBrowserMutex);
+    for (const auto& session : secureBrowserSessions) disconnectedSecureBrowserProfiles.insert(session->profileId);
+    for (auto it = secureBrowserSessions.begin(); it != secureBrowserSessions.end();) {
+        if (closeBrowserSession(**it)) it = secureBrowserSessions.erase(it);
+        else {
+            if ((*it)->job) TerminateJobObject((*it)->job, ERROR_CANCELLED);
+            ++it;
+        }
+    }
 }
 
 void OpenSsh(const Profile& profile, const std::string& sessionId, const Preferences& preferences) {

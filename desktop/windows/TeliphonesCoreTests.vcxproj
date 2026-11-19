@@ -32,6 +32,7 @@
     <ClCompile Include="src\core\Monitor.cpp" />
     <ClCompile Include="src\core\Pairing.cpp" />
     <ClCompile Include="src\core\Profiles.cpp" />
+    <ClCompile Include="src\core\SecureBrowser.cpp" />
     <ClCompile Include="src\core\TunnelConfig.cpp" />
     <ClCompile Include="src\core\TunnelLifecycle.cpp" />
     <ClCompile Include="src\core\Validation.cpp" />

@@ -1,4 +1,4 @@
-# TELIPHONES 0.9.0 for Windows (experimental)
+# TELIPHONES 0.10.0 for Windows (experimental)
 
 Current 0.8.0 authority, firewall and lease changes: [implementation and acceptance](../../teliphones/docs/DEVELOPMENT-0.8.0.md).
 Unknown-public-IP FreePBX 17 connectivity remains unverified. Historical evidence
@@ -6,19 +6,19 @@ below does not validate this development candidate.
 
 **TELIPHONES is a UK registered trademark.**
 
-**TELIPHONES 0.9.0 for Windows is licensed under GPLv3.**
+**TELIPHONES 0.10.0 for Windows is licensed under GPLv3.**
 
 Reach your PBX privately, open FreePBX in your preferred browser and start an
 approved SSH session without distributing permanent administrator SSH credentials.
 This guide covers installing and using the Windows application. The
 [FreePBX administration guide](../../teliphones/README.md) covers server setup.
 
-Windows **0.9.0** (file version **0.9.0.0**) is independent of proposed,
+Windows **0.10.0** (file version **0.10.0.0**) is independent of proposed,
 unreleased FreePBX module/root broker **0.8.3.15**, protocol **12**. The
 development archive is prepared for controlled review, not a release or
 production approval. The checksum-verified historical 0.6.7 archive is at the
 repository root and does not contain these newer changes. Windows
-0.9.0 bounds tunnel establishment, authentication and controller admission;
+0.10.0 bounds tunnel establishment, authentication and controller admission;
 allows Disconnect and Close during Connect; and persists exact tunnel ownership
 for safe next-launch recovery. Its elevated cleanup can remove a residual
 adapter through Windows Configuration Manager only after the current interface
@@ -37,6 +37,25 @@ not a published download.
 The [version definition](src/app/Version.h), not the manifest assembly identity,
 defines the application version.
 
+**Secure management GUI:** TELIPHONES preserves the PBX-configured primary service
+order. HTTP primary pairings fail closed; TELIPHONES does not reorder services,
+rewrite pairings, or change firewall permissions. A PBX administrator must
+explicitly approve configuring certificate-valid HTTPS as primary, then the
+operator must explicitly pair again. For HTTPS, configure the certificate DNS
+hostname using **HTTPS Hostname...** on the saved administrator profile, based on
+information supplied or confirmed by the PBX administrator. TELIPHONES launches
+Microsoft Edge with a unique isolated profile, maps only that explicit hostname
+to the paired WireGuard IPv4, blocks other DNS hostnames in that profile, disables
+proxy use, and leaves normal TLS certificate validation enabled. It launches only
+after verifying the tunnel service, route selection and a fresh management TCP
+probe; the owned Edge process job is closed when disconnect is requested or the
+monitor observes tunnel loss. This is a scoped resolver/profile and process
+lifecycle measure, **not universal network confinement**: IP-literal access,
+redirect behavior, browser/OS networking and races while the tunnel disappears
+are not proven blocked. Do not rely on it as a general egress firewall. The public
+WireGuard endpoint is never treated as a TLS hostname, and certificate errors are
+not bypassed. Native Windows/Edge acceptance is still required.
+
 > [!WARNING]
 > **Experimental, not production-ready.** Conflicting historical operator reports
 > state that eleven and ten native OpenSSH integration tests passed. A successful
@@ -47,7 +66,7 @@ defines the application version.
 > recovery still need live validation. Opening the embedded SSH console
 > unexpectedly closing TELIPHONES remains a release blocker.
 > These supplied reports lack matching run/build identifiers and raw logs; they
-> do not establish which test count is accurate, validate current 0.9.0 source or
+> do not establish which test count is accurate, validate current 0.10.0 source or
 > establish a matching binary. See
 > [verification status](#verification-status).
 
@@ -108,7 +127,7 @@ risk. See the [current security limitations](#security).
 
 ### Download an existing build
 
-**Windows CI builds have completed for 0.9.0, but functional/native acceptance
+**Earlier Windows CI builds have completed for 0.9.0; no 0.10.0 build is available, and functional/native acceptance
 is outstanding.** The artifact from run `43980149884` (artifact
 `14281389786`) is blocked by Chrome as “Dangerous download blocked”; the cause
 is unresolved. Do not bypass browser or operating-system protection, and do not
@@ -133,7 +152,7 @@ source rather than disabling Windows protections. For source builds, see
 
 ### Upgrade the development workstation after native validation
 
-Windows CI builds for 0.9.0 have completed, but do not upgrade until the exact
+Do not upgrade to 0.10.0 until the exact
 build passes native Release compilation, the complete CTests (including
 `tunnel_startup_native` with its stuck
 `START_PENDING` and per-tunnel lock cases, and `wireguard_nt_unit`),
@@ -151,21 +170,21 @@ application bundle, not an MSI installer. The workflow's bundle directory is
    `START_PENDING`), record the read-only diagnostics in
    [Troubleshooting](#troubleshooting). Do not assume cleanup or network roaming
    succeeded unless the application confirms it.
-2. Extract the validated bundle into a separate **TELIPHONES-0.9.0** directory.
+2. Extract the validated bundle into a separate **TELIPHONES-0.10.0** directory.
    Keep both executables, `wireguard.dll`, licences and `build-info.json` together.
 3. Before launch, in PowerShell in that directory, check:
 
    ```powershell
    $info = Get-Content .\build-info.json -Raw | ConvertFrom-Json
    $version = [Diagnostics.FileVersionInfo]::GetVersionInfo((Resolve-Path .\TELIPHONES.exe).Path)
-   if ($version.ProductVersion -ne '0.9.0' -or $version.FileVersion -ne '0.9.0.0') { throw 'Wrong executable version' }
-   if ($info.productVersion -ne '0.9.0' -or $info.fileVersion -ne '0.9.0.0') { throw 'Wrong build metadata' }
+   if ($version.ProductVersion -ne '0.10.0' -or $version.FileVersion -ne '0.10.0.0') { throw 'Wrong executable version' }
+   if ($info.productVersion -ne '0.10.0' -or $info.fileVersion -ne '0.10.0.0') { throw 'Wrong build metadata' }
    if ((Get-FileHash .\TELIPHONES.exe -Algorithm SHA256).Hash -ine $info.sha256) { throw 'Application hash mismatch' }
    if ((Get-FileHash .\TELIPHONES-SSH.exe -Algorithm SHA256).Hash -ine $info.sshHelperSha256) { throw 'SSH helper hash mismatch' }
    if ((Get-FileHash .\wireguard.dll -Algorithm SHA256).Hash -ine $info.wireGuardNtSha256) { throw 'WireGuardNT hash mismatch' }
    ```
 
-4. Launch the new executable, confirm **0.9.0** in About and reuse the saved
+4. Launch the new executable, confirm **0.10.0** in About and reuse the saved
    profile without re-pairing. Perform one controlled Connect and retain the
    WireGuard log plus any stage-specific error. Confirm sustained service
    operation, eventual handshake, approved PBX access and disconnect/reconnect.
@@ -198,9 +217,9 @@ During installation the dialogue cannot be closed until the worker finishes; can
 
 ## Pair an administrator workstation
 
-The 0.8.2 development package is available locally for controlled testing,
-but is not live-accepted or approved for production use. Windows CI builds for
-0.9.0 have completed, but functional/native acceptance remains outstanding.
+The 0.8.2 package and its broker details below are historical context only. This
+0.10.0 candidate is not live-accepted or approved for production use; no 0.10.0
+Windows CI artifact exists and functional/native acceptance remains outstanding.
 The CI artifact is not an accepted upgrade. The historical 0.6.7
 archive is not included in this checkout and predates these changes. After an
 authorized controlled-development installation or upgrade, complete the
@@ -253,10 +272,13 @@ The native startup regression and live WireGuard validation remain outstanding;
 see [Windows readiness](tests/WINDOWS-READINESS.md#wireguard-startup-regression).
 
 Select **Open FreePBX** and sign in with normal FreePBX credentials.
-   The browser opens the approved HTTP/HTTPS management URL (including a custom
-   port, when configured) on the PBX tunnel address inside the encrypted
-   tunnel. Redirects and HTTPS certificates still depend on the PBX web setup;
-   never disable certificate checks to work around a mismatch.
+   For HTTPS management, configure the certificate DNS name using **HTTPS
+   Hostname...** and open FreePBX. The isolated Edge profile resolves that name to
+   the paired tunnel IPv4, uses no proxy, and validates the certificate normally.
+   HTTP primary management is intentionally refused. Redirect destinations and
+   alternate IP-literal access are not universally confined; if the tunnel is
+   lost, the owned Edge job is closed when detected. Never disable certificate
+   checks to work around a mismatch.
 
 The client adds only the PBX's host route; ordinary workstation traffic does not
 use the tunnel. The PBX does not forward the workstation onto other networks.
@@ -470,7 +492,7 @@ OpenSSH integrations passing and another reports ten. Neither supplied a
 matching run URL, commit/build identifier or raw log, so neither count can be
 independently reconciled with the current source. The twelve methods currently
 registered in the readiness documentation are not evidence that twelve ran or
-passed. Report these as unverified historical reports, not current 0.9.0
+passed. Report these as unverified historical reports, not current 0.10.0
 validation.
 The all-terminal/Unicode-path, Windows reboot and real FreePBX/systemd
 revocation/expiry/rollback matrix remains outstanding. The loopback issuer is a
@@ -590,7 +612,7 @@ identity-bound migration parsing and the Argon2id positive-path provider tests
 when available. This is not a native Windows build: this Linux environment
 cannot compile or exercise the MFC application, Windows Credential Manager,
 DPAPI, UAC, service/helper lifecycle, or actual WireGuard reconnect path.
-Historical operator reports for 0.7.0 are not evidence for the current 0.9.0
+Historical operator reports for 0.7.0 are not evidence for the current 0.10.0
 changes.
 
 Live FreePBX session admission, listener migration, source restrictions,

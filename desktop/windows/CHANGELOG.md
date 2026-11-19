@@ -5,10 +5,25 @@ No Windows release is declared published by this document. Earlier development
 builds lacked embedded file/product versions and cannot be assigned reliable
 version numbers retrospectively.
 
-## 0.9.0 — Unreleased lifecycle reliability target
+## 0.10.0 — Unreleased recovery and secure-management target
 
-Windows file/product version: **0.9.0.0** / **0.9.0**. FreePBX module/root
+Windows file/product version: **0.10.0.0** / **0.10.0**. FreePBX module/root
 broker **0.8.3.15**, protocol **12**.
+
+- Add profile-independent discovery and exact-ownership recovery of residual
+  TELIPHONES WireGuard tunnels, retaining diagnostics and records until service,
+  interface and recorded PnP state have been independently reconciled.
+- Detect the paired primary management URL's scheme. Secure GUI launch accepts
+  only an explicitly configured HTTPS certificate hostname, using isolated
+  Edge profile resolver rules and normal certificate validation. HTTP primaries
+  are rejected with administrator guidance to approve a certificate-valid HTTPS
+  primary and explicitly pair again; services are never reordered and existing
+  pairings/firewall permissions are not rewritten. This is not universal network
+  confinement; redirects, IP literals and tunnel-loss races remain acceptance
+  limitations. Owned Edge process jobs close on disconnect or detected tunnel loss.
+- Portable recovery and management URL policy tests are included. Native Windows
+  cleanup, Edge behavior, and browser session lifecycle remain required acceptance
+  gates.
 
 - Bound service establishment, WireGuard authentication and controller admission;
   stop retrying after a terminal deadline and fence obsolete operation results.

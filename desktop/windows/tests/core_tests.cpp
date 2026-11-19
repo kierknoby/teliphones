@@ -20,6 +20,8 @@
 #include "../src/core/Pairing.h"
 #include "../src/core/Profiles.h"
 #include "../src/core/Rendezvous.h"
+#include "../src/core/SecureBrowser.h"
+#include "../src/core/SessionDiagnostics.h"
 #include "../src/core/SshRuntime.h"
 #include "../src/core/TunnelConfig.h"
 #include "../src/core/TunnelLifecycle.h"
@@ -303,6 +305,101 @@ void testPairing() {
     object["ssh_port"] = 22002;
     object["ssh_api_port"] = 80;
     check(throws([&] { ParsePairResponse(v2(), kNonce, kWorkstationKey, sshKey); }), "managed certificate API port is fixed");
+}
+
+void testPairedPrimaryManagementUrls() {
+      const PairResponse http = ParsePairResponse(response({}), kNonce, kWorkstationKey);
+      Profile primary = adminProfile();
+      primary.pairing = http;
+      const std::string savedHttpPairing = SerializeProfiles({primary});
+      bool administratorGuidance = false;
+      try {
+            (void)BuildSecureManagementTarget(http.guiUrl, http.pbxAddress, "pbx.example.test");
+      } catch (const Error& error) {
+            const std::string message = error.what();
+            administratorGuidance = message.find("explicitly approve") != std::string::npos &&
+                                    message.find("pair again") != std::string::npos &&
+                                    message.find("firewall permission is changed") != std::string::npos;
+      }
+      check(PrimaryManagementScheme(http.guiUrl, http.pbxAddress) == ManagementScheme::Http &&
+                    administratorGuidance && SerializeProfiles({primary}) == savedHttpPairing,
+              "HTTP primary fails closed with explicit administrator guidance and unchanged pairing");
+      check(http.guiUrl == "http://100.70.1.1/admin/" &&
+                    FreePbxUrl(primary, "") == http.guiUrl &&
+                    ManagementProbePort(http.guiUrl) == 80,
+              "paired primary HTTP management URL is detected and retained");
+
+      const std::string customHttpUrl = "http://100.70.1.1:8080/admin/";
+      check(PrimaryManagementScheme(customHttpUrl, http.pbxAddress) == ManagementScheme::Http &&
+                    throws([&] { BuildSecureManagementTarget(customHttpUrl, http.pbxAddress, "pbx.example.test"); }),
+              "custom-port HTTP primary is detected as HTTP rather than silently replaced");
+
+      const std::string httpsUrl = "https://100.70.1.1:8443/admin/";
+      primary.pairing = ParsePairResponse(response({{"gui_url", httpsUrl}}), kNonce, kWorkstationKey);
+      const auto restored = ParseProfiles(SerializeProfiles({primary}));
+      check(restored.size() == 1 && restored[0].pairing.guiUrl == httpsUrl &&
+                    FreePbxUrl(restored[0], "") == httpsUrl &&
+                    BrowserLaunch(kWindowsDefaultBrowser, "", httpsUrl).target == httpsUrl &&
+                              BuildSecureManagementTarget(httpsUrl, restored[0].pairing.pbxAddress, "pbx.example.test").url ==
+                                    "https://pbx.example.test:8443/admin/",
+              "paired primary HTTPS URL is preserved exactly through save and launch");
+      check(PrimaryManagementScheme(httpsUrl, restored[0].pairing.pbxAddress) == ManagementScheme::Https,
+              "configured primary HTTPS scheme is detected");
+
+      check(SecureBrowserMayLaunch(true, true, true) && !SecureBrowserMayLaunch(false, true, true) &&
+                !SecureBrowserMayLaunch(true, false, true) && !SecureBrowserMayLaunch(true, true, false),
+            "secure browser launch requires verified tunnel and successful fresh probe");
+      check(SecureBrowserMustClose(true) && !SecureBrowserMustClose(false),
+            "secure browser session closes only after disconnect is observed");
+
+      const auto target = BuildSecureManagementTarget(httpsUrl, restored[0].pairing.pbxAddress, "pbx.example.test");
+      const std::string escapedEdge = "C:\\Program Files\\Microsoft Edge\\msedge.exe";
+      const std::string escapedProfile = "C:\\Users\\review user\\AppData\\Local\\TELIPHONES\\SecureBrowser\\aabbcc";
+      const LaunchPlan edgeLaunch = SecureEdgeLaunch(escapedEdge, target, escapedProfile);
+      const std::string expectedRules = "--host-resolver-rules=MAP pbx.example.test 100.70.1.1, MAP * ~NOTFOUND";
+      check(edgeLaunch.program == escapedEdge && edgeLaunch.commandLine.find("\"" + escapedEdge + "\"") != std::string::npos &&
+                edgeLaunch.commandLine.find("\"--user-data-dir=" + escapedProfile + "\"") != std::string::npos &&
+                edgeLaunch.commandLine.find("\"" + expectedRules + "\"") != std::string::npos &&
+                edgeLaunch.commandLine.find("https://pbx.example.test:8443/admin/") != std::string::npos,
+            "secure Edge command safely quotes executable, profile, resolver rules and target URL");
+      check(edgeLaunch.commandLine.find("MAP pbx.example.test 100.70.1.1") != std::string::npos &&
+                edgeLaunch.commandLine.find("MAP * ~NOTFOUND") != std::string::npos &&
+                edgeLaunch.commandLine.find("--no-proxy-server") != std::string::npos &&
+                edgeLaunch.commandLine.find("--no-first-run") != std::string::npos &&
+                edgeLaunch.commandLine.find("--inprivate") != std::string::npos &&
+                edgeLaunch.commandLine.find("ignore-certificate") == std::string::npos,
+            "secure Edge launch maps only the configured hostname and preserves resolver, proxy and TLS restrictions");
+      check(throws([&] { SecureEdgeLaunch("C:\\Program Files\\Other\\browser.exe", target, escapedProfile); }) &&
+                throws([&] { SecureEdgeLaunch(escapedEdge, target, "relative\\profile"); }) &&
+                throws([&] { SecureEdgeLaunch(escapedEdge, target, "C:\\bad\\profile\" --proxy-server=evil"); }),
+            "secure Edge launch rejects non-Edge executable and unsafe profile paths");
+      SecureManagementTarget modifiedHost = target;
+      modifiedHost.hostname = "evil.example.test";
+      SecureManagementTarget modifiedAddress = target;
+      modifiedAddress.tunnelAddress = "100.70.1.2";
+      SecureManagementTarget modifiedUrl = target;
+      modifiedUrl.url = "https://evil.example.test/admin/";
+      SecureManagementTarget modifiedRules = target;
+      modifiedRules.resolverRules += ", MAP * 8.8.8.8";
+      check(throws([&] { SecureEdgeLaunch(escapedEdge, modifiedHost, escapedProfile); }) &&
+                throws([&] { SecureEdgeLaunch(escapedEdge, modifiedAddress, escapedProfile); }) &&
+                throws([&] { SecureEdgeLaunch(escapedEdge, modifiedUrl, escapedProfile); }) &&
+                throws([&] { SecureEdgeLaunch(escapedEdge, modifiedRules, escapedProfile); }),
+            "secure Edge launch refuses modified or inconsistent hostname, IP, URL and resolver targets");
+
+      for (const char* invalid : {"https://evil.example/", "https://100.70.1.2:8443/admin/",
+                                                "https://100.70.1.1:8443/admin/?x", "https://user@100.70.1.1/admin/"}) {
+            check(throws([&] { ParsePairResponse(response({{"gui_url", invalid}}), kNonce, kWorkstationKey); }),
+                    "invalid paired primary management URL is rejected");
+      }
+}
+
+void testRemoteSupportManagementUrlRemainsIndependent() {
+      const Profile support = supportProfile();
+      const std::string url = FreePbxUrl(support, "s-1");
+      check(url == "http://10.20.4.2/admin/" &&
+                    BrowserLaunch(kWindowsDefaultBrowser, "", url).target == url,
+              "Remote Support retains its separate HTTP management URL policy");
 }
 
 void testWorkstationHeartbeatSshUpdates() {
@@ -604,6 +701,8 @@ void testConnectionHealth() {
             }
             check(layout.viewport.bottom() <= layout.actions[0].y,
                   "scroll viewport cannot obscure fixed connection controls");
+            check(layout.actions.size() == 7 && layout.actions[5].bottom() <= layout.disclaimer.y,
+                  "profile-independent recovery action fits the fixed footer");
         }
     }
     const auto normal = ArrangeDesktop(1034, 580);
@@ -1426,10 +1525,22 @@ void testTunnelLifecycle() {
     check(lc::DecodeHelperResult(lc::EncodeHelperResult(rejectedRemoval), decoded) &&
               decoded.residual == lc::Residual::AdapterRemovalFailed && decoded.error == 995,
           "an identity-verified adapter removal failure preserves its native error");
-    check(contains(rejectedRemovalMessage, "Configuration Manager refused removal") &&
+      check(contains(rejectedRemovalMessage, "Configuration Manager") &&
               contains(rejectedRemovalMessage, "Windows error 995") &&
               contains(rejectedRemovalMessage, "identity-verified TELIPHONES adapter"),
           "adapter removal failure identifies the operation and owned device rather than misreporting a timeout");
+
+      lc::HelperResult identityMismatch;
+      identityMismatch.stage = lc::Stage::RemoveFailed;
+      identityMismatch.error = 1168;
+      identityMismatch.cleanupIncomplete = true;
+      identityMismatch.residual = lc::Residual::AdapterRemovalIdentityMismatch;
+      const auto mismatchMessage = lc::HelperMessage(lc::EncodeHelperResult(identityMismatch));
+      check(lc::DecodeHelperResult(lc::EncodeHelperResult(identityMismatch), decoded) && decoded.error == 1168 &&
+                    decoded.residual == lc::Residual::AdapterRemovalIdentityMismatch &&
+                    contains(mismatchMessage, "exact recorded PnP instance") && contains(mismatchMessage, "IP Helper still reports") &&
+                    !contains(mismatchMessage, "Configuration Manager refused removal"),
+              "1168 plus a surviving alias is reported as an identity mismatch, never as confirmed adapter removal");
 
     // A disconnected tunnel can leave a non-present interface row with its alias; that row carries no traffic.
     const std::string tunnel = "TELIPHONES-1df533523b61";
@@ -1451,6 +1562,28 @@ void testTunnelLifecycle() {
           "other WireGuard adapters and near-miss names are ignored");
     check(lc::ClassifyTunnelAdapter(false, {}, tunnel) == lc::AdapterPresence::Unverified,
           "a failed interface enumeration never counts as released");
+      using D = lc::RecordedDeviceState;
+      check(lc::ReconcileAdapterPresence(lc::AdapterPresence::Active, D::Missing) == lc::AdapterPresence::Active &&
+                    lc::ReconcileAdapterPresence(lc::AdapterPresence::Absent, D::Present) == lc::AdapterPresence::Active,
+              "either independent positive adapter observation prevents false absence");
+      check(lc::ReconcileAdapterPresence(lc::AdapterPresence::Absent, D::Missing) == lc::AdapterPresence::Absent &&
+                    lc::ReconcileAdapterPresence(lc::AdapterPresence::Absent, D::NonPresent) == lc::AdapterPresence::Active &&
+                    lc::ReconcileAdapterPresence(lc::AdapterPresence::Unverified, D::Missing) == lc::AdapterPresence::Unverified &&
+                    lc::ReconcileAdapterPresence(lc::AdapterPresence::Absent, D::Unknown) == lc::AdapterPresence::Unverified,
+              "registered non-present devnodes remain distinct from missing and unknown devices");
+      check(lc::MayClearOwnershipRecord(true, true, lc::AdapterPresence::Absent, D::Missing) &&
+                    !lc::MayClearOwnershipRecord(false, true, lc::AdapterPresence::Absent, D::Missing) &&
+                    !lc::MayClearOwnershipRecord(true, false, lc::AdapterPresence::Absent, D::Missing) &&
+                    !lc::MayClearOwnershipRecord(true, true, lc::AdapterPresence::Active, D::Missing) &&
+                    !lc::MayClearOwnershipRecord(true, true, lc::AdapterPresence::Absent, D::Unknown) &&
+                    !lc::MayClearOwnershipRecord(true, true, lc::AdapterPresence::Absent, D::NonPresent),
+              "stale journal removal requires valid ownership plus service, interface and exact-PnP absence");
+      check(lc::MayClearActiveRecovery(true, true, true, true, lc::AdapterPresence::Absent, D::Missing) &&
+                    !lc::MayClearActiveRecovery(true, false, false, true, lc::AdapterPresence::Absent, D::Missing) &&
+                    !lc::MayClearActiveRecovery(true, true, true, false, lc::AdapterPresence::Absent, D::Missing) &&
+                    !lc::MayClearActiveRecovery(true, true, true, true, lc::AdapterPresence::Unverified, D::Missing) &&
+                    !lc::MayClearActiveRecovery(true, true, true, true, lc::AdapterPresence::Absent, D::Unknown),
+              "active recovery context cannot clear without exact authoritative absence evidence");
 
     struct FakeWindows {
         std::vector<lc::AdapterPresence> observations;
@@ -1506,7 +1639,7 @@ void testTunnelLifecycle() {
               contains(unverifiedMessage, "Cleanup is incomplete") && contains(unverifiedMessage, "Other WireGuard tunnels were not changed") &&
               !contains(unverifiedMessage, "an active network adapter"),
           "an unverified adapter is reported, not treated as success");
-    check(!lc::DecodeHelperResult(lc::EncodeHelperResult(lc::HelperResult{lc::Stage::RemoveFailed}) | (9u << 12), decoded),
+      check(!lc::DecodeHelperResult(lc::EncodeHelperResult(lc::HelperResult{lc::Stage::RemoveFailed}) | (15u << 12), decoded),
           "unknown residual kinds are rejected");
 
     check(contains(lc::HelperMessage(lc::EncodeHelperResult(lc::HelperResult{lc::Stage::Busy})), "still in progress"),
@@ -1946,12 +2079,14 @@ int main() {
     for (unsigned part : versionParts) check(part <= 65535, "Windows version component fits the resource WORD");
     check(TELIPHONES_VERSION_FILE_STRING == versionBase + "." + std::to_string(versionParts[3]), "file version expands consistently");
     check(TELIPHONES_VERSION_STRING == versionBase, "product version expands without a development suffix");
-    check(std::string(TELIPHONES_VERSION_STRING) == "0.9.0", "Windows application version is independent of the module");
-    check(std::string(TELIPHONES_VERSION_FILE_STRING) == "0.9.0.0", "Windows file version is 0.9.0.0");
+      check(std::string(TELIPHONES_VERSION_STRING) == "0.10.0", "Windows application version is independent of the module");
+      check(std::string(TELIPHONES_VERSION_FILE_STRING) == "0.10.0.0", "Windows file version is 0.10.0.0");
     testEncoding();
     testJson();
     testValidation();
     testPairing();
+      testPairedPrimaryManagementUrls();
+      testRemoteSupportManagementUrlRemainsIndependent();
     testWorkstationHeartbeatSshUpdates();
     testTunnels();
     testTunnelLifecycle();

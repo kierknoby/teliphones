@@ -15,6 +15,7 @@ set(TELIPHONES_CORE_SOURCES
     src/core/Pairing.cpp
     src/core/Profiles.cpp
     src/core/SessionDiagnostics.cpp
+    src/core/SecureBrowser.cpp
     src/core/TunnelConfig.cpp
     src/core/TunnelLifecycle.cpp
     src/core/Validation.cpp
