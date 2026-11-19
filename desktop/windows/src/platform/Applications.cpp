@@ -1,3 +1,6 @@
+#include <winsock2.h>
+#include <ws2tcpip.h>
+
 #include "Applications.h"
 #include "Win.h"
 #include "Ssh.h"
