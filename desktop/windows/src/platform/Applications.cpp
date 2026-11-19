@@ -8,6 +8,7 @@
 
 #include <shellapi.h>
 #include <iphlpapi.h>
+#include <netioapi.h>
 #include <objbase.h>
 
 #include <cctype>

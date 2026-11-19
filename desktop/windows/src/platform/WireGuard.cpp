@@ -466,16 +466,16 @@ AdapterReadback readAdapterState(const std::string& tunnelName) {
     }
     DEVINST device = 0;
     std::wstring instance = Widen(record->pnpInstanceId);
-    const CONFIGRET located = CM_Locate_DevNodeW(&device, instance.data(), CM_LOCATE_DEVNODE_PHANTOM);
-    if (located == CR_SUCCESS) {
-        ULONG status = 0, problem = 0;
-        const CONFIGRET queried = CM_Get_DevNode_Status(&status, &problem, device, 0);
-        if (queried == CR_SUCCESS) {
-            result.pnpState = (status & DN_PRESENT) != 0 ? lifecycle::RecordedDeviceState::Present
-                                                         : lifecycle::RecordedDeviceState::NonPresent;
+    const CONFIGRET present = CM_Locate_DevNodeW(&device, instance.data(), CM_LOCATE_DEVNODE_NORMAL);
+    if (present == CR_SUCCESS) {
+        result.pnpState = lifecycle::RecordedDeviceState::Present;
+    } else if (present == CR_NO_SUCH_DEVNODE) {
+        const CONFIGRET registered = CM_Locate_DevNodeW(&device, instance.data(), CM_LOCATE_DEVNODE_PHANTOM);
+        if (registered == CR_SUCCESS) {
+            result.pnpState = lifecycle::RecordedDeviceState::NonPresent;
+        } else if (registered == CR_NO_SUCH_DEVNODE) {
+            result.pnpState = lifecycle::RecordedDeviceState::Missing;
         }
-    } else if (located == CR_NO_SUCH_DEVNODE) {
-        result.pnpState = lifecycle::RecordedDeviceState::Missing;
     }
     result.combined = lifecycle::ReconcileAdapterPresence(result.interfacePresence, result.pnpState);
     return result;
