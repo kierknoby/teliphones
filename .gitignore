@@ -55,6 +55,7 @@ __pycache__/
 # Restored native dependencies
 desktop/windows/vcpkg_installed/
 desktop/windows/dependencies/
+desktop/windows/build/
 
 # Generated release/test artifacts belong in the external TELIPHONES archive,
 # never at the repository root. Keep this root-scoped so packaged fixtures in

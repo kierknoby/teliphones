@@ -616,6 +616,26 @@ class BuildLayoutTests(unittest.TestCase):
         self.assertIn("DrawFocusRect", draw)
         self.assertNotIn("⚠", resource)
 
+    def test_pair_dialog_mfc_handlers_and_geometry_types_are_native_compatible(self):
+        header = (ROOT / "src/app/PairDlg.h").read_text()
+        source = (ROOT / "src/app/PairDlg.cpp").read_text()
+        self.assertIn("afx_msg BOOL OnMouseWheel(UINT flags, short delta, CPoint point);", header)
+        self.assertNotIn("OnMouseWheel(UINT flags, short delta, CPoint point) override", header)
+        self.assertIn("ON_WM_MOUSEWHEEL()", source)
+        self.assertIn("static_cast<int>(rect.top)", source)
+        self.assertIn("static_cast<int>(rect.bottom)", source)
+        self.assertIn("static_cast<int>(std::min(window.Width(), work.Width()))", source)
+        self.assertIn("static_cast<int>(std::min(window.Height(), work.Height()))", source)
+        self.assertIn("static_cast<int>(std::clamp(window.left, work.left, work.right - width))", source)
+        self.assertIn("static_cast<int>(std::clamp(window.top, work.top, work.bottom - height))", source)
+
+    def test_ssh_runtime_cleanup_uses_canonical_diagnostic_redaction(self):
+        ssh = (ROOT / "src/platform/Ssh.cpp").read_text()
+        diagnostics = (ROOT / "src/core/SessionDiagnostics.h").read_text()
+        self.assertIn('#include "../core/SessionDiagnostics.h"', ssh)
+        self.assertIn("std::string SanitizeDiagnosticDetail(const std::string& detail);", diagnostics)
+        self.assertIn("SanitizeDiagnosticDetail(error.what())", ssh)
+
     def test_ssh_runtime_cleanup_cannot_block_startup_and_exit_tears_down_everything(self):
         main = (ROOT / "src/app/MainDlg.cpp").read_text()
         startup = main.split("profiles_ = tlp::win::LoadProfiles();", 1)[1].split("RefreshList();", 1)

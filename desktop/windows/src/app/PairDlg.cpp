@@ -124,10 +124,10 @@ BOOL CPairDlg::OnInitDialog() {
         ScreenToClient(&rect);
         if (id == IDOK || id == IDCANCEL) {
             footerControls_.push_back({child, rect});
-            footerTop_ = std::min(footerTop_, rect.top);
+            footerTop_ = std::min(footerTop_, static_cast<int>(rect.top));
         } else {
             contentControls_.push_back({child, rect});
-            contentExtent_ = std::max(contentExtent_, rect.bottom);
+            contentExtent_ = std::max(contentExtent_, static_cast<int>(rect.bottom));
         }
     }
     // Cap the initial outer window size to the nearest monitor's work area.
@@ -137,10 +137,10 @@ BOOL CPairDlg::OnInitDialog() {
         const CRect work(monitor.rcWork);
         CRect window;
         GetWindowRect(&window);
-        const int width = std::min(window.Width(), work.Width());
-        const int height = std::min(window.Height(), work.Height());
-        const int x = std::clamp(window.left, work.left, work.right - width);
-        const int y = std::clamp(window.top, work.top, work.bottom - height);
+        const int width = static_cast<int>(std::min(window.Width(), work.Width()));
+        const int height = static_cast<int>(std::min(window.Height(), work.Height()));
+        const int x = static_cast<int>(std::clamp(window.left, work.left, work.right - width));
+        const int y = static_cast<int>(std::clamp(window.top, work.top, work.bottom - height));
         if (width != window.Width() || height != window.Height() || x != window.left || y != window.top)
             SetWindowPos(nullptr, x, y, width, height, SWP_NOZORDER | SWP_NOACTIVATE);
     }

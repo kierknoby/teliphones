@@ -27,7 +27,7 @@ protected:
     afx_msg void OnSize(UINT nType, int cx, int cy);
     afx_msg void OnVScroll(UINT code, UINT position, CScrollBar* scrollbar);
     afx_msg void OnSetFocus(CWnd* oldWindow);
-    BOOL OnMouseWheel(UINT flags, short delta, CPoint point) override;
+    afx_msg BOOL OnMouseWheel(UINT flags, short delta, CPoint point);
     DECLARE_MESSAGE_MAP()
 
 private:

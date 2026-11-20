@@ -1,6 +1,7 @@
 #include "Ssh.h"
 #include "Win.h"
 #include "../core/SshRuntime.h"
+#include "../core/SessionDiagnostics.h"
 #include "../core/Validation.h"
 
 #include <filesystem>
