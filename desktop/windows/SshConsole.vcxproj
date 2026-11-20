@@ -32,7 +32,7 @@
     <ClCompile Include="src\platform\SshSession.cpp" />
     <ClCompile Include="src\platform\SshAgent.cpp" />
     <ClCompile Include="src\platform\Ssh.cpp" />
-    <ClCompile Include="src\platform\Applications.cpp" />
+    <ClCompile Include="src\platform\Applications.cpp"><PreprocessorDefinitions>TELIPHONES_SSH_ONLY_BUILD;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
     <ClCompile Include="src\platform\Services.cpp" />
     <ClCompile Include="src\platform\Win.cpp" />
   </ItemGroup>

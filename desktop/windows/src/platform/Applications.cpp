@@ -1,17 +1,23 @@
+#if !defined(TELIPHONES_SSH_ONLY_BUILD)
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#endif
 
 #include "Applications.h"
 #include "Win.h"
 #include "Ssh.h"
 #include "Services.h"
+#if !defined(TELIPHONES_SSH_ONLY_BUILD)
 #include "WireGuard.h"
-#include "../core/Encoding.h"
 #include "../core/SecureBrowser.h"
+#endif
+#include "../core/Encoding.h"
 
 #include <shellapi.h>
+#if !defined(TELIPHONES_SSH_ONLY_BUILD)
 #include <iphlpapi.h>
 #include <netioapi.h>
+#endif
 #include <objbase.h>
 
 #include <cctype>
@@ -19,10 +25,12 @@
 #include <cwchar>
 #include <iterator>
 #include <map>
+#include <vector>
+#if !defined(TELIPHONES_SSH_ONLY_BUILD)
 #include <memory>
 #include <mutex>
 #include <set>
-#include <vector>
+#endif
 
 #include "../core/Validation.h"
 
@@ -30,6 +38,7 @@ namespace tlp {
 namespace win {
 namespace {
 
+#if !defined(TELIPHONES_SSH_ONLY_BUILD)
 struct SecureBrowserSession {
     std::string profileId;
     std::wstring tunnelName;
@@ -48,6 +57,7 @@ struct SecureBrowserSession {
 std::mutex secureBrowserMutex;
 std::vector<std::unique_ptr<SecureBrowserSession>> secureBrowserSessions;
 std::set<std::string> disconnectedSecureBrowserProfiles;
+#endif
 
 std::wstring preferencesFile() { return EnsureDirectory(KnownFolder(FOLDERID_LocalAppData) + L"\\TELIPHONES") + L"\\preferences.json"; }
 
@@ -135,6 +145,7 @@ std::string systemDirectory() {
     return Narrow(system);
 }
 
+#if !defined(TELIPHONES_SSH_ONLY_BUILD)
 class ProcessHandle {
 public:
     explicit ProcessHandle(HANDLE value) : value_(value) {}
@@ -145,7 +156,9 @@ public:
 private:
     HANDLE value_;
 };
+#endif
 
+#if !defined(TELIPHONES_SSH_ONLY_BUILD)
 bool isSecureProfileLeaf(const std::wstring& leaf) {
     if (leaf.size() != 32) return false;
     for (wchar_t c : leaf) {
@@ -453,6 +466,7 @@ void launchSecureEdge(const std::string& profileId, const std::string& tunnelNam
     }
     if (resumeError != ERROR_SUCCESS) ThrowLastError("Unable to start the isolated Edge process", resumeError);
 }
+#endif
 
 std::string knownFolder(const KNOWNFOLDERID& id) {
     try {
@@ -548,6 +562,10 @@ std::string OpenSshClient() {
 
 void OpenFreePbx(const Profile& profile, const std::string& sessionId, const Preferences& preferences) {
     const std::string pairedUrl = FreePbxUrl(profile, sessionId);
+#if defined(TELIPHONES_SSH_ONLY_BUILD)
+    if (profile.kind == ProfileKind::Administrator)
+        throw Error("Administrator FreePBX browsing is available only in the full TELIPHONES application.");
+#else
     if (profile.kind == ProfileKind::Administrator && pairedUrl.rfind("https://", 0) == 0) {
         SecureManagementTarget target = BuildSecureManagementTarget(pairedUrl, profile.pairing.pbxAddress,
                                                                     profile.managementTlsHostname);
@@ -579,6 +597,7 @@ void OpenFreePbx(const Profile& profile, const std::string& sessionId, const Pre
         }
         return;
     }
+#endif
     if (profile.kind == ProfileKind::Administrator)
         throw Error("The paired primary management service is HTTP. TELIPHONES will not launch it in an ordinary browser or silently change PBX service order. Ask the PBX administrator to explicitly approve HTTPS as the primary service, then explicitly pair again.");
     std::string url = pairedUrl;
@@ -586,6 +605,7 @@ void OpenFreePbx(const Profile& profile, const std::string& sessionId, const Pre
     launch(BrowserLaunch(preferences.browser, executable, url), AppKind::Browser, preferences.browser);
 }
 
+#if !defined(TELIPHONES_SSH_ONLY_BUILD)
 void CloseSecureBrowserSessions(const std::string& profileId) {
     std::lock_guard<std::mutex> lock(secureBrowserMutex);
     disconnectedSecureBrowserProfiles.insert(profileId);
@@ -611,6 +631,7 @@ void CloseAllSecureBrowserSessions() {
         }
     }
 }
+#endif
 
 void OpenSsh(const Profile& profile, const std::string& sessionId, const Preferences& preferences) {
     if (profile.kind == ProfileKind::Administrator) {
