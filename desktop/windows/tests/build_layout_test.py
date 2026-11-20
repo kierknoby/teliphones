@@ -616,6 +616,26 @@ class BuildLayoutTests(unittest.TestCase):
         self.assertIn("DrawFocusRect", draw)
         self.assertNotIn("⚠", resource)
 
+    def test_recovery_button_text_extent_and_layout_use_native_types(self):
+        main = (ROOT / "src/app/MainDlg.cpp").read_text()
+        draw = main.split("void CMainDlg::OnDrawItem", 1)[1].split("if (controlId != IDC_HEALTH_INLINE_GRAPH", 1)[0]
+        self.assertIn("dc.GetTextExtent(label.GetString(), label.GetLength())", draw)
+        self.assertIn("const int labelWidth = static_cast<int>(labelSize.cx);", draw)
+        self.assertIn("const int labelHeight = static_cast<int>(labelSize.cy);", draw)
+        self.assertIn("std::max(labelHeight, iconSize)", draw)
+        self.assertIn("const int top = static_cast<int>(item->rcItem.top", draw)
+
+    def test_recovery_worker_uses_owned_saved_tunnel_snapshot(self):
+        main = (ROOT / "src/app/MainDlg.cpp").read_text()
+        recovery = main.split("void CMainDlg::OnRecover()", 1)[1].split("void CMainDlg::OnSelectionChanged", 1)[0]
+        worker = recovery.split("RunInBackground(m_hWnd, OperationKind::Recovery", 1)[1]
+        capture = worker.split("(OperationResult& result)", 1)[0]
+        body = worker.split("(OperationResult& result)", 1)[1]
+        self.assertIn("[toProcess, recoveringActive, activeProfile, activeAddress, savedTunnels]", capture)
+        self.assertNotIn("this", capture)
+        self.assertIn("ResidualTeliphonesTunnels(savedTunnels)", body)
+        self.assertNotIn("profiles_", body)
+
     def test_pair_dialog_mfc_handlers_and_geometry_types_are_native_compatible(self):
         header = (ROOT / "src/app/PairDlg.h").read_text()
         source = (ROOT / "src/app/PairDlg.cpp").read_text()

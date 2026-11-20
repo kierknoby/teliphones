@@ -430,19 +430,21 @@ void CMainDlg::OnDrawItem(int controlId, LPDRAWITEMSTRUCT item) {
         CFont* font = GetDlgItem(IDC_RECOVER)->GetFont();
         CFont* previousFont = font ? dc.SelectObject(font) : nullptr;
         const CString label = L"Recover";
-        CSize labelSize;
-        dc.GetTextExtent(label, labelSize);
+        const CSize labelSize = dc.GetTextExtent(label.GetString(), label.GetLength());
         const int gap = MulDiv(4, static_cast<int>(dpi), 96);
         const int iconWidth = warning ? iconSize : 0;
-        const int totalWidth = labelSize.cx + (iconWidth ? gap + iconWidth : 0);
-        const int left = item->rcItem.left + (item->rcItem.right - item->rcItem.left - totalWidth) / 2;
-        const int top = item->rcItem.top + (item->rcItem.bottom - item->rcItem.top - std::max(labelSize.cy, iconSize)) / 2;
+        const int labelWidth = static_cast<int>(labelSize.cx);
+        const int labelHeight = static_cast<int>(labelSize.cy);
+        const int totalWidth = labelWidth + (iconWidth ? gap + iconWidth : 0);
+        const int left = static_cast<int>(item->rcItem.left + (item->rcItem.right - item->rcItem.left - totalWidth) / 2);
+        const int contentHeight = std::max(labelHeight, iconSize);
+        const int top = static_cast<int>(item->rcItem.top + (item->rcItem.bottom - item->rcItem.top - contentHeight) / 2);
         dc.SetBkMode(TRANSPARENT);
         dc.SetTextColor(GetSysColor(disabled ? COLOR_GRAYTEXT : COLOR_BTNTEXT));
-        CRect text(left, item->rcItem.top, left + labelSize.cx, item->rcItem.bottom);
+        CRect text(left, item->rcItem.top, left + labelWidth, item->rcItem.bottom);
         if (pressed) text.OffsetRect(1, 1);
         dc.DrawText(label, text, DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_NOPREFIX);
-        if (warning) DrawIconEx(dc.GetSafeHdc(), left + labelSize.cx + gap, top, warning, iconSize, iconSize, 0, nullptr, DI_NORMAL);
+        if (warning) DrawIconEx(dc.GetSafeHdc(), left + labelWidth + gap, top, warning, iconSize, iconSize, 0, nullptr, DI_NORMAL);
         if ((item->itemState & ODS_FOCUS) != 0) {
             CRect focus(item->rcItem);
             focus.DeflateRect(3, 3);
@@ -810,12 +812,12 @@ void CMainDlg::OnRecover() {
         SetState(connectionState_, "Disconnect the currently active TELIPHONES session before recovery.");
         return;
     }
+    std::vector<std::string> savedTunnels;
+    for (const auto& profile : profiles_) savedTunnels.push_back(tlp::TunnelNameFor(profile));
     std::vector<std::string> candidates;
     try {
         // Protected local ownership records remain authoritative after revocation or profile removal.
         // This scan is read-only and never discovers generic WireGuard VPNs.
-        std::vector<std::string> savedTunnels;
-        for (const auto& profile : profiles_) savedTunnels.push_back(tlp::TunnelNameFor(profile));
         candidates = tlp::win::ResidualTeliphonesTunnels(savedTunnels);
     } catch (const std::exception& error) {
         LogEvent("recovery_reconcile", "error", std::string("Read-only TELIPHONES recovery scan failed: ") +
@@ -850,7 +852,7 @@ void CMainDlg::OnRecover() {
         ? std::optional<Profile>(*FindProfile(active_->profileId)) : std::nullopt;
     const std::string activeAddress = recoveringActive ? active_->pbxAddress : std::string();
     RunInBackground(m_hWnd, OperationKind::Recovery, "Manual full-runtime recovery",
-                    [toProcess, recoveringActive, activeProfile, activeAddress](OperationResult& result) {
+                    [toProcess, recoveringActive, activeProfile, activeAddress, savedTunnels](OperationResult& result) {
         try {
             if (!tlp::win::RecoverSecureBrowserSessions())
                 result.error += "One or more TELIPHONES Edge sessions or marked browser profiles could not be closed and removed; ";
@@ -888,8 +890,6 @@ void CMainDlg::OnRecover() {
         // RemoveTunnel waits for the elevated helper, which independently waits for service deletion and adapter release.
         // This second inventory is a fresh read-only Windows service/interface scan; it is not inferred from error 1168.
         try {
-            std::vector<std::string> savedTunnels;
-            for (const auto& profile : profiles_) savedTunnels.push_back(tlp::TunnelNameFor(profile));
             const auto remaining = tlp::win::ResidualTeliphonesTunnels(savedTunnels);
             if (!remaining.empty()) {
                 result.error += "Windows still reports TELIPHONES-owned or unverified tunnel state: ";
