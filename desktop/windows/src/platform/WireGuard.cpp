@@ -481,17 +481,6 @@ AdapterReadback readAdapterState(const std::string& tunnelName) {
     return result;
 }
 
-bool TunnelRemovalVerified(const std::string& tunnelName) {
-    if (!lifecycle::IsTeliphonesTunnelName(tunnelName)) return false;
-    const auto record = readOwnership(tunnelName);
-    if (!record || !record->complete) return false;
-    const auto service = tunnel_startup::ReadStatus(serviceName(tunnelName));
-    if (!tunnel_startup::Absent(service)) return false;
-    const auto readback = readAdapterState(tunnelName);
-    return lifecycle::MayClearActiveRecovery(true, true, true, true, readback.interfacePresence,
-                                              readback.pnpState);
-}
-
 lifecycle::AdapterPresence awaitAdapterRelease(const std::string& tunnelName) {
     const auto probe = [&] { return readAdapterState(tunnelName).combined; };
     return lifecycle::AwaitAdapterRelease(probe, [] { return GetTickCount64(); },
@@ -1046,6 +1035,17 @@ void RemoveTunnel(const std::string& tunnelName) {
     DWORD code = runElevated(HelperArguments(HelperCommand{HelperCommand::Verb::TunnelDown, tunnelName, "", "", ""}));
     if (code == ERROR_CANCELLED) throw Error("The tunnel may still be connected because administrative approval was declined. Disconnect again, or approve recovery at the next launch.");
     if (code != kHelperOk) throw Error(lifecycle::HelperMessage(code));
+}
+
+bool TunnelRemovalVerified(const std::string& tunnelName) {
+    if (!lifecycle::IsTeliphonesTunnelName(tunnelName)) return false;
+    const auto record = readOwnership(tunnelName);
+    if (!record || !record->complete) return false;
+    const auto service = tunnel_startup::ReadStatus(serviceName(tunnelName));
+    if (!tunnel_startup::Absent(service)) return false;
+    const auto readback = readAdapterState(tunnelName);
+    return lifecycle::MayClearActiveRecovery(true, true, true, true, readback.interfacePresence,
+                                              readback.pnpState);
 }
 
 lifecycle::AdapterPresence TunnelAdapterPresence(const std::string& tunnelName) {
