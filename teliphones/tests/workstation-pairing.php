@@ -11,8 +11,9 @@ $recorder = new class extends WebSupport {
     public array $reply = ['ok' => true, 'message' => 'paired', 'pairing_response' => 'TELIPHONES-PAIR-RESPONSE-1:eyJzY2hlbWEiOiJ0ZWxpcGhvbmVzIn0'];
     public function request(array $request): array
     {
-        if ($request['action'] === 'status') return ['ok' => true, 'status' => ['protocol' => 12, 'component_version' => '0.8.3.15', 'phase' => 'Ready',
-            'workstations' => ['ready' => true, 'requirements' => ['wg' => true, 'ip' => true, 'nft' => true], 'items' => []]]];
+        if ($request['action'] === 'status') return ['ok' => true, 'status' => ['protocol' => 12, 'component_version' => '0.9.0.0', 'phase' => 'Ready',
+            'workstations' => ['ready' => true, 'requirements' => ['wg' => true, 'ip' => true, 'nft' => true], 'items' => [],
+                'management_hostname' => 'pbx.example.net']]];
         $this->sent[] = $request;
         return $this->reply;
     }
@@ -26,6 +27,24 @@ $post = ['token' => 'known', 'action' => 'pair', 'request' => 'TELIPHONES-PAIR-R
 $result = WebSupport::handleAction($recorder, $post, 'known', $operational, $https);
 $assert($result['dispatched'] && $recorder->sent === [['action' => 'pair', 'request' => 'TELIPHONES-PAIR-REQUEST-1:abc', 'endpoint_host' => 'pbx.example.net',
     'listen_port' => '51821', 'mode' => 'temporary', 'minutes' => '60', 'ssh' => '0']], 'Pairing must forward exactly its own allowlisted fields.');
+$hostnamePost = $post + ['management_hostname' => 'pbx.example.net'];
+$recorder->sent = [];
+$result = WebSupport::handleAction($recorder, $hostnamePost, 'known', $operational, $https);
+$assert($result['dispatched'] && ($recorder->sent[0]['management_hostname'] ?? null) === 'pbx.example.net',
+    'The administrator-confirmed HTTPS hostname must be forwarded with pairing configuration.');
+$recorder->sent = [];
+$blankHostname = WebSupport::handleAction($recorder, ['management_hostname' => ''] + $post, 'known', $operational, $https);
+$assert($blankHostname['dispatched'] && !array_key_exists('management_hostname', $recorder->sent[0]),
+    'Blank hostname must preserve a previously configured broker value.');
+$recorder->sent = [];
+$result = WebSupport::handleAction($recorder, ['web' => 'http:80', 'management_hostname' => 'pbx.example.net'] + $post,
+    'known', $operational, $https);
+$assert(!$result['dispatched'] && $recorder->sent === [], 'An HTTPS hostname cannot be saved when HTTP is the primary management service.');
+foreach (['https://pbx.example.net/', 'pbx.example.net:443', '127.0.0.1', 'bad host'] as $invalidHostname) {
+    $recorder->sent = [];
+    $result = WebSupport::handleAction($recorder, ['management_hostname' => $invalidHostname] + $post, 'known', $operational, $https);
+    $assert(!$result['dispatched'] && $recorder->sent === [], 'Invalid certificate hostnames must fail before broker dispatch.');
+}
 $assert($result['notice']['pairing_response'] === $recorder->reply['pairing_response'], 'Pairing response must reach the page.');
 $olderBroker = $operational;
 $olderBroker['status']['protocol'] = 12;
@@ -49,7 +68,7 @@ $assert($lockedResult['dispatched'] && $recorder->sent[0]['sources'] === '198.51
 
 $modern = $operational;
 $modern['status']['protocol'] = 12;
-$modern['status']['component_version'] = '0.8.3.15';
+$modern['status']['component_version'] = '0.9.0.0';
 $modern['status']['workstations']['ssh_ready'] = true;
 $webBroker = $modern;
 $recorder->sent = [];
@@ -102,7 +121,7 @@ $assert($result['dispatched'], 'Missing SSH prerequisites must not disable web-o
 $result = WebSupport::handleAction($recorder, ['ssh' => '1'] + $post, 'known', $modern, $https);
 $assert(!$result['dispatched'] && strpos($result['notice']['error'], 'did not include SSH capability') !== false,
     'A version-1 web-only request must never receive SSH permission.');
-$policyStatus = ['ok' => true, 'status' => ['protocol' => 12, 'component_version' => '0.8.3.15', 'workstations' => [
+$policyStatus = ['ok' => true, 'status' => ['protocol' => 12, 'component_version' => '0.9.0.0', 'workstations' => [
     'ready' => true, 'items' => [], 'requirements' => ['wg' => true, 'ip' => true, 'nft' => true],
     'connection_state' => 'closed']]];
 $assert(WebSupport::supportsWorkstationPolicy($policyStatus), 'Protocol 8 must expose connection-state controls.');
@@ -111,7 +130,7 @@ $recorder->sent = [];
 $result = WebSupport::handleAction($recorder, $policyPost, 'known', $policyStatus, $https);
 $assert($result['dispatched'] && $recorder->sent[0] === ['action' => 'workstation-policy', 'state' => 'frozen'],
     'Connection-state changes must forward only the selected state.');
-$sessionStatus = ['ok' => true, 'status' => ['protocol' => 12, 'component_version' => '0.8.3.15', 'workstations' => [
+$sessionStatus = ['ok' => true, 'status' => ['protocol' => 12, 'component_version' => '0.9.0.0', 'workstations' => [
     'ready' => true, 'items' => [], 'requirements' => ['wg' => true, 'ip' => true, 'nft' => true],
     'max_sessions' => 1, 'connected_workstations' => 1]]];
 $assert(WebSupport::supportsWorkstationSessions($sessionStatus), 'Protocol 11 must report enforced workstation session capacity.');
@@ -152,9 +171,14 @@ $result = WebSupport::handleAction($recorder, $limitPost, 'known', $oldSessionSt
 $assert(!$result['dispatched'] && $recorder->sent === [],
     'A broker without enforced session admission must not receive session-limit settings.');
 $assert(WebSupport::pairingRequestSupportsSsh($managedPost['request']), 'A version-2 request with an SSH key must expose SSH approval.');
+$managedV3 = $managedPost;
+$managedV3['request'] = 'TELIPHONES-PAIR-REQUEST-3:' . rtrim(strtr(base64_encode(str_replace('teliphones-pair-request/2', 'teliphones-pair-request/3', $sshRequestPayload)), '+/', '-_'), '=');
+$assert(WebSupport::pairingRequestSupportsSsh($managedV3['request']), 'A version-3 request with an SSH key must expose SSH approval.');
 $assert(!WebSupport::pairingRequestSupportsSsh($post['request']), 'A version-1 request must not expose SSH approval.');
 $recorder->sent = [];
 $assert(WebSupport::validPairingResponse('TELIPHONES-PAIR-RESPONSE-2:' . str_repeat('a', 200)), 'Version-2 pairing responses must survive the browser allowlist.');
+$assert(WebSupport::validPairingResponse('TELIPHONES-PAIR-RESPONSE-3:' . str_repeat('a', 200)), 'Version-3 pairing responses must survive the browser allowlist.');
+$assert($operational['status']['workstations']['management_hostname'] === 'pbx.example.net', 'The configured hostname must be available to the module view.');
 
 $recorder->sent = [];
 $result = WebSupport::handleAction($recorder, ['token' => 'known', 'action' => 'unpair', 'workstation_id' => '0123456789abcdef', 'request' => 'x'], 'known', $operational, $https);
@@ -284,7 +308,7 @@ $item = ['id' => '0123456789abcdef', 'name' => 'ADMIN-PC', 'address' => '100.70.
     'created_at' => 1, 'expires_at' => 2000000000, 'last_handshake' => 0,
     'verified_endpoint' => ['address' => '2001:db8::24', 'port' => 51821],
     'fingerprint' => 'SHA256:abcdefghijklmnop', 'public_key' => 'LEAKED-PUBLIC-KEY'];
-$status = ['ok' => true, 'status' => ['protocol' => 12, 'component_version' => '0.8.3.15', 'phase' => 'Ready', 'workstations' => ['ready' => true, 'requirements' => ['wg' => true, 'ip' => true, 'nft' => true],
+$status = ['ok' => true, 'status' => ['protocol' => 12, 'component_version' => '0.9.0.0', 'phase' => 'Ready', 'workstations' => ['ready' => true, 'requirements' => ['wg' => true, 'ip' => true, 'nft' => true],
     'error' => '', 'listen_port' => 51821, 'pbx_address' => '100.70.1.1', 'items' => [$item, ['id' => '../../x', 'name' => 'bad']]]]];
 $workstations = WebSupport::workstations($status);
 $assert($workstations['supported'] && $workstations['ready'] && count($workstations['items']) === 1 && !isset($workstations['items'][0]['public_key']), 'Workstation status must be allowlisted.');
@@ -327,6 +351,16 @@ $buttonDisabled = static function (string $html, string $action): bool {
 };
 $status['status']['readiness'] = ['WireGuard wg' => true];
 $html = $render($status);
+$assert(strpos($html, 'name="management_hostname"') !== false
+    && strpos($html, 'value="pbx.example.net"') !== false,
+    'The module page must render the configured certificate hostname for administration and pairing.');
+$assert(strpos($html, 'value="0"') !== false && strpos($html, 'Permanent (until revoked)') !== false,
+    'The Permanent pairing option must expose canonical zero duration semantics.');
+$assert(strpos($html, 'name="management_hostname"') !== false
+    && strpos($html, 'pbx.example.net') !== false,
+    'The module page must render the configured certificate hostname for administration and pairing.');
+$assert(strpos($html, 'value="0"') !== false && strpos($html, 'Permanent (until revoked)') !== false,
+    'The Permanent pairing option must expose canonical zero duration semantics.');
 $withRevocation = $status;
 $withRevocation['status']['workstation_revocation'] = $revocation;
 $revocationHtml = $render($withRevocation);

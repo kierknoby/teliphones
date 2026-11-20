@@ -28,6 +28,7 @@ function form(javascript = true) {
             field.value = value;
             if (javascript && field.listeners[event]) field.listeners[event]();
         },
+        get(id) { return elements.get(id); },
         post() {
             const post = { action: 'pair', token: 'pair-test-token' };
             for (const field of elements.values()) {
@@ -47,10 +48,18 @@ const encode = (value, version) => `TELIPHONES-PAIR-REQUEST-${version}:` +
     Buffer.from(JSON.stringify(value)).toString('base64url');
 const request = encode(payload, 1);
 const web = form();
+assert.strictEqual(web.get('teliphones-pair-management-hostname').value, 'pbx.example.net',
+    'The pairing form should show the broker’s configured hostname');
 web.set('teliphones-pair-request', request);
 web.set('teliphones-pair-host', 'pbx.example.net');
-web.set('teliphones-pair-mode', 'persistent');
 web.set('teliphones-pair-minutes', '240');
+web.set('teliphones-pair-mode', 'persistent');
+assert.strictEqual(web.get('teliphones-pair-minutes').value, '0', 'Permanent selection must show canonical zero');
+assert.strictEqual(web.get('teliphones-pair-minutes').disabled, true, 'Permanent selection disables temporary duration');
+web.set('teliphones-pair-mode', 'temporary', 'change');
+assert.strictEqual(web.get('teliphones-pair-minutes').value, '240', 'Temporary duration selection is restored after switching');
+web.set('teliphones-pair-mode', 'persistent', 'change');
+assert.strictEqual(web.get('teliphones-pair-minutes-permanent').disabled, false, 'Permanent successful value is enabled');
 const complete = web.post();
 assert.strictEqual(web.elements.get('teliphones-pair-ssh').disabled, true);
 assert.strictEqual(complete.ssh, '0', 'Disabled SSH approval must still submit explicit web-only access');
@@ -58,6 +67,22 @@ assert.strictEqual(complete.request, request, 'The Windows request must not be m
 for (const name of ['request', 'endpoint_host', 'listen_port', 'mode', 'minutes', 'ssh', 'web', 'sources']) {
     assert.strictEqual(typeof complete[name], 'string', `${name} must be a successful form control`);
 }
+assert.strictEqual(complete.minutes, '0', 'Permanent pairing must submit the canonical duration value');
+assert.strictEqual(complete.management_hostname, 'pbx.example.net', 'The configured hostname is submitted with pairing');
+const temporary = form();
+temporary.set('teliphones-pair-request', request);
+temporary.set('teliphones-pair-mode', 'temporary', 'change');
+assert.strictEqual(temporary.post().minutes, '60', 'Temporary pairing submits its selected duration');
+const invalidTemporary = form();
+invalidTemporary.set('teliphones-pair-minutes', '0');
+invalidTemporary.set('teliphones-pair-mode', 'persistent', 'change');
+invalidTemporary.set('teliphones-pair-mode', 'temporary', 'change');
+assert.strictEqual(invalidTemporary.get('teliphones-pair-minutes').value, '60',
+    'Temporary duration defaults to 60 when the previous value is invalid');
+const noScriptPermanent = form(false);
+noScriptPermanent.set('teliphones-pair-request', request);
+noScriptPermanent.set('teliphones-pair-mode', 'persistent');
+assert.strictEqual(noScriptPermanent.post().minutes, '0', 'No-JavaScript Permanent pairing submits canonical zero');
 
 if (process.argv.includes('--post')) {
     process.stdout.write(JSON.stringify(complete));
@@ -99,10 +124,11 @@ if (process.argv.includes('--post')) {
     const noScript = form(false);
     noScript.set('teliphones-pair-request', request);
     assert.strictEqual(noScript.post().ssh, '0', 'No-JavaScript submission remains explicitly web-only');
+    for (const version of [2, 3]) {
     const managed = form();
-    managed.set('teliphones-pair-request', encode({ ...payload, schema: 'teliphones-pair-request/2',
+    managed.set('teliphones-pair-request', encode({ ...payload, schema: `teliphones-pair-request/${version}`,
         ssh_public_key: 'ssh-ed25519 ' + Buffer.concat([Buffer.from([0, 0, 0, 11]),
-            Buffer.from('ssh-ed25519'), Buffer.from([0, 0, 0, 32]), Buffer.alloc(32, 1)]).toString('base64') }, 2));
+            Buffer.from('ssh-ed25519'), Buffer.from([0, 0, 0, 32]), Buffer.alloc(32, 1)]).toString('base64') }, version));
     assert.strictEqual(managed.elements.get('teliphones-pair-web-only').disabled, true);
     assert.strictEqual(managed.post().ssh, '0', 'SSH-capable request does not grant SSH automatically');
     managed.set('teliphones-pair-ssh', '1', 'change');
@@ -112,5 +138,6 @@ if (process.argv.includes('--post')) {
     managed.set('teliphones-pair-request', 'malformed');
     assert.strictEqual(managed.post().ssh, '0');
     assert(!('ssh_user' in managed.post()), 'Losing SSH capability must remove account approval');
+    }
     console.log('Pairing form tests: PASS (actual page/template/JavaScript POST, explicit access, retained safe values, missing fields, CSRF)');
 }

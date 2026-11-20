@@ -11,12 +11,15 @@ namespace tlp {
 
 extern const char kPairRequestPrefix[];
 extern const char kPairResponsePrefix[];
+extern const char kPairRequestV3Prefix[];
 
 // 16 random bytes -> 22 base64url characters, as required by the broker.
 std::string MakeNonce(const Bytes& randomBytes);
 std::string BuildPairRequest(const std::string& workstation, const std::string& publicKey, const std::string& nonce);
 std::string BuildSshPairRequest(const std::string& workstation, const std::string& publicKey, const std::string& nonce,
                                 const std::string& sshPublicKey);
+std::string BuildManagementPairRequest(const std::string& workstation, const std::string& publicKey,
+                                       const std::string& nonce, const std::string& sshPublicKey = "");
 struct WorkstationPairRequest {
     std::string code;
     std::string sshPublicKey;
@@ -38,6 +41,8 @@ struct PairResponse {
     std::int64_t expiresAt = 0;  // 0 for persistent pairings
     bool ssh = false;
     std::string guiUrl;
+    std::string managementHostname;
+    bool managementHostnameSupplied = false;
     std::string sshUser;
     std::string sshPublicKey;
     std::string sshRequestPublicKey;

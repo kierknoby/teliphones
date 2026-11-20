@@ -13,12 +13,19 @@ approved SSH session without distributing permanent administrator SSH credential
 This guide covers installing and using the Windows application. The
 [FreePBX administration guide](../../teliphones/README.md) covers server setup.
 
-Windows **0.10.0** (file version **0.10.0.0**) is independent of proposed,
-unreleased FreePBX module/root broker **0.8.3.15**, protocol **12**. The
-development archive is prepared for controlled review, not a release or
+Windows **0.10.0** (file version **0.10.0.0**) is independent of FreePBX
+module/root broker **0.9.0.0**, protocol **12**. The matching 0.9.0.0 module
+archive is a local development package, not a release or
 production approval. The checksum-verified historical 0.6.7 archive is at the
-repository root and does not contain these newer changes. Windows
-0.10.0 bounds tunnel establishment, authentication and controller admission;
+repository root and does not contain these newer changes.
+Native Windows compilation and dialog interaction remain release blockers. The
+new v3 pairing response can populate the editable HTTPS hostname only when the
+PBX administrator has explicitly configured it; the broker does not inspect
+certificate SANs or infer the name from the WireGuard endpoint. If absent,
+confirm the exact DNS name with the administrator. Windows retains normal
+certificate validation. Permanent authority has no expiry deadline, but it
+does not bypass the short renewable active-session lease.
+Windows 0.10.0 bounds tunnel establishment, authentication and controller admission;
 allows Disconnect and Close during Connect; and persists exact tunnel ownership
 for safe next-launch recovery. Its elevated cleanup can remove a residual
 adapter through Windows Configuration Manager only after the current interface
@@ -28,12 +35,13 @@ correlation with PBX-side session diagnostics from 0.8.5, the earlier service
 lifecycle corrections and SSH recovery, and 0.8.3's official
 WireGuardNT 1.1 adapter-API activation with memory-only keys. It retains 0.8.1's pairing dialogue order, stale-request handling, Copy/Save
    availability and response-derived approved SSH account display, and the 0.8.0 source
-features: password protection, listener migration, PBX policy/status, Allowed
-List and unlock requests, post-pair SSH elevation and the experimental built-in
-SSH console. The reported failure where opening the embedded SSH console closes
-TELIPHONES remains an unresolved release blocker; this version does not claim
-the crash is fixed or that public-IP roaming works end to end. It is unreleased,
-not a published download.
+   features: password protection, listener migration, PBX policy/status, Allowed
+   List and unlock requests, and post-pair SSH elevation. The experimental
+   built-in SSH console is disabled on the active Open SSH path; managed SSH uses
+   the selected external OpenSSH-backed terminal. Earlier reports of the console
+   closing TELIPHONES are historical and do not establish a current external
+   terminal defect. Public-IP roaming and the 0.10.0 changes still require native
+   and live-system acceptance. This version is unreleased, not a published download.
 The [version definition](src/app/Version.h), not the manifest assembly identity,
 defines the application version.
 
@@ -41,9 +49,13 @@ defines the application version.
 order. HTTP primary pairings fail closed; TELIPHONES does not reorder services,
 rewrite pairings, or change firewall permissions. A PBX administrator must
 explicitly approve configuring certificate-valid HTTPS as primary, then the
-operator must explicitly pair again. For HTTPS, configure the certificate DNS
-hostname using **HTTPS Hostname...** on the saved administrator profile, based on
-information supplied or confirmed by the PBX administrator. TELIPHONES launches
+operator must explicitly pair again. For HTTPS, enter the certificate DNS
+hostname during pairing or configure it later using **HTTPS Hostname...** on
+the saved administrator profile, based on information supplied or confirmed by
+the PBX administrator. A v3 response automatically populates the editable
+hostname field when the PBX has an explicitly configured hostname; if the
+response contains `null`, confirm the exact DNS name with the administrator.
+The hostname is not inferred from the WireGuard endpoint. TELIPHONES launches
 Microsoft Edge with a unique isolated profile, maps only that explicit hostname
 to the paired WireGuard IPv4, blocks other DNS hostnames in that profile, disables
 proxy use, and leaves normal TLS certificate validation enabled. It launches only
@@ -63,8 +75,9 @@ not bypassed. Native Windows/Edge acceptance is still required.
 > automatic closure of the owned terminal when TELIPHONES disconnects were also
 > reported. Complete server-side revocation,
 > authorisation expiry, systemd/cgroup lifecycle, reconnection and failure
-> recovery still need live validation. Opening the embedded SSH console
-> unexpectedly closing TELIPHONES remains a release blocker.
+> recovery still need live validation. The experimental embedded SSH console is
+> disabled on the active managed SSH path; those reports do not establish a
+> current external-terminal defect or acceptance of the external SSH workflow.
 > These supplied reports lack matching run/build identifiers and raw logs; they
 > do not establish which test count is accurate, validate current 0.10.0 source or
 > establish a matching binary. See
@@ -127,16 +140,18 @@ risk. See the [current security limitations](#security).
 
 ### Download an existing build
 
-**Earlier Windows CI builds have completed for 0.9.0; no 0.10.0 build is available, and functional/native acceptance
-is outstanding.** The artifact from run `43980149884` (artifact
+**No matching successful CI run or downloadable 0.10.0 build can be verified from
+this checkout; functional/native acceptance is outstanding.** Earlier Windows
+CI builds completed for 0.9.0. The artifact from run `43980149884` (artifact
 `14281389786`) is blocked by Chrome as “Dangerous download blocked”; the cause
 is unresolved. Do not bypass browser or operating-system protection, and do not
 substitute an older run for the current source.
 
-The **TELIPHONES-Windows-x64** artefact is produced by the Windows Actions
-workflow; its existence does not establish functional acceptance or safe public
-download availability. Retention is 14 days; expired artefacts may be
-unavailable. No public release or direct public download is claimed.
+The Windows Actions workflow defines a **TELIPHONES-Windows-x64** artifact, but
+that workflow configuration is not evidence that a 0.10.0 run succeeded or that
+an artifact is currently available. Any artifact's existence would not establish
+functional acceptance or safe public download availability. No public release or
+direct public download is claimed.
 Extract the ZIP and keep **`TELIPHONES.exe`, `TELIPHONES-SSH.exe` and
 `wireguard.dll` together**.
 It also contains this guide, the changelog, licences and `build-info.json`,
@@ -217,15 +232,16 @@ During installation the dialogue cannot be closed until the worker finishes; can
 
 ## Pair an administrator workstation
 
-The 0.8.2 package and its broker details below are historical context only. This
-0.10.0 candidate is not live-accepted or approved for production use; no 0.10.0
-Windows CI artifact exists and functional/native acceptance remains outstanding.
-The CI artifact is not an accepted upgrade. The historical 0.6.7
-archive is not included in this checkout and predates these changes. After an
+Older package and broker details are historical context only. This 0.10.0
+candidate is not live-accepted or approved for production use; no matching
+successful Windows CI run or downloadable artifact can be verified from this
+checkout, and functional/native acceptance remains outstanding. A CI artifact
+would not by itself be an accepted upgrade. The historical 0.6.7
+archive predates these changes. After an
 authorized controlled-development installation or upgrade, complete the
 [root broker bootstrap](../../teliphones/README.md#complete-installation-on-freepbx-17)
 with no active support session and workstation tunnels disconnected. Verify
-that the broker reports version 0.8.2 and protocol 12; an operational socket
+that the broker reports version 0.9.0.0 and protocol 12; an operational socket
 alone does not confirm the required broker version.
 
 1. Select **Add my PBX...** and enter the workstation name under **Pair my PBX >
@@ -255,12 +271,15 @@ alone does not confirm the required broker version.
    the current request and revalidates addresses, endpoint, expiry, account and
    pinned host/CA keys. Invalid, old or mismatched responses remain rejected.
 
-The existing v1/v2 pairing protocol is unchanged. The response envelope is
-request-bound but not independently signed: trusted administrator HTTPS supplies
-its provenance. SSH session certificates are separately signature-verified.
+Pairing v1/v2 requests and response envelopes remain supported for existing
+clients and saved connections. The current Windows client uses v3 and the broker
+returns v3 only for a v3 request; its response is bound to the request nonce and
+workstation public key. The response envelope is not independently signed:
+trusted administrator HTTPS supplies its provenance. SSH session certificates
+are separately signature-verified.
 
 After saving, select the profile and **Connect**, approving tunnel setup. Wait
-   for Connection Health to confirm that the PBX is reachable.
+for Connection Health to confirm that the PBX is reachable.
 Tunnel setup confirms the Windows service within a bounded deadline, then
 opens its existing WireGuardNT adapter and applies only the memory-only
 enrolled private key. The official service does not expose a text-UAPI pipe;
@@ -271,14 +290,16 @@ number, without including key material. No VPN/address conflict is inferred.
 The native startup regression and live WireGuard validation remain outstanding;
 see [Windows readiness](tests/WINDOWS-READINESS.md#wireguard-startup-regression).
 
-Select **Open FreePBX** and sign in with normal FreePBX credentials.
-   For HTTPS management, configure the certificate DNS name using **HTTPS
-   Hostname...** and open FreePBX. The isolated Edge profile resolves that name to
-   the paired tunnel IPv4, uses no proxy, and validates the certificate normally.
-   HTTP primary management is intentionally refused. Redirect destinations and
-   alternate IP-literal access are not universally confined; if the tunnel is
-   lost, the owned Edge job is closed when detected. Never disable certificate
-   checks to work around a mismatch.
+Select **Open FreePBX** and sign in with normal FreePBX credentials. For HTTPS
+management, pairing automatically fills the administrator-approved certificate
+DNS name from a valid v3 response. If it was absent, enter the name supplied or
+confirmed by the PBX administrator in the pairing field or later using
+**HTTPS Hostname...**. The isolated Edge profile resolves that name to the paired
+tunnel IPv4, uses no proxy, and validates the certificate normally. HTTP primary
+management is intentionally refused. Redirect destinations and alternate
+IP-literal access are not universally confined; if the tunnel is lost, the owned
+Edge job is closed when detected. Never disable certificate checks to work
+around a mismatch.
 
 The client adds only the PBX's host route; ordinary workstation traffic does not
 use the tunnel. The PBX does not forward the workstation onto other networks.
@@ -592,14 +613,18 @@ customer data in an issue.
 
 ## Verification status
 
-The FreePBX module target is proposed 0.8.2 and unreleased. Its development
-archive is available locally; the historical 0.6.7
+The FreePBX module/root broker source target is 0.9.0.0, protocol 12, and
+unreleased. Its local development archive is available for controlled testing;
+the historical 0.6.7
 archive was intentionally removed from this checkout and predates the proposed
-changes. Windows CI builds have completed, but native and functional acceptance
-is outstanding. The artifact from run `43980149884` (artifact `14281389786`)
+changes. Earlier Windows CI builds completed for 0.9.0; no matching successful
+0.10.0 run or downloadable artifact can be verified from this checkout, and
+native and functional acceptance is outstanding. The artifact from run
+`43980149884` (artifact `14281389786`)
 is blocked by Chrome as “Dangerous download blocked”; the cause is unresolved.
-The
-embedded SSH console crash remains an unresolved release blocker. Historical
+The experimental embedded SSH console remains disabled on the active managed
+SSH path. Historical reports of that console closing TELIPHONES do not establish
+a current external-terminal defect. Historical
 native test-count reports are not interchangeable or independently reproduced:
 an earlier report said eleven SSH integration tests, a later report said ten,
 and current readiness documents twelve registered integration methods. No

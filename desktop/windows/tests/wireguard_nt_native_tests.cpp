@@ -177,6 +177,55 @@ bool installFixture(const Tunnel& tunnel, const TunnelConfig& config) {
                          HexEncode(RandomBytes(16)), GetTickCount64() + 1, cancellation);
 }
 
+void recoveryRegressionTests() {
+    const auto installation = FindWireGuard();
+    require(installation.installed && installation.trusted, "Native recovery regression requires trusted official WireGuard");
+    Tunnel tunnel;
+    TunnelConfig config;
+    config.privateKey = GeneratePrivateKey(installation);
+    config.peerPublicKey = DerivePublicKey(installation, GeneratePrivateKey(installation));
+    config.address = "192.0.2.1/32";
+    config.allowedIps = {"192.0.2.2/32"};
+    config.endpoint = "127.0.0.1:9";
+    config.persistentKeepalive = 25;
+
+    require(installFixture(tunnel, config), "Could not install isolated native recovery fixture");
+    require(QueryTunnel(tunnel.name) == TunnelState::Running &&
+        TunnelAdapterPresence(tunnel.name) == tunnel_lifecycle::AdapterPresence::Active,
+        "Native recovery fixture must have a real service and interface before removal");
+    tunnel.remove();
+    require(QueryTunnel(tunnel.name) == TunnelState::Absent &&
+        TunnelAdapterPresence(tunnel.name) == tunnel_lifecycle::AdapterPresence::Absent,
+        "Observed stale-recovery condition requires service, PnP-backed adapter and interface absent");
+
+    // Simulate the stale UI-only flag: the real platform readback is clean. Repeated controlled recovery is idempotent.
+    require(QueryTunnel(tunnel.name) == TunnelState::Absent &&
+        TunnelAdapterPresence(tunnel.name) == tunnel_lifecycle::AdapterPresence::Absent,
+        "Recovery must clear stale application state based on independent current Windows readback");
+    for (int attempt = 0; attempt < 2; ++attempt) {
+    try { RemoveTunnel(tunnel.name); }
+    catch (const Error&) {
+        require(QueryTunnel(tunnel.name) == TunnelState::Absent &&
+            TunnelAdapterPresence(tunnel.name) == tunnel_lifecycle::AdapterPresence::Absent,
+            "Repeated recovery may report missing ownership only when platform inventory remains clean");
+    }
+    require(QueryTunnel(tunnel.name) == TunnelState::Absent &&
+        TunnelAdapterPresence(tunnel.name) == tunnel_lifecycle::AdapterPresence::Absent,
+        "Repeated recovery must not recreate or leave resources");
+    }
+    // Unknown device/service identity is not authority to delete. A generic unrelated WireGuard service is never selected.
+    require(!tunnel_lifecycle::MayClearActiveRecovery(true, false, false, true,
+        tunnel_lifecycle::AdapterPresence::Absent, tunnel_lifecycle::RecordedDeviceState::Missing),
+        "Unknown ownership must retain recovery state instead of claiming cleanup");
+    require(!tunnel_lifecycle::MayClearActiveRecovery(true, true, true, true,
+        tunnel_lifecycle::AdapterPresence::Unverified, tunnel_lifecycle::RecordedDeviceState::Missing),
+        "An unverified interface enumeration must retain recovery state");
+        const TunnelState unrelatedBefore = QueryTunnel("ProtonVPN");
+        require(QueryTunnel("ProtonVPN") == unrelatedBefore,
+            "The unrelated ProtonVPN service state remains untouched by TELIPHONES-only recovery");
+    SecureWipe(config.privateKey);
+}
+
 class Adapter {
 public:
     const nt::Api& api;
@@ -317,9 +366,10 @@ int wmain(int argc, wchar_t** argv) {
     for (int i = 1; i < argc; ++i) arguments.push_back(Narrow(argv[i]));
     if (IsHelperInvocation(arguments)) return RunTunnelHelper(arguments);
     try {
-        require(arguments.size() == 1, "Specify --unit or --integration");
+        require(arguments.size() == 1, "Specify --unit, --integration or --recovery");
         if (arguments[0] == "--unit") unitTests();
         else if (arguments[0] == "--integration") integrationTests();
+        else if (arguments[0] == "--recovery") recoveryRegressionTests();
         else throw std::runtime_error("Unknown test mode");
         std::cout << "WireGuardNT " << arguments[0] << ": PASS\n";
         return 0;

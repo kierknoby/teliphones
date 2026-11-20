@@ -1,6 +1,7 @@
 #include "MainDlg.h"
 
 #include <objbase.h>
+#include <shellapi.h>
 
 #include <ctime>
 #include <algorithm>
@@ -42,7 +43,7 @@ namespace {
 constexpr UINT_PTR kMonitorTimer = 1;
 constexpr UINT kMonitorIntervalMs = 2000;
 
-enum class OperationKind { Connect, Disconnect, Cleanup, Ssh, Policy };
+enum class OperationKind { Connect, Disconnect, Cleanup, Recovery, Ssh, Policy };
 
 struct OperationResult {
     OperationKind kind = OperationKind::Connect;
@@ -416,6 +417,41 @@ void CMainDlg::RefreshHealth() {
 }
 
 void CMainDlg::OnDrawItem(int controlId, LPDRAWITEMSTRUCT item) {
+    if (controlId == IDC_RECOVER && item != nullptr) {
+        CDC dc;
+        dc.Attach(item->hDC);
+        const bool disabled = (item->itemState & ODS_DISABLED) != 0;
+        const bool pressed = (item->itemState & ODS_SELECTED) != 0;
+        DrawFrameControl(dc.GetSafeHdc(), &item->rcItem, DFC_BUTTON,
+                         DFCS_BUTTONPUSH | (disabled ? DFCS_INACTIVE : 0) | (pressed ? DFCS_PUSHED : 0));
+        const UINT dpi = GetDpiForWindow(m_hWnd);
+        const int iconSize = MulDiv(16, static_cast<int>(dpi), 96);
+        const HICON warning = static_cast<HICON>(LoadImageW(nullptr, IDI_WARNING, IMAGE_ICON, iconSize, iconSize, LR_SHARED));
+        CFont* font = GetDlgItem(IDC_RECOVER)->GetFont();
+        CFont* previousFont = font ? dc.SelectObject(font) : nullptr;
+        const CString label = L"Recover";
+        CSize labelSize;
+        dc.GetTextExtent(label, labelSize);
+        const int gap = MulDiv(4, static_cast<int>(dpi), 96);
+        const int iconWidth = warning ? iconSize : 0;
+        const int totalWidth = labelSize.cx + (iconWidth ? gap + iconWidth : 0);
+        const int left = item->rcItem.left + (item->rcItem.right - item->rcItem.left - totalWidth) / 2;
+        const int top = item->rcItem.top + (item->rcItem.bottom - item->rcItem.top - std::max(labelSize.cy, iconSize)) / 2;
+        dc.SetBkMode(TRANSPARENT);
+        dc.SetTextColor(GetSysColor(disabled ? COLOR_GRAYTEXT : COLOR_BTNTEXT));
+        CRect text(left, item->rcItem.top, left + labelSize.cx, item->rcItem.bottom);
+        if (pressed) text.OffsetRect(1, 1);
+        dc.DrawText(label, text, DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_NOPREFIX);
+        if (warning) DrawIconEx(dc.GetSafeHdc(), left + labelSize.cx + gap, top, warning, iconSize, iconSize, 0, nullptr, DI_NORMAL);
+        if ((item->itemState & ODS_FOCUS) != 0) {
+            CRect focus(item->rcItem);
+            focus.DeflateRect(3, 3);
+            dc.DrawFocusRect(&focus);
+        }
+        if (previousFont) dc.SelectObject(previousFont);
+        dc.Detach();
+        return;
+    }
     if (controlId != IDC_HEALTH_INLINE_GRAPH || item == nullptr) {
         CDialogEx::OnDrawItem(controlId, item);
         return;
@@ -749,7 +785,7 @@ void CMainDlg::RemoveStaleTunnels() {
     if (tlp::ui::ShowMessage(Widen("TELIPHONES tunnels from a previous run are still installed (" + names +
                                    "). Remove them now? Other WireGuard tunnels are not changed.").c_str(),
                              MB_ICONQUESTION | MB_YESNO) != IDYES) {
-        SetState("Recovery required", "Choose Recover TELIPHONES when you are ready. Recovery works without a saved profile or active PBX pairing.");
+        SetState("Recovery required", "Choose Recover when you are ready. Recovery works without a saved profile or active PBX pairing.");
         return;
     }
     busy_ = true;
@@ -778,35 +814,13 @@ void CMainDlg::OnRecover() {
     try {
         // Protected local ownership records remain authoritative after revocation or profile removal.
         // This scan is read-only and never discovers generic WireGuard VPNs.
-        candidates = tlp::win::ResidualTeliphonesTunnels({});
+        std::vector<std::string> savedTunnels;
+        for (const auto& profile : profiles_) savedTunnels.push_back(tlp::TunnelNameFor(profile));
+        candidates = tlp::win::ResidualTeliphonesTunnels(savedTunnels);
     } catch (const std::exception& error) {
         LogEvent("recovery_reconcile", "error", std::string("Read-only TELIPHONES recovery scan failed: ") +
                  tlp::SanitizeDiagnosticDetail(error.what()));
         SetState("Recovery status unknown", "Windows could not safely inspect TELIPHONES tunnel ownership. No resources were changed; see Session Log.");
-        return;
-    }
-    if (candidates.empty()) {
-        LogEvent("recovery_reconcile", "info", "No TELIPHONES-owned residual tunnel or valid interrupted ownership record was found.");
-        if (recoveringActive) {
-            try {
-                if (!tlp::win::TunnelRemovalVerified(active_->tunnelName)) {
-                    SetState("Recovery required", "The ownership scan is empty, but Windows could not independently confirm that this exact tunnel service, interface and recorded device are absent. The recovery context and ownership records were retained. Export Session Log and retry after administrator diagnostics.");
-                    return;
-                }
-            } catch (const std::exception& error) {
-                LogEvent("recovery_reconcile", "error", "Exact active tunnel readback failed: " +
-                         tlp::SanitizeDiagnosticDetail(error.what()));
-                SetState("Recovery status unknown", "Exact Windows service, interface and PnP readback failed. The active recovery context and ownership records were retained; see Session Log.");
-                return;
-            }
-            active_.reset();
-            lastTelemetryTickMs_ = 0;
-            tlp::HealthSnapshot disconnected;
-            disconnected.state = tlp::HealthState::Disconnected;
-            healthDialog_.UpdateSnapshot(disconnected);
-            UpdateButtons();
-        }
-        SetState("Not connected", "No recoverable TELIPHONES tunnel was found. Unrelated WireGuard VPNs were not inspected or changed.");
         return;
     }
     std::vector<std::string> toProcess = candidates;
@@ -814,60 +828,80 @@ void CMainDlg::OnRecover() {
         toProcess.insert(toProcess.begin(), active_->tunnelName);
     std::string names;
     for (const auto& name : toProcess) names += (names.empty() ? "" : ", ") + name;
-    if (tlp::ui::ShowMessage(Widen("Recover these TELIPHONES tunnel(s), including the active recovery context: " + names +
-            "? Windows may request administrative approval. Only resources verified against TELIPHONES' protected ownership records will be changed; other VPNs are untouched.").c_str(),
+    if (tlp::ui::ShowMessage(Widen("Recover TELIPHONES runtime resources" + (names.empty() ? std::string() : " (tunnels: " + names + ")") +
+            "? Windows may request administrative approval. Only positively identified TELIPHONES resources will be changed; other VPNs and saved connections are untouched.").c_str(),
             MB_ICONQUESTION | MB_YESNO) != IDYES) {
         LogEvent("recovery_reconcile", "info", "User deferred manual TELIPHONES recovery; ownership records were retained.");
-        SetState("Recovery required", "Choose Recover TELIPHONES to retry. The protected ownership record was retained.");
+        SetState("Recovery required", "Choose Recover to retry. The protected ownership record was retained.");
         return;
     }
     busy_ = true;
+    ++generation_;
+    probing_ = false;
+    if (recoveringActive && active_->cancellation) active_->cancellation->Cancel();
+    if (active_) {
+        tlp::tunnel_lifecycle::CancelOperation(active_->lifecycle);
+        active_->lifecycle.stage = tlp::tunnel_lifecycle::ConnectionStage::CleanupIncomplete;
+    }
     UpdateButtons();
-    LogEvent("recovery_reconcile", "info", "Manual recovery requested for " + names + ".");
-    SetState("Recovering TELIPHONES tunnels...", "Windows will verify the exact owned service and adapter before cleanup.");
-    const std::string activeTunnel = recoveringActive ? active_->tunnelName : std::string();
+    LogEvent("recovery_reconcile", "info", "Manual full-runtime recovery requested for " + (names.empty() ? std::string("no discovered tunnels") : names) + ".");
+    SetState("Recovering TELIPHONES...", "Stopping TELIPHONES work and closing owned sessions before verifying Windows tunnel state.");
     const std::optional<Profile> activeProfile = recoveringActive && FindProfile(active_->profileId)
         ? std::optional<Profile>(*FindProfile(active_->profileId)) : std::nullopt;
     const std::string activeAddress = recoveringActive ? active_->pbxAddress : std::string();
-    RunInBackground(m_hWnd, recoveringActive ? OperationKind::Disconnect : OperationKind::Cleanup,
-                    "Manual recovery", [toProcess, recoveringActive, activeTunnel, activeProfile, activeAddress](OperationResult& result) {
+    RunInBackground(m_hWnd, OperationKind::Recovery, "Manual full-runtime recovery",
+                    [toProcess, recoveringActive, activeProfile, activeAddress](OperationResult& result) {
+        try {
+            if (!tlp::win::RecoverSecureBrowserSessions())
+                result.error += "One or more TELIPHONES Edge sessions or marked browser profiles could not be closed and removed; ";
+        } catch (const std::exception& error) {
+            result.error += std::string("Secure browser cleanup: ") + tlp::SanitizeDiagnosticDetail(error.what()) + "; ";
+        }
+        try {
+            tlp::win::CloseAllManagedSsh();
+        } catch (const std::exception& error) {
+            result.error += std::string("Managed SSH session teardown: ") + tlp::SanitizeDiagnosticDetail(error.what()) + "; ";
+        }
         if (recoveringActive) {
-            bool tunnelRemoved = false;
-            try {
-                if (activeProfile && activeProfile->kind == ProfileKind::Administrator) {
-                    tlp::win::CloseManagedSsh(activeProfile->id);
-                    try { tlp::win::MaintainWorkstationSession(activeAddress, true); } catch (const std::exception&) {}
-                }
-                tlp::win::RemoveTunnel(activeTunnel);
-                tunnelRemoved = true;
-            } catch (const std::exception& error) {
-                result.error = tlp::SanitizeDiagnosticDetail(error.what());
-            }
-            if (tunnelRemoved && activeProfile && tlp::MayHaveSshRuntime(*activeProfile)) {
+            if (activeProfile && activeProfile->kind == ProfileKind::Administrator) {
                 try {
-                    tlp::win::RemoveSshRuntime(*activeProfile);
+                    tlp::win::MaintainWorkstationSession(activeAddress, true);
                 } catch (const std::exception& error) {
-                    result.warning = "The tunnel was removed, but SSH runtime cleanup is incomplete: " +
-                                     tlp::SanitizeDiagnosticDetail(error.what());
+                    result.warning += std::string("The PBX lease release was not confirmed: ") +
+                                      tlp::SanitizeDiagnosticDetail(error.what()) + ". ";
                 }
             }
-            for (const auto& name : toProcess) {
-                if (name == activeTunnel) continue;
-                try {
-                    tlp::win::RemoveTunnel(name);
-                } catch (const std::exception& error) {
-                    result.error += (result.error.empty() ? "" : " ") + name + ": " +
-                                    tlp::SanitizeDiagnosticDetail(error.what());
-                }
-            }
-            return true;
         }
         for (const auto& name : toProcess) {
             try {
                 tlp::win::RemoveTunnel(name);
             } catch (const std::exception& error) {
-                result.error += (result.error.empty() ? "" : " ") + name + ": " + tlp::SanitizeDiagnosticDetail(error.what());
+                result.error += (result.error.empty() || result.error.back() == ' ' ? "" : " ") + name + ": " +
+                                tlp::SanitizeDiagnosticDetail(error.what()) + "; ";
             }
+        }
+        try {
+            tlp::win::CleanAllSshRuntimes();
+        } catch (const std::exception& error) {
+            result.error += std::string("Temporary SSH runtime cleanup: ") + tlp::SanitizeDiagnosticDetail(error.what()) + "; ";
+        }
+        // RemoveTunnel waits for the elevated helper, which independently waits for service deletion and adapter release.
+        // This second inventory is a fresh read-only Windows service/interface scan; it is not inferred from error 1168.
+        try {
+            std::vector<std::string> savedTunnels;
+            for (const auto& profile : profiles_) savedTunnels.push_back(tlp::TunnelNameFor(profile));
+            const auto remaining = tlp::win::ResidualTeliphonesTunnels(savedTunnels);
+            if (!remaining.empty()) {
+                result.error += "Windows still reports TELIPHONES-owned or unverified tunnel state: ";
+                for (const auto& name : remaining) result.error += name + " ";
+                result.error += "Check Session Log for independent SCM, interface and recorded PnP diagnostics; unidentified devices were left untouched.";
+            }
+        } catch (const std::exception& error) {
+            result.error += std::string("Final Windows service/interface/PnP reconciliation failed: ") +
+                            tlp::SanitizeDiagnosticDetail(error.what());
+        }
+        if (!result.error.empty()) {
+            result.error = "TELIPHONES recovery is incomplete. " + result.error;
         }
         return true;
     });
@@ -1773,6 +1807,44 @@ LRESULT CMainDlg::OnOperationDone(WPARAM, LPARAM lparam) {
                     activePolicyLocked_ ? "Restriction applied" : "Workstation policy updated", result->warning);
             }
             break;
+        case OperationKind::Recovery:
+            if (!result->error.empty()) {
+                LogEvent("recovery_reconcile", "error", result->error);
+                if (active_) active_->lifecycle.stage = tlp::tunnel_lifecycle::ConnectionStage::CleanupIncomplete;
+                SetState("Recovery required", result->error + " The recovery context and ownership records were retained; choose Recover to retry.");
+                if (!result->warning.empty()) {
+                    LogEvent("session_release_warning", "warning", result->warning);
+                    SetState("Recovery required", result->error + " " + result->warning +
+                             " The recovery context and ownership records were retained; choose Recover to retry.");
+                }
+            } else {
+                LogEvent("recovery_reconcile", "info", "Full TELIPHONES runtime cleanup completed and Windows tunnel state was reconciled.");
+                if (active_) {
+                    active_.reset();
+                    lastTelemetryTickMs_ = 0;
+                    tlp::HealthSnapshot disconnected;
+                    disconnected.state = tlp::HealthState::Disconnected;
+                    healthDialog_.UpdateSnapshot(disconnected);
+                }
+                SetState("Not connected", result->warning.empty()
+                    ? "TELIPHONES runtime cleanup completed and no residual owned tunnel state was found."
+                    : "TELIPHONES runtime cleanup completed. " + result->warning);
+                wchar_t executable[32768]{};
+                const DWORD length = GetModuleFileNameW(nullptr, executable, static_cast<DWORD>(std::size(executable)));
+                if (length > 0 && length < std::size(executable)) {
+                    const auto launched = reinterpret_cast<INT_PTR>(ShellExecuteW(nullptr, L"open", executable,
+                        L"--restart-wait", nullptr, SW_SHOWNORMAL));
+                    if (launched > 32) {
+                        LogEvent("recovery_restart", "info", "Controlled application restart launched after cleanup; the new process is waiting for this instance to exit.");
+                        closing_ = true;
+                        FinishClose();
+                        return 0;
+                    }
+                }
+                LogEvent("recovery_restart", "warning", "The controlled application restart could not be launched; cleanup succeeded and TELIPHONES remains disconnected.");
+                SetState("Not connected", "Recovery cleanup succeeded, but TELIPHONES could not start its controlled reset. The application remains disconnected; close and reopen TELIPHONES if its interface still appears stale.");
+            }
+            break;
         case OperationKind::Cleanup:
             if (!result->error.empty()) {
                 std::string reconciliation = "Post-failure read-only reconciliation unavailable.";
@@ -1786,7 +1858,7 @@ LRESULT CMainDlg::OnOperationDone(WPARAM, LPARAM lparam) {
                 }
                 LogEvent("recovery_reconcile", "warning", reconciliation);
                 SetState("Recovery required", "TELIPHONES cleanup did not complete: " + result->error + " " + reconciliation +
-                    " Use Recover TELIPHONES to retry; no unrelated VPN or unverified device will be changed.");
+                    " Use Recover to retry; no unrelated VPN or unverified device will be changed.");
             } else {
                 SetState("Not connected", "A tunnel left from a previous session was removed.");
             }
@@ -1830,7 +1902,7 @@ LRESULT CMainDlg::OnOperationDone(WPARAM, LPARAM lparam) {
                 }
                 LogEvent("recovery_reconcile", "warning", reconciliation);
                 SetState("Recovery required", result->error + " " + reconciliation +
-                    " Use Recover TELIPHONES to retry. The active UI record is retained until removal is verified.");
+                    " Use Recover to retry. The active UI record is retained until removal is verified.");
                 ShowError(result->error);
                 if (active_) active_->lifecycle.stage = tlp::tunnel_lifecycle::ConnectionStage::CleanupIncomplete;
                 if (closing_) FinishClose();
@@ -1910,6 +1982,12 @@ void CMainDlg::OnCancel() {
 void CMainDlg::FinishClose() {
     if (GetSafeHwnd() == nullptr) return;
     tlp::win::CloseAllSecureBrowserSessions();
+    try {
+        tlp::win::CloseAllManagedSsh();
+    } catch (const std::exception& error) {
+        LogEvent("shutdown_with_recovery_state", "warning", "Managed SSH session teardown could not be verified: " +
+                 tlp::SanitizeDiagnosticDetail(error.what()));
+    }
     if (active_) {
         LogEvent("shutdown_with_recovery_state", "warning",
                  "Application closed before owned-resource cleanup was verified; next-launch recovery is required.");

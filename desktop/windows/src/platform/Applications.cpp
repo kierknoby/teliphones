@@ -294,9 +294,17 @@ bool removeOwnedSecureProfileDirectory(const std::wstring& path) {
     return RemoveDirectoryW(path.c_str()) != FALSE;
 }
 
-void cleanupCompletedSecureProfiles() {
-    const std::wstring root = secureBrowserRoot();
-    if (!plainDirectory(root)) return;
+bool cleanupCompletedSecureProfiles() {
+    const std::wstring root = KnownFolder(FOLDERID_LocalAppData) + L"\\TELIPHONES\\SecureBrowser";
+    const DWORD rootAttributes = GetFileAttributesW(root.c_str());
+    if (rootAttributes == INVALID_FILE_ATTRIBUTES) {
+        const DWORD error = GetLastError();
+        if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND) return true;
+        return false;
+    }
+    if ((rootAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0 || (rootAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0)
+        return false;
+    bool complete = true;
     std::set<std::wstring> trackedProfiles;
     {
         std::lock_guard<std::mutex> lock(secureBrowserMutex);
@@ -304,16 +312,18 @@ void cleanupCompletedSecureProfiles() {
     }
     WIN32_FIND_DATAW item{};
     HANDLE search = FindFirstFileW((root + L"\\*").c_str(), &item);
-    if (search == INVALID_HANDLE_VALUE) return;
+    if (search == INVALID_HANDLE_VALUE) return GetLastError() == ERROR_FILE_NOT_FOUND;
     do {
         const std::wstring leaf(item.cFileName);
         const std::wstring profilePath = root + L"\\" + leaf;
         if (trackedProfiles.find(profilePath) == trackedProfiles.end() && isSecureProfileLeaf(leaf) &&
             (item.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0 &&
             (item.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0)
-            (void)removeOwnedSecureProfileDirectory(profilePath);
+                if (!removeOwnedSecureProfileDirectory(profilePath)) complete = false;
     } while (FindNextFileW(search, &item));
+    const DWORD enumerationError = GetLastError();
     FindClose(search);
+    return complete && enumerationError == ERROR_NO_MORE_FILES;
 }
 
 void removeEmptySecureProfileDirectory(const std::wstring& path) {
@@ -630,6 +640,15 @@ void CloseAllSecureBrowserSessions() {
             ++it;
         }
     }
+}
+
+bool RecoverSecureBrowserSessions() {
+    CloseAllSecureBrowserSessions();
+    {
+        std::lock_guard<std::mutex> lock(secureBrowserMutex);
+        if (!secureBrowserSessions.empty()) return false;
+    }
+    return cleanupCompletedSecureProfiles();
 }
 #endif
 

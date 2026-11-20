@@ -163,9 +163,15 @@ void testPairing() {
     check(request.compare(0, 26, kPairRequestPrefix) == 0, "request prefix");
     Bytes body = Base64UrlDecode(request.substr(26));
     json::Value parsed = json::Parse(std::string(body.begin(), body.end()));
-    check(parsed.at("schema").asString() == "teliphones-pair-request/1" && parsed.at("public_key").asString() == kWorkstationKey &&
-              parsed.asObject().size() == 4,
-          "request contains only schema, workstation, public key and nonce");
+      check(parsed.at("schema").asString() == "teliphones-pair-request/1" && parsed.at("public_key").asString() == kWorkstationKey &&
+                    parsed.asObject().size() == 4,
+              "legacy request builder contains only schema, workstation, public key and nonce");
+      const auto modernRequest = CreatePairRequest("ADMIN-PC", kWorkstationKey, kNonce, false, {});
+      check(modernRequest.code.rfind("TELIPHONES-PAIR-REQUEST-3:", 0) == 0, "new GUI-only pairing uses request version 3");
+      const auto modernBody = Base64UrlDecode(modernRequest.code.substr(modernRequest.code.find(':') + 1));
+      const auto modernFields = json::Parse(std::string(modernBody.begin(), modernBody.end()));
+      check(modernFields.at("schema").asString() == "teliphones-pair-request/3" && modernFields.asObject().size() == 4,
+              "version-3 web-only request preserves the minimal exact schema");
     check(MakeNonce(Bytes(16, 7)).size() == 22, "nonce length");
     check(throws([] { BuildPairRequest("bad\"name", kWorkstationKey, kNonce); }), "invalid workstation name rejected");
     check(throws([] { BuildPairRequest("PC", "not-a-key", kNonce); }), "invalid key rejected");
@@ -190,8 +196,36 @@ void testPairing() {
     invalidMigration["address"] = "0.0.0.0/0";
     check(throws([&] { ApplyWorkstationMigration(ok, json::Serialize(json::Value(invalidMigration))); }),
           "migration with an unrestricted tunnel route rejected");
-    PairResponse persistent = ParsePairResponse(response({{"mode", "persistent"}, {"expires_at", nullptr}}), kNonce, kWorkstationKey);
+      PairResponse persistent = ParsePairResponse(response({{"mode", "persistent"}, {"expires_at", nullptr}}), kNonce, kWorkstationKey);
     check(persistent.mode == "persistent" && persistent.expiresAt == 0, "persistent response parsed");
+      const auto baseResponse = response({});
+      const auto baseBody = Base64UrlDecode(baseResponse.substr(std::string(kPairResponsePrefix).size()));
+      auto hostnameObject = json::Parse(std::string(baseBody.begin(), baseBody.end())).asObject();
+      hostnameObject["schema"] = "teliphones-pair-response/3";
+      hostnameObject["management_hostname"] = "pbx.example.net";
+      hostnameObject["gui_url"] = "https://100.70.1.1/admin/";
+      hostnameObject["ssh_user"] = "";
+      hostnameObject["ssh_host_key"] = "";
+      hostnameObject["ssh_ca_key"] = "";
+      hostnameObject["ssh_port"] = 0;
+      hostnameObject["ssh_api_port"] = 0;
+      hostnameObject["ssh"] = false;
+      const auto hostnameText = json::Serialize(json::Value(hostnameObject));
+      const auto hostnameResponse = ParsePairResponse("TELIPHONES-PAIR-RESPONSE-3:" +
+            Base64UrlEncode(Bytes(hostnameText.begin(), hostnameText.end())), kNonce, kWorkstationKey);
+      check(hostnameResponse.managementHostnameSupplied && hostnameResponse.managementHostname == "pbx.example.net",
+              "version-3 response supplies the administrator-confirmed hostname");
+      hostnameObject["management_hostname"] = nullptr;
+      const auto nullHostnameText = json::Serialize(json::Value(hostnameObject));
+      const auto nullHostname = ParsePairResponse("TELIPHONES-PAIR-RESPONSE-3:" +
+            Base64UrlEncode(Bytes(nullHostnameText.begin(), nullHostnameText.end())), kNonce, kWorkstationKey);
+      check(nullHostname.managementHostnameSupplied && nullHostname.managementHostname.empty(),
+              "version-3 response without a configured hostname is explicitly represented");
+        hostnameObject["management_hostname"] = "invalid host name";
+        const auto invalidHostnameText = json::Serialize(json::Value(hostnameObject));
+        check(throws([&] { ParsePairResponse("TELIPHONES-PAIR-RESPONSE-3:" +
+                        Base64UrlEncode(Bytes(invalidHostnameText.begin(), invalidHostnameText.end())), kNonce, kWorkstationKey); }),
+                  "invalid hostname from PBX is rejected");
     for (const char* url : {"http://100.70.1.1:8080/admin/", "https://100.70.1.1/admin/", "https://100.70.1.1:8443/admin/"}) {
         PairResponse custom = ParsePairResponse(response({{"gui_url", url}}), kNonce, kWorkstationKey);
         Profile profile = adminProfile();
@@ -242,23 +276,24 @@ void testPairing() {
     const std::string sshKey = "ssh-ed25519 " + Base64Encode(sshBlob);
     check(IsSshPublicKey(sshKey) && !IsSshPublicKey(sshKey + " comment") && !IsSshPublicKey("ssh-rsa AAAA"), "SSH public keys require canonical Ed25519 structure");
     const auto sshRequest = BuildSshPairRequest("ADMIN-PC", kWorkstationKey, kNonce, sshKey);
-    check(sshRequest.rfind("TELIPHONES-PAIR-REQUEST-2:", 0) == 0, "managed SSH pairing uses version 2");
+      check(sshRequest.rfind("TELIPHONES-PAIR-REQUEST-2:", 0) == 0, "legacy managed SSH builder remains version 2");
     int keygenCalls = 0;
     auto missingOpenSsh = [&keygenCalls]() -> std::string {
         ++keygenCalls;
         throw Error("Windows OpenSSH is absent.");
     };
     const auto webRequest = CreatePairRequest("ADMIN-PC", kWorkstationKey, kNonce, false, missingOpenSsh);
-    check(webRequest.code == BuildPairRequest("ADMIN-PC", kWorkstationKey, kNonce) &&
+      check(webRequest.code.rfind("TELIPHONES-PAIR-REQUEST-3:", 0) == 0 &&
               webRequest.sshPublicKey.empty() && keygenCalls == 0,
-          "new GUI-only pairing never invokes an absent Windows OpenSSH helper");
+              "new GUI-only pairing uses v3 and never invokes an absent Windows OpenSSH helper");
     check(throws([&] { CreatePairRequest("ADMIN-PC", kWorkstationKey, kNonce, true, missingOpenSsh); }) && keygenCalls == 1,
           "explicit SSH request reports missing OpenSSH rather than silently downgrading");
     const auto requestedSsh = CreatePairRequest("ADMIN-PC", kWorkstationKey, kNonce, true, [&]() { return sshKey; });
-    check(requestedSsh.code == sshRequest && requestedSsh.sshPublicKey == sshKey, "SSH opt-in enrolls the separate key");
+    check(requestedSsh.code.rfind("TELIPHONES-PAIR-REQUEST-3:", 0) == 0 && requestedSsh.sshPublicKey == sshKey,
+          "SSH opt-in enrolls a separate key in a version-3 request");
     const auto sshBody = Base64UrlDecode(requestedSsh.code.substr(requestedSsh.code.find(':') + 1));
     const auto sshFields = json::Parse(std::string(sshBody.begin(), sshBody.end()));
-    check(sshFields.at("schema").asString() == "teliphones-pair-request/2" &&
+      check(sshFields.at("schema").asString() == "teliphones-pair-request/3" &&
           sshFields.at("ssh_public_key").asString() == sshKey &&
           sshFields.at("workstation").asString() == "ADMIN-PC", "access and workstation encoded before generation");
     check(!ParsePairResponse(response({{"ssh", false}}), kNonce, kWorkstationKey).ssh,
@@ -276,8 +311,19 @@ void testPairing() {
         const auto text = json::Serialize(object);
         return "TELIPHONES-PAIR-RESPONSE-2:" + Base64UrlEncode(Bytes(text.begin(), text.end()));
     };
+      object["gui_url"] = "https://100.70.1.1/admin/";
+      object["management_hostname"] = "pbx.example.net";
+      object["schema"] = "teliphones-pair-response/3";
+      const auto v3Body = json::Serialize(object);
+      const auto v3 = "TELIPHONES-PAIR-RESPONSE-3:" + Base64UrlEncode(Bytes(v3Body.begin(), v3Body.end()));
+      object.erase("management_hostname");
+      object["schema"] = "teliphones-pair-response/2";
+      object["gui_url"] = "http://100.70.1.1/admin/";
     const auto managed = ParsePairResponse(v2(), kNonce, kWorkstationKey, sshKey);
     check(managed.sshUser == "root" && managed.sshPort == 22002, "explicit administrator-approved root account retained");
+      const auto managedV3 = ParsePairResponse(v3, kNonce, kWorkstationKey, sshKey);
+      check(managedV3.sshUser == "root" && managedV3.managementHostname == "pbx.example.net",
+              "managed SSH and hostname fields are accepted together in v3");
     check(throws([&] { ParsePairResponse(v2(), "bcdefghijklmnopqrstuvw", kWorkstationKey, sshKey); }),
           "regenerated nonce rejects stale PBX response even if public key stays the same");
     auto denied = object;
@@ -1584,6 +1630,24 @@ void testTunnelLifecycle() {
                     !lc::MayClearActiveRecovery(true, true, true, true, lc::AdapterPresence::Unverified, D::Missing) &&
                     !lc::MayClearActiveRecovery(true, true, true, true, lc::AdapterPresence::Absent, D::Unknown),
               "active recovery context cannot clear without exact authoritative absence evidence");
+
+      // Reproduce the stale UI flag reported after Windows has already removed the service, devnode and interface.
+      // Recovery must reconcile current system evidence, and must not couple cleanup to saved profile presence.
+      const auto saved = adminProfile();
+      const auto savedBytes = SerializeProfiles({saved});
+      const auto savedAfterRecovery = SerializeProfiles(ParseProfiles(savedBytes));
+      check(savedAfterRecovery == savedBytes && ParseProfiles(savedAfterRecovery).front().pairing.workstationPublicKey ==
+                saved.pairing.workstationPublicKey && ParseProfiles(savedAfterRecovery).front().pairing.pbxPublicKey ==
+                saved.pairing.pbxPublicKey,
+            "Recovery leaves saved connection credentials byte-for-byte unchanged");
+      check(lc::MayClearActiveRecovery(true, true, true, true, lc::AdapterPresence::Absent, D::Missing),
+            "a stale Recovery required flag clears when service, recorded PnP device and interface are absent");
+      check(!lc::MayClearActiveRecovery(true, true, true, true, lc::AdapterPresence::Unverified, D::Missing) &&
+                !lc::MayClearActiveRecovery(true, false, false, true, lc::AdapterPresence::Absent, D::Missing),
+            "genuinely incomplete removal and unknown ownership remain actionable and fail closed");
+      check(lc::MayClearActiveRecovery(true, true, true, true, lc::AdapterPresence::Absent, D::Missing) &&
+                lc::MayClearActiveRecovery(true, true, true, true, lc::AdapterPresence::Absent, D::Missing),
+            "repeated recovery of independently absent TELIPHONES resources is idempotent");
 
     struct FakeWindows {
         std::vector<lc::AdapterPresence> observations;

@@ -24,6 +24,8 @@ std::shared_ptr<ManagedSshConsole> StartManagedSshConsole(const Profile& profile
 void CloseManagedSsh(const std::string& profile);
 // Application exit: closes every owned session for every profile and verifies each teardown.
 void CloseAllManagedSsh();
+// Removes only allowlisted transient runtimes for valid profile-ID directories. Permanent DPAPI identities remain.
+void CleanAllSshRuntimes();
 int RunSshConsole(const std::vector<std::string>& arguments);
 #ifdef TELIPHONES_SSH_TESTING
 std::size_t ManagedSshSessionCount(const std::string& profile);

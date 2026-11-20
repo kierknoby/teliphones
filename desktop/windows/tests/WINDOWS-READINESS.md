@@ -1,7 +1,7 @@
 # Windows developer builds, testing and readiness
 
 Targets: TELIPHONES for Windows **0.10.0**, an unreleased development target, and
-the currently tested TELIPHONES FreePBX module installation **0.8.3.15**. These
+the proposed, unreleased TELIPHONES FreePBX module/root broker source target **0.9.0.0**. These
 products are independently versioned. No Windows 0.10.0 build is available;
 native Windows build and acceptance tests remain outstanding. Existing published
 module download information is unchanged by this Windows work.
@@ -71,7 +71,7 @@ review. Legacy records with a different schema are currently treated as
 unverified, not migrated or removed automatically.
 
 Startup recovery considers saved-profile tunnel names and valid protected
-records only. The always-visible **Recover TELIPHONES** action works with no
+records only. The always-visible **Recover** action works with no
 saved profiles and after PBX pairing revocation. It does not enumerate generic
 WireGuard VPNs. Recovery requires confirmation and invokes the same elevated,
 per-tunnel-locked helper used by Disconnect.
@@ -130,8 +130,9 @@ profile; the certificate does not need an IP subjectAltName for the private
 WireGuard address. After approval, the operator explicitly pairs again to
 receive the HTTPS primary URL. TELIPHONES does not
 select a later HTTPS service, rewrite existing pairings, or alter firewall
-permissions. HTTPS launch requires the explicit local `management_tls_hostname`
-value supplied or confirmed by the PBX administrator. It starts Microsoft Edge
+permissions. HTTPS launch requires the explicit `management_tls_hostname` value
+supplied or confirmed by the PBX administrator; a valid v3 pairing response
+automatically populates the editable field when configured. It starts Microsoft Edge
 with a unique profile, maps that hostname to the paired tunnel IPv4, blocks
 other hostnames in that profile's resolver configuration, disables proxies and
 preserves normal TLS validation. Launch requires a Running tunnel service,

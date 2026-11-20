@@ -73,6 +73,38 @@ void RemoveSshRuntime(const Profile& profile) {
     RemoveSshRuntimeTree(fs, Narrow(directory + L"\\" + Widen(profile.id)));
 }
 
+void CleanAllSshRuntimes() {
+    const auto root = KnownFolder(FOLDERID_LocalAppData) + L"\\TELIPHONES\\SSH";
+    const auto attributes = GetFileAttributesW(root.c_str());
+    if (attributes == INVALID_FILE_ATTRIBUTES) {
+        const DWORD error = GetLastError();
+        if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND) return;
+        ThrowLastError("Unable to inspect TELIPHONES SSH runtime directory", error);
+    }
+    if ((attributes & FILE_ATTRIBUTE_DIRECTORY) == 0 || (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0)
+        throw Error("The TELIPHONES SSH runtime root is not a plain directory; it was left unchanged.");
+
+    std::vector<std::string> failures;
+    for (const auto& entry : std::filesystem::directory_iterator(std::filesystem::path(root))) {
+        const auto entryStatus = entry.symlink_status();
+        const std::string profileId = Narrow(entry.path().filename().wstring());
+        if (!std::filesystem::is_directory(entryStatus) || std::filesystem::is_symlink(entryStatus) || !IsProfileId(profileId))
+            continue;
+        Profile profile;
+        profile.id = profileId;
+        try {
+            RemoveSshRuntime(profile);
+        } catch (const std::exception& error) {
+            failures.push_back(profileId + ": " + SanitizeDiagnosticDetail(error.what()));
+        }
+    }
+    if (!failures.empty()) {
+        std::string detail = "TELIPHONES temporary SSH runtime cleanup is incomplete: ";
+        for (const auto& failure : failures) detail += (detail.back() == ' ' ? "" : "; ") + failure;
+        throw Error(detail);
+    }
+}
+
 void RequireManagedSsh(const Profile& profile) {
     ValidateManagedPairing(profile.pairing);
     if (profile.kind != ProfileKind::Administrator || profile.pairing.sshPort == 0 ||

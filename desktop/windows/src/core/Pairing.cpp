@@ -9,6 +9,7 @@ namespace tlp {
 
 const char kPairRequestPrefix[] = "TELIPHONES-PAIR-REQUEST-1:";
 const char kPairResponsePrefix[] = "TELIPHONES-PAIR-RESPONSE-1:";
+const char kPairRequestV3Prefix[] = "TELIPHONES-PAIR-REQUEST-3:";
 
 namespace {
 
@@ -162,18 +163,34 @@ std::string BuildSshPairRequest(const std::string& workstation, const std::strin
 WorkstationPairRequest CreatePairRequest(const std::string& workstation, const std::string& publicKey,
                                         const std::string& nonce, bool requestSsh,
                                         const std::function<std::string()>& generateSshKey) {
-    const auto webRequest = BuildPairRequest(workstation, publicKey, nonce);
-    if (!requestSsh) return {webRequest, ""};
-    if (!generateSshKey) throw Error("SSH capability requires an OpenSSH key generator.");
-    const auto key = generateSshKey();
-    return {BuildSshPairRequest(workstation, publicKey, nonce, key), key};
+    std::string key;
+    if (requestSsh) {
+        if (!generateSshKey) throw Error("SSH capability requires an OpenSSH key generator.");
+        key = generateSshKey();
+        if (!IsSshPublicKey(key)) throw Error("Invalid workstation SSH public key.");
+    }
+    return {BuildManagementPairRequest(workstation, publicKey, nonce, key), key};
+}
+
+std::string BuildManagementPairRequest(const std::string& workstation, const std::string& publicKey,
+                                       const std::string& nonce, const std::string& sshPublicKey) {
+    BuildPairRequest(workstation, publicKey, nonce);
+    json::Value::Object object{{"schema", "teliphones-pair-request/3"}, {"workstation", workstation},
+        {"public_key", publicKey}, {"nonce", nonce}};
+    if (!sshPublicKey.empty()) {
+        if (!IsSshPublicKey(sshPublicKey)) throw Error("Invalid workstation SSH public key.");
+        object["ssh_public_key"] = sshPublicKey;
+    }
+    const std::string body = json::Serialize(json::Value(object));
+    return kPairRequestV3Prefix + Base64UrlEncode(Bytes(body.begin(), body.end()));
 }
 
 PairResponse ParsePairResponse(const std::string& input, const std::string& expectedNonce, const std::string& expectedPublicKey,
                                const std::string& sshPublicKey) {
     std::string code = trim(input);
-    const bool managed = code.rfind("TELIPHONES-PAIR-RESPONSE-2:", 0) == 0;
-    const std::string prefix = managed ? "TELIPHONES-PAIR-RESPONSE-2:" : kPairResponsePrefix;
+    const bool hostnameResponse = code.rfind("TELIPHONES-PAIR-RESPONSE-3:", 0) == 0;
+    const bool managed = hostnameResponse || code.rfind("TELIPHONES-PAIR-RESPONSE-2:", 0) == 0;
+    const std::string prefix = hostnameResponse ? "TELIPHONES-PAIR-RESPONSE-3:" : managed ? "TELIPHONES-PAIR-RESPONSE-2:" : kPairResponsePrefix;
     if (code.size() > 16000 || code.compare(0, prefix.size(), prefix) != 0) {
         throw Error("This is not a TELIPHONES pairing response. Copy the complete response shown on the FreePBX TELIPHONES page.");
     }
@@ -187,8 +204,9 @@ PairResponse ParsePairResponse(const std::string& input, const std::string& expe
     std::vector<std::string> keys{"schema", "nonce", "workstation_id", "workstation_public_key", "address", "pbx_address", "pbx_name",
                                    "pbx_public_key", "endpoint", "mode", "expires_at", "ssh", "gui_url"};
     if (managed) for (const char* key : {"ssh_user", "ssh_host_key", "ssh_ca_key", "ssh_port", "ssh_api_port"}) keys.emplace_back(key);
+    if (hostnameResponse) keys.emplace_back("management_hostname");
     json::RequireExactKeys(value, keys, "The pairing response");
-    if (value.at("schema").asString() != (managed ? "teliphones-pair-response/2" : "teliphones-pair-response/1"))
+    if (value.at("schema").asString() != (hostnameResponse ? "teliphones-pair-response/3" : managed ? "teliphones-pair-response/2" : "teliphones-pair-response/1"))
         throw Error("Unsupported pairing response version.");
     if (value.at("nonce").asString() != expectedNonce || value.at("workstation_public_key").asString() != expectedPublicKey) {
         throw Error("This pairing response was issued for a different pairing request. Paste the response generated for the request shown in this window.");
@@ -205,6 +223,15 @@ PairResponse ParsePairResponse(const std::string& input, const std::string& expe
     result.mode = value.at("mode").asString();
     result.ssh = value.at("ssh").asBool();
     result.guiUrl = value.at("gui_url").asString();
+    if (hostnameResponse) {
+        const auto& hostname = value.at("management_hostname");
+        result.managementHostnameSupplied = true;
+        if (!hostname.isNull()) {
+            result.managementHostname = hostname.asString();
+            if (result.guiUrl.rfind("https://", 0) != 0 || !IsHostname(result.managementHostname))
+                throw Error("The PBX supplied an invalid HTTPS management hostname. Verify its configured certificate hostname with the administrator.");
+        }
+    }
     if (managed) {
         result.sshUser = value.at("ssh_user").asString();
         result.sshPublicKey = sshPublicKey;

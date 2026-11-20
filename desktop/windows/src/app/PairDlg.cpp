@@ -1,5 +1,6 @@
 #include "PairDlg.h"
 
+#include <algorithm>
 #include <cstring>
 #include <ctime>
 #include <iterator>
@@ -88,6 +89,10 @@ BEGIN_MESSAGE_MAP(CPairDlg, CAppearanceDialog)
     ON_CBN_SELCHANGE(IDC_PAIR_ACCESS, &CPairDlg::OnRequestChanged)
     ON_EN_CHANGE(IDC_PAIR_RESPONSE, &CPairDlg::OnResponseChanged)
     ON_WM_TIMER()
+    ON_WM_SIZE()
+    ON_WM_VSCROLL()
+    ON_WM_MOUSEWHEEL()
+    ON_WM_SETFOCUS()
 END_MESSAGE_MAP()
 
 CPairDlg::CPairDlg(const tlp::win::WireGuardInstallation& wireguard, CWnd* parent) : CAppearanceDialog(IDD_PAIR, parent), wireguard_(wireguard) {}
@@ -102,12 +107,145 @@ BOOL CPairDlg::OnInitDialog() {
     access->SetCurSel(0);
     static_cast<CEdit*>(GetDlgItem(IDC_PAIR_WORKSTATION))->SetLimitText(64);
     static_cast<CEdit*>(GetDlgItem(IDC_PAIR_RESPONSE))->SetLimitText(16000);
+    static_cast<CEdit*>(GetDlgItem(IDC_PAIR_TLS_HOSTNAME))->SetLimitText(253);
     SetDlgItemText(IDC_PAIR_REQUEST, L"Generate a key and pairing request first.");
     SetDlgItemText(IDC_PAIR_FINGERPRINT, L"");
     SetDlgItemText(IDC_PAIR_STATUS, L"Choose Web Access, or request Web + SSH. FreePBX must separately approve SSH.");
+    ModifyStyle(0, WS_THICKFRAME | WS_VSCROLL);
+    CRect client;
+    GetClientRect(&client);
+    initialClientWidth_ = client.Width();
+    initialClientHeight_ = client.Height();
+    footerTop_ = client.bottom;
+    for (HWND child = ::GetWindow(m_hWnd, GW_CHILD); child; child = ::GetWindow(child, GW_HWNDNEXT)) {
+        const int id = ::GetDlgCtrlID(child);
+        CRect rect;
+        ::GetWindowRect(child, &rect);
+        ScreenToClient(&rect);
+        if (id == IDOK || id == IDCANCEL) {
+            footerControls_.push_back({child, rect});
+            footerTop_ = std::min(footerTop_, rect.top);
+        } else {
+            contentControls_.push_back({child, rect});
+            contentExtent_ = std::max(contentExtent_, rect.bottom);
+        }
+    }
+    // Cap the initial outer window size to the nearest monitor's work area.
+    MONITORINFO monitor{};
+    monitor.cbSize = sizeof(monitor);
+    if (GetMonitorInfo(MonitorFromWindow(m_hWnd, MONITOR_DEFAULTTONEAREST), &monitor)) {
+        const CRect work(monitor.rcWork);
+        CRect window;
+        GetWindowRect(&window);
+        const int width = std::min(window.Width(), work.Width());
+        const int height = std::min(window.Height(), work.Height());
+        const int x = std::clamp(window.left, work.left, work.right - width);
+        const int y = std::clamp(window.top, work.top, work.bottom - height);
+        if (width != window.Width() || height != window.Height() || x != window.left || y != window.top)
+            SetWindowPos(nullptr, x, y, width, height, SWP_NOZORDER | SWP_NOACTIVATE);
+    }
     initialized_ = true;
+    ArrangePairDialog();
     SetDefID(IDC_PAIR_GENERATE);
     OnResponseChanged();
+    return TRUE;
+}
+
+void CPairDlg::ArrangePairDialog() {
+    if (!m_hWnd || arranging_) return;
+    arranging_ = true;
+    CRect client;
+    GetClientRect(&client);
+    const int baseWidth = std::max(1, initialClientWidth_);
+    const auto scaleX = [&](int x) { return MulDiv(x, client.Width(), baseWidth); };
+    const auto scaleWidth = [&](int width) { return MulDiv(width, client.Width(), baseWidth); };
+    const int deltaHeight = client.Height() - initialClientHeight_;
+    const int currentFooterTop = footerTop_ + deltaHeight;
+    const int viewportBottom = std::max(0, currentFooterTop - 6);
+    scrollOffset_ = std::clamp(scrollOffset_, 0, std::max(0, contentExtent_ - viewportBottom));
+
+    for (const auto& item : contentControls_) {
+        if (::IsWindow(item.window)) {
+            ::SetWindowPos(item.window, nullptr, scaleX(item.original.left), item.original.top - scrollOffset_,
+                scaleWidth(item.original.Width()), item.original.Height(), SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+    }
+    for (const auto& item : footerControls_) {
+        if (::IsWindow(item.window)) {
+            ::SetWindowPos(item.window, nullptr, scaleX(item.original.left), item.original.top + deltaHeight,
+                scaleWidth(item.original.Width()), item.original.Height(), SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+    }
+
+    SCROLLINFO info{sizeof(info), SIF_RANGE | SIF_PAGE | SIF_POS};
+    info.nMin = 0;
+    info.nMax = std::max(0, contentExtent_ - 1);
+    info.nPage = static_cast<UINT>(viewportBottom);
+    info.nPos = scrollOffset_;
+    SetScrollInfo(SB_VERT, &info, TRUE);
+    arranging_ = false;
+}
+
+void CPairDlg::ScrollPairContent(int offset) {
+    CRect client;
+    GetClientRect(&client);
+    const int currentFooterTop = footerTop_ + client.Height() - initialClientHeight_;
+    const int viewportBottom = std::max(0, currentFooterTop - 6);
+    const int next = std::clamp(offset, 0, std::max(0, contentExtent_ - viewportBottom));
+    if (next == scrollOffset_) return;
+    scrollOffset_ = next;
+    ArrangePairDialog();
+}
+
+void CPairDlg::OnSize(UINT nType, int cx, int cy) {
+    CAppearanceDialog::OnSize(nType, cx, cy);
+    if (initialized_) ArrangePairDialog();
+}
+
+void CPairDlg::OnVScroll(UINT code, UINT position, CScrollBar* scrollbar) {
+    (void)scrollbar;
+    SCROLLINFO info{sizeof(info), SIF_ALL};
+    GetScrollInfo(SB_VERT, &info);
+    const int line = std::max(16, GetSystemMetrics(SM_CXVSCROLL));
+    switch (code) {
+        case SB_TOP: ScrollPairContent(0); break;
+        case SB_BOTTOM: ScrollPairContent(contentExtent_); break;
+        case SB_LINEUP: ScrollPairContent(scrollOffset_ - line); break;
+        case SB_LINEDOWN: ScrollPairContent(scrollOffset_ + line); break;
+        case SB_PAGEUP: ScrollPairContent(scrollOffset_ - static_cast<int>(info.nPage)); break;
+        case SB_PAGEDOWN: ScrollPairContent(scrollOffset_ + static_cast<int>(info.nPage)); break;
+        case SB_THUMBTRACK:
+        case SB_THUMBPOSITION:
+            ScrollPairContent(static_cast<int>(position));
+            break;
+    }
+}
+
+void CPairDlg::OnSetFocus(CWnd* oldWindow) {
+    CAppearanceDialog::OnSetFocus(oldWindow);
+    CWnd* focus = GetFocus();
+    if (!focus || focus == this) return;
+    auto found = std::find_if(contentControls_.begin(), contentControls_.end(),
+        [focus](const ContentControl& item) { return item.window == focus->GetSafeHwnd(); });
+    if (found == contentControls_.end()) return;
+    CRect client;
+    GetClientRect(&client);
+    const int footer = footerTop_ + client.Height() - initialClientHeight_;
+    CRect rect;
+    focus->GetWindowRect(&rect);
+    ScreenToClient(&rect);
+    if (rect.top < 0) ScrollPairContent(scrollOffset_ + rect.top);
+    else if (rect.bottom > footer - 6) ScrollPairContent(scrollOffset_ + rect.bottom - footer + 6);
+}
+
+BOOL CPairDlg::OnMouseWheel(UINT flags, short delta, CPoint point) {
+    (void)flags;
+    (void)point;
+    wheelRemainder_ += delta;
+    const int notches = wheelRemainder_ / WHEEL_DELTA;
+    wheelRemainder_ %= WHEEL_DELTA;
+    if (notches != 0)
+        ScrollPairContent(scrollOffset_ - notches * std::max(24, GetSystemMetrics(SM_CXVSCROLL)));
     return TRUE;
 }
 
@@ -176,14 +314,27 @@ void CPairDlg::OnResponseChanged() {
     }
     try {
         const auto pairing = ValidatedResponse();
+        if (pairing.managementHostnameSupplied) {
+            if (!pairing.managementHostname.empty()) {
+                SetEdit(this, IDC_PAIR_TLS_HOSTNAME, pairing.managementHostname);
+                GetDlgItem(IDC_PAIR_TLS_HOSTNAME)->EnableWindow(TRUE);
+            } else {
+                SetEdit(this, IDC_PAIR_TLS_HOSTNAME, "");
+                GetDlgItem(IDC_PAIR_TLS_HOSTNAME)->EnableWindow(TRUE);
+                if (pairing.guiUrl.rfind("https://", 0) == 0)
+                    SetDlgItemText(IDC_PAIR_STATUS, L"Pairing verified. The PBX has no configured management certificate hostname; confirm the exact certificate DNS name with its administrator.");
+            }
+        }
         if (pairing.ssh) {
             SetEdit(this, IDC_PAIR_SSHUSER, pairing.sshUser);
             GetDlgItem(IDC_PAIR_SSHUSER)->ShowWindow(SW_SHOW);
             GetDlgItem(IDC_PAIR_SSHLABEL)->ShowWindow(SW_SHOW);
         }
-        SetDlgItemText(IDC_PAIR_STATUS, pairing.ssh
-            ? L"Response verified. SSH approved by FreePBX for the account shown."
-            : L"Response verified. FreePBX Web Access only; SSH is not approved.");
+        if (!pairing.managementHostnameSupplied || !pairing.managementHostname.empty()) {
+            SetDlgItemText(IDC_PAIR_STATUS, pairing.ssh
+                ? L"Response verified. SSH approved by FreePBX for the account shown."
+                : L"Response verified. FreePBX Web Access only; SSH is not approved.");
+        }
         GetDlgItem(IDOK)->EnableWindow(TRUE);
         SetDefID(IDOK);
     } catch (const tlp::Error& error) {

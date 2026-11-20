@@ -60,12 +60,14 @@ std::string changeResponse(const std::string& code, const std::string& field, co
 }
 
 std::string response(const tlp::json::Value& request, bool managed, bool approved = true) {
-    tlp::json::Value::Object value{{"schema", managed ? "teliphones-pair-response/2" : "teliphones-pair-response/1"},
+    const bool version3 = request.at("schema").asString() == "teliphones-pair-request/3";
+    tlp::json::Value::Object value{{"schema", version3 ? "teliphones-pair-response/3" : managed ? "teliphones-pair-response/2" : "teliphones-pair-response/1"},
         {"nonce", request.at("nonce")}, {"workstation_id", "0123456789abcdef"},
         {"workstation_public_key", request.at("public_key")}, {"address", "100.70.1.2/32"},
         {"pbx_address", "100.70.1.1"}, {"pbx_name", "Test-PBX"}, {"pbx_public_key", pbxKey},
         {"endpoint", "pbx.example.net:51821"}, {"mode", "persistent"}, {"expires_at", nullptr},
         {"ssh", managed && approved}, {"gui_url", "https://100.70.1.1/admin/"}};
+    if (version3) value.emplace("management_hostname", "pbx.example.net");
     if (managed) {
         value.emplace("ssh_user", approved ? "administrator" : "");
         value.emplace("ssh_host_key", approved ? sshKey() : "");
@@ -74,7 +76,7 @@ std::string response(const tlp::json::Value& request, bool managed, bool approve
         value.emplace("ssh_api_port", approved ? 8765 : 0);
     }
     const auto body = tlp::json::Serialize(tlp::json::Value(value));
-    return std::string(managed ? "TELIPHONES-PAIR-RESPONSE-2:" : tlp::kPairResponsePrefix) +
+    return std::string(version3 ? "TELIPHONES-PAIR-RESPONSE-3:" : managed ? "TELIPHONES-PAIR-RESPONSE-2:" : tlp::kPairResponsePrefix) +
         tlp::Base64UrlEncode(tlp::Bytes(body.begin(), body.end()));
 }
 
@@ -150,7 +152,7 @@ void RunPairDialogTests(CWnd* parent) {
     dialog.OnGenerate();
     check(enabled(IDC_PAIR_COPY) && enabled(IDC_PAIR_RESPONSE) && !enabled(IDOK), "generated request enables copy not save");
     const auto first = request(dialog);
-    check(first.at("schema").asString() == "teliphones-pair-request/1" && sshGenerated == 0, "web request needs no SSH key");
+    check(first.at("schema").asString() == "teliphones-pair-request/3" && sshGenerated == 0, "web request uses v3 and needs no SSH key");
     const auto approvedWeb = response(first, false);
     const auto parsedWeb = tlp::ParsePairResponse(approvedWeb, first.at("nonce").asString(),
                                                 first.at("public_key").asString());
@@ -159,7 +161,9 @@ void RunPairDialogTests(CWnd* parent) {
     check(!enabled(IDOK), "multiline WM_SETTEXT does not notify response validation");
     dialog.SetDlgItemText(IDC_PAIR_RESPONSE, L"");
     replaceResponse(dialog, approvedWeb);
-    check(enabled(IDOK) && !dialog.GetDlgItem(IDC_PAIR_SSHUSER)->IsWindowVisible(), "valid web approval enables save without SSH account");
+        check(enabled(IDOK) && !dialog.GetDlgItem(IDC_PAIR_SSHUSER)->IsWindowVisible()
+            && text(dialog, IDC_PAIR_TLS_HOSTNAME) == "pbx.example.net",
+            "valid v3 web approval populates hostname and enables save without SSH account");
     auto wrongNonce = first.at("nonce").asString();
     wrongNonce[0] = wrongNonce[0] == 'A' ? 'B' : 'A';
     replaceResponse(dialog, changeResponse(approvedWeb, "nonce", wrongNonce));
@@ -182,7 +186,7 @@ void RunPairDialogTests(CWnd* parent) {
           text(dialog, IDC_PAIR_RESPONSE).empty() && credentials.empty(), "access change invalidates request and removes credential");
     dialog.OnGenerate();
     const auto sshRequest = request(dialog);
-    check(sshRequest.at("schema").asString() == "teliphones-pair-request/2" &&
+    check(sshRequest.at("schema").asString() == "teliphones-pair-request/3" &&
           sshRequest.at("ssh_public_key").asString() == sshKey() && sshGenerated == 1, "SSH choice encoded before generation");
     check(text(dialog, IDC_PAIR_WORKSTATION) == "ADMIN-PC", "regeneration preserves name");
     replaceResponse(dialog, approvedWeb);

@@ -7,12 +7,13 @@ namespace FreePBX\modules\Teliphones {
             return \stream_socket_client('unix://' . $GLOBALS['pageSocket'], $errno, $error, $timeout);
         }
         $pair = \stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
-        $response = $GLOBALS['pageCalls'] === 2
+        $response = $GLOBALS['pageCalls'] === 2 && empty($GLOBALS['pageSuccess'])
             ? ['ok' => false, 'error' => 'Modelled broker operation failure.']
-            : ['ok' => true, 'status' => ['protocol' => 12, 'component_version' => WebSupport::BROKER_VERSION,
+            : ['ok' => true, 'message' => 'Modelled operation succeeded.', 'status' => ['protocol' => 12, 'component_version' => WebSupport::BROKER_VERSION,
                 'phase' => 'Ready', 'enabled' => true, 'readiness' => [],
                 'workstations' => ['ready' => true, 'ssh_ready' => true, 'ssh_accounts' => ['administrator'],
                     'requirements' => ['wg' => true, 'ip' => true, 'nft' => true], 'items' => [],
+                    'management_hostname' => 'pbx.example.net',
                     'web' => [['scheme' => 'https', 'port' => 443]]]]];
         fwrite($pair[1], json_encode($response, JSON_THROW_ON_ERROR) . "\n");
         $GLOBALS['pagePeers'][] = $pair[1];
@@ -30,6 +31,7 @@ namespace {
         public function checkSection($section) { return $section === '*' ? 1 : 0; }
     };
     $GLOBALS['pageCalls'] = 0;
+    $GLOBALS['pageSuccess'] = ($_POST['mode'] ?? null) === 'temporary';
     $GLOBALS['pagePeers'] = [];
     $GLOBALS['pageSocket'] = $argv[1] ?? '';
     function show_view($path, $variables) {

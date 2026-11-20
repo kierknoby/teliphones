@@ -74,9 +74,9 @@ class WebSupport
     ];
     /** Exact fields forwarded for workstation pairing actions; other actions keep their existing forwarding. */
     public const PAIRING_FIELDS = [
-        'pair' => ['request', 'endpoint_host', 'listen_port', 'mode', 'minutes', 'ssh', 'ssh_user', 'web', 'sources'],
+        'pair' => ['request', 'endpoint_host', 'listen_port', 'mode', 'minutes', 'ssh', 'ssh_user', 'web', 'management_hostname', 'sources'],
         'unpair' => ['workstation_id'],
-        'web' => ['web'],
+        'web' => ['web', 'management_hostname'],
         'workstation-policy' => ['state'],
         'workstation-manage' => ['workstation_id', 'state', 'sources'],
         'workstation-ban' => ['source', 'reason', 'hours'],
@@ -106,7 +106,7 @@ class WebSupport
     public const OPERATION_STATES = ['running', 'succeeded', 'failed'];
     /** Protocol 12 is required for the current workstation policy and session controls. */
     public const BROKER_PROTOCOL = 12;
-    public const BROKER_VERSION = '0.8.3.15';
+    public const BROKER_VERSION = '0.9.0.0';
     public const DIAGNOSTICS_PROTOCOL = 4;
     public const SSH_PROTOCOL = 5;
     /** Protocol 6 adds the WireGuard listener firewall permit and configurable management web services. */
@@ -174,6 +174,30 @@ class WebSupport
                             . ($field === 'mode' ? 'pairing duration mode.' : 'SSH access choice.')]];
                 }
             }
+            if ($request['mode'] === 'persistent') $request['minutes'] = '0';
+            elseif (!isset($request['minutes']) || !in_array($request['minutes'], ['60', '240', '480', '1440'], true)) {
+                return ['code' => 200, 'dispatched' => false, 'notice' => ['ok' => false, 'action_failed' => true,
+                    'action' => 'pair', 'operation' => $operation,
+                    'error' => 'Pairing was not attempted: choose a valid temporary duration.']];
+            }
+        }
+        if (in_array($request['action'], ['pair', 'web'], true)
+            && isset($request['management_hostname'])) {
+            $hostname = trim($request['management_hostname']);
+            if (strlen($request['management_hostname']) > 253
+                || ($hostname !== ''
+                    && (preg_match('/^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$/D', $hostname) !== 1
+                        || preg_match('/^[0-9.]+$/D', $hostname) === 1))) {
+                return ['code' => 200, 'dispatched' => false, 'notice' => ['ok' => false, 'action_failed' => true,
+                    'action' => $request['action'], 'operation' => $operation,
+                    'error' => 'Enter a valid HTTPS management DNS hostname or leave it blank.']];
+            }
+            if ($hostname !== '' && isset($request['web']) && trim($request['web']) !== ''
+                && preg_match('/^https\s*:/i', trim(explode(',', $request['web'])[0])) !== 1) {
+                return ['code' => 200, 'dispatched' => false, 'notice' => ['ok' => false, 'action_failed' => true,
+                    'action' => $request['action'], 'operation' => $operation,
+                    'error' => 'A management hostname may be set only when HTTPS is the primary management service.']];
+            }
         }
         if ($request['action'] === 'pair' && !empty($request['web']) && !self::supportsWeb($support)) {
             return ['code' => 409, 'dispatched' => false, 'notice' => ['ok' => false, 'action_failed' => true,
@@ -189,13 +213,27 @@ class WebSupport
                 'error' => 'Locked SSH pairing requires the updated root broker. Complete the documented root broker update, then retry.']];
         }
         // An empty value preserves the saved configuration.
-        if ($request['action'] === 'pair' && isset($request['web'])
+        if (in_array($request['action'], ['pair', 'web'], true) && isset($request['web'])
             && trim($request['web']) === '') {
             unset($request['web']);
+        }
+        if ($request['action'] === 'pair' && isset($request['management_hostname'])
+            && trim($request['management_hostname']) === '') {
+            unset($request['management_hostname']);
         }
         if ($request['action'] === 'web' && !self::supportsWeb($support)) {
             return ['code' => 200, 'dispatched' => false, 'notice' => ['ok' => false, 'action_failed' => true, 'action' => 'web', 'operation' => $operation,
                 'error' => 'Management web services require the updated root broker. Follow the root broker update procedure, then refresh this page.']];
+        }
+        if (in_array($request['action'], ['pair', 'web'], true)
+            && isset($request['management_hostname']) && trim($request['management_hostname']) !== ''
+            && (!isset($request['web']) || trim($request['web']) === '')) {
+            $currentWeb = $support['status']['workstations']['web'] ?? null;
+            if (is_array($currentWeb) && isset($currentWeb[0]['scheme']) && $currentWeb[0]['scheme'] !== 'https') {
+                return ['code' => 200, 'dispatched' => false, 'notice' => ['ok' => false, 'action_failed' => true,
+                    'action' => $request['action'], 'operation' => $operation,
+                    'error' => 'A management hostname may be set only when HTTPS is the primary management service.']];
+            }
         }
         if ($request['action'] === 'workstation-policy' && !self::supportsWorkstationPolicy($support)) {
             return ['code' => 409, 'dispatched' => false, 'notice' => ['ok' => false, 'action_failed' => true,
@@ -331,16 +369,16 @@ class WebSupport
     public static function pairingRequestSupportsSsh($request): bool
     {
         if (!is_string($request) || strlen($request) > 4096
-            || preg_match('/^TELIPHONES-PAIR-REQUEST-2:([A-Za-z0-9_-]+)$/D', trim($request), $matches) !== 1) {
+            || preg_match('/^TELIPHONES-PAIR-REQUEST-([23]):([A-Za-z0-9_-]+)$/D', trim($request), $matches) !== 1) {
             return false;
         }
-        $encoded = strtr($matches[1], '-_', '+/');
+        $encoded = strtr($matches[2], '-_', '+/');
         $encoded .= str_repeat('=', (4 - strlen($encoded) % 4) % 4);
         $decoded = base64_decode($encoded, true);
         if ($decoded === false) return false;
         $payload = json_decode($decoded, true);
         return is_array($payload)
-            && ($payload['schema'] ?? null) === 'teliphones-pair-request/2'
+            && ($payload['schema'] ?? null) === ('teliphones-pair-request/' . $matches[1])
             && is_string($payload['ssh_public_key'] ?? null)
             && $payload['ssh_public_key'] !== '';
     }
@@ -366,6 +404,10 @@ class WebSupport
             }
             if (is_int($status['session']['expires_at'] ?? null)) $session['expires_at'] = $status['session']['expires_at'];
         }
+        $rawHostname = $status['workstations']['management_hostname'] ?? null;
+        $managementHostname = is_string($rawHostname) && strlen($rawHostname) <= 253
+            && ($rawHostname === '' || (preg_match('/^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$/D', $rawHostname) === 1
+                && preg_match('/^[0-9.]+$/D', $rawHostname) !== 1)) ? $rawHostname : '';
         $operation = null;
         $raw = $status['operation'] ?? null;
         if (is_array($raw) && is_string($raw['id'] ?? null) && preg_match('/^[a-f0-9]{1,32}$/', $raw['id'])
@@ -712,6 +754,14 @@ class WebSupport
                     'listening' => is_bool($entry['listening'] ?? null) ? $entry['listening'] : null];
             }
         }
+        $managementHostname = '';
+        $hostname = $raw['management_hostname'] ?? null;
+        if ($supported && is_string($hostname) && strlen($hostname) <= 253
+            && ($hostname === ''
+                || (preg_match('/^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$/D', $hostname) === 1
+                    && preg_match('/^[0-9.]+$/D', $hostname) !== 1))) {
+            $managementHostname = $hostname;
+        }
         return ['supported' => $supported, 'ready' => $supported && $raw['ready'] === true && !in_array(false, $requirements, true) && ($status['enabled'] ?? true) === true, 'requirements' => $requirements,
             'connection_state' => in_array($raw['connection_state'] ?? null, ['open', 'closed', 'frozen'], true) ? $raw['connection_state'] : null,
             'policy_supported' => self::supportsWorkstationPolicy($support),
@@ -726,6 +776,7 @@ class WebSupport
             'error' => $supported && is_string($raw['error'] ?? null) ? substr($raw['error'], 0, 500) : '',
             'firewall_integration' => $firewallIntegration,
             'web' => $web, 'web_supported' => $supported && ($status['protocol'] ?? 0) >= self::WEB_PROTOCOL,
+            'management_hostname' => $managementHostname,
             'gui_url' => $supported && is_string($raw['gui_url'] ?? null)
                 && preg_match('#^https?://[0-9.]{7,15}(:[0-9]{1,5})?/admin/$#D', $raw['gui_url']) === 1 ? $raw['gui_url'] : null,
             'listen_port' => $supported && is_int($raw['listen_port'] ?? null) ? $raw['listen_port'] : null,
@@ -734,7 +785,7 @@ class WebSupport
 
     public static function validPairingResponse($value): bool
     {
-        return is_string($value) && preg_match('/^TELIPHONES-PAIR-RESPONSE-[12]:[A-Za-z0-9_-]{20,16000}$/D', $value) === 1;
+        return is_string($value) && preg_match('/^TELIPHONES-PAIR-RESPONSE-[123]:[A-Za-z0-9_-]{20,16000}$/D', $value) === 1;
     }
 
     /**

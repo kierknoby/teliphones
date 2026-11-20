@@ -1,7 +1,7 @@
 # TELIPHONES for FreePBX 17: module guide
 
-Current source prepares numeric module **0.8.3.15** and root broker **0.8.3.15**,
-retaining protocol **12**; Windows remains independently **0.9.0**. The
+Current source targets numeric module **0.9.0.0** and root broker **0.9.0.0**,
+retaining protocol **12**; Windows is independently **0.10.0** in source. The
 numeric module version is greater than installed `0.8.3`, so Module Admin can
 recognise an in-place upgrade; its metadata remains monotonic. This source
 restores IPv4 pairing where FreePBX 17 does not generate an IPv6 Custom Service
@@ -38,8 +38,8 @@ inactivity bound while accepted cleanup continues independently of the browser.
 Do not delete the revocation journal or restore an older copy to resolve errors:
 that would discard security decisions. Live FreePBX 17 / Debian 12 validation
 of these unreleased corrections is still required. Module and broker source now
-identify this proposed version as 0.8.3.15; Windows remains independently 0.9.0. The
-0.8.3.15 development package is for controlled review, not production
+identify this proposed version as 0.9.0.0; Windows remains independently 0.10.0. The
+0.9.0.0 development target is for controlled review, not production
 installation or live acceptance.
 
 **Review before installation:** the operator confirmed a listener subprocess
@@ -50,14 +50,14 @@ owned listener readback and backs off failures. No live CPU or connectivity
 success is claimed. Follow the controlled observation procedure below.
 
 Approve private access to your PBX from the FreePBX interface. TELIPHONES
-**0.8.3.15 (proposed, unreleased)** pairs Windows workstations over WireGuard, with web access and,
+**0.9.0.0 (proposed, unreleased)** pairs Windows workstations over WireGuard, with web access and,
 when explicitly approved, temporary SSH certificates for an existing account.
 This is the authoritative guide to installing, upgrading and operating the
 FreePBX module and its separately installed root broker.
 
 **TELIPHONES is a UK registered trademark.**
 
-**TELIPHONES proposed 0.8.3.15 for FreePBX is licensed under GPLv3.**
+**TELIPHONES proposed 0.9.0.0 for FreePBX is licensed under GPLv3.**
 
 The software grant is GPL version 3 or later; the product footer uses the
 GPLv3 wording above. Software licensing does not grant trademark rights.
@@ -96,7 +96,7 @@ See [Licence](#licence).
 
 ## Secure Administration Without Exposing Your PBX
 
-With independently versioned **Windows 0.9.0**, administrators use **My PBXs**
+With independently versioned **Windows 0.10.0 source**, administrators use **My PBXs**
 to connect their own paired workstations. **Remote Support** is a separate,
 customer-authorised, time-limited workflow for enrolled MSP engineers.
 Neither replaces normal FreePBX sign-in or creates Linux accounts.
@@ -197,21 +197,24 @@ TELIPHONES is a community module and is not listed in the FreePBX online module 
 
 ### Install through Module Admin (recommended)
 
-The proposed 0.8.3.15 development package is `TELIPHONES-0.8.3.15.tgz`;
-verify it against `TELIPHONES-0.8.3.15.tgz.sha256` before upload. This archive is not a
-production approval or evidence of live FreePBX acceptance. Upgrading the
-module in place and refreshing the root broker preserves workstation
-configuration, ownership information, credentials and existing security
-policy; do not uninstall TELIPHONES first.
+The 0.9.0.0 module is an unreleased development target. The matching
+`TELIPHONES-0.9.0.0.tgz` archive and checksum are local development artifacts,
+not a release or deployment. The retained
+`TELIPHONES-0.8.3.15.tgz` archive is an earlier version and does not include
+these changes. Do not upload it as a 0.9.0.0 package. Any future in-place
+upgrade and root broker refresh must preserve workstation configuration,
+ownership information, credentials and existing security policy; do not
+uninstall TELIPHONES first.
 
-To install the 0.8.3.15 development package through FreePBX Module Admin, verify:
+For controlled testing, verify the development package checksum before upload.
+Do not use these instructions to install the older archive as the new target:
 
 ```bash
-sha256sum -c TELIPHONES-0.8.3.15.tgz.sha256
+sha256sum -c TELIPHONES-0.9.0.0.tgz.sha256
 ```
 
 Then open **Admin > Module Admin**, choose **Upload modules**, upload
-`TELIPHONES-0.8.3.15.tgz`, install TELIPHONES and apply the configuration. Continue
+`TELIPHONES-0.9.0.0.tgz`, install TELIPHONES and apply the configuration. Continue
 with [Complete Installation on FreePBX 17](#complete-installation-on-freepbx-17)
 to refresh the separately installed root broker. These steps describe the
 Module Admin package path only; do not install on a production PBX, and do not
@@ -323,9 +326,10 @@ On success, `systemctl status` shows `Loaded: loaded (/etc/systemd/system/teliph
 
 Update TELIPHONES in place. Do not uninstall the module first: uninstalling removes workstation pairings.
 
-**Proposed upgrade to 0.8.3.15 development candidate:** verify
-`TELIPHONES-0.8.3.15.tgz` and its checksum, then use the Module Admin upload
-workflow above for an in-place upgrade and rerun the root broker bootstrap.
+**Upgrade to the 0.9.0.0 development target:** verify the local
+`TELIPHONES-0.9.0.0.tgz` checksum before controlled testing, then use the
+Module Admin upload workflow above for an in-place upgrade and rerun the root
+broker bootstrap.
 Static package validation does not establish live acceptance or production
 readiness. Do not upgrade from a historical 0.6.7 package expecting the newer
 listener/admission corrections; it contains only the historical 0.6.7 source.
@@ -478,7 +482,7 @@ Do not declare connectivity fixed until the complete sequence succeeds.
 
 ### After upgrading TELIPHONES
 
-A Module Admin upgrade updates the FreePBX module files but does not necessarily update the separately installed, root-owned broker. TELIPHONES 0.8.3.15 requires broker version 0.8.3.15, broker protocol 12 and both `/usr/local/lib/teliphones-broker/support_broker.py` and `/usr/local/lib/teliphones-broker/ssh_authority.py`; an older broker or a missing SSH helper cannot provide the current FreePBX firewall compatibility corrections, durable workstation revocation, verified access removal, persisted operation outcomes, pairing transport and error-handling corrections, nftables transaction acknowledgement, session-admission diagnostics, bounded correlated diagnostic history, generation-fenced listener reconciliation, durable restrictive policy, bounded controller requests, safe workstation cleanup recovery, managed SSH, connection-state policy, source-locked pairing, post-pair workstation policy, identity-preserving listener migration, Windows policy requests, post-pair SSH elevation, manual listener bans or enforced workstation session limits. Confirm that no support session is active (as root: `fwconsole teliphones status`), disconnect Windows tunnels and expect existing TELIPHONES-managed SSH sessions to terminate, then rerun the root bootstrap from an existing root shell. The bootstrap retains the previous helper files and broker unit, validates the installed helpers, and enables and restarts `teliphones-broker.service`. Verify that service is active, `/run/teliphones/control.sock` exists, and the refreshed Connectivity > TELIPHONES page reports broker version 0.8.3.15, protocol 12 and managed SSH readiness. On failure, rollback attempts to restore prior files and the previous enabled/active state; an incomplete rollback is an error requiring recovery from the existing root shell. Do not restart, reconfigure or disable the normal system SSH service or change administrator accounts. Valid pairings retain their original deadlines and cryptographic identities during listener migration.
+A Module Admin upgrade updates the FreePBX module files but does not necessarily update the separately installed, root-owned broker. TELIPHONES 0.9.0.0 requires broker version 0.9.0.0 and protocol 12. The exact HTTPS certificate hostname may be explicitly configured by an administrator; the broker does not inspect certificate SANs or derive a TLS name from the WireGuard endpoint. Permanent pairing is durable authority with no expiry and does not create an unlimited active session. Confirm that no support session is active, disconnect Windows tunnels, and follow the reviewed root bootstrap only after a matching package exists. Do not restart, reconfigure or disable the normal system SSH service or change administrator accounts.
 **Proposed 0.8.3.15 is an unreleased development candidate.** The TGZ and checksum are prepared for controlled testing but are not production approval or live acceptance.
 **Proposed 0.8.3.15 is an unreleased development candidate.** The TGZ and checksum are prepared for controlled testing but are not production approval or live acceptance.
 
@@ -804,9 +808,14 @@ The 0.8.0 implementation adds durable restrictive decisions, generation-fenced
 listener reconciliation, conservative firewall path verification, expiring
 management grants and bounded controller requests. The original unknown-public-IP
 FreePBX 17 requirement remains **unverified**. Native Windows validation and live
-kernel/FreePBX acceptance remain outstanding; the reported SSH console crash is
-also unresolved. Windows 0.9.0 native validation and broker protocol 12 remain
-independent status items.
+kernel/FreePBX acceptance remain outstanding. The experimental built-in SSH
+console is disabled on the active managed SSH path; Windows 0.10.0 native
+validation and broker protocol 12 remain independent status items. For pairing
+v3, Windows automatically fills the editable HTTPS certificate hostname from
+the PBX's configured, administrator-approved response value; if it is absent,
+the administrator must supply or confirm it. The hostname is never inferred
+from the WireGuard endpoint, and normal TLS certificate verification remains
+enabled.
 
 See the [0.8.0 development notes](docs/DEVELOPMENT-0.8.0.md).
 
@@ -989,9 +998,10 @@ The 0.8.0 implementation adds durable restrictive decisions, generation-fenced
 listener reconciliation, conservative firewall path verification, expiring
 management grants and bounded controller requests. The original unknown-public-IP
 FreePBX 17 requirement remains **unverified**. Native Windows validation and live
-kernel/FreePBX acceptance remain outstanding; the reported SSH console crash is
-also unresolved. Windows 0.9.0 native validation and broker protocol 12 remain
-independent status items.
+kernel/FreePBX acceptance remain outstanding. The experimental built-in SSH
+console is disabled on the active managed SSH path. The Windows 0.9.0 reference
+in the older implementation report is historical; Windows 0.10.0 native
+validation and broker protocol 12 remain independent status items.
 
 See [0.8.0 implementation and acceptance](docs/DEVELOPMENT-0.8.0.md).
 
@@ -1142,7 +1152,7 @@ The human contributor remains solely responsible for the contribution. AI tools 
 
 ## Release History
 
-The complete [FreePBX module change history](docs/CHANGELOG.md) is bundled with the independently verified R3 FreePBX listener recovery, retaining protocol 12 and requiring root broker 0.8.3.15. Proposed 0.8.3.15 is a development candidate, not live acceptance or production approval. Windows is independently versioned at 0.9.0. No release or deployment is claimed.
+The complete [FreePBX module change history](docs/CHANGELOG.md) records the R3 FreePBX listener recovery and the proposed 0.9.0.0 hostname-aware pairing and permanent-duration work, retaining protocol 12 and requiring root broker 0.9.0.0. This is an unreleased development target, not live acceptance or production approval. Windows is independently versioned at 0.10.0 in source; its native acceptance is outstanding. No release or deployment is claimed.
 
 The administration page groups System Readiness, Remote Support, Windows
 Workstation Access, Paired Workstations and Security & Access Restrictions.
@@ -1191,6 +1201,8 @@ Upgrade rollback restores the installed helper files and service unit; matching
 module/broker downgrade, asynchronous Firewall recovery and systemd behaviour
 still require disposable-PBX tests. Do not downgrade one component alone.
 
-Use an updated Windows 0.9.0 build from this source for custom management URLs
-and Connection Health. Health probes the approved URL's TCP port, including
+Windows 0.10.0 source supports a locally configured certificate hostname for
+the paired HTTPS management service; it does not discover that hostname from
+the pairing response. Changing the PBX management URL still requires re-pairing.
+Connection Health probes the approved URL's TCP port, including
 8080/8443; it does not validate HTTP contents, redirects or TLS certificates.

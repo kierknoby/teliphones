@@ -60,13 +60,13 @@ $assert($model['files'][BrokerBootstrap::BROKER_DIR . '/FirewallListener.php'] =
 $assert(BrokerBootstrap::helperParity('/module'), 'Root-owned firewall helper must exactly match the module helper after upgrade.');
 $model['files'][BrokerBootstrap::BROKER_DIR . '/FirewallListener.php'] .= "\n// stale";
 $assert(!BrokerBootstrap::helperParity('/module'), 'A root helper mismatch must be detected deterministically.');
-$assert(strpos($model['files'][BrokerBootstrap::BROKER_FILE], 'VERSION = "0.8.3.15"') !== false
+$assert(strpos($model['files'][BrokerBootstrap::BROKER_FILE], 'VERSION = "0.9.0.0"') !== false
     && strpos($model['files'][BrokerBootstrap::BROKER_FILE], 'def listener_failure_output(') !== false
     && strpos($model['files'][BrokerBootstrap::BROKER_FILE], 'def reconcile_listener(') !== false
     && strpos($model['files'][BrokerBootstrap::BROKER_FILE], 'def reconcile_revocations(') !== false
     && strpos($model['files'][BrokerBootstrap::BROKER_FILE], 'def revocation_status(') !== false
     && strpos($model['files'][BrokerBootstrap::BROKER_FILE], 'def handle_connection(') !== false,
-    'The upgraded root broker must be 0.8.3.15 with FreePBX listener chain fallthrough, scoped Fail2Ban handling, firewall compatibility corrections, IPv6 terminal-path verification, durable revocation, persisted outcomes and owned firewall reconciliation.');
+    'The upgraded root broker must be 0.9.0.0 with FreePBX listener chain fallthrough, scoped Fail2Ban handling, firewall compatibility corrections, IPv6 terminal-path verification, durable revocation, persisted outcomes and owned firewall reconciliation.');
 $commands = implode("\n", $model['commands']);
 $assert(strpos($commands, ' -c ') < strpos($commands, 'systemctl restart teliphones-broker.service'), 'Import validation must precede activation.');
 foreach (['import', 'php', 'activation'] as $failure) {

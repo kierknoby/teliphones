@@ -39,7 +39,7 @@ SOCKET = "/run/teliphones/control.sock"
 # Protocol 11 adds PBX-enforced workstation session leases and management gating.
 # Protocol 12 adds post-pair workstation policy management.
 PROTOCOL = 12
-VERSION = "0.8.3.15"
+VERSION = "0.9.0.0"
 SESSION_CONTROL_PORT = 8766
 SESSION_LEASE_SECONDS = 30
 FWCONSOLE = "/usr/sbin/fwconsole"
@@ -66,6 +66,8 @@ PAIR_REQUEST_PREFIX = "TELIPHONES-PAIR-REQUEST-1:"
 PAIR_RESPONSE_PREFIX = "TELIPHONES-PAIR-RESPONSE-1:"
 PAIR_REQUEST_V2 = "TELIPHONES-PAIR-REQUEST-2:"
 PAIR_RESPONSE_V2 = "TELIPHONES-PAIR-RESPONSE-2:"
+PAIR_REQUEST_V3 = "TELIPHONES-PAIR-REQUEST-3:"
+PAIR_RESPONSE_V3 = "TELIPHONES-PAIR-RESPONSE-3:"
 WG_PUBLIC_KEY = re.compile(r"[A-Za-z0-9+/]{42}[AEIMQUYcgkosw480]=")
 WORKSTATION_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._()-]{0,63}")
 HOSTNAME = re.compile(r"(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*")
@@ -530,8 +532,8 @@ def validate(request):
         "status": set(), "revoke": set(), "dependencies": set(),
         "authorise": {"minutes"}, "evidence": {"evidence"},
         "configure": {"url", "certificate", "private_key", "ca", "checker_key"},
-        "pair": {"request", "endpoint_host", "listen_port", "mode", "minutes", "ssh", "ssh_user", "web", "sources"}, "unpair": {"workstation_id"},
-        "web": {"web"}, "workstation-policy": {"state"},
+        "pair": {"request", "endpoint_host", "listen_port", "mode", "minutes", "ssh", "ssh_user", "web", "management_hostname", "sources"}, "unpair": {"workstation_id"},
+        "web": {"web", "management_hostname"}, "workstation-policy": {"state"},
         "workstation-manage": {"workstation_id", "state", "sources"},
         "workstation-ban": {"source", "reason", "hours"}, "workstation-unban": {"ban_id"},
         "workstation-limit": {"maximum"},
@@ -567,7 +569,7 @@ def validate(request):
         if any(not isinstance(request.get(field), str) for field in ("request", "endpoint_host", "listen_port", "mode", "ssh")):
             raise BrokerError("Complete workstation pairing details are required.")
         parse_pair_request(request["request"])
-        if request["request"].strip().startswith(PAIR_REQUEST_V2) and request["ssh"] == "1":
+        if request["request"].strip().startswith((PAIR_REQUEST_V2, PAIR_REQUEST_V3)) and request["ssh"] == "1":
             if not isinstance(request.get("ssh_user"), str) or re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", request["ssh_user"]) is None:
                 raise BrokerError("Explicitly select the existing Linux account authorised for this workstation.")
         endpoint_host(request["endpoint_host"])
@@ -575,6 +577,7 @@ def validate(request):
             raise BrokerError("The WireGuard UDP port must be between 1024 and 65535.")
         if request["mode"] not in ("temporary", "persistent") or request["ssh"] not in ("0", "1"):
             raise BrokerError("Choose temporary or persistent pairing, and whether SSH is permitted.")
+        normalize_pair_duration(request)
         if request["mode"] == "temporary" and (not isinstance(request.get("minutes"), str) or not re.fullmatch(r"[0-9]{2,4}", request["minutes"])
                                                or not 15 <= int(request["minutes"]) <= 1440):
             raise BrokerError("Temporary pairing must last between 15 and 1440 minutes.")
@@ -583,6 +586,9 @@ def validate(request):
                 raise BrokerError("Management web services must be supplied as text.")
             if request["web"].strip():
                 parse_web(request["web"])
+        if "management_hostname" in request:
+            validate_management_hostname(request["management_hostname"],
+                                        parse_web(request["web"]) if request.get("web", "").strip() else None)
         if "sources" in request:
             if not isinstance(request["sources"], str):
                 raise BrokerError("Approved workstation sources must be supplied as text.")
@@ -590,7 +596,9 @@ def validate(request):
     if action == "web":
         if not isinstance(request.get("web"), str):
             raise BrokerError("Complete management web service details are required.")
-        parse_web(request["web"])
+        web = parse_web(request["web"])
+        if "management_hostname" in request:
+            validate_management_hostname(request["management_hostname"], web)
     if action == "workstation-policy" and request.get("state") not in ("open", "closed", "frozen"):
         raise BrokerError("Choose Open, Closed or Frozen workstation access.")
     if action == "workstation-manage":
@@ -654,21 +662,26 @@ def parse_pair_request(code):
     """Parse the workstation-generated request; it carries only a public key, a name and a nonce."""
     try:
         code = code.strip()
-        version = 2 if code.startswith(PAIR_REQUEST_V2) else 1
-        prefix = PAIR_REQUEST_V2 if version == 2 else PAIR_REQUEST_PREFIX
+        version = 3 if code.startswith(PAIR_REQUEST_V3) else 2 if code.startswith(PAIR_REQUEST_V2) else 1
+        prefix = {1: PAIR_REQUEST_PREFIX, 2: PAIR_REQUEST_V2, 3: PAIR_REQUEST_V3}[version]
         if not code.startswith(prefix) or len(code) > 4096:
             raise ValueError("prefix")
         value = json.loads(b64url_decode(code[len(prefix):]).decode("utf-8"))
     except (ValueError, UnicodeDecodeError) as error:
         raise BrokerError("The pairing request is not a TELIPHONES workstation pairing request.") from error
-    if (not isinstance(value, dict) or set(value) != ({"schema", "workstation", "public_key", "nonce"} | ({"ssh_public_key"} if version == 2 else set()))
-            or value["schema"] != "teliphones-pair-request/" + str(version)
-            or not isinstance(value["workstation"], str) or not WORKSTATION_NAME.fullmatch(value["workstation"])
-            or not isinstance(value["public_key"], str) or not WG_PUBLIC_KEY.fullmatch(value["public_key"])
-            or base64.b64decode(value["public_key"]) == bytes(32)
-            or not isinstance(value["nonce"], str) or not re.fullmatch(r"[A-Za-z0-9_-]{22}", value["nonce"])):
+    expected_base = {"schema", "workstation", "public_key", "nonce"}
+    allowed_keys = expected_base | ({"ssh_public_key"} if version >= 2 else set())
+    if not isinstance(value, dict):
         raise BrokerError("The pairing request is malformed or incomplete.")
-    if version == 2:
+    expected_keys = (allowed_keys, expected_base) if version == 3 else (allowed_keys,)
+    if (not any(set(value) == keys for keys in expected_keys)
+            or value.get("schema") != "teliphones-pair-request/" + str(version)
+            or not isinstance(value.get("workstation"), str) or not WORKSTATION_NAME.fullmatch(value["workstation"])
+            or not isinstance(value.get("public_key"), str) or not WG_PUBLIC_KEY.fullmatch(value["public_key"])
+            or base64.b64decode(value["public_key"]) == bytes(32)
+            or not isinstance(value.get("nonce"), str) or not re.fullmatch(r"[A-Za-z0-9_-]{22}", value["nonce"])):
+        raise BrokerError("The pairing request is malformed or incomplete.")
+    if version == 2 or (version == 3 and "ssh_public_key" in value):
         try:
             value["ssh_public_key"] = ssh.public_key(value["ssh_public_key"])
         except ssh.SshError as error:
@@ -735,6 +748,25 @@ def parse_web(value):
     if len(entries) > MAX_WEB_SERVICES:
         raise BrokerError("At most %d management web services may be authorised." % MAX_WEB_SERVICES)
     return entries
+
+
+def validate_management_hostname(value, web=None):
+    """Validate the administrator-selected TLS DNS name; never infer it from a tunnel endpoint."""
+    if not isinstance(value, str) or len(value) > 253:
+        raise BrokerError("HTTPS management hostname must be a DNS name of at most 253 characters.")
+    value = value.strip()
+    if value and (not HOSTNAME.fullmatch(value) or re.fullmatch(r"[0-9.]+", value)):
+        raise BrokerError("HTTPS management hostname must be a valid DNS name without scheme, port or path.")
+    if value and web is not None and web[0]["scheme"] != "https":
+        raise BrokerError("A management certificate hostname applies only when HTTPS is the primary management service.")
+    return value
+
+
+def normalize_pair_duration(request):
+    """Canonicalize persistent pairing duration even when the form omits its disabled field."""
+    if request["mode"] == "persistent":
+        request["minutes"] = "0"
+    return request
 
 
 def parse_source_restrictions(value):
@@ -1822,6 +1854,7 @@ class Broker:
         state = {"subnet": stored.get("subnet") if isinstance(stored.get("subnet"), str) else None,
                  "listen_port": stored.get("listen_port") if isinstance(stored.get("listen_port"), int) else None,
                  "web": normalise_web(stored.get("web")),
+                 "management_hostname": validate_management_hostname(stored.get("management_hostname", ""), normalise_web(stored.get("web"))),
                  "connection_state": mode,
                  "max_sessions": stored.get("max_sessions", 1),
                  "workstations": valid,
@@ -1830,6 +1863,7 @@ class Broker:
             raise BrokerError("Invalid maximum simultaneous workstation setting.")
         changed = (len(valid) != len(items) or stored.get("connection_state") != mode
                    or stored.get("max_sessions") != state["max_sessions"]
+                   or stored.get("management_hostname", "") != state["management_hostname"]
                    or (mode != "closed" and (state["subnet"] is None or state["listen_port"] is None)))
         return state, changed
 
@@ -4006,7 +4040,8 @@ class Broker:
         existing = next((item for item in state["workstations"] if item["public_key"] == pairing["public_key"]), None)
         if state["connection_state"] == "frozen" and existing is None:
             raise BrokerError("New workstation pairings are suspended while TELIPHONES is Frozen.")
-        if pairing["schema"] != "teliphones-pair-request/2" and request["ssh"] == "1":
+        if request["ssh"] == "1" and (pairing["schema"] == "teliphones-pair-request/1"
+                           or not pairing.get("ssh_public_key")):
             raise BrokerError("This pairing request did not include SSH capability; request SSH from the Windows application first.")
         host, port = endpoint_host(request["endpoint_host"]), int(request["listen_port"])
         requested_sources = parse_source_restrictions(request.get("sources", ""))
@@ -4026,11 +4061,15 @@ class Broker:
         state["listen_port"] = port
         if isinstance(request.get("web"), str) and request["web"].strip():
             state["web"] = parse_web(request["web"])
+        if isinstance(request.get("management_hostname"), str):
+            state["management_hostname"] = validate_management_hostname(request["management_hostname"], state["web"])
+        elif state["web"][0]["scheme"] != "https":
+            state["management_hostname"] = ""
         existing = next((item for item in state["workstations"] if item["public_key"] == pairing["public_key"]), None)
         if existing and existing.get("locked") and not requested_sources:
             requested_sources = existing["sources"]
         locked = bool(requested_sources)
-        if pairing["schema"] == "teliphones-pair-request/2" and request["ssh"] == "1":
+        if pairing.get("ssh_public_key") and request["ssh"] == "1":
             try:
                 self.ssh.initialise()
                 self.ssh.host_key()
@@ -4076,7 +4115,7 @@ class Broker:
         if locked:
             entry.update(sources=requested_sources, subnet=station_subnet, pbx_address=pbx_address,
                          listener_port=station_port)
-        if pairing["schema"] == "teliphones-pair-request/2" and entry["ssh"]:
+        if pairing.get("ssh_public_key") and entry["ssh"]:
             entry.update(ssh_public_key=pairing["ssh_public_key"], ssh_user=request["ssh_user"])
             try:
                 self.ssh.account_policy(entry, entry.get("pbx_address", str(network[1])))
@@ -4114,15 +4153,20 @@ class Broker:
         self.diagnostic(diagnostic_id, "pairing.approved", mode=entry["mode"], expires_at=entry["expires_at"],
                         renewed=existing is not None)
         self.audit("pair", uid, "completed")
-        response = {"schema": "teliphones-pair-response/1", "nonce": pairing["nonce"], "workstation_id": entry["id"],
+        response_version = 3 if pairing["schema"] == "teliphones-pair-request/3" else 2 if pairing["schema"] == "teliphones-pair-request/2" else 1
+        response = {"schema": "teliphones-pair-response/%d" % response_version, "nonce": pairing["nonce"], "workstation_id": entry["id"],
                     "workstation_public_key": entry["public_key"], "address": address, "pbx_address": pbx_address,
                     "pbx_name": re.sub(r"[^A-Za-z0-9._-]", "", socket.gethostname())[:64] or "FreePBX",
                     "pbx_public_key": pbx_public, "endpoint": host + ":" + str(entry["listener_port"] if locked else port), "mode": entry["mode"],
                     "expires_at": entry["expires_at"], "ssh": entry["ssh"], "gui_url": gui_url(state["web"], pbx_address)}
         prefix = PAIR_RESPONSE_PREFIX
-        if pairing["schema"] == "teliphones-pair-request/2":
-            prefix = PAIR_RESPONSE_V2
-            response.update(schema="teliphones-pair-response/2", ssh_user=entry.get("ssh_user", ""),
+        if response_version >= 3:
+            prefix = PAIR_RESPONSE_V3
+            response["management_hostname"] = state["management_hostname"] if state["web"][0]["scheme"] == "https" else None
+        if response_version >= 2:
+            if response_version == 2:
+                prefix = PAIR_RESPONSE_V2
+            response.update(schema="teliphones-pair-response/%d" % response_version, ssh_user=entry.get("ssh_user", ""),
                             ssh_host_key=self.ssh.host_key() if ssh.managed(entry) else "",
                             ssh_ca_key=self.ssh.initialise() if ssh.managed(entry) else "",
                             ssh_port=ssh.port(entry) if ssh.managed(entry) else 0,
@@ -4172,6 +4216,10 @@ class Broker:
     def configure_web(self, request, uid):
         state, _ = self.workstation_state()
         state["web"] = parse_web(request["web"])
+        if "management_hostname" in request:
+            state["management_hostname"] = validate_management_hostname(request["management_hostname"], state["web"])
+        elif state["web"][0]["scheme"] != "https":
+            state["management_hostname"] = ""
         self.commit_restrictive_state(state)
         self.audit("web", uid, "completed")
         return state["web"]
@@ -4306,6 +4354,7 @@ class Broker:
                 "listen_port": state["listen_port"],
                 "web": [{"scheme": entry["scheme"], "port": entry["port"],
                          "listening": web_listening(entry["port"], pbx_address)} for entry in state["web"]],
+                "management_hostname": state.get("management_hostname", ""),
                 "gui_url": gui_url(state["web"], pbx_address) if pbx_address else None,
                 "firewall_integration": {"state": self.integration["state"] if state["workstations"] else "inactive",
                                          "message": self.integration["message"] if state["workstations"] else "",

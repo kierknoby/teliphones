@@ -349,7 +349,7 @@ class SupportBrokerTests(unittest.TestCase):
 
     def test_status_reports_live_monitoring_protocol_matching_gui(self):
         status = self.broker.status()
-        self.assertEqual(status["component_version"], "0.8.3.15")
+        self.assertEqual(status["component_version"], "0.9.0.0")
         self.assertEqual(status["protocol"], 12)
         self.assertEqual(status["protocol"], broker_module.PROTOCOL)
         self.assertIn("operation", status)
@@ -421,7 +421,9 @@ def pair_request(public_key="A" * 42 + "E=", name="ADMIN-PC (alice)", nonce="n" 
 
 
 def decode_response(code):
-    prefix = broker_module.PAIR_RESPONSE_V2 if code.startswith(broker_module.PAIR_RESPONSE_V2) else broker_module.PAIR_RESPONSE_PREFIX
+    prefix = (broker_module.PAIR_RESPONSE_V3 if code.startswith(broker_module.PAIR_RESPONSE_V3) else
+              broker_module.PAIR_RESPONSE_V2 if code.startswith(broker_module.PAIR_RESPONSE_V2) else
+              broker_module.PAIR_RESPONSE_PREFIX)
     assert code.startswith(prefix)
     return json.loads(broker_module.b64url_decode(code[len(prefix):]))
 
@@ -698,21 +700,33 @@ class WorkstationPairingTests(unittest.TestCase):
         self.ssh_reconcile.stop()
         self.directory.cleanup()
 
-    def pair(self, mode="persistent", ssh="0", minutes="60", port="51821", web=None, sources=None, **request_options):
+    def pair(self, mode="persistent", ssh="0", minutes="60", port="51821", web=None, sources=None,
+             request_version=1, **request_options):
         if not (self.state / "workstations.json").exists():
             self.broker.save_workstations({"subnet": None, "listen_port": None, "web": broker_module.DEFAULT_WEB,
                                            "connection_state": "open", "workstations": []})
+        management_hostname = request_options.pop("management_hostname", None)
         pairing_request = pair_request(**request_options)
+        if request_version == 3:
+            pairing = broker_module.parse_pair_request(pairing_request)
+            pairing["schema"] = "teliphones-pair-request/3"
+            pairing_request = broker_module.PAIR_REQUEST_V3 + broker_module.b64url_encode(json.dumps(pairing).encode())
+        elif request_version != 1:
+            raise ValueError("test helper supports pair request versions 1 and 3")
         if ssh == "1":
             pairing = broker_module.parse_pair_request(pairing_request)
-            pairing.update(schema="teliphones-pair-request/2",
+            pairing_version = 3 if request_version == 3 else 2
+            pairing.update(schema="teliphones-pair-request/%d" % pairing_version,
                            ssh_public_key="ssh-ed25519 " + base64.b64encode(
                                b"\0\0\0\x0bssh-ed25519\0\0\0\x20" + bytes(range(32))).decode())
-            pairing_request = broker_module.PAIR_REQUEST_V2 + broker_module.b64url_encode(json.dumps(pairing).encode())
+            prefix = broker_module.PAIR_REQUEST_V3 if pairing_version == 3 else broker_module.PAIR_REQUEST_V2
+            pairing_request = prefix + broker_module.b64url_encode(json.dumps(pairing).encode())
         request = {"action": "pair", "request": pairing_request, "endpoint_host": "pbx.example.net",
                    "listen_port": port, "mode": mode, "minutes": minutes, "ssh": ssh}
         if web is not None:
             request["web"] = web
+        if management_hostname is not None:
+            request["management_hostname"] = management_hostname
         if sources is not None:
             request["sources"] = sources
         if ssh == "1":
@@ -742,14 +756,25 @@ class WorkstationPairingTests(unittest.TestCase):
                 "mode": "temporary", "minutes": "60", "ssh": "0"}
         self.assertEqual(broker_module.validate(good), "pair")
         self.assertEqual(broker_module.validate({**good, "mode": "persistent", "minutes": "0"}), "pair")
+        self.assertEqual(broker_module.validate({**good, "mode": "persistent", "minutes": "1440"}), "pair")
+        persistent = {**good, "mode": "persistent", "minutes": "60"}
+        self.assertEqual(broker_module.validate(persistent), "pair")
+        self.assertEqual(persistent["minutes"], "0", "Permanent authority has canonical zero duration")
         for change in ({"request": "TELIPHONES-PAIR-REQUEST-1:!!"}, {"request": pair_request(extra="x")},
                        {"request": pair_request(public_key="not-a-key")}, {"request": pair_request(public_key="A" * 43 + "=")},
                        {"request": pair_request(name="<script>")}, {"request": pair_request(nonce="short")},
                        {"endpoint_host": "pbx.example.net;id"}, {"endpoint_host": "127.0.0.1"}, {"endpoint_host": "1.2.3"},
+                       {"management_hostname": "https://pbx.example.net/"}, {"management_hostname": "pbx.example.net:443"},
+                       {"management_hostname": "bad host"},
                        {"listen_port": "80"}, {"listen_port": "70000"}, {"mode": "forever"}, {"ssh": "yes"},
-                       {"minutes": "5"}, {"minutes": "1441"}, {"command": "id"}):
+                       {"minutes": "0"}, {"minutes": "5"}, {"minutes": "1441"}, {"command": "id"}):
             with self.assertRaises(broker_module.BrokerError, msg=str(change)):
                 broker_module.validate({**good, **change})
+        with self.assertRaises(broker_module.BrokerError):
+            broker_module.validate({**good, "web": "http:80", "management_hostname": "pbx.example.net"})
+        self.assertEqual(broker_module.validate_management_hostname("pbx.example.net", [{"scheme": "https", "port": 443}]),
+                         "pbx.example.net")
+        self.assertEqual(broker_module.validate_management_hostname("", [{"scheme": "http", "port": 80}]), "")
         for workstation_id in ("all", "0123456789abcdef"):
             self.assertEqual(broker_module.validate({"action": "unpair", "workstation_id": workstation_id}), "unpair")
         for workstation_id in ("ALL", "0123", "../x", 1):
@@ -1492,7 +1517,8 @@ class WorkstationPairingTests(unittest.TestCase):
             self.assertEqual(broker_module.read_json(self.state / "workstations.json")["workstations"], [])
 
     def test_pairing_applies_port_policy_before_admitting_the_peer(self):
-        result, response = self.pair(ssh="1")
+        result, response = self.pair(ssh="1", web="https:443", management_hostname="pbx.example.net",
+                         request_version=3)
         self.assertTrue(result["ok"])
         self.assertEqual(response["nonce"], "n" * 22)
         self.assertEqual(response["workstation_public_key"], "A" * 42 + "E=")
@@ -1500,12 +1526,14 @@ class WorkstationPairingTests(unittest.TestCase):
         self.assertEqual(response["endpoint"], "pbx.example.net:51821")
         self.assertEqual(response["mode"], "persistent")
         self.assertIsNone(response["expires_at"])
+        self.assertEqual(response["schema"], "teliphones-pair-response/3")
+        self.assertEqual(response["management_hostname"], "pbx.example.net")
         self.assertTrue(response["ssh"])
         network = broker_module.ipaddress.IPv4Network(json.loads((self.state / "workstations.json").read_text())["subnet"])
         self.assertTrue(network.subnet_of(broker_module.WORKSTATION_POOL) and not network.overlaps(broker_module.WORKSTATION_EXCLUDED))
         self.assertEqual(response["pbx_address"], str(network[1]))
         self.assertEqual(response["address"], str(network[2]) + "/32")
-        self.assertEqual(response["gui_url"], "http://" + str(network[1]) + "/admin/")
+        self.assertEqual(response["gui_url"], "https://" + str(network[1]) + "/admin/")
         policy = next(index for index, call in enumerate(self.net.calls) if call[0] == "nft")
         admitted = next(index for index, call in enumerate(self.net.calls) if call[0] == "wg" and "allowed-ips" in call[1])
         self.assertLess(policy, admitted)
@@ -1559,6 +1587,19 @@ class WorkstationPairingTests(unittest.TestCase):
         self.assertEqual(self.broker.status()["workstations"]["items"], [])
         expired = self.broker.diagnostics.read("ws-" + response["workstation_id"])
         self.assertIn("pairing.expired", [item["event"] for item in expired])
+
+    def test_v3_web_only_and_legacy_pairing_schemas(self):
+        _, modern = self.pair(mode="persistent", web="https:443", management_hostname="pbx.example.net",
+                      request_version=3)
+        self.assertEqual(modern["schema"], "teliphones-pair-response/3")
+        self.assertEqual(modern["management_hostname"], "pbx.example.net")
+        state, _ = self.broker.workstation_state()
+        self.assertIsNone(state["workstations"][0]["expires_at"], "Permanent authority must have no deadline")
+        self.assertIsNone(modern["expires_at"])
+
+        legacy_request = pair_request(name="LEGACY-PC", nonce="l" * 22)
+        parsed = broker_module.parse_pair_request(legacy_request)
+        self.assertEqual(parsed["schema"], "teliphones-pair-request/1")
 
     def test_repairing_same_key_keeps_address_and_port_is_fixed(self):
         _, first = self.pair(mode="temporary")
@@ -1642,7 +1683,7 @@ class WorkstationPairingTests(unittest.TestCase):
     def test_status_reports_workstations_without_keys(self):
         self.pair(mode="temporary", ssh="1")
         status = self.broker.status()["workstations"]
-        self.assertEqual(set(status), {"ready", "requirements", "error", "recovery_ready", "listen_port", "web", "gui_url", "connection_state",
+        self.assertEqual(set(status), {"ready", "requirements", "error", "recovery_ready", "listen_port", "web", "gui_url", "management_hostname", "connection_state",
                                        "firewall_integration", "pbx_address", "items", "ssh_ready", "ssh_error", "bans",
                                        "max_sessions", "connected_workstations", "ssh_accounts", "session_control_port"})
         self.assertEqual(status["firewall_integration"]["state"], "active")
@@ -1682,7 +1723,7 @@ class WorkstationPairingTests(unittest.TestCase):
         self.assertNotIn("disconnected", json.dumps(events).lower())
         self.assertEqual({item["diagnostic_id"] for item in events}, {diagnostic_id})
         exported = self.broker.dispatch({"action": "diagnostics", "diagnostic_id": diagnostic_id}, 1000)
-        self.assertEqual(exported["component_version"], "0.8.3.15")
+        self.assertEqual(exported["component_version"], "0.9.0.0")
         self.assertEqual(exported["diagnostic_id"], diagnostic_id)
         self.assertFalse(any("public_key" in item or "token" in json.dumps(item).lower() for item in exported["events"]))
 
@@ -1696,7 +1737,7 @@ class WorkstationPairingTests(unittest.TestCase):
         self.assertIn("interface.established", names)
         self.assertIn("peer.admitted", names)
         self.assertIn("peer.observation", names)
-        self.assertTrue(all(event["source"] == "pbx" and event["component_version"] == "0.8.3.15" for event in events))
+        self.assertTrue(all(event["source"] == "pbx" and event["component_version"] == "0.9.0.0" for event in events))
         self.broker.dispatch({"action": "unpair", "workstation_id": response["workstation_id"]}, 1000)
         events = self.broker.diagnostics.read(diagnostic_id)
         self.assertEqual(events[-1]["event"], "pairing.revoked")

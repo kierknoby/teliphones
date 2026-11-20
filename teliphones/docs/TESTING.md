@@ -1,14 +1,14 @@
 # TELIPHONES testing
 
-## Current Windows 0.9.0 / proposed module 0.8.3.15 source review and package boundary
+## Current Windows 0.10.0 / proposed module 0.9.0.0 source review and package boundary
 
-Windows 0.9.0 is independently versioned; proposed module/root broker 0.8.3.15
-retain protocol 12. The development candidate archive is built only after the
-source and regression checks pass. This is not a production release and does
-not establish live FreePBX acceptance. The historical `TELIPHONES-0.6.7.tgz`
-and checksum are present at the repository root and verified before comparison.
-Source version checks run without an archive; the package validator verifies
-archive/source equality, metadata and checksum.
+Windows 0.10.0 is independently versioned; module/root broker 0.9.0.0 retain
+protocol 12. The matching local 0.9.0.0 archive is an unreleased development
+package; the retained 0.8.3.15 archive is historical and must not be validated
+as current.
+This is not a production release and does not establish live FreePBX acceptance.
+Source version checks run without an archive; complete package validation checks
+the local package, exact module contents, metadata and checksum.
 
 Run source version consistency independently from the repository root:
 
@@ -16,8 +16,8 @@ Run source version consistency independently from the repository root:
 PYTHONDONTWRITEBYTECODE=1 python3 teliphones/tests/package-validation.py SourceVersionTests
 ```
 
-For complete package validation, first build `TELIPHONES-0.8.3.15.tgz` using the
-root `README.md` procedure after verification, then run
+After building the archive from the module source with the deterministic
+procedure in the root README, verify its checksum and run
 `PYTHONDONTWRITEBYTECODE=1 python3 teliphones/tests/package-validation.py`.
 The complete validator requires the archive and checksum; the source-only check
 does not replace it.
@@ -36,9 +36,9 @@ pairing behaviour, startup smoke and portable Release checks, use the
 `desktop/windows/tests/WINDOWS-READINESS.md` reference in the source repository.
 Linux checks do not substitute for Windows execution.
 
-## Current 0.8.3.15 source checks and release blockers
+## Current 0.9.0.0 source checks and release blockers
 
-Current 0.8.3.15 firewall regression coverage exercises IPv4 and IPv6 generated
+Current 0.9.0.0 firewall regression coverage exercises IPv4 and IPv6 generated
 listener convergence, declared-empty Fail2Ban chains, scoped active restrictions,
 RETURN/fallthrough, the FreePBX zone MARK and service jumps, and rejection of
 unknown targets, unsupported rules and early terminal verdicts. Production
@@ -57,8 +57,8 @@ The 0.8.0 implementation adds durable restrictive decisions, generation-fenced
 listener reconciliation, conservative firewall path verification, expiring
 management grants and bounded controller requests. The original unknown-public-IP
 FreePBX 17 requirement remains **unverified**. Native Windows validation and live
-kernel/FreePBX acceptance remain outstanding; the reported SSH console crash is
-also unresolved. Windows 0.9.0 native validation remains outstanding and broker
+kernel/FreePBX acceptance remain outstanding; the experimental Windows custom
+console is disabled on the active managed SSH path. Windows 0.10.0 native validation remains outstanding and broker
 protocol remains 12.
 
 See [current implementation and disposable acceptance](DEVELOPMENT-0.8.0.md).
@@ -301,9 +301,10 @@ with versions and build provenance recorded separately:
 2. **Windows settings:** Applications/Connectivity and Appearance in System,
    Light and Dark. Include one high-contrast and narrow/high-DPI example only
    after real visual inspection; injected test DPI is not a screenshot.
-3. **Authenticated SSH:** the actual current built-in managed console and
-   observed owned-session closure on disconnect. Earlier external-terminal
-   screenshots are historical, not evidence of the current integrated console.
+3. **Authenticated SSH:** the selected external OpenSSH-backed terminal and
+  observed owned-session closure on disconnect. The experimental built-in
+  console is disabled on the active managed SSH path; screenshots of earlier
+  external-terminal workflows are historical.
 4. **FreePBX workstation approval:** SSH opt-in with a deliberately selected
    test account, permission/lifetime controls, integration status and diagnostics.
 5. **FreePBX readiness/upgrade:** module 0.6.6 and separately refreshed broker

@@ -48,7 +48,7 @@ bool eventValid(const std::string& value) {
         "session_release_warning", "shutdown_teardown_failed", "shutdown_with_residual_tunnel", "residual_tunnels_found",
         "connection_deadline", "obsolete_connection_result", "shutdown_cleanup_deferred", "shutdown_with_recovery_state",
         "health_changed", "probe_changed", "telemetry_changed", "session_summary", "recent_measurements", "measurement_error",
-        "tunnel_adapter_removal", "recovery_reconcile", "tunnel_ownership_reconciled",
+        "tunnel_adapter_removal", "recovery_reconcile", "recovery_restart", "tunnel_ownership_reconciled",
         "admission_failed", "admission_recovered", "network_changed"};
     return std::find(events.begin(), events.end(), value) != events.end();
 }

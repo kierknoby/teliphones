@@ -57,11 +57,11 @@ $expand = static function (array $actions) use ($failedAction): string {
     return in_array($failedAction, $actions, true) ? ' open' : '';
 };
 $pairValues = [];
-if ($failedAction === 'pair' && WebSupport::validRequest($_POST, $token ?? '')) {
-    foreach (['endpoint_host' => 253, 'listen_port' => 5, 'web' => 120, 'sources' => 2048] as $field => $limit) {
+if (in_array($failedAction, ['pair', 'web'], true) && WebSupport::validRequest($_POST, $token ?? '')) {
+    foreach (['endpoint_host' => 253, 'listen_port' => 5, 'web' => 120, 'management_hostname' => 253, 'sources' => 2048] as $field => $limit) {
         if (is_string($_POST[$field] ?? null) && strlen($_POST[$field]) <= $limit) $pairValues[$field] = $_POST[$field];
     }
-    foreach (['mode' => ['temporary', 'persistent'], 'minutes' => ['60', '240', '480', '1440']] as $field => $allowed) {
+    foreach (['mode' => ['temporary', 'persistent'], 'minutes' => ['0', '60', '240', '480', '1440']] as $field => $allowed) {
         if (in_array($_POST[$field] ?? null, $allowed, true)) $pairValues[$field] = $_POST[$field];
     }
 }
@@ -622,7 +622,10 @@ foreach ($workstations['items'] as $workstation) {
 <form method="post">
 <input type="hidden" name="token" value="<?=$escape($token ?? '')?>">
 <label for="teliphones-web-services">Management web services (comma-separated scheme:port, first entry is the workstation GUI address)</label>
-<input id="teliphones-web-services" class="form-control" name="web" maxlength="120" pattern="\s*(https?:[0-9]{1,5})(\s*,\s*https?:[0-9]{1,5}){0,3}\s*" required value="<?=$escape($webText !== '' ? $webText : 'http:80, https:443')?>">
+<input id="teliphones-web-services" class="form-control" name="web" maxlength="120" pattern="\s*(https?:[0-9]{1,5})(\s*,\s*https?:[0-9]{1,5}){0,3}\s*" required value="<?=$escape($failedAction === 'web' ? ($pairValues['web'] ?? '') : ($webText !== '' ? $webText : 'http:80, https:443'))?>">
+<label for="teliphones-management-hostname">HTTPS management certificate hostname (administrator-confirmed; required to automatically configure Windows HTTPS)</label>
+<input id="teliphones-management-hostname" class="form-control" name="management_hostname" maxlength="253" value="<?=$escape($failedAction === 'web' ? ($pairValues['management_hostname'] ?? '') : ($live['management_hostname'] ?? ''))?>" placeholder="freepbx.example.com">
+<p class="help-block">Enter the exact DNS name covered by the certificate for the primary HTTPS service. TELIPHONES does not inspect Apache certificate names or guess from the WireGuard endpoint. A legacy, default, or unverified broker value does not confirm this hostname; do not guess it. If unset, new pairings explain that the hostname must be supplied manually in Windows. Changing this name does not change the web service or bypass certificate validation.</p>
 <button class="btn btn-default" type="submit" name="action" value="web"<?=$unpairOff?>>Update management web services</button>
 </form>
 </div>
@@ -669,6 +672,9 @@ foreach ($workstations['items'] as $workstation) {
 <label for="teliphones-pair-web">Management web services reachable through the tunnel (first entry becomes this workstation's GUI address)</label>
 <input id="teliphones-pair-web" class="form-control" name="web" maxlength="120" pattern="\s*(https?:[0-9]{1,5})(\s*,\s*https?:[0-9]{1,5}){0,3}\s*" value="<?=$escape($pairValues['web'] ?? $defaultWebText)?>">
 <p class="help-block">Defaults to the saved configuration, or this server's current scheme/port when it is not listed. Behind a reverse proxy, enter the PBX's actual listener, not the proxy port. Verify service reachability on the tunnel address; firewall permissions alone do not configure Apache. Applies to all paired workstations.</p>
+<label for="teliphones-pair-management-hostname">HTTPS certificate hostname (administrator-confirmed)</label>
+<input id="teliphones-pair-management-hostname" class="form-control" name="management_hostname" maxlength="253" value="<?=$escape($pairValues['management_hostname'] ?? ($live['management_hostname'] ?? ''))?>" placeholder="freepbx.example.com">
+<p class="help-block">Used only when HTTPS is the first management service. Enter the exact certificate DNS name; no name is inferred from the public WireGuard endpoint, and a legacy, default, or unverified broker value does not confirm it. Windows keeps normal certificate validation enabled.</p>
 <?php endif; ?>
 <div id="teliphones-pair-ssh-controls" hidden>
 <input id="teliphones-pair-web-only" type="hidden" name="ssh" value="0">
@@ -687,7 +693,11 @@ foreach ($workstations['items'] as $workstation) {
 <label for="teliphones-pair-mode">Pairing</label>
 <select id="teliphones-pair-mode" class="form-control" name="mode"><option value="temporary"<?=($pairValues['mode'] ?? 'temporary') === 'temporary' ? ' selected' : ''?>>Temporary</option><option value="persistent"<?=($pairValues['mode'] ?? '') === 'persistent' ? ' selected' : ''?>>Persistent trusted workstation (until revoked)</option></select>
 <label for="teliphones-pair-minutes">Temporary pairing duration (minutes)</label>
-<select id="teliphones-pair-minutes" class="form-control" name="minutes"><?php foreach ([60, 240, 480, 1440] as $minutes): ?><option value="<?=$minutes?>"<?=($pairValues['minutes'] ?? '60') === (string)$minutes ? ' selected' : ''?>><?=$minutes?></option><?php endforeach; ?></select>
+<?php $persistentPairing = ($pairValues['mode'] ?? 'temporary') === 'persistent'; $temporaryMinutes = in_array($pairValues['minutes'] ?? '60', ['60', '240', '480', '1440'], true) ? ($pairValues['minutes'] ?? '60') : '60'; ?>
+<select id="teliphones-pair-minutes" class="form-control" name="minutes"<?=$persistentPairing ? ' disabled aria-disabled="true"' : ''?>>
+<option value="0"<?=$persistentPairing ? ' selected' : ''?>>0</option><?php foreach ([60, 240, 480, 1440] as $minutes): ?><option value="<?=$minutes?>"<?=(!$persistentPairing && $temporaryMinutes === (string)$minutes) ? ' selected' : ''?>><?=$minutes?></option><?php endforeach; ?></select>
+<input type="hidden" id="teliphones-pair-minutes-permanent" name="minutes" value="0"<?=$persistentPairing ? '' : ' disabled'}>
+<p class="help-block">Permanent means until explicitly revoked. It has no pairing expiry; active administrative sessions still use separate short renewable leases.</p>
 <label for="teliphones-pair-sources">Lock this workstation to approved IPs/domains (optional, comma-separated)</label>
 <input id="teliphones-pair-sources" class="form-control" name="sources" maxlength="2048" placeholder="198.51.100.24, office.example.net" value="<?=$escape($pairValues['sources'] ?? '')?>"<?=$sourceLockOff?>>
 <p class="help-block">A non-empty list uses a dedicated WireGuard listener port and tunnel interface; FreePBX Firewall service rules are managed automatically. If the PBX is behind router/NAT, forward the allocated UDP port to the PBX. DNS names are resolved and refreshed by the PBX; unresolved names do not add access. This initial lock is administrator-set during pairing.</p>
@@ -709,6 +719,29 @@ foreach ($workstations['items'] as $workstation) {
     var account = document.getElementById('teliphones-pair-ssh-account');
     var username = document.getElementById('teliphones-pair-ssh-user');
     var sources = document.getElementById('teliphones-pair-sources');
+    var mode = document.getElementById('teliphones-pair-mode');
+    var minutes = document.getElementById('teliphones-pair-minutes');
+    var permanentMinutes = document.getElementById('teliphones-pair-minutes-permanent');
+    var savedTemporaryMinutes = minutes && ['60', '240', '480', '1440'].indexOf(minutes.value) >= 0 ? minutes.value : '60';
+    function updateDuration() {
+        if (!mode || !minutes || !permanentMinutes) return;
+        var permanent = mode.value === 'persistent';
+        if (permanent) {
+            if (!minutes.disabled && ['60', '240', '480', '1440'].indexOf(minutes.value) >= 0) savedTemporaryMinutes = minutes.value;
+            minutes.value = '0';
+            minutes.disabled = true;
+            minutes.setAttribute('aria-disabled', 'true');
+            permanentMinutes.disabled = false;
+        } else {
+            minutes.disabled = false;
+            minutes.removeAttribute('aria-disabled');
+            if (minutes.value === '0' || ['60', '240', '480', '1440'].indexOf(minutes.value) < 0) {
+                minutes.value = ['60', '240', '480', '1440'].indexOf(savedTemporaryMinutes) >= 0 ? savedTemporaryMinutes : '60';
+            }
+            savedTemporaryMinutes = minutes.value;
+            permanentMinutes.disabled = true;
+        }
+    }
     if (!request || !controls || !approval || !webOnly || !account || !username) return;
     function updateAccount() {
         var needed = approval.value === '1' && !approval.disabled;
@@ -719,12 +752,12 @@ foreach ($workstations['items'] as $workstation) {
     function updateRequest() {
         var supported = false;
         var parts = request.value.trim().split(':');
-        if (parts.length === 2 && parts[0] === 'TELIPHONES-PAIR-REQUEST-2' && /^[A-Za-z0-9_-]+$/.test(parts[1])) {
+        if (parts.length === 2 && (parts[0] === 'TELIPHONES-PAIR-REQUEST-2' || parts[0] === 'TELIPHONES-PAIR-REQUEST-3') && /^[A-Za-z0-9_-]+$/.test(parts[1])) {
             try {
                 var encoded = parts[1].replace(/-/g, '+').replace(/_/g, '/');
                 while (encoded.length % 4) encoded += '=';
                 var payload = JSON.parse(window.atob(encoded));
-                supported = payload.schema === 'teliphones-pair-request/2' &&
+                supported = (payload.schema === 'teliphones-pair-request/2' || payload.schema === 'teliphones-pair-request/3') &&
                     typeof payload.ssh_public_key === 'string' && payload.ssh_public_key.length > 0;
             } catch (ignore) {
                 supported = false;
@@ -747,6 +780,10 @@ foreach ($workstations['items'] as $workstation) {
     }
     request.addEventListener('input', updateRequest);
     if (sources) sources.addEventListener('input', updateRequest);
+    if (mode) mode.addEventListener('change', updateDuration);
+    if (minutes) minutes.addEventListener('change', function () {
+        if (!minutes.disabled && ['60', '240', '480', '1440'].indexOf(minutes.value) >= 0) savedTemporaryMinutes = minutes.value;
+    });
     approval.addEventListener('change', updateAccount);
     var stateForm = document.getElementById('teliphones-connection-state-form');
     if (stateForm) {
@@ -759,6 +796,7 @@ foreach ($workstations['items'] as $workstation) {
         });
     }
     updateRequest();
+    updateDuration();
 })();
 </script>
 <script type="application/json" id="teliphones-initial-status"><?=json_encode($initial, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_UNICODE | JSON_PARTIAL_OUTPUT_ON_ERROR)?></script>

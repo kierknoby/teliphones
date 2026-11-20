@@ -2,6 +2,7 @@
 
 #include <shellapi.h>
 
+#include <algorithm>
 #include <iterator>
 #include <string>
 #include <vector>
@@ -13,6 +14,9 @@
 CTeliphonesApp theApp;
 
 namespace {
+
+constexpr wchar_t kInstanceMutex[] = L"Local\\TELIPHONES-Desktop";
+constexpr wchar_t kRestartWaitArgument[] = L"--restart-wait";
 
 std::wstring ProcessImage(DWORD processId) {
     HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, processId);
@@ -82,14 +86,34 @@ BOOL CTeliphonesApp::InitInstance() {
         ExitProcess(static_cast<UINT>(tlp::win::RunTunnelHelper(arguments)));
     }
 
+    const bool restartHandoff = std::find_if(arguments.begin(), arguments.end(), [](const std::string& argument) {
+        return argument == "--restart-wait";
+    }) != arguments.end();
+    HANDLE instance = nullptr;
+    if (restartHandoff) {
+        HANDLE previous = OpenMutexW(SYNCHRONIZE, FALSE, kInstanceMutex);
+        if (previous != nullptr) {
+            const DWORD waited = WaitForSingleObject(previous, 30000);
+            if (waited != WAIT_OBJECT_0 && waited != WAIT_ABANDONED) {
+                CloseHandle(previous);
+                AfxMessageBox(L"TELIPHONES could not complete its controlled recovery restart because the previous instance did not exit within 30 seconds. The current recovery cleanup has completed; start TELIPHONES again to reset its interface state.", MB_ICONWARNING);
+                return FALSE;
+            }
+            // A successful wait owns the released mutex. Retain this handle for the new application's lifetime.
+            instance = previous;
+        }
+    }
+
     INITCOMMONCONTROLSEX controls{sizeof(controls), ICC_WIN95_CLASSES};
     InitCommonControlsEx(&controls);
     CWinApp::InitInstance();
 
-    HANDLE instance = CreateMutexW(nullptr, TRUE, L"Local\\TELIPHONES-Desktop");
-    if (instance != nullptr && GetLastError() == ERROR_ALREADY_EXISTS) {
-        ActivateExistingInstance();
-        return FALSE;
+    if (instance == nullptr) {
+        instance = CreateMutexW(nullptr, TRUE, kInstanceMutex);
+        if (instance != nullptr && GetLastError() == ERROR_ALREADY_EXISTS) {
+            ActivateExistingInstance();
+            return FALSE;
+        }
     }
 
     CMainDlg dialog;

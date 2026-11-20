@@ -5,8 +5,8 @@ The 0.8.0 authority, firewall and lease implementation is documented in the
 Unknown-public-IP FreePBX 17 connectivity remains unverified. Historical evidence
 below does not validate this development candidate.
 
-This document describes proposed, unreleased **FreePBX module 0.8.0**, **root broker 0.8.0**,
-**broker protocol 12** and **Windows 0.8.5** source:
+This document describes proposed, unreleased **FreePBX module 0.9.0.0**, **root broker 0.9.0.0**,
+**broker protocol 12** and **Windows 0.10.0** source:
 components, trust boundaries, interfaces, firewall layers and stored state.
 Architecture describes the implementation, not proof of production behaviour.
 See [Security and verification evidence](SECURITY.md#verification-evidence)
@@ -75,7 +75,7 @@ flowchart TB
 Key points:
 
 - The broker is installed by a **root bootstrap**, because Module Admin runs as the web service account and cannot create root-owned files or services. The bootstrap stages the module into a root-owned directory before executing it, so root never runs code directly from the web-writable module directory.
-- The broker reports protocol, component version and capabilities. Proposed module 0.8.1 requires broker 0.8.1 even at protocol 12; missing/malformed capabilities or an older component block workstation operations. The 0.8.1 development package is not production-ready or live-accepted.
+- The broker reports protocol, component version and capabilities. Proposed module 0.9.0.0 requires root broker 0.9.0.0 and retains protocol 12. A v3 pairing envelope carries an explicitly administrator-confirmed HTTPS DNS hostname; v1/v2 response envelopes remain unchanged. The broker does not inspect certificate SANs or infer a TLS hostname from the WireGuard endpoint. Permanent authority has no expiry but does not bypass the short active-session lease. No 0.9.0.0 package is present; the retained 0.8.3.15 archive is historical. This development target is not production-ready or live-accepted. Windows remains independently versioned at 0.10.0.
 - Pairing and revocation opt into fixed, non-secret progress frames while synchronous verification runs. PHP retains a five-second inactivity deadline; only a verified final result confirms removal. Connection loss does not cancel or redispatch the mutation. Broker 0.8.0 durably records revocation before cleanup, rejects revoked identities during recovery/admission, exposes the latest persisted outcome separately from listener housekeeping, and records correlated workstation admission outcomes in bounded persistent diagnostics. It also reconciles generated FreePBX Custom Service rules for listener ports and classifies IPv6 wildcard web listeners as indeterminate for IPv4. The historical 0.6.7 package was intentionally removed from this checkout and predates the proposed 0.8.0 listener/admission correction. Local tests do not establish live FreePBX acceptance.
 - Like other root `fwconsole` services, this design trusts the integrity of the FreePBX application code. Anyone able to execute code as the FreePBX service account can send requests to the broker.
 
@@ -272,7 +272,7 @@ The Windows application is a native C++17 Win32/MFC executable for Windows 10/11
 - **Keys:** WireGuard private keys are stored in Credential Manager/DPAPI; optional Connect Password Protection uses Argon2id/AES-256-GCM inside DPAPI. Profiles never contain private keys.
 - **Profiles:** Public pairing and grant data are stored in the user's roaming application-data directory.
 - **Tunnels:** Staging/installed configs contain a public bootstrap identity, not the enrolled key. After UAC and validation, a PID-bound local-only named pipe supplies the credential to the elevated helper. It opens the official service's existing WireGuardNT adapter and applies only the private-key field through the published API, without replacing peers. The pinned official DLL/header are restored from the version-matched archive; only hash-verified code in an administrator-controlled directory is loaded. Restarting the stored configuration cannot authenticate as the enrolled identity. Restrictive ACLs and owned-process controls remain.
-- **SSH:** Managed My PBXs opens the built-in libvterm/ConPTY console using the protected authentication event, isolated agent and owned process job. The separate Remote Support workflow retains supported external terminal launchers. Native 0.8.1 validation remains outstanding.
+- **SSH:** Managed My PBXs launches the selected external OpenSSH-backed terminal using a protected authentication event, isolated agent and owned process job. The experimental built-in libvterm/ConPTY console is disabled on this path. The separate Remote Support workflow retains its own supported terminal launchers. Native 0.10.0 validation remains outstanding.
 - **WireGuard:** The application uses genuine WireGuard for Windows, checking its Authenticode signature. It reuses existing installations or, only after explicit user approval, downloads a reviewed official x64 MSI, verifies its pinned hash and Authenticode publisher, and invokes Windows Installer through UAC. No WireGuard binaries are bundled. The installer does not change TELIPHONES profiles or tunnel configurations. See [installation verification and limitations](../desktop/windows/README.md#secure-connectivity-and-wireguard-installation); native installation is not yet Windows-validated.
 - **Monitoring:** Only one connection is active at a time. Reachability is polled through the tunnel; there is no server-pushed revocation channel.
 - **Extension point:** An `IRendezvousProvider` interface exists for future endpoint resolution; only direct connection is implemented ([design note](RENDEZVOUS.md)).

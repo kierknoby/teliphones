@@ -27,6 +27,8 @@ void OpenFreePbx(const Profile& profile, const std::string& sessionId, const Pre
 // Called only after disconnect has been requested; closes only tracked TELIPHONES Edge processes for this profile.
 void CloseSecureBrowserSessions(const std::string& profileId);
 void CloseAllSecureBrowserSessions();
+// Closes tracked TELIPHONES Edge jobs and removes only inactive, marked TELIPHONES profile directories.
+bool RecoverSecureBrowserSessions();
 void OpenSsh(const Profile& profile, const std::string& sessionId, const Preferences& preferences);
 
 }  // namespace win

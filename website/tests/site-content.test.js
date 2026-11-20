@@ -23,6 +23,7 @@ const brokerVersion = fs.readFileSync(path.join(root, 'teliphones/support_broker
   .match(/^VERSION = "([^"]+)"/m)[1];
 const currentModuleVersion = '0.8.3.15';
 const currentBrokerVersion = '0.8.3.15';
+const developmentModuleVersion = '0.9.0.0';
 
 test('all site pages have valid local links, assets and unique fragment targets', () => {
   const ids = new Map();
@@ -52,8 +53,10 @@ test('all site pages have valid local links, assets and unique fragment targets'
 
 test('current product and installation copy matches independent source versions', () => {
   assert.equal(moduleVersion, brokerVersion, 'Module and broker source versions must match');
-  assert.equal(moduleVersion, currentModuleVersion,
-    'The website module version must match the currently tested installation');
+  assert.equal(moduleVersion, developmentModuleVersion,
+    'The module source version must match the unreleased development target');
+  assert.equal(currentModuleVersion, currentBrokerVersion,
+    'The website distribution status must retain the currently tested package version');
   assert.equal(version, '0.10.0');
   for (const name of ['index.html', 'windows/index.html', 'downloads/index.html',
     'freepbx/index.html', 'faq/index.html', 'about/index.html', 'roadmap/index.html']) {

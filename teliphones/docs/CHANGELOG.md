@@ -5,8 +5,29 @@
 Historical entries describe their versions at the time, not current behaviour
 or current test status. Windows has an independent history in the source
 repository. Portable Linux validation has been run for the broker, FreePBX module and
-Windows core; current evidence is recorded in DEVELOPMENT-0.8.0.md. Native Windows compilation/UI integration and live FreePBX
+Windows core; the current Windows evidence is recorded in its guide and readiness
+reference. `DEVELOPMENT-0.8.0.md` is a historical implementation/acceptance report.
+Native Windows compilation/UI integration and live FreePBX
 session, migration, firewall and SSH acceptance remain outstanding.
+
+## 0.9.0.0, hostname-aware pairing and permanent duration semantics (unreleased development)
+
+- Keep Windows independently at 0.10.0 and retain broker protocol 12. Add an
+  opt-in pairing request/response schema v3 for the administrator-confirmed
+  HTTPS certificate DNS hostname; existing v1/v2 pairing envelopes remain
+  unchanged. The broker does not infer the hostname from the WireGuard endpoint
+  or inspect certificate SANs.
+- Add explicit hostname configuration to the module and broker state. Windows
+  automatically receives the exact HTTPS hostname configured by the PBX
+  administrator in pairing response version 3 and populates the editable field;
+  a missing value remains blank for administrator confirmation.
+  Older request versions retain their compatible response formats.
+- Make Permanent pairing submit canonical zero and persist no authority expiry.
+  It is independent of the broker's short renewable active-session lease.
+- Make the Windows pairing dialog resizable and scrollable on constrained
+  displays, with Save/Cancel kept visible.
+- This is an unreleased development target. Package generation, native Windows
+  compilation/UI acceptance and live FreePBX acceptance are not claimed.
 
 ## 0.8.3.15, FreePBX generated listener chain verification (unreleased development)
 
