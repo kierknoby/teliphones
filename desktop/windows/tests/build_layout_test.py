@@ -611,8 +611,10 @@ class BuildLayoutTests(unittest.TestCase):
         self.assertIn("LoadImageW(nullptr, IDI_WARNING, IMAGE_ICON, iconSize, iconSize, LR_SHARED)", draw)
         self.assertIn("GetDpiForWindow(m_hWnd)", draw)
         self.assertIn("totalWidth", draw)
-        self.assertIn("labelSize.cx + (iconWidth ? gap + iconWidth : 0)", draw)
-        self.assertIn("left + labelSize.cx + gap", draw)
+        self.assertIn("const int labelWidth = static_cast<int>(labelSize.cx);", draw)
+        self.assertIn("labelWidth + (iconWidth ? gap + iconWidth : 0)", draw)
+        self.assertIn("left + labelWidth + gap", draw)
+        self.assertIn("left + (item->rcItem.right - item->rcItem.left - totalWidth) / 2", draw)
         self.assertIn("DrawFocusRect", draw)
         self.assertNotIn("⚠", resource)
 
@@ -695,6 +697,11 @@ class BuildLayoutTests(unittest.TestCase):
         self.assertIn("def test_production_console_crash_leaves_no_session_and_next_start_recovers_runtime", native)
         self.assertIn('"--recover-runtime"', native)
         self.assertIn('"--recover-runtime"', (ROOT / "tests/ssh_native_host.cpp").read_text())
+        self.assertIn("def pin_processes(pids):", native)
+        crash = native.split("def crash_and_recover(", 1)[1].split("def fixture_preflight", 1)[0]
+        self.assertIn("pinned = pin_processes(owned)", crash)
+        self.assertIn("WaitForSingleObject(handle, 0)", crash)
+        self.assertNotIn("process_in_snapshot(pid) for pid in owned", crash)
 
     def test_wireguard_nt_dependency_and_private_only_update_are_pinned(self):
         manifest = json.loads((ROOT / "wireguard-nt.json").read_text())
@@ -929,6 +936,11 @@ function Get-FileHash { throw 'Regression: verifier must not depend on Get-FileH
         self.assertIn("TELIPHONES_SSH_TEST_LOG", session)
         self.assertIn("TELIPHONES_SSH_TEST_LOG", fixture)
         self.assertIn('glob("*-client.log")', fixture)
+        self.assertIn("def pin_processes(pids):", fixture)
+        crash = fixture.split("def crash_and_recover(", 1)[1].split("def fixture_preflight", 1)[0]
+        self.assertIn("pinned = pin_processes(owned)", crash)
+        self.assertIn("WaitForSingleObject(handle, 0)", crash)
+        self.assertNotIn("process_in_snapshot(pid) for pid in owned", crash)
 
     def test_system_process_inventory_never_opens_process_handles(self):
         spec = importlib.util.spec_from_file_location("fixture_inventory", ROOT / "tests/ssh_native_check.py")
@@ -1595,6 +1607,25 @@ endfunction()
         for mnemonic in ("&Workstation", "&Access", "&Generate", "&Copy", "&Paste", "&Save"):
             self.assertIn(mnemonic, dialog)
         self.assertIn("Connectivity > TELIPHONES > Pair a Workstation", dialog)
+
+    def test_pair_dialog_responsive_layout_scales_edges_and_pins_footer(self):
+        source = (ROOT / "src/app/PairDlg.cpp").read_text()
+        layout = source.split("void CPairDlg::ArrangePairDialog()", 1)[1].split("void CPairDlg::OnSize", 1)[0]
+        self.assertIn("const auto scaleX = [&](int x) { return MulDiv(x, client.Width(), baseWidth); };", layout)
+        self.assertIn("const int right = scaleX(item.original.right);", layout)
+        self.assertIn("right - left, item.original.Height()", layout)
+        self.assertIn("item.original.top - scrollOffset_", layout)
+        self.assertIn("item.original.top + deltaHeight", layout)
+        self.assertIn("footerTop_ + deltaHeight", layout)
+        self.assertIn("SetScrollInfo(SB_VERT, &info, TRUE)", layout)
+        native = (ROOT / "tests/pair_dialog_tests.cpp").read_text()
+        for required in ("scrolled pairing controls retain order within the content viewport",
+                 "Save and Cancel remain pinned to the resized client bottom",
+                         "Cancel remains within the resized client bounds"):
+            self.assertIn(required, native)
+        self.assertIn("rect.bottom <= viewportBottom", native)
+        self.assertIn("rect.right <= resizedClient.right", native)
+        self.assertIn("rect.bottom <= resizedClient.bottom", native)
 
     def test_pairing_dialogue_invalidates_and_revalidates_without_trusting_account_edit(self):
         source = (ROOT / "src/app/PairDlg.cpp").read_text()

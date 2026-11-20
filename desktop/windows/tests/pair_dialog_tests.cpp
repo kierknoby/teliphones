@@ -140,10 +140,76 @@ void RunPairDialogTests(CWnd* parent) {
         CRect rect;
         dialog.GetDlgItem(id)->GetWindowRect(rect);
         dialog.ScreenToClient(rect);
-        check(rect.top > previousTop && rect.right <= client.right && rect.bottom <= client.bottom,
-              "pairing control order and client bounds");
+                if (!(rect.left >= client.left && rect.top >= client.top && rect.top > previousTop &&
+              rect.right <= client.right && rect.bottom <= client.bottom)) {
+            throw std::runtime_error("pairing control order and client bounds: id=" + std::to_string(id) +
+                " rect=(" + std::to_string(rect.left) + "," + std::to_string(rect.top) + "," +
+                std::to_string(rect.right) + "," + std::to_string(rect.bottom) + ") client=(0,0," +
+                std::to_string(client.right) + "," + std::to_string(client.bottom) + ") previousTop=" +
+                std::to_string(previousTop));
+        }
         previousTop = rect.top;
     }
+    CRect originalWindow;
+    dialog.GetWindowRect(&originalWindow);
+    CRect originalOk;
+    dialog.GetDlgItem(IDOK)->GetWindowRect(&originalOk);
+    dialog.ScreenToClient(&originalOk);
+    CRect originalCancel;
+    dialog.GetDlgItem(IDCANCEL)->GetWindowRect(&originalCancel);
+    dialog.ScreenToClient(&originalCancel);
+    const int okBottomGap = client.bottom - originalOk.bottom;
+    const int cancelBottomGap = client.bottom - originalCancel.bottom;
+    dialog.SetWindowPos(nullptr, originalWindow.left, originalWindow.top,
+                        originalWindow.Width() - 120, originalWindow.Height() - 100,
+                        SWP_NOZORDER | SWP_NOACTIVATE);
+    CRect resizedClient;
+    dialog.GetClientRect(&resizedClient);
+    check(resizedClient.Width() < client.Width() && resizedClient.Height() < client.Height(),
+          "pairing dialogue resizes to a smaller client area");
+    SCROLLINFO scrollInfo{sizeof(scrollInfo), SIF_RANGE | SIF_PAGE | SIF_POS};
+    check(dialog.GetScrollInfo(SB_VERT, &scrollInfo) != FALSE && scrollInfo.nMax > 0 &&
+          scrollInfo.nMax - static_cast<int>(scrollInfo.nPage) > 0,
+          "small pairing dialogue exposes a scrollable content range");
+    dialog.SendMessage(WM_VSCROLL, SB_BOTTOM);
+    dialog.GetScrollInfo(SB_VERT, &scrollInfo);
+    check(scrollInfo.nPos > 0, "pairing content scrolls to reveal its bottom controls");
+    CRect resizedOk;
+    dialog.GetDlgItem(IDOK)->GetWindowRect(&resizedOk);
+    dialog.ScreenToClient(&resizedOk);
+    CRect resizedCancel;
+    dialog.GetDlgItem(IDCANCEL)->GetWindowRect(&resizedCancel);
+    dialog.ScreenToClient(&resizedCancel);
+    check(resizedClient.bottom - resizedOk.bottom == okBottomGap &&
+          resizedClient.bottom - resizedCancel.bottom == cancelBottomGap,
+          "Save and Cancel remain pinned to the resized client bottom");
+    check(resizedCancel.left >= 0 && resizedCancel.top >= 0 && resizedCancel.right <= resizedClient.right &&
+          resizedCancel.bottom <= resizedClient.bottom,
+          "Cancel remains within the resized client bounds");
+    const int viewportBottom = resizedOk.top - 6;
+    previousTop = -1;
+    for (int id : ordered) {
+        CRect rect;
+        dialog.GetDlgItem(id)->GetWindowRect(&rect);
+        dialog.ScreenToClient(&rect);
+        if (id == IDOK) {
+            check(rect.left >= 0 && rect.top >= 0 && rect.right <= resizedClient.right &&
+                  rect.bottom <= resizedClient.bottom && rect.top > previousTop,
+                  "Save remains ordered within the resized client bounds");
+        } else {
+            check(rect.left >= 0 && rect.right <= resizedClient.right && rect.bottom <= viewportBottom &&
+                  rect.top > previousTop,
+                  "scrolled pairing controls retain order within the content viewport");
+        }
+        previousTop = rect.top;
+    }
+    check(resizedOk.left >= 0 && resizedOk.right <= resizedClient.right &&
+          resizedCancel.left >= 0 && resizedCancel.right <= resizedClient.right,
+          "pinned pairing buttons remain within the resized client bounds");
+    dialog.SendMessage(WM_VSCROLL, SB_TOP);
+    dialog.SetWindowPos(nullptr, originalWindow.left, originalWindow.top,
+                        originalWindow.Width(), originalWindow.Height(),
+                        SWP_NOZORDER | SWP_NOACTIVATE);
     check(dialog.GetNextDlgTabItem(dialog.GetDlgItem(IDC_PAIR_WORKSTATION))->GetDlgCtrlID() == IDC_PAIR_ACCESS,
           "Tab moves from workstation to access before generation");
     check(dialog.GetNextDlgTabItem(dialog.GetDlgItem(IDC_PAIR_ACCESS))->GetDlgCtrlID() == IDC_PAIR_GENERATE,

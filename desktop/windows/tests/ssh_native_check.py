@@ -27,6 +27,7 @@ SSHD = OPENSSH / "sshd.exe"
 KEYGEN = OPENSSH / "ssh-keygen.exe"
 SYSTEM_SID = "S-1-5-18"
 ADMIN_SID = "S-1-5-32-544"
+SYNCHRONIZE = 0x00100000
 
 def kernel32():
     from ctypes import wintypes
@@ -368,6 +369,55 @@ def process_snapshot():
 
 def process_in_snapshot(pid):
     return any(entry == pid for entry, _ in process_snapshot())
+
+
+def pin_processes(pids):
+    """Hold synchronization handles so PID reuse cannot masquerade as a surviving child."""
+    from ctypes import wintypes
+
+    kernel = kernel32()
+    handles = []
+    try:
+        for pid in sorted(pids):
+            handle = kernel.OpenProcess(SYNCHRONIZE, False, pid)
+            if handle:
+                handles.append((pid, wintypes.HANDLE(handle)))
+            else:
+                error = ctypes.get_last_error()
+                if error != 87 and process_in_snapshot(pid):  # ERROR_INVALID_PARAMETER means it exited before pinning.
+                    raise ctypes.WinError(error)
+    except Exception:
+        for _, handle in handles:
+            kernel.CloseHandle(handle)
+        raise
+    return handles
+
+
+@unittest.skipUnless(os.name == "nt", "Requires Windows process synchronization handles.")
+class ProcessPinningTests(unittest.TestCase):
+    def test_pinned_process_handle_signals_after_owned_process_termination(self):
+        kernel = kernel32()
+        startup = subprocess.STARTUPINFO()
+        startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        process = subprocess.Popen(
+            [os.environ["COMSPEC"], "/d", "/c", "ping", "-n", "30", "127.0.0.1"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, startupinfo=startup)
+        handles = []
+        try:
+            handles = pin_processes({process.pid})
+            self.assertEqual(len(handles), 1, "Could not pin the preflight process.")
+            self.assertTrue(all(kernel.WaitForSingleObject(handle, 0) == 258 for _, handle in handles),
+                            "A pinned process handle was signaled before process termination.")
+            process.kill()
+            process.wait(timeout=5)
+            self.assertTrue(all(kernel.WaitForSingleObject(handle, 0) == 0 for _, handle in handles),
+                            "Pinned process handles did not signal after their process exited.")
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=5)
+            for _, handle in handles:
+                kernel.CloseHandle(handle)
 
 
 def descendants(root):
@@ -1033,14 +1083,22 @@ class WindowsSshTests(unittest.TestCase):
     def crash_and_recover(self, host, profile, identity_path, runtime, attempt):
         owned = descendants(host.pid)
         self.assertTrue(owned, "The active console had no owned SSH processes to verify.")
-        host.kill()
-        host.wait(timeout=10)
-        for _ in range(100):
-            if not any(process_in_snapshot(pid) for pid in owned):
-                break
-            time.sleep(0.05)
-        survivors = {pid for pid in owned if process_in_snapshot(pid)}
-        self.assertFalse(survivors, f"Crashed TELIPHONES host orphaned owned SSH processes: {sorted(survivors)}")
+        pinned = pin_processes(owned)
+        self.assertTrue(pinned, "No active console descendants could be pinned before the crash.")
+        try:
+            host.kill()
+            host.wait(timeout=10)
+            kernel = kernel32()
+            for _ in range(100):
+                if all(kernel.WaitForSingleObject(handle, 0) == 0 for _, handle in pinned):
+                    break
+                time.sleep(0.05)
+            survivors = [pid for pid, handle in pinned if kernel.WaitForSingleObject(handle, 0) != 0]
+            self.assertFalse(survivors, f"Crashed TELIPHONES host orphaned owned SSH processes: {survivors}")
+        finally:
+            kernel = kernel32()
+            for _, handle in pinned:
+                kernel.CloseHandle(handle)
         self.assertTrue((attempt / "ssh.log").is_file(), "Crash left no runtime file to model the reported failure.")
         self.assertTrue(identity_path.is_file())
         for file in attempt.iterdir():

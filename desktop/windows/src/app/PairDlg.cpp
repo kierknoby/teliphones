@@ -158,7 +158,6 @@ void CPairDlg::ArrangePairDialog() {
     GetClientRect(&client);
     const int baseWidth = std::max(1, initialClientWidth_);
     const auto scaleX = [&](int x) { return MulDiv(x, client.Width(), baseWidth); };
-    const auto scaleWidth = [&](int width) { return MulDiv(width, client.Width(), baseWidth); };
     const int deltaHeight = client.Height() - initialClientHeight_;
     const int currentFooterTop = footerTop_ + deltaHeight;
     const int viewportBottom = std::max(0, currentFooterTop - 6);
@@ -166,14 +165,18 @@ void CPairDlg::ArrangePairDialog() {
 
     for (const auto& item : contentControls_) {
         if (::IsWindow(item.window)) {
-            ::SetWindowPos(item.window, nullptr, scaleX(item.original.left), item.original.top - scrollOffset_,
-                scaleWidth(item.original.Width()), item.original.Height(), SWP_NOZORDER | SWP_NOACTIVATE);
+            const int left = scaleX(item.original.left);
+            const int right = scaleX(item.original.right);
+            ::SetWindowPos(item.window, nullptr, left, item.original.top - scrollOffset_,
+                right - left, item.original.Height(), SWP_NOZORDER | SWP_NOACTIVATE);
         }
     }
     for (const auto& item : footerControls_) {
         if (::IsWindow(item.window)) {
-            ::SetWindowPos(item.window, nullptr, scaleX(item.original.left), item.original.top + deltaHeight,
-                scaleWidth(item.original.Width()), item.original.Height(), SWP_NOZORDER | SWP_NOACTIVATE);
+            const int left = scaleX(item.original.left);
+            const int right = scaleX(item.original.right);
+            ::SetWindowPos(item.window, nullptr, left, item.original.top + deltaHeight,
+                right - left, item.original.Height(), SWP_NOZORDER | SWP_NOACTIVATE);
         }
     }
 
