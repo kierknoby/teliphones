@@ -644,7 +644,7 @@ class BuildLayoutTests(unittest.TestCase):
         self.assertIn("afx_msg BOOL OnMouseWheel(UINT flags, short delta, CPoint point);", header)
         self.assertNotIn("OnMouseWheel(UINT flags, short delta, CPoint point) override", header)
         self.assertIn("ON_WM_MOUSEWHEEL()", source)
-        self.assertIn("static_cast<int>(rect.top)", source)
+        self.assertIn("static_cast<int>(rect.bottom)", source)
         self.assertIn("static_cast<int>(rect.bottom)", source)
         self.assertIn("static_cast<int>(std::min(window.Width(), work.Width()))", source)
         self.assertIn("static_cast<int>(std::min(window.Height(), work.Height()))", source)
@@ -1611,17 +1611,26 @@ endfunction()
     def test_pair_dialog_responsive_layout_scales_edges_and_pins_footer(self):
         source = (ROOT / "src/app/PairDlg.cpp").read_text()
         layout = source.split("void CPairDlg::ArrangePairDialog()", 1)[1].split("void CPairDlg::OnSize", 1)[0]
+        self.assertIn("const int baseWidth = std::max(1, ScaleForDpi(initialClientWidth_));", layout)
         self.assertIn("const auto scaleX = [&](int x) { return MulDiv(x, client.Width(), baseWidth); };", layout)
         self.assertIn("const int right = scaleX(item.original.right);", layout)
-        self.assertIn("right - left, item.original.Height()", layout)
-        self.assertIn("item.original.top - scrollOffset_", layout)
-        self.assertIn("item.original.top + deltaHeight", layout)
-        self.assertIn("footerTop_ + deltaHeight", layout)
+        self.assertIn("bottom - top", layout)
+        self.assertIn("client.bottom - ScaleForDpi(item.bottomGap + item.original.Height())", layout)
         self.assertIn("SetScrollInfo(SB_VERT, &info, TRUE)", layout)
+        self.assertIn("ON_MESSAGE(WM_DPICHANGED, &CPairDlg::OnDpiChanged)", source)
+        self.assertIn("ON_MESSAGE(WM_DPICHANGED_AFTERPARENT, &CPairDlg::OnDpiLayout)", source)
+        self.assertIn("int CPairDlg::FooterTop(const CRect& client) const", source)
+        self.assertIn("int CPairDlg::ScaledContentExtent() const", source)
+        self.assertIn("const int minimumGap = MulDiv(8, initialDpi_, 96);", source)
         native = (ROOT / "tests/pair_dialog_tests.cpp").read_text()
         for required in ("scrolled pairing controls retain order within the content viewport",
                  "Save and Cancel remain pinned to the resized client bottom",
-                         "Cancel remains within the resized client bounds"):
+                         "initial Save and Cancel remain visible in client coordinates",
+                         "resized Save and Cancel remain visible in client coordinates",
+                         "scrolled Save and Cancel remain visible in client coordinates",
+                 "DPI-scaled Save and Cancel remain visible in client coordinates",
+                 "restored-DPI Save and Cancel remain visible in client coordinates",
+                 "Cancel remains within the resized client bounds"):
             self.assertIn(required, native)
         self.assertIn("rect.bottom <= viewportBottom", native)
         self.assertIn("rect.right <= resizedClient.right", native)

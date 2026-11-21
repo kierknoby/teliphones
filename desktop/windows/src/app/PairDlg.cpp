@@ -90,6 +90,8 @@ BEGIN_MESSAGE_MAP(CPairDlg, CAppearanceDialog)
     ON_EN_CHANGE(IDC_PAIR_RESPONSE, &CPairDlg::OnResponseChanged)
     ON_WM_TIMER()
     ON_WM_SIZE()
+    ON_MESSAGE(WM_DPICHANGED, &CPairDlg::OnDpiChanged)
+    ON_MESSAGE(WM_DPICHANGED_AFTERPARENT, &CPairDlg::OnDpiLayout)
     ON_WM_VSCROLL()
     ON_WM_MOUSEWHEEL()
     ON_WM_SETFOCUS()
@@ -114,19 +116,21 @@ BOOL CPairDlg::OnInitDialog() {
     ModifyStyle(0, WS_THICKFRAME | WS_VSCROLL);
     CRect client;
     GetClientRect(&client);
+    initialDpi_ = std::max(1, static_cast<int>(GetDpiForWindow(m_hWnd)));
+    layoutDpi_ = initialDpi_;
     initialClientWidth_ = client.Width();
-    initialClientHeight_ = client.Height();
-    footerTop_ = client.bottom;
+    footerControls_.clear();
     for (HWND child = ::GetWindow(m_hWnd, GW_CHILD); child; child = ::GetWindow(child, GW_HWNDNEXT)) {
         const int id = ::GetDlgCtrlID(child);
         CRect rect;
         ::GetWindowRect(child, &rect);
         ScreenToClient(&rect);
         if (id == IDOK || id == IDCANCEL) {
-            footerControls_.push_back({child, rect});
-            footerTop_ = std::min(footerTop_, static_cast<int>(rect.top));
+            const int minimumGap = MulDiv(8, initialDpi_, 96);
+            footerControls_.push_back({child, rect,
+                std::max(minimumGap, static_cast<int>(client.bottom - rect.bottom))});
         } else {
-            contentControls_.push_back({child, rect});
+            contentControls_.push_back({child, rect, 0});
             contentExtent_ = std::max(contentExtent_, static_cast<int>(rect.bottom));
         }
     }
@@ -156,45 +160,80 @@ void CPairDlg::ArrangePairDialog() {
     arranging_ = true;
     CRect client;
     GetClientRect(&client);
-    const int baseWidth = std::max(1, initialClientWidth_);
+    const int baseWidth = std::max(1, ScaleForDpi(initialClientWidth_));
     const auto scaleX = [&](int x) { return MulDiv(x, client.Width(), baseWidth); };
-    const int deltaHeight = client.Height() - initialClientHeight_;
-    const int currentFooterTop = footerTop_ + deltaHeight;
+    const int currentFooterTop = FooterTop(client);
     const int viewportBottom = std::max(0, currentFooterTop - 6);
-    scrollOffset_ = std::clamp(scrollOffset_, 0, std::max(0, contentExtent_ - viewportBottom));
+    const int contentExtent = ScaledContentExtent();
+    scrollOffset_ = std::clamp(scrollOffset_, 0, std::max(0, contentExtent - viewportBottom));
 
     for (const auto& item : contentControls_) {
         if (::IsWindow(item.window)) {
             const int left = scaleX(item.original.left);
             const int right = scaleX(item.original.right);
-            ::SetWindowPos(item.window, nullptr, left, item.original.top - scrollOffset_,
-                right - left, item.original.Height(), SWP_NOZORDER | SWP_NOACTIVATE);
+            const int top = ScaleForDpi(item.original.top) - scrollOffset_;
+            const int bottom = ScaleForDpi(item.original.bottom) - scrollOffset_;
+            ::SetWindowPos(item.window, nullptr, left, top, right - left, bottom - top,
+                SWP_NOZORDER | SWP_NOACTIVATE);
         }
     }
     for (const auto& item : footerControls_) {
         if (::IsWindow(item.window)) {
             const int left = scaleX(item.original.left);
             const int right = scaleX(item.original.right);
-            ::SetWindowPos(item.window, nullptr, left, item.original.top + deltaHeight,
-                right - left, item.original.Height(), SWP_NOZORDER | SWP_NOACTIVATE);
+            const int top = client.bottom - ScaleForDpi(item.bottomGap + item.original.Height());
+            const int height = ScaleForDpi(item.original.Height());
+            ::SetWindowPos(item.window, nullptr, left, top, right - left, height,
+                SWP_NOZORDER | SWP_NOACTIVATE);
         }
     }
 
     SCROLLINFO info{sizeof(info), SIF_RANGE | SIF_PAGE | SIF_POS};
     info.nMin = 0;
-    info.nMax = std::max(0, contentExtent_ - 1);
+    info.nMax = std::max(0, contentExtent - 1);
     info.nPage = static_cast<UINT>(viewportBottom);
     info.nPos = scrollOffset_;
     SetScrollInfo(SB_VERT, &info, TRUE);
     arranging_ = false;
 }
 
+int CPairDlg::ScaleForDpi(int value) const {
+    return MulDiv(value, std::max(1, layoutDpi_), initialDpi_);
+}
+
+int CPairDlg::FooterTop(const CRect& client) const {
+    int top = client.bottom;
+    for (const auto& item : footerControls_) {
+        top = std::min(top, client.bottom - ScaleForDpi(item.bottomGap + item.original.Height()));
+    }
+    return top;
+}
+
+int CPairDlg::ScaledContentExtent() const {
+    return ScaleForDpi(contentExtent_);
+}
+
+LRESULT CPairDlg::OnDpiChanged(WPARAM dpi, LPARAM rectangle) {
+    layoutDpi_ = std::max(1, static_cast<int>(HIWORD(dpi)));
+    const RECT& suggested = *reinterpret_cast<const RECT*>(rectangle);
+    SetWindowPos(nullptr, suggested.left, suggested.top, suggested.right - suggested.left,
+        suggested.bottom - suggested.top, SWP_NOZORDER | SWP_NOACTIVATE);
+    ArrangePairDialog();
+    return 0;
+}
+
+LRESULT CPairDlg::OnDpiLayout(WPARAM, LPARAM) {
+    layoutDpi_ = std::max(1, static_cast<int>(GetDpiForWindow(m_hWnd)));
+    ArrangePairDialog();
+    return 0;
+}
+
 void CPairDlg::ScrollPairContent(int offset) {
     CRect client;
     GetClientRect(&client);
-    const int currentFooterTop = footerTop_ + client.Height() - initialClientHeight_;
+    const int currentFooterTop = FooterTop(client);
     const int viewportBottom = std::max(0, currentFooterTop - 6);
-    const int next = std::clamp(offset, 0, std::max(0, contentExtent_ - viewportBottom));
+    const int next = std::clamp(offset, 0, std::max(0, ScaledContentExtent() - viewportBottom));
     if (next == scrollOffset_) return;
     scrollOffset_ = next;
     ArrangePairDialog();
@@ -212,7 +251,7 @@ void CPairDlg::OnVScroll(UINT code, UINT position, CScrollBar* scrollbar) {
     const int line = std::max(16, GetSystemMetrics(SM_CXVSCROLL));
     switch (code) {
         case SB_TOP: ScrollPairContent(0); break;
-        case SB_BOTTOM: ScrollPairContent(contentExtent_); break;
+        case SB_BOTTOM: ScrollPairContent(ScaledContentExtent()); break;
         case SB_LINEUP: ScrollPairContent(scrollOffset_ - line); break;
         case SB_LINEDOWN: ScrollPairContent(scrollOffset_ + line); break;
         case SB_PAGEUP: ScrollPairContent(scrollOffset_ - static_cast<int>(info.nPage)); break;
@@ -233,11 +272,12 @@ void CPairDlg::OnSetFocus(CWnd* oldWindow) {
     if (found == contentControls_.end()) return;
     CRect client;
     GetClientRect(&client);
-    const int footer = footerTop_ + client.Height() - initialClientHeight_;
+    const int footer = FooterTop(client);
     CRect rect;
     focus->GetWindowRect(&rect);
     ScreenToClient(&rect);
-    if (rect.top < 0) ScrollPairContent(scrollOffset_ + rect.top);
+    const int viewportTop = ScaleForDpi(0);
+    if (rect.top < viewportTop) ScrollPairContent(scrollOffset_ + rect.top - viewportTop);
     else if (rect.bottom > footer - 6) ScrollPairContent(scrollOffset_ + rect.bottom - footer + 6);
 }
 

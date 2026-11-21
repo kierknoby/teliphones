@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <map>
 #include <stdexcept>
+#include <string>
 
 namespace {
 const std::string publicKey = std::string(42, 'A') + "E=";
@@ -136,11 +137,38 @@ void RunPairDialogTests(CWnd* parent) {
     int previousTop = -1;
     CRect client;
     dialog.GetClientRect(client);
-    for (int id : ordered) {
+    const int initialDpi = std::max(1, static_cast<int>(GetDpiForWindow(dialog.GetSafeHwnd())));
+    const auto clientRect = [&](int id) {
         CRect rect;
-        dialog.GetDlgItem(id)->GetWindowRect(rect);
-        dialog.ScreenToClient(rect);
-                if (!(rect.left >= client.left && rect.top >= client.top && rect.top > previousTop &&
+        dialog.GetDlgItem(id)->GetWindowRect(&rect);
+        dialog.ScreenToClient(&rect);
+        return rect;
+    };
+    const auto assertFooterVisible = [&](const char* stage, int expectedOkGap, int expectedCancelGap) {
+        CRect currentClient;
+        dialog.GetClientRect(&currentClient);
+        const CRect ok = clientRect(IDOK);
+        const CRect cancel = clientRect(IDCANCEL);
+        check(ok.left >= 0 && ok.top >= 0 && ok.right <= currentClient.right && ok.bottom <= currentClient.bottom &&
+              cancel.left >= 0 && cancel.top >= 0 && cancel.right <= currentClient.right && cancel.bottom <= currentClient.bottom,
+              (std::string(stage) + ": dpi=" + std::to_string(GetDpiForWindow(dialog.GetSafeHwnd())) +
+               " save=(" + std::to_string(ok.left) + "," + std::to_string(ok.top) + "," +
+               std::to_string(ok.right) + "," + std::to_string(ok.bottom) + ") cancel=(" +
+               std::to_string(cancel.left) + "," + std::to_string(cancel.top) + "," +
+               std::to_string(cancel.right) + "," + std::to_string(cancel.bottom) + ") client=(0,0," +
+               std::to_string(currentClient.right) + "," + std::to_string(currentClient.bottom) + ")").c_str());
+        check(currentClient.bottom - ok.bottom == expectedOkGap &&
+              currentClient.bottom - cancel.bottom == expectedCancelGap,
+              "Save and Cancel preserve their client-bottom gaps");
+    };
+    const CRect initialOk = clientRect(IDOK);
+    const CRect initialCancel = clientRect(IDCANCEL);
+    const int initialOkGap = client.bottom - initialOk.bottom;
+    const int initialCancelGap = client.bottom - initialCancel.bottom;
+    assertFooterVisible("initial Save and Cancel remain visible in client coordinates", initialOkGap, initialCancelGap);
+    for (int id : ordered) {
+        const CRect rect = clientRect(id);
+        if (!(rect.left >= client.left && rect.top >= client.top && rect.top > previousTop &&
               rect.right <= client.right && rect.bottom <= client.bottom)) {
             throw std::runtime_error("pairing control order and client bounds: id=" + std::to_string(id) +
                 " rect=(" + std::to_string(rect.left) + "," + std::to_string(rect.top) + "," +
@@ -152,12 +180,8 @@ void RunPairDialogTests(CWnd* parent) {
     }
     CRect originalWindow;
     dialog.GetWindowRect(&originalWindow);
-    CRect originalOk;
-    dialog.GetDlgItem(IDOK)->GetWindowRect(&originalOk);
-    dialog.ScreenToClient(&originalOk);
-    CRect originalCancel;
-    dialog.GetDlgItem(IDCANCEL)->GetWindowRect(&originalCancel);
-    dialog.ScreenToClient(&originalCancel);
+    const CRect originalOk = clientRect(IDOK);
+    const CRect originalCancel = clientRect(IDCANCEL);
     const int okBottomGap = client.bottom - originalOk.bottom;
     const int cancelBottomGap = client.bottom - originalCancel.bottom;
     dialog.SetWindowPos(nullptr, originalWindow.left, originalWindow.top,
@@ -167,6 +191,8 @@ void RunPairDialogTests(CWnd* parent) {
     dialog.GetClientRect(&resizedClient);
     check(resizedClient.Width() < client.Width() && resizedClient.Height() < client.Height(),
           "pairing dialogue resizes to a smaller client area");
+    assertFooterVisible("resized Save and Cancel remain visible in client coordinates",
+                        okBottomGap, cancelBottomGap);
     SCROLLINFO scrollInfo{sizeof(scrollInfo), SIF_RANGE | SIF_PAGE | SIF_POS};
     check(dialog.GetScrollInfo(SB_VERT, &scrollInfo) != FALSE && scrollInfo.nMax > 0 &&
           scrollInfo.nMax - static_cast<int>(scrollInfo.nPage) > 0,
@@ -174,12 +200,8 @@ void RunPairDialogTests(CWnd* parent) {
     dialog.SendMessage(WM_VSCROLL, SB_BOTTOM);
     dialog.GetScrollInfo(SB_VERT, &scrollInfo);
     check(scrollInfo.nPos > 0, "pairing content scrolls to reveal its bottom controls");
-    CRect resizedOk;
-    dialog.GetDlgItem(IDOK)->GetWindowRect(&resizedOk);
-    dialog.ScreenToClient(&resizedOk);
-    CRect resizedCancel;
-    dialog.GetDlgItem(IDCANCEL)->GetWindowRect(&resizedCancel);
-    dialog.ScreenToClient(&resizedCancel);
+    const CRect resizedOk = clientRect(IDOK);
+    const CRect resizedCancel = clientRect(IDCANCEL);
     check(resizedClient.bottom - resizedOk.bottom == okBottomGap &&
           resizedClient.bottom - resizedCancel.bottom == cancelBottomGap,
           "Save and Cancel remain pinned to the resized client bottom");
@@ -206,10 +228,32 @@ void RunPairDialogTests(CWnd* parent) {
     check(resizedOk.left >= 0 && resizedOk.right <= resizedClient.right &&
           resizedCancel.left >= 0 && resizedCancel.right <= resizedClient.right,
           "pinned pairing buttons remain within the resized client bounds");
+    assertFooterVisible("scrolled Save and Cancel remain visible in client coordinates",
+                        okBottomGap, cancelBottomGap);
     dialog.SendMessage(WM_VSCROLL, SB_TOP);
     dialog.SetWindowPos(nullptr, originalWindow.left, originalWindow.top,
                         originalWindow.Width(), originalWindow.Height(),
                         SWP_NOZORDER | SWP_NOACTIVATE);
+    RECT dpiBounds{originalWindow.left, originalWindow.top,
+                   originalWindow.left + MulDiv(originalWindow.Width(), 144, initialDpi),
+                   originalWindow.top + MulDiv(originalWindow.Height(), 144, initialDpi)};
+    dialog.SendMessage(WM_DPICHANGED, MAKELONG(144, 144), reinterpret_cast<LPARAM>(&dpiBounds));
+    const int dpiOkGap = MulDiv(okBottomGap, 144, initialDpi);
+    const int dpiCancelGap = MulDiv(cancelBottomGap, 144, initialDpi);
+    assertFooterVisible("DPI-scaled Save and Cancel remain visible in client coordinates",
+                        dpiOkGap, dpiCancelGap);
+        check(clientRect(IDOK).Height() == MulDiv(initialOk.Height(), 144, initialDpi) &&
+                    clientRect(IDCANCEL).Height() == MulDiv(initialCancel.Height(), 144, initialDpi),
+          "Save and Cancel heights scale with the simulated DPI");
+    RECT restoredBounds{originalWindow.left, originalWindow.top,
+                        originalWindow.right, originalWindow.bottom};
+    dialog.SendMessage(WM_DPICHANGED, MAKELONG(initialDpi, initialDpi),
+                       reinterpret_cast<LPARAM>(&restoredBounds));
+    dialog.SetWindowPos(nullptr, originalWindow.left, originalWindow.top,
+                        originalWindow.Width(), originalWindow.Height(),
+                        SWP_NOZORDER | SWP_NOACTIVATE);
+    assertFooterVisible("restored-DPI Save and Cancel remain visible in client coordinates",
+                        initialOkGap, initialCancelGap);
     check(dialog.GetNextDlgTabItem(dialog.GetDlgItem(IDC_PAIR_WORKSTATION))->GetDlgCtrlID() == IDC_PAIR_ACCESS,
           "Tab moves from workstation to access before generation");
     check(dialog.GetNextDlgTabItem(dialog.GetDlgItem(IDC_PAIR_ACCESS))->GetDlgCtrlID() == IDC_PAIR_GENERATE,

@@ -25,6 +25,8 @@ protected:
     afx_msg void OnResponseChanged();
     afx_msg void OnTimer(UINT_PTR timerId);
     afx_msg void OnSize(UINT nType, int cx, int cy);
+    afx_msg LRESULT OnDpiChanged(WPARAM dpi, LPARAM rectangle);
+    afx_msg LRESULT OnDpiLayout(WPARAM, LPARAM);
     afx_msg void OnVScroll(UINT code, UINT position, CScrollBar* scrollbar);
     afx_msg void OnSetFocus(CWnd* oldWindow);
     afx_msg BOOL OnMouseWheel(UINT flags, short delta, CPoint point);
@@ -46,16 +48,20 @@ private:
     struct ContentControl {
         HWND window = nullptr;
         CRect original;
+        int bottomGap = 0;
     };
     std::vector<ContentControl> contentControls_;
     std::vector<ContentControl> footerControls_;
     int initialClientWidth_ = 0;
-    int initialClientHeight_ = 0;
+    int initialDpi_ = 96;
+    int layoutDpi_ = 96;
     int scrollOffset_ = 0;
     int contentExtent_ = 0;
-    int footerTop_ = 0;
     int wheelRemainder_ = 0;
     bool arranging_ = false;
     void ArrangePairDialog();
+    int ScaleForDpi(int value) const;
+    int FooterTop(const CRect& client) const;
+    int ScaledContentExtent() const;
     void ScrollPairContent(int offset);
 };
