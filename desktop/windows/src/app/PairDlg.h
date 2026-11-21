@@ -55,13 +55,13 @@ private:
     int initialClientWidth_ = 0;
     int initialDpi_ = 96;
     int layoutDpi_ = 96;
-    int scrollOffset_ = 0;
+    LONG scrollOffset_ = 0;
     int contentExtent_ = 0;
     int wheelRemainder_ = 0;
     bool arranging_ = false;
     void ArrangePairDialog();
-    int ScaleForDpi(int value) const;
-    int FooterTop(const CRect& client) const;
-    int ScaledContentExtent() const;
-    void ScrollPairContent(int offset);
+    LONG ScaleForDpi(LONG value) const;
+    LONG FooterTop(const CRect& client) const;
+    LONG ScaledContentExtent() const;
+    void ScrollPairContent(LONG offset);
 };

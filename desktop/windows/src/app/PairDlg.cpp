@@ -160,19 +160,20 @@ void CPairDlg::ArrangePairDialog() {
     arranging_ = true;
     CRect client;
     GetClientRect(&client);
-    const int baseWidth = std::max(1, ScaleForDpi(initialClientWidth_));
+    const LONG baseWidth = std::max<LONG>(1, ScaleForDpi(initialClientWidth_));
     const auto scaleX = [&](int x) { return MulDiv(x, client.Width(), baseWidth); };
-    const int currentFooterTop = FooterTop(client);
-    const int viewportBottom = std::max(0, currentFooterTop - 6);
-    const int contentExtent = ScaledContentExtent();
-    scrollOffset_ = std::clamp(scrollOffset_, 0, std::max(0, contentExtent - viewportBottom));
+    const LONG currentFooterTop = FooterTop(client);
+    const LONG viewportBottom = std::max<LONG>(0, currentFooterTop - 6);
+    const LONG contentExtent = ScaledContentExtent();
+    scrollOffset_ = std::clamp(scrollOffset_, LONG{0},
+        std::max<LONG>(0, contentExtent - viewportBottom));
 
     for (const auto& item : contentControls_) {
         if (::IsWindow(item.window)) {
             const int left = scaleX(item.original.left);
             const int right = scaleX(item.original.right);
-            const int top = ScaleForDpi(item.original.top) - scrollOffset_;
-            const int bottom = ScaleForDpi(item.original.bottom) - scrollOffset_;
+            const LONG top = ScaleForDpi(item.original.top) - scrollOffset_;
+            const LONG bottom = ScaleForDpi(item.original.bottom) - scrollOffset_;
             ::SetWindowPos(item.window, nullptr, left, top, right - left, bottom - top,
                 SWP_NOZORDER | SWP_NOACTIVATE);
         }
@@ -181,8 +182,8 @@ void CPairDlg::ArrangePairDialog() {
         if (::IsWindow(item.window)) {
             const int left = scaleX(item.original.left);
             const int right = scaleX(item.original.right);
-            const int top = client.bottom - ScaleForDpi(item.bottomGap + item.original.Height());
-            const int height = ScaleForDpi(item.original.Height());
+            const LONG top = client.bottom - ScaleForDpi(item.bottomGap + item.original.Height());
+            const LONG height = ScaleForDpi(item.original.Height());
             ::SetWindowPos(item.window, nullptr, left, top, right - left, height,
                 SWP_NOZORDER | SWP_NOACTIVATE);
         }
@@ -190,26 +191,26 @@ void CPairDlg::ArrangePairDialog() {
 
     SCROLLINFO info{sizeof(info), SIF_RANGE | SIF_PAGE | SIF_POS};
     info.nMin = 0;
-    info.nMax = std::max(0, contentExtent - 1);
+    info.nMax = static_cast<int>(std::max<LONG>(0, contentExtent - 1));
     info.nPage = static_cast<UINT>(viewportBottom);
-    info.nPos = scrollOffset_;
+    info.nPos = static_cast<int>(scrollOffset_);
     SetScrollInfo(SB_VERT, &info, TRUE);
     arranging_ = false;
 }
 
-int CPairDlg::ScaleForDpi(int value) const {
-    return MulDiv(value, std::max(1, layoutDpi_), initialDpi_);
+LONG CPairDlg::ScaleForDpi(LONG value) const {
+    return static_cast<LONG>(MulDiv(value, std::max(1, layoutDpi_), initialDpi_));
 }
 
-int CPairDlg::FooterTop(const CRect& client) const {
-    int top = client.bottom;
+LONG CPairDlg::FooterTop(const CRect& client) const {
+    LONG top = client.bottom;
     for (const auto& item : footerControls_) {
         top = std::min(top, client.bottom - ScaleForDpi(item.bottomGap + item.original.Height()));
     }
     return top;
 }
 
-int CPairDlg::ScaledContentExtent() const {
+LONG CPairDlg::ScaledContentExtent() const {
     return ScaleForDpi(contentExtent_);
 }
 
@@ -228,12 +229,12 @@ LRESULT CPairDlg::OnDpiLayout(WPARAM, LPARAM) {
     return 0;
 }
 
-void CPairDlg::ScrollPairContent(int offset) {
+void CPairDlg::ScrollPairContent(LONG offset) {
     CRect client;
     GetClientRect(&client);
-    const int currentFooterTop = FooterTop(client);
-    const int viewportBottom = std::max(0, currentFooterTop - 6);
-    const int next = std::clamp(offset, 0, std::max(0, ScaledContentExtent() - viewportBottom));
+    const LONG currentFooterTop = FooterTop(client);
+    const LONG viewportBottom = std::max<LONG>(0, currentFooterTop - 6);
+    const LONG next = std::clamp(offset, LONG{0}, std::max<LONG>(0, ScaledContentExtent() - viewportBottom));
     if (next == scrollOffset_) return;
     scrollOffset_ = next;
     ArrangePairDialog();
@@ -248,17 +249,17 @@ void CPairDlg::OnVScroll(UINT code, UINT position, CScrollBar* scrollbar) {
     (void)scrollbar;
     SCROLLINFO info{sizeof(info), SIF_ALL};
     GetScrollInfo(SB_VERT, &info);
-    const int line = std::max(16, GetSystemMetrics(SM_CXVSCROLL));
+    const LONG line = std::max<LONG>(16, GetSystemMetrics(SM_CXVSCROLL));
     switch (code) {
         case SB_TOP: ScrollPairContent(0); break;
         case SB_BOTTOM: ScrollPairContent(ScaledContentExtent()); break;
         case SB_LINEUP: ScrollPairContent(scrollOffset_ - line); break;
         case SB_LINEDOWN: ScrollPairContent(scrollOffset_ + line); break;
-        case SB_PAGEUP: ScrollPairContent(scrollOffset_ - static_cast<int>(info.nPage)); break;
-        case SB_PAGEDOWN: ScrollPairContent(scrollOffset_ + static_cast<int>(info.nPage)); break;
+        case SB_PAGEUP: ScrollPairContent(scrollOffset_ - static_cast<LONG>(info.nPage)); break;
+        case SB_PAGEDOWN: ScrollPairContent(scrollOffset_ + static_cast<LONG>(info.nPage)); break;
         case SB_THUMBTRACK:
         case SB_THUMBPOSITION:
-            ScrollPairContent(static_cast<int>(position));
+            ScrollPairContent(static_cast<LONG>(position));
             break;
     }
 }
@@ -272,11 +273,11 @@ void CPairDlg::OnSetFocus(CWnd* oldWindow) {
     if (found == contentControls_.end()) return;
     CRect client;
     GetClientRect(&client);
-    const int footer = FooterTop(client);
+    const LONG footer = FooterTop(client);
     CRect rect;
     focus->GetWindowRect(&rect);
     ScreenToClient(&rect);
-    const int viewportTop = ScaleForDpi(0);
+    const LONG viewportTop = ScaleForDpi(0);
     if (rect.top < viewportTop) ScrollPairContent(scrollOffset_ + rect.top - viewportTop);
     else if (rect.bottom > footer - 6) ScrollPairContent(scrollOffset_ + rect.bottom - footer + 6);
 }
