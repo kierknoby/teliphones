@@ -7,6 +7,7 @@
 #include "../src/platform/Ssh.h"
 #include "../src/platform/Win.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <limits>
 #include <map>
