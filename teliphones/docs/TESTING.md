@@ -1,11 +1,11 @@
 # TELIPHONES testing
 
-## Current Windows 0.10.0 / proposed module 0.9.0.0 source review and package boundary
+## Current Windows 0.10.0 / proposed module 0.9.0.1 source review and package boundary
 
-Windows 0.10.0 is independently versioned; module/root broker 0.9.0.0 retain
-protocol 12. The matching local 0.9.0.0 archive is an unreleased development
-package; the retained 0.8.3.15 archive is historical and must not be validated
-as current.
+Windows 0.10.0 is independently versioned; module/root broker 0.9.0.1 retain
+protocol 12 and the current pairing contracts. The matching local 0.9.0.1
+archive is an unreleased maintenance package; the retained 0.8.3.15 and prior
+0.9.0.0 archives are historical and must not be validated as current.
 This is not a production release and does not establish live FreePBX acceptance.
 Source version checks run without an archive; complete package validation checks
 the local package, exact module contents, metadata and checksum.
@@ -36,9 +36,9 @@ pairing behaviour, startup smoke and portable Release checks, use the
 `desktop/windows/tests/WINDOWS-READINESS.md` reference in the source repository.
 Linux checks do not substitute for Windows execution.
 
-## Current 0.9.0.0 source checks and release blockers
+## Current 0.9.0.1 source checks and release blockers
 
-Current 0.9.0.0 firewall regression coverage exercises IPv4 and IPv6 generated
+Current 0.9.0.1 module regression coverage exercises IPv4 and IPv6 generated
 listener convergence, declared-empty Fail2Ban chains, scoped active restrictions,
 RETURN/fallthrough, the FreePBX zone MARK and service jumps, and rejection of
 unknown targets, unsupported rules and early terminal verdicts. Production

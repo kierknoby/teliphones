@@ -23,7 +23,7 @@ const brokerVersion = fs.readFileSync(path.join(root, 'teliphones/support_broker
   .match(/^VERSION = "([^"]+)"/m)[1];
 const currentModuleVersion = '0.8.3.15';
 const currentBrokerVersion = '0.8.3.15';
-const developmentModuleVersion = '0.9.0.0';
+const developmentModuleVersion = '0.9.0.1';
 
 test('all site pages have valid local links, assets and unique fragment targets', () => {
   const ids = new Map();

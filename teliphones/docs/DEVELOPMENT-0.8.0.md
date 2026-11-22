@@ -3,7 +3,7 @@
 This report records the original module and root broker **0.8.0**, protocol
 **12**. At the time of this historical report, the development candidate was
 module/broker **0.8.1**, while Windows was independently **0.9.0**, file version
-**0.9.0.0**. Current source versions are module/root broker **0.9.0.0** and
+**0.9.0.1**. Current source versions are module/root broker **0.9.0.1** and
 Windows **0.10.0**; consult the current component guides for status. This is an
 unreleased development record, not a release. The original requirement — access from a previously unknown public IP
 on FreePBX 17 / Debian 12 with Firewall enabled and no manual whitelisting —

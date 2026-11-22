@@ -5,7 +5,7 @@ The 0.8.0 authority, firewall and lease implementation is documented in the
 Unknown-public-IP FreePBX 17 connectivity remains unverified. Historical evidence
 below does not validate this development candidate.
 
-This document describes proposed, unreleased **FreePBX module 0.9.0.0**, **root broker 0.9.0.0**,
+This document describes proposed, unreleased **FreePBX module 0.9.0.1**, **root broker 0.9.0.1**,
 **broker protocol 12** and **Windows 0.10.0** source:
 components, trust boundaries, interfaces, firewall layers and stored state.
 Architecture describes the implementation, not proof of production behaviour.
@@ -75,7 +75,7 @@ flowchart TB
 Key points:
 
 - The broker is installed by a **root bootstrap**, because Module Admin runs as the web service account and cannot create root-owned files or services. The bootstrap stages the module into a root-owned directory before executing it, so root never runs code directly from the web-writable module directory.
-- The broker reports protocol, component version and capabilities. Proposed module 0.9.0.0 requires root broker 0.9.0.0 and retains protocol 12. A v3 pairing envelope carries an explicitly administrator-confirmed HTTPS DNS hostname; v1/v2 response envelopes remain unchanged. The broker does not inspect certificate SANs or infer a TLS hostname from the WireGuard endpoint. Permanent authority has no expiry but does not bypass the short active-session lease. No 0.9.0.0 package is present; the retained 0.8.3.15 archive is historical. This development target is not production-ready or live-accepted. Windows remains independently versioned at 0.10.0.
+- The broker reports protocol, component version and capabilities. Proposed module 0.9.0.1 requires root broker 0.9.0.1 and retains protocol 12. A v3 pairing envelope carries an explicitly administrator-confirmed HTTPS DNS hostname; v1/v2 response envelopes remain unchanged. The broker does not inspect certificate SANs or infer a TLS hostname from the WireGuard endpoint. Permanent authority has no expiry but does not bypass the short active-session lease. A local 0.9.0.1 maintenance package is prepared for controlled validation; the retained 0.8.3.15 archive is historical. This development target is not production-ready or live-accepted. Windows remains independently versioned at 0.10.0.
 - Pairing and revocation opt into fixed, non-secret progress frames while synchronous verification runs. PHP retains a five-second inactivity deadline; only a verified final result confirms removal. Connection loss does not cancel or redispatch the mutation. Broker 0.8.0 durably records revocation before cleanup, rejects revoked identities during recovery/admission, exposes the latest persisted outcome separately from listener housekeeping, and records correlated workstation admission outcomes in bounded persistent diagnostics. It also reconciles generated FreePBX Custom Service rules for listener ports and classifies IPv6 wildcard web listeners as indeterminate for IPv4. The historical 0.6.7 package was intentionally removed from this checkout and predates the proposed 0.8.0 listener/admission correction. Local tests do not establish live FreePBX acceptance.
 - Like other root `fwconsole` services, this design trusts the integrity of the FreePBX application code. Anyone able to execute code as the FreePBX service account can send requests to the broker.
 

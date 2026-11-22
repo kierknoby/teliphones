@@ -8,7 +8,7 @@ version numbers retrospectively.
 ## 0.10.0 — Unreleased recovery and secure-management target
 
 Windows file/product version: **0.10.0.0** / **0.10.0**. FreePBX module/root
-broker **0.9.0.0**, protocol **12**.
+broker **0.9.0.1**, protocol **12**.
 
 - Add profile-independent discovery and exact-ownership recovery of residual
   TELIPHONES WireGuard tunnels, retaining diagnostics and records until service,

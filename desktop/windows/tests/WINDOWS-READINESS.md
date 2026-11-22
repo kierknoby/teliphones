@@ -1,7 +1,7 @@
 # Windows developer builds, testing and readiness
 
 Targets: TELIPHONES for Windows **0.10.0**, an unreleased development target, and
-the proposed, unreleased TELIPHONES FreePBX module/root broker source target **0.9.0.0**. These
+the proposed, unreleased TELIPHONES FreePBX module/root broker source target **0.9.0.1**. These
 products are independently versioned. No Windows 0.10.0 build is available;
 native Windows build and acceptance tests remain outstanding. Existing published
 module download information is unchanged by this Windows work.

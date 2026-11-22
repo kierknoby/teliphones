@@ -13,12 +13,12 @@ There are two distinct workflows:
 
 | Component | Source version | Current status |
 |---|---|---|
-| FreePBX module | **0.9.0.0** | Unreleased development target; controlled review only, not production-approved |
-| Root broker | **0.9.0.0** | Independently installed component; matching module version and protocol 12 are required |
+| FreePBX module | **0.9.0.1** | Unreleased maintenance target; controlled review only, not production-approved |
+| Root broker | **0.9.0.1** | Independently installed component; matching module version and protocol 12 are required |
 | Pairing / workstation-management protocol | **12** | Retained; no protocol change in the current module candidate |
 | Windows application | **0.10.0** (file version **0.10.0.0**) | Unreleased development target; no matching successful CI run or downloadable artifact can be verified from this checkout; native acceptance remains outstanding |
 
-These components are versioned independently. The 0.9.0.0 module/broker development target adds an opt-in v3 pairing envelope to carry an administrator-confirmed HTTPS DNS hostname; v1/v2 response envelopes remain unchanged and protocol 12 is retained. Permanent workstation authority has no expiry and remains distinct from the short renewable active-session lease. Windows 0.10.0 is unchanged. Source versions and development artifacts do not establish production approval. No release or deployment is declared here.
+The 0.9.0.1 maintenance update fixes a PHP template parse error and retains the 0.9.0.0 pairing behavior. These independently versioned components keep protocol 12 and existing v1/v2 pairing compatibility; the optional v3 response carries an administrator-confirmed HTTPS DNS hostname. Permanent workstation authority has no expiry and remains distinct from the short renewable active-session lease. Windows 0.10.0 is unchanged. Source versions and development artifacts do not establish production approval. No release or deployment is declared here.
 
 For automatic Windows HTTPS hostname population, a PBX administrator must explicitly configure the DNS hostname covered by the trusted certificate. A valid v3 pairing response automatically populates Windows' editable hostname field with that configured value; a blank hostname is returned as unavailable and requires manual administrator confirmation. The broker does not inspect certificate SANs or infer the TLS name from the WireGuard endpoint. Windows retains normal TLS certificate validation. Changing the PBX management service URL requires a new pairing; changing only the certificate hostname does not.
 
@@ -34,15 +34,15 @@ For automatic Windows HTTPS hostname population, a PBX administrator must explic
 
 ## Distribution and validation
 
-The repository retains the earlier `TELIPHONES-0.8.3.15.tgz` archive and checksum; it is not the 0.9.0.0 target. `TELIPHONES-0.9.0.0.tgz` and its SHA-256 sidecar are generated locally as an unreleased development package for controlled validation; neither is a release or deployment. Build the module-only package deterministically and validate its exact source contents and checksum:
+The repository retains the earlier `TELIPHONES-0.8.3.15.tgz` archive and checksum and the prior `TELIPHONES-0.9.0.0.tgz` development package. The new `TELIPHONES-0.9.0.1.tgz` and its SHA-256 sidecar are generated locally as an unreleased maintenance package for controlled validation; neither is a release or deployment. Build the module-only package deterministically and validate its exact source contents and checksum:
 
 ```bash
 tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
 	--mode='u+rwX,go+rX,go-w' --exclude='*/.*' --exclude='*/tests' \
 	--exclude='*/__pycache__' --exclude='*.pyc' --exclude='*.pyo' \
-	-czf TELIPHONES-0.9.0.0.tgz teliphones
-sha256sum TELIPHONES-0.9.0.0.tgz > TELIPHONES-0.9.0.0.tgz.sha256
-sha256sum -c TELIPHONES-0.9.0.0.tgz.sha256
+	-czf TELIPHONES-0.9.0.1.tgz teliphones
+sha256sum TELIPHONES-0.9.0.1.tgz > TELIPHONES-0.9.0.1.tgz.sha256
+sha256sum -c TELIPHONES-0.9.0.1.tgz.sha256
 PYTHONDONTWRITEBYTECODE=1 python3 teliphones/tests/package-validation.py
 ```
 

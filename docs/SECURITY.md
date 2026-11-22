@@ -5,8 +5,9 @@ Unknown-public-IP FreePBX 17 connectivity remains unverified. Historical evidenc
 below does not validate this development candidate.
 
 This document explains proposed, unreleased source targets **FreePBX module
-0.9.0.0**, **root broker 0.9.0.0**, **protocol 12** and **Windows 0.10.0**, evidence
-and limitations. No 0.9.0.0 package is present; the 0.8.3.15 archive is historical.
+0.9.0.1**, **root broker 0.9.0.1**, **protocol 12** and **Windows 0.10.0**, evidence
+and limitations. A local 0.9.0.1 maintenance package is prepared for controlled
+validation; the 0.8.3.15 archive is historical.
 it is not production-ready or live-accepted. The historical 0.6.7 archive was
 intentionally removed from this checkout and did not contain the proposed
 changes.
@@ -85,7 +86,7 @@ they are not the current native-test result.
 |---|---|
 | Current source review | Windows 0.10.0 adds exact-ownership tunnel recovery and secure HTTPS hostname handling while retaining the bounded tunnel lifecycle and diagnostics. Native compilation, service/driver, browser integration and platform acceptance are not established by this document; public-IP roaming and end-to-end reconnection are not established. The experimental built-in console is disabled on the active managed SSH path. No matching 0.10.0 CI artifact or live connectivity success is claimed here. |
 | Pairing form source correction | Disabled SSH select omitted `ssh` from web-only POST. The module now submits explicit `ssh=0`, retains safe values and rejects missing/invalid choices. PHP/Node page-path tests passed; gateway suite 203 run, 202 passed, one skipped, includes actual PHP page/Unix-socket broker pairing with modelled network commands. This is not live PBX execution. |
-| Current and historical packages | Proposed module/broker 0.9.0.0 retains protocol 12; no matching package is present and the retained 0.8.3.15 archive is historical. This target is not production-ready or live-accepted. No release or deployment is claimed. Exact archive/source equality is a local packaging check, not proof of live connectivity. Windows is independently 0.10.0 in source. |
+| Current and historical packages | Proposed module/broker 0.9.0.1 retains protocol 12; a local maintenance package is prepared for controlled validation and the retained 0.8.3.15 archive is historical. This target is not production-ready or live-accepted. No release or deployment is claimed. Exact archive/source equality is a local packaging check, not proof of live connectivity. Windows is independently 0.10.0 in source. |
 | nftables repeatability | At 0.6.3 preparation, 10/10 working-tree and 10/10 unchanged-baseline namespace runs passed after an earlier intermittent own-event-filtering failure. That failure remains undiagnosed; successful samples do not exclude recurrence. |
 | Later operator report | Earlier Windows Actions run: all eleven native SSH integrations passed; first-run GUI smoke subsequently reported successful. No matching 0.8.1 run or independently fetched evidence is supplied. |
 | Operator's latest report | A supplied historical report states successful Windows GitHub Actions builds and ten native OpenSSH integration tests passing. Another report states eleven. No run URL, commit/build hash or raw logs accompanied either report, so the counts cannot be reconciled or verified against the current source. |

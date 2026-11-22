@@ -26,9 +26,11 @@ jobs:
       - name: PHP syntax validation
         run: |
           find teliphones -type f \( -name '*.php' -o -name '*.phtml' \) -print0 | xargs -0 -r -n1 php -l
-      - name: PHP behavioural regressions
+      - name: PHP behavioral and broker regressions
         run: |
           XDEBUG_MODE=off php teliphones/tests/run.php
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s gateway/tests -p 'test_*.py' -v
+          PYTHONDONTWRITEBYTECODE=1 python3 teliphones/tests/package-validation.py SourceVersionTests
       - name: Python syntax, unit and security regressions
         run: |
           python3 -m compileall -q teliphones gateway
@@ -38,7 +40,9 @@ jobs:
           tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
             --mode='u+rwX,go+rX,go-w' --exclude='*/.*' --exclude='*/tests' \
             --exclude='*/__pycache__' --exclude='*.pyc' --exclude='*.pyo' \
-            -czf TELIPHONES-0.8.3.10.tgz teliphones
-          sha256sum TELIPHONES-0.8.3.10.tgz > TELIPHONES-0.8.3.10.tgz.sha256
+            -czf TELIPHONES-0.9.0.1.tgz teliphones
+          sha256sum TELIPHONES-0.9.0.1.tgz > TELIPHONES-0.9.0.1.tgz.sha256
+          sha256sum -c TELIPHONES-0.9.0.1.tgz.sha256
+          PYTHONDONTWRITEBYTECODE=1 python3 teliphones/tests/package-validation.py
           PYTHONDONTWRITEBYTECODE=1 python3 teliphones/tests/package-validation.py
           PYTHONDONTWRITEBYTECODE=1 python3 teliphones/tests/documentation-links.py

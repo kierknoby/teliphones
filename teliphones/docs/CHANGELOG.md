@@ -10,6 +10,17 @@ reference. `DEVELOPMENT-0.8.0.md` is a historical implementation/acceptance repo
 Native Windows compilation/UI integration and live FreePBX
 session, migration, firewall and SSH acceptance remain outstanding.
 
+## 0.9.0.1, maintenance update (unreleased development)
+
+- Correct the pairing duration template's malformed PHP echo so the FreePBX
+  administration page parses and renders.
+- Keep broker protocol 12, v1/v2 pairing compatibility and the 0.9.0.0
+  hostname-aware v3 pairing and persistent-duration behavior unchanged.
+- Update the module and matching broker version to 0.9.0.1. The Windows
+  application remains independently versioned at 0.10.0.
+- Local PHP syntax and behavior checks and deterministic package integrity are
+  required before controlled review; this is not a release or deployment.
+
 ## 0.9.0.0, hostname-aware pairing and permanent duration semantics (unreleased development)
 
 - Keep Windows independently at 0.10.0 and retain broker protocol 12. Add an

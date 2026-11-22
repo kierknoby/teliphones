@@ -14,8 +14,8 @@ This guide covers installing and using the Windows application. The
 [FreePBX administration guide](../../teliphones/README.md) covers server setup.
 
 Windows **0.10.0** (file version **0.10.0.0**) is independent of FreePBX
-module/root broker **0.9.0.0**, protocol **12**. The matching 0.9.0.0 module
-archive is a local development package, not a release or
+module/root broker **0.9.0.1**, protocol **12**. The matching 0.9.0.1 module
+archive is a local maintenance package, not a release or
 production approval. The checksum-verified historical 0.6.7 archive is at the
 repository root and does not contain these newer changes.
 Native Windows compilation and dialog interaction remain release blockers. The
@@ -241,7 +241,7 @@ archive predates these changes. After an
 authorized controlled-development installation or upgrade, complete the
 [root broker bootstrap](../../teliphones/README.md#complete-installation-on-freepbx-17)
 with no active support session and workstation tunnels disconnected. Verify
-that the broker reports version 0.9.0.0 and protocol 12; an operational socket
+   that the broker reports version 0.9.0.1 and protocol 12; an operational socket
 alone does not confirm the required broker version.
 
 1. Select **Add my PBX...** and enter the workstation name under **Pair my PBX >
@@ -613,8 +613,8 @@ customer data in an issue.
 
 ## Verification status
 
-The FreePBX module/root broker source target is 0.9.0.0, protocol 12, and
-unreleased. Its local development archive is available for controlled testing;
+The FreePBX module/root broker source target is 0.9.0.1, protocol 12, and
+unreleased. Its local maintenance archive is available for controlled testing;
 the historical 0.6.7
 archive was intentionally removed from this checkout and predates the proposed
 changes. Earlier Windows CI builds completed for 0.9.0; no matching successful

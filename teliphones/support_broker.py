@@ -39,7 +39,7 @@ SOCKET = "/run/teliphones/control.sock"
 # Protocol 11 adds PBX-enforced workstation session leases and management gating.
 # Protocol 12 adds post-pair workstation policy management.
 PROTOCOL = 12
-VERSION = "0.9.0.0"
+VERSION = "0.9.0.1"
 SESSION_CONTROL_PORT = 8766
 SESSION_LEASE_SECONDS = 30
 FWCONSOLE = "/usr/sbin/fwconsole"
