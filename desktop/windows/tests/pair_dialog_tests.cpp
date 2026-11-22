@@ -331,8 +331,9 @@ void RunPairDialogTests(CWnd* parent) {
     const int maxScroll = std::max(0, currentScroll.nMax - static_cast<int>(currentScroll.nPage) + 1);
     setScrollPosition(0);
     const CRect topHostname = clientRect(IDC_PAIR_TLS_HOSTNAME);
-    const int partialScroll = std::clamp(topHostname.top + topHostname.Height() / 2 - viewportBottom,
-                                         1, std::max(1, maxScroll - 1));
+    const int partialScroll = static_cast<int>(std::clamp<LONG>(
+        topHostname.top + topHostname.Height() / 2 - viewportBottom,
+        1L, std::max<LONG>(1L, static_cast<LONG>(maxScroll) - 1L)));
     assertScrollGeometry("top", 0);
         check(visibleControlRect(IDC_PAIR_TLS_HOSTNAME).IsRectEmpty(),
             "hostname below the top viewport has no visible region");
