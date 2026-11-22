@@ -28,6 +28,7 @@ KEYGEN = OPENSSH / "ssh-keygen.exe"
 SYSTEM_SID = "S-1-5-18"
 ADMIN_SID = "S-1-5-32-544"
 SYNCHRONIZE = 0x00100000
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 
 def kernel32():
     from ctypes import wintypes
@@ -37,6 +38,12 @@ def kernel32():
     kernel.CreateFileW.restype = wintypes.HANDLE
     kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
     kernel.OpenProcess.restype = wintypes.HANDLE
+    kernel.GetProcessTimes.argtypes = [wintypes.HANDLE, ctypes.c_void_p, ctypes.c_void_p,
+                                       ctypes.c_void_p, ctypes.c_void_p]
+    kernel.GetProcessTimes.restype = wintypes.BOOL
+    kernel.QueryFullProcessImageNameW.argtypes = [wintypes.HANDLE, wintypes.DWORD,
+                                                   wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
+    kernel.QueryFullProcessImageNameW.restype = wintypes.BOOL
     kernel.WaitNamedPipeW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD]
     kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
     kernel.CloseHandle.argtypes = [wintypes.HANDLE]
@@ -333,7 +340,7 @@ def fixture_task_state(task):
 
 
 def process_snapshot():
-    """PID inventory does not request rights on a SYSTEM process object. Returns (pid, parent pid) pairs."""
+    """PID inventory with parent and image evidence, without opening SYSTEM processes."""
     from ctypes import wintypes
 
     class ProcessEntry(ctypes.Structure):
@@ -357,7 +364,7 @@ def process_snapshot():
         entry.dwSize = ctypes.sizeof(entry)
         found = kernel.Process32FirstW(snapshot, ctypes.byref(entry))
         while found:
-            entries.append((entry.th32ProcessID, entry.th32ParentProcessID))
+            entries.append((entry.th32ProcessID, entry.th32ParentProcessID, entry.szExeFile))
             found = kernel.Process32NextW(snapshot, ctypes.byref(entry))
         error = ctypes.get_last_error()
         if error != 18:  # ERROR_NO_MORE_FILES is the only successful enumeration end.
@@ -368,27 +375,50 @@ def process_snapshot():
 
 
 def process_in_snapshot(pid):
-    return any(entry == pid for entry, _ in process_snapshot())
+    return any(entry == pid for entry, _, _ in process_snapshot())
+
+
+def process_identity(handle):
+    from ctypes import wintypes
+
+    class FileTime(ctypes.Structure):
+        _fields_ = [("low", wintypes.DWORD), ("high", wintypes.DWORD)]
+
+    created, exited, kernel_time, user_time = FileTime(), FileTime(), FileTime(), FileTime()
+    if not kernel32().GetProcessTimes(handle, ctypes.byref(created), ctypes.byref(exited),
+                                     ctypes.byref(kernel_time), ctypes.byref(user_time)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    image = ctypes.create_unicode_buffer(32768)
+    size = wintypes.DWORD(len(image))
+    if not kernel32().QueryFullProcessImageNameW(handle, 0, image, ctypes.byref(size)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    creation = (created.high << 32) | created.low
+    return image.value, creation
 
 
 def pin_processes(pids):
-    """Hold synchronization handles so PID reuse cannot masquerade as a surviving child."""
+    """Pin process objects and capture creation/image/parent evidence."""
     from ctypes import wintypes
 
     kernel = kernel32()
     handles = []
     try:
-        for pid in sorted(pids):
-            handle = kernel.OpenProcess(SYNCHRONIZE, False, pid)
+        metadata = pids if isinstance(pids, dict) else {pid: (None, None) for pid in pids}
+        for pid in sorted(metadata):
+            handle = kernel.OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
             if handle:
-                handles.append((pid, wintypes.HANDLE(handle)))
+                image, creation = process_identity(wintypes.HANDLE(handle))
+                parent, snapshot_image = metadata[pid]
+                handles.append({"pid": pid, "handle": wintypes.HANDLE(handle), "image": image,
+                                "creation": creation, "parent": parent,
+                                "snapshot_image": snapshot_image})
             else:
                 error = ctypes.get_last_error()
                 if error != 87 and process_in_snapshot(pid):  # ERROR_INVALID_PARAMETER means it exited before pinning.
                     raise ctypes.WinError(error)
     except Exception:
-        for _, handle in handles:
-            kernel.CloseHandle(handle)
+        for item in handles:
+            kernel.CloseHandle(item["handle"])
         raise
     return handles
 
@@ -406,27 +436,74 @@ class ProcessPinningTests(unittest.TestCase):
         try:
             handles = pin_processes({process.pid})
             self.assertEqual(len(handles), 1, "Could not pin the preflight process.")
-            self.assertTrue(all(kernel.WaitForSingleObject(handle, 0) == 258 for _, handle in handles),
+            self.assertTrue(all(kernel.WaitForSingleObject(item["handle"], 0) == 258 for item in handles),
                             "A pinned process handle was signaled before process termination.")
             process.kill()
             process.wait(timeout=5)
-            self.assertTrue(all(kernel.WaitForSingleObject(handle, 0) == 0 for _, handle in handles),
+            self.assertTrue(all(kernel.WaitForSingleObject(item["handle"], 0) == 0 for item in handles),
                             "Pinned process handles did not signal after their process exited.")
         finally:
             if process.poll() is None:
                 process.kill()
                 process.wait(timeout=5)
-            for _, handle in handles:
-                kernel.CloseHandle(handle)
+            for item in handles:
+                kernel.CloseHandle(item["handle"])
 
 
 def descendants(root):
-    found, frontier = set(), {root}
+    found, frontier = {}, {root}
     entries = process_snapshot()
     while frontier:
-        frontier = {pid for pid, parent in entries if parent in frontier and pid not in found and pid != root}
-        found |= frontier
+        frontier = {pid: (parent, image) for pid, parent, image in entries
+                    if parent in frontier and pid not in found and pid != root}
+        found.update(frontier)
     return found
+
+
+def surviving_owned_processes(processes):
+    """Return pinned, still-running instances that match their captured ownership evidence."""
+    kernel = kernel32()
+    survivors = []
+    for process in processes:
+        handle = process["handle"]
+        state = kernel.WaitForSingleObject(handle, 0)
+        if state == 0:
+            continue
+        if state != 258:
+            raise ctypes.WinError(ctypes.get_last_error())
+        current_image, current_creation = process_identity(handle)
+        final_state = kernel.WaitForSingleObject(handle, 0)
+        if final_state == 258 and current_image == process["image"] and current_creation == process["creation"]:
+            survivors.append(process["pid"])
+        elif final_state != 0:
+            raise ctypes.WinError(ctypes.get_last_error())
+    return survivors
+
+
+def assert_owned_process_tree(root_pid, root_handle, processes):
+    """Verify pinned process identity, parentage chronology and expected SSH/helper members."""
+    root_image, root_creation = process_identity(root_handle)
+    by_pid = {item["pid"]: item for item in processes}
+    expected_helper = str(HOST).casefold()
+    expected_ssh = str(SSH).casefold()
+    pinned_images = set()
+    for item in processes:
+        image = item["image"].casefold()
+        if Path(item["snapshot_image"]).name.casefold() != Path(item["image"]).name.casefold():
+            raise AssertionError(f"Process PID {item['pid']} changed image between enumeration and pinning.")
+        pinned_images.add(image)
+        parent = item["parent"]
+        if parent == root_pid:
+            parent_creation = root_creation
+        else:
+            parent_item = by_pid.get(parent)
+            if parent_item is None:
+                raise AssertionError(f"PID {item['pid']} has no pinned parent instance {parent}.")
+            parent_creation = parent_item["creation"]
+        if item["creation"] <= parent_creation:
+            raise AssertionError(f"PID {item['pid']} predates its captured parent instance {parent}; likely PID reuse.")
+    if expected_helper not in pinned_images or expected_ssh not in pinned_images:
+        raise AssertionError("Pinned descendants do not include both the TELIPHONES console helper and OpenSSH client.")
 
 
 def wait_server_exit(pid_file):
@@ -1086,19 +1163,26 @@ class WindowsSshTests(unittest.TestCase):
         pinned = pin_processes(owned)
         self.assertTrue(pinned, "No active console descendants could be pinned before the crash.")
         try:
+            assert_owned_process_tree(host.pid, ctypes.c_void_p(host._handle), pinned)
+        except AssertionError as error:
+            for item in pinned:
+                kernel32().CloseHandle(item["handle"])
+            self.fail(f"Process inventory was not a verified TELIPHONES/OpenSSH descendant tree: {error}")
+        try:
             host.kill()
             host.wait(timeout=10)
             kernel = kernel32()
             for _ in range(100):
-                if all(kernel.WaitForSingleObject(handle, 0) == 0 for _, handle in pinned):
+                if all(kernel.WaitForSingleObject(item["handle"], 0) == 0 for item in pinned):
                     break
                 time.sleep(0.05)
-            survivors = [pid for pid, handle in pinned if kernel.WaitForSingleObject(handle, 0) != 0]
-            self.assertFalse(survivors, f"Crashed TELIPHONES host orphaned owned SSH processes: {survivors}")
+            survivors = surviving_owned_processes(pinned)
+            self.assertFalse(survivors,
+                             "Crashed TELIPHONES host left pinned SSH/helper process instances running: " +
+                             repr(survivors))
         finally:
-            kernel = kernel32()
-            for _, handle in pinned:
-                kernel.CloseHandle(handle)
+            for item in pinned:
+                kernel.CloseHandle(item["handle"])
         self.assertTrue((attempt / "ssh.log").is_file(), "Crash left no runtime file to model the reported failure.")
         self.assertTrue(identity_path.is_file())
         for file in attempt.iterdir():
