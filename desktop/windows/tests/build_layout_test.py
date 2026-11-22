@@ -1641,7 +1641,7 @@ endfunction()
                  "restored-DPI Save and Cancel remain visible in client coordinates",
                  "Cancel remains within the resized client bounds"):
             self.assertIn(required, native)
-        self.assertIn("rect.bottom <= viewportBottom", native)
+        self.assertIn("visibleRect.bottom <= viewportBottom", native)
         self.assertIn("rect.bottom <= 0", native)
         self.assertIn("GetComboBoxInfo", native)
         self.assertIn("visibleRect.top < previousVisibleBottom", native)

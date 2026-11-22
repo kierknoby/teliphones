@@ -61,6 +61,13 @@ void CopyText(HWND owner, const std::string& text) {
     CloseClipboard();
 }
 
+void ClipChildToViewport(HWND window, const CRect& child, LONG viewportTop, LONG viewportBottom) {
+    const int top = static_cast<int>(std::clamp<LONG>(viewportTop - child.top, 0, child.Height()));
+    const int bottom = static_cast<int>(std::clamp<LONG>(viewportBottom - child.top, 0, child.Height()));
+    HRGN region = CreateRectRgn(0, top, std::max(0, child.Width()), std::max(top, bottom));
+    if (region && !SetWindowRgn(window, region, TRUE)) DeleteObject(region);
+}
+
 std::string ComputerName() {
     wchar_t buffer[MAX_COMPUTERNAME_LENGTH + 1]{};
     DWORD length = static_cast<DWORD>(std::size(buffer));
@@ -178,6 +185,7 @@ void CPairDlg::ArrangePairDialog() {
             const LONG bottom = ScaleForDpi(item.original.bottom) - scrollOffset_;
             ::SetWindowPos(item.window, nullptr, left, top, right - left, bottom - top,
                 SWP_NOZORDER | SWP_NOACTIVATE);
+            ClipChildToViewport(item.window, CRect(left, top, right, bottom), 0, viewportBottom);
         }
     }
     for (const auto& item : footerControls_) {

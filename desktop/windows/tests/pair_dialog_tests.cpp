@@ -158,7 +158,18 @@ void RunPairDialogTests(CWnd* parent) {
             rect = info.rcItem;
             dialog.ScreenToClient(&rect);
         }
-        return rect;
+        HRGN region = ::CreateRectRgn(0, 0, 0, 0);
+        check(region != nullptr, "allocate pairing control visibility region");
+        const int regionType = ::GetWindowRgn(dialog.GetDlgItem(id)->GetSafeHwnd(), region);
+        RECT bounds{};
+        const int boundsType = regionType == ERROR ? ERROR : ::GetRgnBox(region, &bounds);
+        ::DeleteObject(region);
+        check(regionType != ERROR && boundsType != ERROR,
+              "query native clipping region for pairing content control");
+        if (boundsType == NULLREGION) return CRect(rect.left, rect.top, rect.left, rect.top);
+        CRect clipped(clientRect(id).left + bounds.left, clientRect(id).top + bounds.top,
+                      clientRect(id).left + bounds.right, clientRect(id).top + bounds.bottom);
+        return rect & clipped;
     };
     const auto assertFooterVisible = [&](const char* stage, int expectedOkGap, int expectedCancelGap) {
         CRect currentClient;
@@ -273,9 +284,11 @@ void RunPairDialogTests(CWnd* parent) {
                   rect.bottom <= resizedClient.bottom && rect.top > previousTop)) failGeometry();
         } else {
             // Controls fully above the viewport are expected at the bottom scroll position.
-            // Any visible portion must be within the content viewport, not under the pinned footer.
+            // A partially visible native child may retain a larger outer rectangle, but its
+            // actual window region must be clipped to the content viewport and fixed footer.
             const bool validVerticalPlacement = aboveViewport ||
-                (intersectsViewport && rect.bottom <= viewportBottom && !belowViewport);
+                (intersectsViewport && !belowViewport && visibleRect.top >= 0 &&
+                 visibleRect.bottom <= viewportBottom);
             if (!(rect.left >= 0 && rect.right <= resizedClient.right && rect.top > previousTop &&
                   rect.bottom > rect.top && validVerticalPlacement)) failGeometry();
             if (visible && visibleRect.bottom > 0 && visibleRect.top < viewportBottom) {
