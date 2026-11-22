@@ -136,6 +136,15 @@ void testJson() {
     check(throws([] { json::Parse("01"); }), "leading zero rejected");
     check(!json::Parse("1.5").isInteger() && !json::Parse("99999999999999999999").isInteger(), "fractions and overflow are not integers");
     check(throws([] { json::Parse("\"\\ud800\""); }), "unpaired surrogate rejected");
+      try {
+            json::RequireExactKeys(json::Parse("{\"present\":true,\"extra\":1}"), {"present", "required"}, "test schema");
+            check(false, "exact JSON schema reports field mismatches");
+      } catch (const Error& error) {
+            const std::string message = error.what();
+            check(message.find("missing: required") != std::string::npos &&
+                    message.find("unexpected: extra") != std::string::npos,
+                    "exact JSON schema diagnostics name missing and unexpected fields");
+      }
 }
 
 void testValidation() {

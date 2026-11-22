@@ -310,7 +310,25 @@ void RequireExactKeys(const Value& value, const std::vector<std::string>& keys, 
     std::set<std::string> expected(keys.begin(), keys.end());
     std::set<std::string> actual;
     for (const auto& item : value.asObject()) actual.insert(item.first);
-    if (expected != actual) throw Error(std::string(what) + " has missing or unexpected fields.");
+    if (expected != actual) {
+        std::string message = std::string(what) + " has missing or unexpected fields (";
+        bool first = true;
+        for (const auto& key : expected) {
+            if (actual.count(key) == 0) {
+                if (!first) message += ", ";
+                message += "missing: " + key;
+                first = false;
+            }
+        }
+        for (const auto& key : actual) {
+            if (expected.count(key) == 0) {
+                if (!first) message += ", ";
+                message += "unexpected: " + key;
+                first = false;
+            }
+        }
+        throw Error(message + ").");
+    }
 }
 
 }  // namespace json

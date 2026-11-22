@@ -696,7 +696,7 @@ foreach ($workstations['items'] as $workstation) {
 <?php $persistentPairing = ($pairValues['mode'] ?? 'temporary') === 'persistent'; $temporaryMinutes = in_array($pairValues['minutes'] ?? '60', ['60', '240', '480', '1440'], true) ? ($pairValues['minutes'] ?? '60') : '60'; ?>
 <select id="teliphones-pair-minutes" class="form-control" name="minutes"<?=$persistentPairing ? ' disabled aria-disabled="true"' : ''?>>
 <option value="0"<?=$persistentPairing ? ' selected' : ''?>>0</option><?php foreach ([60, 240, 480, 1440] as $minutes): ?><option value="<?=$minutes?>"<?=(!$persistentPairing && $temporaryMinutes === (string)$minutes) ? ' selected' : ''?>><?=$minutes?></option><?php endforeach; ?></select>
-<input type="hidden" id="teliphones-pair-minutes-permanent" name="minutes" value="0"<?=$persistentPairing ? '' : ' disabled'}>
+<input type="hidden" id="teliphones-pair-minutes-permanent" name="minutes" value="0"<?=$persistentPairing ? '' : ' disabled'?>>
 <p class="help-block">Permanent means until explicitly revoked. It has no pairing expiry; active administrative sessions still use separate short renewable leases.</p>
 <label for="teliphones-pair-sources">Lock this workstation to approved IPs/domains (optional, comma-separated)</label>
 <input id="teliphones-pair-sources" class="form-control" name="sources" maxlength="2048" placeholder="198.51.100.24, office.example.net" value="<?=$escape($pairValues['sources'] ?? '')?>"<?=$sourceLockOff?>>

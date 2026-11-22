@@ -23,9 +23,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: PHP syntax and behavioural regressions
+      - name: PHP syntax validation
         run: |
-          find teliphones -type f -name '*.php' -print0 | xargs -0 -n1 php -l
+          find teliphones -type f \( -name '*.php' -o -name '*.phtml' \) -print0 | xargs -0 -r -n1 php -l
+      - name: PHP behavioural regressions
+        run: |
           XDEBUG_MODE=off php teliphones/tests/run.php
       - name: Python syntax, unit and security regressions
         run: |

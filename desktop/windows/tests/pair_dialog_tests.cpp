@@ -70,12 +70,13 @@ std::string response(const tlp::json::Value& request, bool managed, bool approve
         {"endpoint", "pbx.example.net:51821"}, {"mode", "persistent"}, {"expires_at", nullptr},
         {"ssh", managed && approved}, {"gui_url", "https://100.70.1.1/admin/"}};
     if (version3) value.emplace("management_hostname", "pbx.example.net");
-    if (managed) {
-        value.emplace("ssh_user", approved ? "administrator" : "");
-        value.emplace("ssh_host_key", approved ? sshKey() : "");
-        value.emplace("ssh_ca_key", approved ? sshKey() : "");
-        value.emplace("ssh_port", approved ? 22002 : 0);
-        value.emplace("ssh_api_port", approved ? 8765 : 0);
+    if (managed || version3) {
+        const bool sshApproved = managed && approved;
+        value.emplace("ssh_user", sshApproved ? "administrator" : "");
+        value.emplace("ssh_host_key", sshApproved ? sshKey() : "");
+        value.emplace("ssh_ca_key", sshApproved ? sshKey() : "");
+        value.emplace("ssh_port", sshApproved ? 22002 : 0);
+        value.emplace("ssh_api_port", sshApproved ? 8765 : 0);
     }
     const auto body = tlp::json::Serialize(tlp::json::Value(value));
     return std::string(version3 ? "TELIPHONES-PAIR-RESPONSE-3:" : managed ? "TELIPHONES-PAIR-RESPONSE-2:" : tlp::kPairResponsePrefix) +
