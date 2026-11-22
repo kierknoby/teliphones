@@ -460,6 +460,8 @@ class BuildLayoutTests(unittest.TestCase):
         self.assertIn("DeleteFileW(record.c_str())", final)
         self.assertIn("CM_Locate_DevNodeW", wireguard)
         self.assertIn("CM_Query_And_Remove_SubTreeW", wireguard)
+        self.assertIn("CM_LOCATE_DEVNODE_PHANTOM", wireguard)
+        self.assertIn("CM_LOCATE_DEVNODE_PHANTOM", wireguard)
         self.assertIn('"tunnel_adapter_removal"', wireguard)
         self.assertIn('", CONFIGRET="', wireguard)
         self.assertIn('", veto_type="', wireguard)
@@ -585,8 +587,8 @@ class BuildLayoutTests(unittest.TestCase):
         done = main.split("LRESULT CMainDlg::OnOperationDone", 1)[1].split("void CMainDlg::OnCancel()", 1)[0]
         self.assertIn("case OperationKind::Recovery", done)
         self.assertIn("active_.reset()", done)
-        self.assertIn("--restart-wait", done)
-        self.assertIn("recovery_restart", done)
+        self.assertNotIn("ShellExecuteW", done)
+        self.assertIn('SetState("Not connected"', done)
         app = (ROOT / "src/app/TeliphonesApp.cpp").read_text()
         self.assertIn("WaitForSingleObject(previous, 30000)", app)
         self.assertIn("kInstanceMutex", app)
@@ -1596,17 +1598,19 @@ endfunction()
             self.assertIsNotNone(match, identifier)
             x, y, width, height = map(int, match.groups()[:4])
             self.assertGreaterEqual(y, previous_bottom)
-            self.assertLessEqual(x + width, 445)
+            self.assertLessEqual(x + width, 470)
             if identifier == "IDC_PAIR_ACCESS":
                 height = 18  # Resource height includes the expanded dropdown list, not its closed face.
             previous_bottom = y + height
-            self.assertLessEqual(previous_bottom, 432)
+            self.assertLessEqual(previous_bottom, 458)
             if identifier in ("IDC_PAIR_COPY", "IDC_PAIR_RESPONSE", "IDOK"):
                 self.assertIn("WS_DISABLED", match.group(5))
         self.assertRegex(dialog, r'IDC_PAIR_SSHUSER,[^\n]*ES_READONLY[^\n]*NOT WS_VISIBLE')
         self.assertIn('IDC_PAIR_SSHLABEL', dialog)
         for mnemonic in ("&Workstation", "&Access", "&Generate", "&Copy", "&Paste", "&Save"):
             self.assertIn(mnemonic, dialog)
+        self.assertIn('CAPTION "Add my PBX"', dialog)
+        self.assertIn("SetWindowText(L\"Add my PBX\")", (ROOT / "src/app/PairDlg.cpp").read_text())
         self.assertIn("Connectivity > TELIPHONES > Pair a Workstation", dialog)
 
     def test_pair_dialog_responsive_layout_scales_edges_and_pins_footer(self):
@@ -1643,6 +1647,40 @@ endfunction()
         self.assertIn("visibleRect.top < previousVisibleBottom", native)
         self.assertIn("rect.right <= resizedClient.right", native)
         self.assertIn("rect.bottom <= resizedClient.bottom", native)
+
+    def test_settings_dialog_has_responsive_scroll_and_pinned_actions(self):
+        source = (ROOT / "src/app/AppSettingsDlg.cpp").read_text()
+        header = (ROOT / "src/app/AppSettingsDlg.h").read_text()
+        resource = (ROOT / "src/app/TELIPHONES.rc").read_text()
+        dialog = resource.split("IDD_APP_SETTINGS DIALOGEX", 1)[1].split("\nEND", 1)[0]
+        for contract in ("ON_WM_SIZE()", "ON_WM_VSCROLL()", "ON_WM_MOUSEWHEEL()",
+                         "ON_MESSAGE(WM_DPICHANGED", "OnDpiLayout", "SetScrollInfo(SB_VERT", "OnGetMinMaxInfo"):
+            self.assertIn(contract, source)
+        for field in ("contentExtent_", "scrollOffset_", "layoutReady_", "initialClientHeight_"):
+            self.assertIn(field, header)
+        for control in ("IDC_APPS_SKIP", "IDC_APPS_ABOUT", "IDOK", "IDCANCEL"):
+            self.assertIn(control, dialog)
+        self.assertIn("WS_THICKFRAME | WS_VSCROLL", source)
+        self.assertIn("!::IsWindowVisible(focus->GetSafeHwnd())", source)
+        self.assertIn('GROUPBOX        "Connectivity - WireGuard for Windows"', dialog)
+        self.assertIn("secure HTTPS management requires Edge, Chrome or Brave", source)
+
+    def test_secure_https_browser_selection_is_explicit_and_no_fallback(self):
+        source = (ROOT / "src/platform/Applications.cpp").read_text()
+        core = (ROOT / "src/core/SecureBrowser.cpp").read_text()
+        launchers = (ROOT / "src/core/Launchers.cpp").read_text()
+        main = (ROOT / "src/app/MainDlg.cpp").read_text()
+        self.assertIn('ResolveApp(AppKind::Browser, preferences.browser', source)
+        self.assertNotIn('ResolveApp(AppKind::Browser, "edge"', source)
+        self.assertIn('loweredName != "brave.exe"', core)
+        self.assertIn('"--incognito"', core)
+        self.assertIn("does not fall back to the Windows default browser", main)
+        self.assertIn('add(programFiles, "\\\\BraveSoftware\\\\Brave-Browser\\\\Application\\\\brave.exe")', source)
+        self.assertIn('id == "edge" || id == "chrome" || id == "brave"', launchers)
+        self.assertIn("IsSupportedSecureBrowser(app.id)", launchers)
+        self.assertIn("IsSupportedSecureBrowser(id)", launchers)
+        settings = (ROOT / "src/app/AppSettingsDlg.cpp").read_text()
+        self.assertIn("IsSupportedSecureBrowser(app.id)", settings)
 
     def test_pairing_dialogue_invalidates_and_revalidates_without_trusting_account_edit(self):
         source = (ROOT / "src/app/PairDlg.cpp").read_text()

@@ -504,6 +504,11 @@ std::vector<std::string> folderCandidates(const std::string& id) {
         add(programFiles, "\\PuTTY\\putty.exe");
         add(programFilesX86, "\\PuTTY\\putty.exe");
     }
+    if (id == "brave") {
+        add(programFiles, "\\BraveSoftware\\Brave-Browser\\Application\\brave.exe");
+        add(programFilesX86, "\\BraveSoftware\\Brave-Browser\\Application\\brave.exe");
+        add(localAppData, "\\BraveSoftware\\Brave-Browser\\Application\\brave.exe");
+    }
     return out;
 }
 
@@ -579,6 +584,9 @@ void OpenFreePbx(const Profile& profile, const std::string& sessionId, const Pre
     if (profile.kind == ProfileKind::Administrator && pairedUrl.rfind("https://", 0) == 0) {
         SecureManagementTarget target = BuildSecureManagementTarget(pairedUrl, profile.pairing.pbxAddress,
                                                                     profile.managementTlsHostname);
+        if (preferences.browser == kWindowsDefaultBrowser || preferences.browser.empty())
+            throw Error("Secure HTTPS management requires an explicitly selected Microsoft Edge, Google Chrome, or Brave browser. The Windows default browser is not substituted. Select a supported browser in Settings > Applications.");
+        const std::string executable = ResolveApp(AppKind::Browser, preferences.browser, DetectApps(AppKind::Browser, preferences));
         const std::string tunnelName = TunnelNameFor(profile);
         const TunnelState service = QueryTunnel(tunnelName);
         const AddressRoute route = RouteToAddress(tunnelName, target.tunnelAddress);
@@ -587,7 +595,6 @@ void OpenFreePbx(const Profile& profile, const std::string& sessionId, const Pre
         const bool tunnelVerified = service == TunnelState::Running && route.route == RouteEvidence::ViaTunnel;
         if (!SecureBrowserMayLaunch(tunnelVerified, probe.known, probe.succeeded))
             throw Error("TELIPHONES requires the exact tunnel service to be Running, the management route to select that tunnel, and the paired management TCP port to answer a fresh probe. No browser was opened.");
-        const std::string executable = ResolveApp(AppKind::Browser, "edge", DetectApps(AppKind::Browser, preferences));
         const std::wstring pnp = adapterPnpInstance(tunnelName);
         pruneSecureBrowserSessions();
         {
@@ -598,7 +605,7 @@ void OpenFreePbx(const Profile& profile, const std::string& sessionId, const Pre
         cleanupCompletedSecureProfiles();
         const std::wstring userDataDirectory = createSecureProfileDirectory(profileLock);
         try {
-            LaunchPlan plan = SecureEdgeLaunch(executable, target, Narrow(userDataDirectory));
+            LaunchPlan plan = SecureChromiumLaunch(executable, target, Narrow(userDataDirectory));
             launchSecureEdge(profile.id, tunnelName, pnp, plan, userDataDirectory, profileLock);
         } catch (...) {
             if (profileLock) CloseHandle(profileLock);

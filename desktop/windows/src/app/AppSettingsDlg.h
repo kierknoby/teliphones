@@ -51,6 +51,14 @@ protected:
     afx_msg void OnGetStartedSupport();
     afx_msg LRESULT OnSetupProgress(WPARAM, LPARAM);
     afx_msg LRESULT OnSetupDone(WPARAM, LPARAM);
+    afx_msg void OnSize(UINT type, int width, int height);
+    afx_msg void OnVScroll(UINT code, UINT position, CScrollBar* bar);
+    afx_msg BOOL OnMouseWheel(UINT flags, short delta, CPoint point);
+    afx_msg LRESULT OnDpiChanged(WPARAM dpi, LPARAM rectangle);
+    afx_msg LRESULT OnDpiLayout(WPARAM, LPARAM);
+    afx_msg void OnGetMinMaxInfo(MINMAXINFO* info);
+    BOOL PreTranslateMessage(MSG* message) override;
+    afx_msg LRESULT OnRevealFocusedControl(WPARAM, LPARAM);
     DECLARE_MESSAGE_MAP()
 
 private:
@@ -63,6 +71,8 @@ private:
     void RefreshConnectivity();
     void ShowStep();
     void GetStarted(StartAction action);
+    void Arrange();
+    void ScrollTo(int offset);
 
     Mode mode_;
     std::optional<tlp::Preferences> stored_;
@@ -77,4 +87,16 @@ private:
     bool installing_ = false;
     tlp::win::WireGuardInstallation wireguard_;
     std::thread installer_;
+    struct LayoutControl { HWND window = nullptr; CRect original; bool footer = false; bool rightAnchored = false; };
+    std::vector<LayoutControl> layoutControls_;
+    int initialClientWidth_ = 0;
+    int initialClientHeight_ = 0;
+    int initialDpi_ = 96;
+    int layoutDpi_ = 96;
+    int contentExtent_ = 0;
+    int scrollOffset_ = 0;
+    int wheelRemainder_ = 0;
+    bool layoutReady_ = false;
+    bool arranging_ = false;
+    static constexpr UINT kRevealFocusMessage = WM_APP + 0x322;
 };

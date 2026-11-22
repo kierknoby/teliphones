@@ -13,6 +13,10 @@ std::string lower(std::string text) {
     return text;
 }
 
+bool isSupportedBrowser(const std::string& id) {
+    return id == kWindowsDefaultBrowser || id == "edge" || id == "chrome" || id == "brave";
+}
+
 bool endsWithExe(const std::string& path) { return path.size() > 4 && lower(path.substr(path.size() - 4)) == ".exe"; }
 
 bool isAbsoluteLocalPath(const std::string& path) {
@@ -94,6 +98,8 @@ std::string AppName(AppKind kind, const std::string& id) {
     return id.empty() ? std::string(kind == AppKind::Browser ? "No browser selected" : "No SSH terminal selected") : "Unrecognised application (" + id + ")";
 }
 
+bool IsSupportedSecureBrowser(const std::string& id) { return isSupportedBrowser(id); }
+
 bool IsAppId(const std::string& text) {
     if (text.empty() || text.size() > 32) return false;
     return std::all_of(text.begin(), text.end(), [](char c) { return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-'; });
@@ -163,7 +169,8 @@ Preferences ParsePreferences(const std::string& text) {
         const AppInfo* app = FindApp(AppKind::Browser, location.first);
         if (app == nullptr) app = FindApp(AppKind::Terminal, location.first);
         const std::string& path = location.second.asString();
-        if (app == nullptr || !IsExpectedExecutable(*app, path)) throw Error("Invalid application location in TELIPHONES preferences.");
+        if (app == nullptr || (app->kind == AppKind::Browser && !IsSupportedSecureBrowser(app->id)) ||
+            !IsExpectedExecutable(*app, path)) throw Error("Invalid application location in TELIPHONES preferences.");
         preferences.locations[location.first] = path;
     }
     return preferences;
@@ -172,6 +179,7 @@ Preferences ParsePreferences(const std::string& text) {
 std::vector<std::string> AvailableApps(AppKind kind, const DetectedApps& detected) {
     std::vector<std::string> ids;
     for (const AppInfo& app : KnownApps(kind)) {
+        if (kind == AppKind::Browser && !IsSupportedSecureBrowser(app.id)) continue;
         if (app.id == kWindowsDefaultBrowser || detected.count(app.id) != 0) ids.push_back(app.id);
     }
     return ids;
@@ -227,6 +235,7 @@ AppUnavailable::AppUnavailable(AppKind appKind, std::string appId)
       id(std::move(appId)) {}
 
 std::string ResolveApp(AppKind kind, const std::string& id, const DetectedApps& detected) {
+    if (kind == AppKind::Browser && !IsSupportedSecureBrowser(id)) throw AppUnavailable(kind, id);
     if (kind == AppKind::Browser && id == kWindowsDefaultBrowser) return std::string();
     const AppInfo* app = FindApp(kind, id);
     if (app == nullptr) throw AppUnavailable(kind, id);
@@ -258,6 +267,7 @@ LaunchPlan BrowserLaunch(const std::string& browserId, const std::string& execut
     if (!IsManagementUrl(url)) {
         throw Error("Refusing to open an unexpected FreePBX address.");
     }
+    if (!IsSupportedSecureBrowser(browserId)) throw AppUnavailable(AppKind::Browser, browserId);
     LaunchPlan plan;
     if (browserId == kWindowsDefaultBrowser) {
         plan.shellOpen = true;

@@ -55,28 +55,29 @@ SecureManagementTarget BuildSecureManagementTarget(const std::string& primaryUrl
     return target;
 }
 
-LaunchPlan SecureEdgeLaunch(const std::string& edgeExecutable, const SecureManagementTarget& target,
-                            const std::string& isolatedUserDataDirectory) {
-        if (edgeExecutable.size() < 11 || isolatedUserDataDirectory.size() < 4 ||
+LaunchPlan SecureChromiumLaunch(const std::string& browserExecutable, const SecureManagementTarget& target,
+                const std::string& isolatedUserDataDirectory) {
+    if (browserExecutable.size() < 11 || isolatedUserDataDirectory.size() < 4 ||
                 !((isolatedUserDataDirectory[0] >= 'A' && isolatedUserDataDirectory[0] <= 'Z') ||
                     (isolatedUserDataDirectory[0] >= 'a' && isolatedUserDataDirectory[0] <= 'z')) ||
                 isolatedUserDataDirectory[1] != ':' || isolatedUserDataDirectory[2] != '\\' ||
                 isolatedUserDataDirectory.find_first_of("\"*?<>|\r\n") != std::string::npos)
-                throw Error("A Microsoft Edge executable and absolute isolated profile directory are required.");
+                throw Error("A supported Chromium executable and absolute isolated profile directory are required.");
     const SecureManagementTarget checked = BuildSecureManagementTarget(
         "https://" + target.tunnelAddress + (target.port == 443 ? "" : ":" + std::to_string(target.port)) + "/admin/",
         target.tunnelAddress, target.hostname);
     if (target.url != checked.url || target.resolverRules != checked.resolverRules)
-        throw Error("Refusing an invalid secure Edge launch plan.");
-    const bool edgeName = edgeExecutable.size() >= 10 &&
-        std::equal(edgeExecutable.end() - 10, edgeExecutable.end(), "msedge.exe", [](char a, char b) {
-            return (a >= 'A' && a <= 'Z' ? a + ('a' - 'A') : a) == b;
-        });
-    if (!edgeName) throw Error("Secure management hostname mapping requires Microsoft Edge.");
+        throw Error("Refusing an invalid secure Chromium launch plan.");
+    const auto executableName = browserExecutable.substr(browserExecutable.find_last_of("\\/") == std::string::npos
+        ? 0 : browserExecutable.find_last_of("\\/") + 1);
+    const std::string loweredName = lowerAscii(executableName);
+    if (loweredName != "msedge.exe" && loweredName != "chrome.exe" && loweredName != "brave.exe")
+        throw Error("Secure HTTPS management supports Microsoft Edge, Google Chrome, or Brave. Select one of these in Settings; other browsers are not substituted.");
+    const std::string privateMode = loweredName == "msedge.exe" ? "--inprivate" : "--incognito";
     LaunchPlan plan;
-    plan.program = edgeExecutable;
-    plan.commandLine = JoinCommandLine({edgeExecutable, "--user-data-dir=" + isolatedUserDataDirectory,
-        "--host-resolver-rules=" + target.resolverRules, "--no-proxy-server", "--no-first-run", "--inprivate", target.url});
+    plan.program = browserExecutable;
+    plan.commandLine = JoinCommandLine({browserExecutable, "--user-data-dir=" + isolatedUserDataDirectory,
+        "--host-resolver-rules=" + target.resolverRules, "--no-proxy-server", "--no-first-run", privateMode, target.url});
     return plan;
 }
 

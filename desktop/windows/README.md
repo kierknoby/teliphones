@@ -56,17 +56,18 @@ the PBX administrator. A v3 response automatically populates the editable
 hostname field when the PBX has an explicitly configured hostname; if the
 response contains `null`, confirm the exact DNS name with the administrator.
 The hostname is not inferred from the WireGuard endpoint. TELIPHONES launches
-Microsoft Edge with a unique isolated profile, maps only that explicit hostname
+the selected supported Chromium browser (Microsoft Edge, Google Chrome or Brave)
+with a unique isolated profile, maps only that explicit hostname
 to the paired WireGuard IPv4, blocks other DNS hostnames in that profile, disables
 proxy use, and leaves normal TLS certificate validation enabled. It launches only
 after verifying the tunnel service, route selection and a fresh management TCP
-probe; the owned Edge process job is closed when disconnect is requested or the
+probe; the owned browser process job is closed when disconnect is requested or the
 monitor observes tunnel loss. This is a scoped resolver/profile and process
 lifecycle measure, **not universal network confinement**: IP-literal access,
 redirect behavior, browser/OS networking and races while the tunnel disappears
 are not proven blocked. Do not rely on it as a general egress firewall. The public
 WireGuard endpoint is never treated as a TLS hostname, and certificate errors are
-not bypassed. Native Windows/Edge acceptance is still required.
+not bypassed. Native Windows/browser acceptance is still required.
 
 > [!WARNING]
 > **Experimental, not production-ready.** Conflicting historical operator reports
@@ -294,11 +295,11 @@ Select **Open FreePBX** and sign in with normal FreePBX credentials. For HTTPS
 management, pairing automatically fills the administrator-approved certificate
 DNS name from a valid v3 response. If it was absent, enter the name supplied or
 confirmed by the PBX administrator in the pairing field or later using
-**HTTPS Hostname...**. The isolated Edge profile resolves that name to the paired
+**HTTPS Hostname...**. The selected supported Edge, Chrome or Brave profile resolves that name to the paired
 tunnel IPv4, uses no proxy, and validates the certificate normally. HTTP primary
 management is intentionally refused. Redirect destinations and alternate
 IP-literal access are not universally confined; if the tunnel is lost, the owned
-Edge job is closed when detected. Never disable certificate checks to work
+browser job is closed when detected. Never disable certificate checks to work
 around a mismatch.
 
 The client adds only the PBX's host route; ordinary workstation traffic does not
@@ -439,10 +440,10 @@ TELIPHONES opens the FreePBX interface and SSH sessions with applications you ch
 
 The first time TELIPHONES starts for a Windows user, a **Welcome to TELIPHONES** dialogue asks for:
 
-- **Default Browser**: the Windows default browser, plus whichever of Google Chrome, Microsoft Edge, Mozilla Firefox, Brave and Vivaldi are installed.
+- **Default Browser**: the Windows default browser, plus installed Google Chrome, Microsoft Edge and Brave for secure HTTPS management.
 - **Default SSH Terminal**: whichever of Windows PowerShell, PowerShell 7, Windows Terminal, PuTTY and Command Prompt are installed. Managed My PBXs SSH uses the selected OpenSSH-backed terminal; the Custom Console is disabled.
 
-Only applications found on the computer are listed. Google Chrome is preselected when installed, otherwise the Windows default browser. Windows PowerShell is preselected when installed, otherwise Command Prompt, otherwise the first terminal found.
+The Windows default browser is always listed; Google Chrome, Microsoft Edge and Brave appear when installed. Google Chrome is preselected when installed, otherwise the Windows default browser. Windows PowerShell is preselected when installed, otherwise Command Prompt, otherwise the first terminal found.
 
 - **Save & Next** stores your choices and advances to secure connectivity.
 - **Skip** stores the preselected defaults and advances to secure connectivity. Change them later in Settings.
@@ -450,7 +451,7 @@ Only applications found on the computer are listed. Google Chrome is preselected
 
 ### Settings
 
-Choose **Settings...** in the main window at any time. Its **Applications** section has the same **Default Browser** and **Default SSH Terminal** lists and the same storage. Changes take effect when you click **Save**. Use **Locate...** to choose an application that was not detected, for example a portable copy of PuTTY. Only the supported program files (`chrome.exe`, `msedge.exe`, `firefox.exe`, `brave.exe`, `vivaldi.exe`, `powershell.exe`, `pwsh.exe`, `wt.exe`, `putty.exe` and `cmd.exe`) on a local drive are accepted.
+Choose **Settings...** in the main window at any time. Its **Applications** section has the same **Default Browser** and **Default SSH Terminal** lists and the same storage. Changes take effect when you click **Save**. Use **Locate...** to choose an application that was not detected, for example a portable copy of PuTTY. Secure HTTPS management supports Edge, Chrome and Brave; Firefox and Vivaldi are not offered because TELIPHONES does not provide the isolated secure-management launch mode for them. Supported program files (`chrome.exe`, `msedge.exe`, `brave.exe`, `powershell.exe`, `pwsh.exe`, `wt.exe`, `putty.exe` and `cmd.exe`) on a local drive are accepted.
 
 Detection uses the Windows registrations for installed applications (App Paths and registered browsers) and standard Windows folders, rather than fixed installation paths.
 
@@ -472,7 +473,7 @@ for renderer, accessibility and new-dialogue implementation details.
 | Selection | What TELIPHONES runs |
 |---|---|
 | Windows default browser | The PBX address through the Windows registered URL handler, as in earlier releases |
-| Chrome, Edge, Firefox, Brave, Vivaldi | The detected browser executable, with the PBX address as its only argument |
+| Chrome, Edge, Brave | For secure HTTPS management, the selected detected executable runs with an isolated profile, scoped hostname resolver mapping and normal TLS validation; HTTP does not silently fall back to another browser |
 | Windows PowerShell / PowerShell 7 / Windows Terminal / Command Prompt | The selected external terminal runs managed My PBXs SSH or the separate Remote Support workflow |
 | PuTTY (Remote Support only) | PuTTY with `-ssh`, the tunnel address, the approved SSH port (`-P`), the user name (`-l`) and a per-PBX `-loghost` name for host-key checking; not managed My PBXs certificate authentication |
 

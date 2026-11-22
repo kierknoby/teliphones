@@ -8,6 +8,7 @@
 #include <vector>
 
 void RunPairDialogTests(CWnd* parent);
+void RunSettingsDialogTests(CWnd* parent);
 
 namespace {
 
@@ -43,6 +44,7 @@ protected:
             LayoutTests();
             AppearanceTests();
             RunPairDialogTests(this);
+            RunSettingsDialogTests(this);
             tlp::HealthPreferences preferences;
             preferences.windowX = 90000;
             preferences.windowY = -90000;

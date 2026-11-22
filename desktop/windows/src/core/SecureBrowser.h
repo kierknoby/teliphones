@@ -18,12 +18,12 @@ struct SecureManagementTarget {
     std::string resolverRules;
 };
 
-// Maps an explicitly configured certificate hostname to the paired tunnel address in an isolated Edge instance.
+// Maps an explicitly configured certificate hostname to the paired tunnel address in an isolated Chromium profile.
 // HTTP primaries fail closed; no hostname is inferred from the public WireGuard endpoint.
 SecureManagementTarget BuildSecureManagementTarget(const std::string& primaryUrl, const std::string& tunnelAddress,
                                                     const std::string& managementHostname);
-LaunchPlan SecureEdgeLaunch(const std::string& edgeExecutable, const SecureManagementTarget& target,
-                            const std::string& isolatedUserDataDirectory);
+LaunchPlan SecureChromiumLaunch(const std::string& browserExecutable, const SecureManagementTarget& target,
+                                const std::string& isolatedUserDataDirectory);
 bool SecureResolverAllowsHost(const SecureManagementTarget& target, const std::string& hostname);
 bool SecureBrowserMayLaunch(bool tunnelVerified, bool managementProbeKnown, bool managementProbeSucceeded);
 bool SecureBrowserMustClose(bool tunnelDisconnected);

@@ -42,6 +42,13 @@ BEGIN_MESSAGE_MAP(CAppSettingsDlg, CAppearanceDialog)
     ON_BN_CLICKED(IDC_SETUP_SUPPORT, &CAppSettingsDlg::OnGetStartedSupport)
     ON_MESSAGE(WM_APP_SETUP_PROGRESS, &CAppSettingsDlg::OnSetupProgress)
     ON_MESSAGE(WM_APP_SETUP_DONE, &CAppSettingsDlg::OnSetupDone)
+    ON_WM_SIZE()
+    ON_WM_VSCROLL()
+    ON_WM_MOUSEWHEEL()
+    ON_WM_GETMINMAXINFO()
+    ON_MESSAGE(WM_DPICHANGED, &CAppSettingsDlg::OnDpiChanged)
+    ON_MESSAGE(WM_DPICHANGED_AFTERPARENT, &CAppSettingsDlg::OnDpiLayout)
+    ON_MESSAGE(WM_APP + 0x322, &CAppSettingsDlg::OnRevealFocusedControl)
 END_MESSAGE_MAP()
 
 CAppSettingsDlg::CAppSettingsDlg(Mode mode, const std::optional<tlp::Preferences>& stored, CWnd* parent)
@@ -59,6 +66,7 @@ void CAppSettingsDlg::DoDataExchange(CDataExchange* exchange) {
 
 BOOL CAppSettingsDlg::OnInitDialog() {
     CAppearanceDialog::OnInitDialog();
+    ModifyStyle(0, WS_THICKFRAME | WS_VSCROLL);
     GetDlgItem(IDC_CONNECT_PASSWORD)->EnableWindow(connectProfile.has_value()
         && connectProfile->kind == tlp::ProfileKind::Administrator && !connectionActive);
     GetDlgItem(IDC_PASSWORD_LOCK_NOW)->EnableWindow(connectionActive);
@@ -70,13 +78,11 @@ BOOL CAppSettingsDlg::OnInitDialog() {
     if (mode_ == Mode::Welcome) {
         SetWindowText(L"Welcome to TELIPHONES");
         SetDlgItemText(IDC_APPS_HEADING, L"Step 1: Applications");
-        SetDlgItemText(IDC_APPS_INTRO, L"Choose the browser used to open FreePBX and the terminal used for Remote Support. Managed My PBXs SSH opens in the built-in TELIPHONES console. "
-                                       L"Only applications found on this computer are listed. You can change these at any time in Settings.");
+        SetDlgItemText(IDC_APPS_INTRO, L"Choose the browser for FreePBX and the terminal for Remote Support. Secure HTTPS management uses the selected Edge, Chrome or Brave browser. Managed My PBXs SSH uses the selected external terminal.");
     } else {
         SetWindowText(L"TELIPHONES Settings");
         SetDlgItemText(IDC_APPS_HEADING, L"Applications");
-        SetDlgItemText(IDC_APPS_INTRO, L"The browser opens FreePBX; the selected terminal applies to Remote Support. Managed My PBXs SSH uses the built-in TELIPHONES console. "
-                                       L"Preferences are stored locally for your Windows account and are never sent to a PBX.");
+        SetDlgItemText(IDC_APPS_INTRO, L"The selected browser opens FreePBX; secure HTTPS management requires Edge, Chrome or Brave. The selected terminal applies to SSH. Preferences stay on this computer.");
         GetDlgItem(IDC_APPS_SKIP)->ShowWindow(SW_HIDE);
     }
     try {
@@ -89,8 +95,160 @@ BOOL CAppSettingsDlg::OnInitDialog() {
     Fill(AppKind::Terminal, effective.terminal);
     UpdateStatus();
     RefreshConnectivity();
+    CRect client;
+    GetClientRect(&client);
+    initialClientWidth_ = std::max(1, client.Width());
+    initialClientHeight_ = std::max(1, client.Height());
+    initialDpi_ = std::max(1, static_cast<int>(GetDpiForWindow(m_hWnd)));
+    layoutDpi_ = initialDpi_;
+    for (HWND child = ::GetWindow(m_hWnd, GW_CHILD); child; child = ::GetWindow(child, GW_HWNDNEXT)) {
+        const int id = ::GetDlgCtrlID(child);
+        CRect rect;
+        ::GetWindowRect(child, &rect);
+        ScreenToClient(&rect);
+        const bool footer = id == IDC_APPS_SKIP || id == IDC_APPS_ABOUT || id == IDOK || id == IDCANCEL;
+        layoutControls_.push_back({child, rect, footer, rect.CenterPoint().x >= initialClientWidth_ / 2});
+        if (!footer) contentExtent_ = std::max(contentExtent_, static_cast<int>(rect.bottom));
+    }
+    MONITORINFO monitor{};
+    monitor.cbSize = sizeof(monitor);
+    if (GetMonitorInfo(MonitorFromWindow(m_hWnd, MONITOR_DEFAULTTONEAREST), &monitor)) {
+        CRect work(monitor.rcWork), window;
+        GetWindowRect(&window);
+        const int width = std::min(window.Width(), work.Width());
+        const int height = std::min(window.Height(), work.Height());
+        const int x = std::clamp<int>(window.left, work.left, work.right - width);
+        const int y = std::clamp<int>(window.top, work.top, work.bottom - height);
+        SetWindowPos(nullptr, x, y, width, height, SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+    layoutReady_ = true;
     ShowStep();
+    Arrange();
     return TRUE;
+}
+
+void CAppSettingsDlg::Arrange() {
+    if (!layoutReady_ || arranging_ || !m_hWnd) return;
+    arranging_ = true;
+    CRect client;
+    GetClientRect(&client);
+    const int baseWidth = std::max(1, MulDiv(initialClientWidth_, layoutDpi_, initialDpi_));
+    const auto scale = [&](int value) { return MulDiv(value, layoutDpi_, initialDpi_); };
+    int footerTop = client.bottom;
+    for (const auto& item : layoutControls_) if (item.footer && ::IsWindowVisible(item.window))
+        footerTop = std::min(footerTop, client.bottom - scale(initialClientHeight_ - item.original.top));
+    const int viewportBottom = std::max(0, footerTop - scale(8));
+    int visibleExtent = 0;
+    for (const auto& item : layoutControls_) if (!item.footer && ::IsWindowVisible(item.window))
+        visibleExtent = std::max(visibleExtent, scale(item.original.bottom));
+    // All layout and viewport values are current-DPI client pixels. Recompute
+    // this from visible controls so hidden wizard sections and a DPI round-trip
+    // cannot inflate the scroll range.
+    contentExtent_ = visibleExtent;
+    scrollOffset_ = std::clamp(scrollOffset_, 0, std::max(0, contentExtent_ - viewportBottom));
+    for (const auto& item : layoutControls_) {
+        if (!::IsWindow(item.window)) continue;
+        const int left = item.footer && item.rightAnchored
+            ? client.right - scale(initialClientWidth_ - item.original.left) : MulDiv(item.original.left, client.Width(), baseWidth);
+        const int right = item.footer && item.rightAnchored
+            ? client.right - scale(initialClientWidth_ - item.original.right) : MulDiv(item.original.right, client.Width(), baseWidth);
+        const int top = item.footer ? client.bottom - scale(initialClientHeight_ - item.original.top) : scale(item.original.top) - scrollOffset_;
+        const int bottom = item.footer ? top + scale(item.original.Height()) : scale(item.original.bottom) - scrollOffset_;
+        ::SetWindowPos(item.window, nullptr, left, top, std::max(1, right - left), std::max(1, bottom - top),
+                       SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+    SCROLLINFO info{sizeof(info), SIF_RANGE | SIF_PAGE | SIF_POS};
+    info.nMin = 0;
+    info.nMax = std::max(0, contentExtent_ - 1);
+    info.nPage = static_cast<UINT>(viewportBottom);
+    info.nPos = scrollOffset_;
+    SetScrollInfo(SB_VERT, &info, TRUE);
+    arranging_ = false;
+}
+
+void CAppSettingsDlg::ScrollTo(int offset) {
+    CRect client;
+    GetClientRect(&client);
+    int footerTop = client.bottom;
+    for (const auto& item : layoutControls_) if (item.footer && ::IsWindowVisible(item.window))
+        footerTop = std::min(footerTop, client.bottom - MulDiv(initialClientHeight_ - item.original.top, layoutDpi_, initialDpi_));
+    const int margin = MulDiv(8, layoutDpi_, initialDpi_);
+    scrollOffset_ = std::clamp(offset, 0, std::max(0, contentExtent_ - std::max(0, footerTop - margin)));
+    Arrange();
+}
+
+void CAppSettingsDlg::OnSize(UINT type, int width, int height) {
+    CAppearanceDialog::OnSize(type, width, height);
+    Arrange();
+}
+
+void CAppSettingsDlg::OnVScroll(UINT code, UINT position, CScrollBar*) {
+    SCROLLINFO info{sizeof(info), SIF_ALL};
+    GetScrollInfo(SB_VERT, &info);
+    const int line = MulDiv(28, layoutDpi_, 96);
+    switch (code) {
+        case SB_TOP: ScrollTo(0); break;
+        case SB_BOTTOM: ScrollTo(contentExtent_); break;
+        case SB_LINEUP: ScrollTo(scrollOffset_ - line); break;
+        case SB_LINEDOWN: ScrollTo(scrollOffset_ + line); break;
+        case SB_PAGEUP: ScrollTo(scrollOffset_ - static_cast<int>(info.nPage)); break;
+        case SB_PAGEDOWN: ScrollTo(scrollOffset_ + static_cast<int>(info.nPage)); break;
+        case SB_THUMBTRACK: case SB_THUMBPOSITION: ScrollTo(static_cast<int>(position)); break;
+    }
+}
+
+BOOL CAppSettingsDlg::OnMouseWheel(UINT, short delta, CPoint) {
+    wheelRemainder_ += delta;
+    const int notches = wheelRemainder_ / WHEEL_DELTA;
+    wheelRemainder_ %= WHEEL_DELTA;
+    if (notches) ScrollTo(scrollOffset_ - notches * MulDiv(48, layoutDpi_, 96));
+    return TRUE;
+}
+
+LRESULT CAppSettingsDlg::OnDpiChanged(WPARAM dpi, LPARAM rectangle) {
+    layoutDpi_ = std::max(1, static_cast<int>(HIWORD(dpi)));
+    const RECT& suggested = *reinterpret_cast<const RECT*>(rectangle);
+    SetWindowPos(nullptr, suggested.left, suggested.top, suggested.right - suggested.left,
+                 suggested.bottom - suggested.top, SWP_NOZORDER | SWP_NOACTIVATE);
+    Arrange();
+    return 0;
+}
+
+LRESULT CAppSettingsDlg::OnDpiLayout(WPARAM, LPARAM) {
+    layoutDpi_ = std::max(1, static_cast<int>(GetDpiForWindow(m_hWnd)));
+    Arrange();
+    return 0;
+}
+
+void CAppSettingsDlg::OnGetMinMaxInfo(MINMAXINFO* info) {
+    CAppearanceDialog::OnGetMinMaxInfo(info);
+    const int dpi = std::max(1, static_cast<int>(GetDpiForWindow(m_hWnd)));
+    info->ptMinTrackSize.x = MulDiv(380, dpi, 96);
+    info->ptMinTrackSize.y = MulDiv(300, dpi, 96);
+}
+
+BOOL CAppSettingsDlg::PreTranslateMessage(MSG* message) {
+    const BOOL handled = CAppearanceDialog::PreTranslateMessage(message);
+    if (message->message == WM_KEYDOWN && message->wParam == VK_TAB) PostMessage(kRevealFocusMessage);
+    return handled;
+}
+
+LRESULT CAppSettingsDlg::OnRevealFocusedControl(WPARAM, LPARAM) {
+    CWnd* focus = GetFocus();
+    if (!focus || !IsChild(focus) || !::IsWindowVisible(focus->GetSafeHwnd())) return 0;
+    const auto found = std::find_if(layoutControls_.begin(), layoutControls_.end(),
+        [focus](const LayoutControl& item) { return item.window == focus->GetSafeHwnd() && !item.footer; });
+    if (found == layoutControls_.end()) return 0;
+    CRect rect, client;
+    focus->GetWindowRect(&rect);
+    ScreenToClient(&rect);
+    GetClientRect(&client);
+    int footerTop = client.bottom;
+    for (const auto& item : layoutControls_) if (item.footer && ::IsWindowVisible(item.window))
+        footerTop = std::min(footerTop, client.bottom - MulDiv(initialClientHeight_ - item.original.top, layoutDpi_, initialDpi_));
+    if (rect.top < 0) ScrollTo(scrollOffset_ + rect.top);
+    else if (rect.bottom > footerTop - 8) ScrollTo(scrollOffset_ + rect.bottom - footerTop + 8);
+    return 0;
 }
 
 void CAppSettingsDlg::Detect() {
@@ -197,6 +355,7 @@ void CAppSettingsDlg::Locate(AppKind kind) {
     std::string supported;
     for (const tlp::AppInfo& app : tlp::KnownApps(kind)) {
         if (app.executables.empty()) continue;
+        if (kind == AppKind::Browser && !tlp::IsSupportedSecureBrowser(app.id)) continue;
         if (tlp::IsExpectedExecutable(app, chosen)) {
             working_.locations[app.id] = chosen;
             try {
@@ -210,7 +369,9 @@ void CAppSettingsDlg::Locate(AppKind kind) {
         }
         supported += "\n  " + app.name + " (" + app.executables.front() + ")";
     }
-    ShowError("TELIPHONES cannot use this program. Choose one of the supported applications on a local drive:" + supported);
+    ShowError(kind == AppKind::Browser
+        ? "Secure HTTPS management supports Microsoft Edge, Google Chrome or Brave. Choose one of these applications on a local drive:" + supported
+        : "TELIPHONES cannot use this program. Choose one of the supported applications on a local drive:" + supported);
 }
 
 bool CAppSettingsDlg::Store(const tlp::Preferences& candidate) {
@@ -306,6 +467,7 @@ void CAppSettingsDlg::ShowStep() {
         }
         SetDlgItemText(IDOK, step_ == 1 ? L"Save & Next" : step_ == 2 ? L"Continue" : L"Finish");
     }
+    Arrange();
 }
 
 void CAppSettingsDlg::RefreshConnectivity() {

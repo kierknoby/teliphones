@@ -395,6 +395,14 @@ writes real credentials. This verifies dialogue integration, not the Windows
 Credential Manager or cryptographic provider implementation. The normal
 application continues to use its real platform implementations.
 
+The same native test target also compiles the production `CAppSettingsDlg` and
+checks Settings resource creation, monitor work-area placement, visible-control
+overlap, keyboard order, compact footer visibility, resize scrolling and footer
+persistence. Pairing checks additionally cover the hostname field, visible
+footer, content/footer overlap and the DPI-scaled minimum size. These are
+automated native geometry checks, not screenshot-based visual acceptance; run
+the manual small-display and DPI matrix below on Windows before sign-off.
+
 The portable Release build and all nine Linux CTests passed locally, including
 the extended protocol and source/resource checks. Native Release compilation,
 this MFC regression and the actual application startup smoke test cannot run

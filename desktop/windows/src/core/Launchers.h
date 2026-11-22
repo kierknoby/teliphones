@@ -33,6 +33,7 @@ const std::vector<AppInfo>& KnownApps(AppKind kind);
 const AppInfo* FindApp(AppKind kind, const std::string& id);
 std::string AppName(AppKind kind, const std::string& id);
 bool IsAppId(const std::string& text);
+bool IsSupportedSecureBrowser(const std::string& id);
 
 // Executable paths discovered on this computer, keyed by catalogue id. A user-located executable that still exists
 // takes precedence over an automatically detected copy of the same application.

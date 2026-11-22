@@ -128,6 +128,9 @@ void RunPairDialogTests(CWnd* parent) {
     PairTestDialog dialog(parent);
     check(dialog.Create(IDD_PAIR, parent) != FALSE, "create real pairing dialogue");
     dialog.ShowWindow(SW_SHOWNOACTIVATE);
+        wchar_t title[128]{};
+        GetWindowTextW(dialog.GetSafeHwnd(), title, static_cast<int>(std::size(title)));
+        check(std::wstring(title) == L"Add my PBX", "pairing window title identifies Add my PBX");
     const auto enabled = [&](int id) { return dialog.GetDlgItem(id)->IsWindowEnabled() != FALSE; };
     check(!enabled(IDC_PAIR_COPY) && !enabled(IDOK) && !enabled(IDC_PAIR_RESPONSE), "initial copy/save/response disabled");
     check(!dialog.GetDlgItem(IDC_PAIR_SSHUSER)->IsWindowVisible(), "no initial SSH account");
@@ -221,6 +224,17 @@ void RunPairDialogTests(CWnd* parent) {
     check(resizedCancel.left >= 0 && resizedCancel.top >= 0 && resizedCancel.right <= resizedClient.right &&
           resizedCancel.bottom <= resizedClient.bottom,
           "Cancel remains within the resized client bounds");
+    const int initialScroll = scrollInfo.nPos;
+    for (int id : {IDC_PAIR_RESPONSE, IDC_PAIR_TLS_HOSTNAME, IDOK, IDCANCEL}) {
+        CWnd* control = dialog.GetDlgItem(id);
+        if (!control->IsWindowVisible() || !control->IsWindowEnabled()) continue;
+        ::SetFocus(control->GetSafeHwnd());
+        dialog.SendMessage(WM_APP + 0x321);
+        const CRect focusedRect = clientRect(id);
+        check(focusedRect.top >= 0 && focusedRect.bottom <= resizedClient.bottom,
+              "focused pairing control is scrolled into view within the dialog client");
+    }
+    dialog.SendMessage(WM_VSCROLL, SB_THUMBPOSITION, initialScroll);
     const int viewportBottom = resizedOk.top - 6;
     dialog.GetScrollInfo(SB_VERT, &scrollInfo);
     previousTop = std::numeric_limits<LONG>::min();

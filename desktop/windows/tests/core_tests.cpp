@@ -409,14 +409,20 @@ void testPairedPrimaryManagementUrls() {
 
       const auto target = BuildSecureManagementTarget(httpsUrl, restored[0].pairing.pbxAddress, "pbx.example.test");
       const std::string escapedEdge = "C:\\Program Files\\Microsoft Edge\\msedge.exe";
+      const std::string escapedBrave = "C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe";
       const std::string escapedProfile = "C:\\Users\\review user\\AppData\\Local\\TELIPHONES\\SecureBrowser\\aabbcc";
-      const LaunchPlan edgeLaunch = SecureEdgeLaunch(escapedEdge, target, escapedProfile);
+      const LaunchPlan edgeLaunch = SecureChromiumLaunch(escapedEdge, target, escapedProfile);
+      const LaunchPlan braveLaunch = SecureChromiumLaunch(escapedBrave, target, escapedProfile);
       const std::string expectedRules = "--host-resolver-rules=MAP pbx.example.test 100.70.1.1, MAP * ~NOTFOUND";
       check(edgeLaunch.program == escapedEdge && edgeLaunch.commandLine.find("\"" + escapedEdge + "\"") != std::string::npos &&
                 edgeLaunch.commandLine.find("\"--user-data-dir=" + escapedProfile + "\"") != std::string::npos &&
                 edgeLaunch.commandLine.find("\"" + expectedRules + "\"") != std::string::npos &&
                 edgeLaunch.commandLine.find("https://pbx.example.test:8443/admin/") != std::string::npos,
             "secure Edge command safely quotes executable, profile, resolver rules and target URL");
+        check(braveLaunch.program == escapedBrave && braveLaunch.commandLine.find("--host-resolver-rules=") != std::string::npos &&
+                        braveLaunch.commandLine.find("--no-proxy-server") != std::string::npos &&
+                        braveLaunch.commandLine.find("ignore-certificate") == std::string::npos,
+                  "explicit Brave selection receives isolated secure launch arguments without a TLS bypass");
       check(edgeLaunch.commandLine.find("MAP pbx.example.test 100.70.1.1") != std::string::npos &&
                 edgeLaunch.commandLine.find("MAP * ~NOTFOUND") != std::string::npos &&
                 edgeLaunch.commandLine.find("--no-proxy-server") != std::string::npos &&
@@ -424,10 +430,10 @@ void testPairedPrimaryManagementUrls() {
                 edgeLaunch.commandLine.find("--inprivate") != std::string::npos &&
                 edgeLaunch.commandLine.find("ignore-certificate") == std::string::npos,
             "secure Edge launch maps only the configured hostname and preserves resolver, proxy and TLS restrictions");
-      check(throws([&] { SecureEdgeLaunch("C:\\Program Files\\Other\\browser.exe", target, escapedProfile); }) &&
-                throws([&] { SecureEdgeLaunch(escapedEdge, target, "relative\\profile"); }) &&
-                throws([&] { SecureEdgeLaunch(escapedEdge, target, "C:\\bad\\profile\" --proxy-server=evil"); }),
-            "secure Edge launch rejects non-Edge executable and unsafe profile paths");
+        check(throws([&] { SecureChromiumLaunch("C:\\Program Files\\Other\\browser.exe", target, escapedProfile); }) &&
+                        throws([&] { SecureChromiumLaunch(escapedEdge, target, "relative\\profile"); }) &&
+                        throws([&] { SecureChromiumLaunch(escapedEdge, target, "C:\\bad\\profile\" --proxy-server=evil"); }),
+                  "secure Chromium launch rejects unsupported executable and unsafe profile paths");
       SecureManagementTarget modifiedHost = target;
       modifiedHost.hostname = "evil.example.test";
       SecureManagementTarget modifiedAddress = target;
@@ -436,10 +442,10 @@ void testPairedPrimaryManagementUrls() {
       modifiedUrl.url = "https://evil.example.test/admin/";
       SecureManagementTarget modifiedRules = target;
       modifiedRules.resolverRules += ", MAP * 8.8.8.8";
-      check(throws([&] { SecureEdgeLaunch(escapedEdge, modifiedHost, escapedProfile); }) &&
-                throws([&] { SecureEdgeLaunch(escapedEdge, modifiedAddress, escapedProfile); }) &&
-                throws([&] { SecureEdgeLaunch(escapedEdge, modifiedUrl, escapedProfile); }) &&
-                throws([&] { SecureEdgeLaunch(escapedEdge, modifiedRules, escapedProfile); }),
+      check(throws([&] { SecureChromiumLaunch(escapedEdge, modifiedHost, escapedProfile); }) &&
+                throws([&] { SecureChromiumLaunch(escapedEdge, modifiedAddress, escapedProfile); }) &&
+                throws([&] { SecureChromiumLaunch(escapedEdge, modifiedUrl, escapedProfile); }) &&
+                throws([&] { SecureChromiumLaunch(escapedEdge, modifiedRules, escapedProfile); }),
             "secure Edge launch refuses modified or inconsistent hostname, IP, URL and resolver targets");
 
       for (const char* invalid : {"https://evil.example/", "https://100.70.1.2:8443/admin/",
@@ -1199,15 +1205,23 @@ bool unavailable(const std::function<void()>& action, AppKind kind, const std::s
 void testLaunchers() {
     // Catalogue and detection-driven choices.
     check(KnownApps(AppKind::Browser).front().id == kWindowsDefaultBrowser, "Windows default browser listed first");
-    for (const char* id : {"chrome", "edge", "firefox", "brave"}) check(FindApp(AppKind::Browser, id) != nullptr, "required browser catalogued");
+      for (const char* id : {"chrome", "edge", "firefox", "brave", "vivaldi"}) check(FindApp(AppKind::Browser, id) != nullptr, "required browser catalogued");
     for (const char* id : {"powershell", "windows-terminal", "putty", "cmd"}) check(FindApp(AppKind::Terminal, id) != nullptr, "required terminal catalogued");
     check(!FindApp(AppKind::Terminal, "putty")->needsOpenSsh && FindApp(AppKind::Terminal, "cmd")->needsOpenSsh, "only PuTTY works without OpenSSH");
     DetectedApps noBrowsers;
     DetectedApps browsers{{"chrome", kChrome}, {"firefox", "C:\\Program Files\\Mozilla Firefox\\firefox.exe"}};
     DetectedApps terminals{{"powershell", kPowerShell}, {"cmd", "C:\\Windows\\System32\\cmd.exe"}, {"putty", kPutty}};
     check(AvailableApps(AppKind::Browser, noBrowsers) == std::vector<std::string>{kWindowsDefaultBrowser}, "Windows default browser always offered");
-    check(AvailableApps(AppKind::Browser, browsers) == std::vector<std::string>({kWindowsDefaultBrowser, "chrome", "firefox"}),
-          "only detected browsers offered, in catalogue order");
+      const DetectedApps allBrowsers{{"chrome", kChrome}, {"firefox", "C:\\Program Files\\Mozilla Firefox\\firefox.exe"},
+                                                   {"vivaldi", "C:\\Program Files\\Vivaldi\\Application\\vivaldi.exe"},
+                                                   {"brave", "C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe"}};
+      check(AvailableApps(AppKind::Browser, browsers) == std::vector<std::string>({kWindowsDefaultBrowser, "chrome"}) &&
+                    AvailableApps(AppKind::Browser, allBrowsers) == std::vector<std::string>({kWindowsDefaultBrowser, "chrome", "brave"}),
+              "only detected browsers supported by secure HTTPS management are offered");
+      check(IsSupportedSecureBrowser(kWindowsDefaultBrowser) && IsSupportedSecureBrowser("edge") &&
+                    IsSupportedSecureBrowser("chrome") && IsSupportedSecureBrowser("brave") &&
+                    !IsSupportedSecureBrowser("firefox") && !IsSupportedSecureBrowser("vivaldi"),
+              "secure browser allowlist matches the selected Chromium launch support");
     check(AvailableApps(AppKind::Terminal, terminals) == std::vector<std::string>({"powershell", "putty", "cmd"}), "only detected terminals offered");
     check(AvailableApps(AppKind::Terminal, {}).empty(), "no terminal offered when none is installed");
     check(DefaultBrowser(browsers) == "chrome" && DefaultBrowser(noBrowsers) == kWindowsDefaultBrowser, "Chrome preselected when installed");
@@ -1217,13 +1231,16 @@ void testLaunchers() {
 
     // First run: saved, skipped and cancelled.
     check(NeedsFirstRun(std::nullopt), "first run without preferences");
-    auto cancelled = PreferencesAfterFirstRun(FirstRunOutcome::Cancelled, "firefox", "putty", browsers, terminals, std::nullopt);
+      auto cancelled = PreferencesAfterFirstRun(FirstRunOutcome::Cancelled, "chrome", "putty", browsers, terminals, std::nullopt);
     check(!cancelled, "cancelling first run stores nothing");
     auto skipped = PreferencesAfterFirstRun(FirstRunOutcome::Skipped, "", "", browsers, terminals, std::nullopt);
     check(skipped && skipped->browser == "chrome" && skipped->terminal == "powershell" && skipped->setup == "skipped" && !NeedsFirstRun(skipped),
           "skipping first run stores the defaults and is not asked again");
-    auto saved = PreferencesAfterFirstRun(FirstRunOutcome::Saved, "firefox", "putty", browsers, terminals, std::nullopt);
-    check(saved && saved->browser == "firefox" && saved->terminal == "putty" && saved->setup == "completed" && !NeedsFirstRun(saved), "first-run choices saved");
+      auto saved = PreferencesAfterFirstRun(FirstRunOutcome::Saved, "chrome", "putty", browsers, terminals, std::nullopt);
+      check(saved && saved->browser == "chrome" && saved->terminal == "putty" && saved->setup == "completed" && !NeedsFirstRun(saved), "first-run choices saved");
+      check(throws([&] { PreferencesAfterFirstRun(FirstRunOutcome::Saved, "firefox", "putty", allBrowsers, terminals, std::nullopt); }) &&
+                    throws([&] { PreferencesAfterFirstRun(FirstRunOutcome::Saved, "vivaldi", "putty", allBrowsers, terminals, std::nullopt); }),
+              "unsupported browsers cannot be saved as the secure HTTPS preference");
     check(throws([&] { PreferencesAfterFirstRun(FirstRunOutcome::Saved, "edge", "putty", browsers, terminals, std::nullopt); }),
           "uninstalled browser cannot be saved");
     check(throws([&] { PreferencesAfterFirstRun(FirstRunOutcome::Saved, "chrome", "windows-terminal", browsers, terminals, std::nullopt); }),
@@ -1241,13 +1258,15 @@ void testLaunchers() {
 
     // Persistence: exact round trip and strict parsing.
     Preferences restored = ParsePreferences(SerializePreferences(located));
-    check(restored.browser == "firefox" && restored.terminal == "putty" && restored.setup == "completed" && restored.locations == located.locations,
+      check(restored.browser == "chrome" && restored.terminal == "putty" && restored.setup == "completed" && restored.locations == located.locations,
           "preferences round trip");
     check(ParsePreferences(SerializePreferences(Preferences())).browser.empty(), "empty preferences round trip");
-    check(ParsePreferences("{\"schema\":\"teliphones-desktop-preferences/1\",\"browser\":\"future-browser\",\"terminal\":\"cmd\",\"locations\":{},"
-                           "\"setup\":\"completed\"}")
-                  .browser == "future-browser",
-          "unknown application kept so it is reported rather than replaced");
+      check(ParsePreferences("{\"schema\":\"teliphones-desktop-preferences/1\",\"browser\":\"future-browser\",\"terminal\":\"cmd\",\"locations\":{},"
+                                       "\"setup\":\"completed\"}")
+                          .browser == "future-browser" &&
+                    ParsePreferences("{\"schema\":\"teliphones-desktop-preferences/1\",\"browser\":\"firefox\",\"terminal\":\"putty\",\"locations\":{},"
+                                            "\"setup\":\"completed\"}").browser == "firefox",
+              "unknown and legacy unsupported browser selections are preserved for explicit repair, never substituted");
     std::vector<std::string> badPreferences = {
         "",
         "{\"schema\":\"teliphones-desktop-preferences/2\",\"browser\":\"\",\"terminal\":\"\",\"locations\":{},\"setup\":\"\"}",
@@ -1270,9 +1289,16 @@ void testLaunchers() {
     check(unavailable([&] { ResolveApp(AppKind::Browser, "edge", browsers); }, AppKind::Browser, "edge"), "uninstalled browser reported");
     check(unavailable([&] { ResolveApp(AppKind::Terminal, "windows-terminal", terminals); }, AppKind::Terminal, "windows-terminal"),
           "uninstalled terminal reported");
-    check(unavailable([&] { ResolveApp(AppKind::Browser, "future-browser", browsers); }, AppKind::Browser, "future-browser"), "unknown browser reported");
+      check(unavailable([&] { ResolveApp(AppKind::Browser, "future-browser", browsers); }, AppKind::Browser, "future-browser") &&
+                    unavailable([&] { ResolveApp(AppKind::Browser, "firefox", allBrowsers); }, AppKind::Browser, "firefox"),
+              "unsupported and unknown browser choices are reported without launching or substituting another browser");
     check(ResolveApp(AppKind::Browser, kWindowsDefaultBrowser, noBrowsers).empty(), "Windows default browser needs no executable");
     check(ResolveApp(AppKind::Browser, "chrome", browsers) == kChrome, "installed browser resolved");
+      const DetectedApps secureBrowsers{{"edge", "C:\\Program Files\\Microsoft Edge\\msedge.exe"},
+                                                        {"brave", "C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe"}};
+      check(ResolveApp(AppKind::Browser, "brave", secureBrowsers) == secureBrowsers.at("brave") &&
+                    unavailable([&] { ResolveApp(AppKind::Browser, "brave", browsers); }, AppKind::Browser, "brave"),
+              "secure browser resolution honors explicit Brave selection and reports a missing Brave without Edge substitution");
     check(unavailable([&] { ResolveApp(AppKind::Terminal, "putty", {{"putty", "C:\\Temp\\calc.exe"}}); }, AppKind::Terminal, "putty"),
           "wrong executable is not launched");
 
@@ -1297,7 +1323,8 @@ void testLaunchers() {
     check(system.shellOpen && system.target == url && system.program.empty(), "Windows default browser uses the registered URL handler");
     LaunchPlan chrome = BrowserLaunch("chrome", kChrome, url);
     check(!chrome.shellOpen && chrome.program == kChrome && chrome.commandLine == "\"" + kChrome + "\" " + url, "selected browser opens the PBX URL");
-    check(BrowserLaunch("firefox", "D:\\Firefox\\firefox.exe", url).commandLine == "D:\\Firefox\\firefox.exe " + url, "browser path quoting");
+    check(unavailable([&] { BrowserLaunch("firefox", "D:\\Firefox\\firefox.exe", url); }, AppKind::Browser, "firefox"),
+          "unsupported browser cannot bypass secure-browser selection policy");
     check(unavailable([&] { BrowserLaunch("chrome", "C:\\x\\msedge.exe", url); }, AppKind::Browser, "chrome"), "mismatched browser executable refused");
     for (const char* bad : {"http://100.70.1.1/admin/ --incognito", "https://evil.example/admin/", "http://100.70.1.1/admin/?x", "--disable-web-security",
                             "http://pbx.example.net/admin/"}) {
@@ -1738,6 +1765,71 @@ void testTunnelLifecycle() {
               !lc::MatchesOwnedAdapter(ownership, "TELIPHONES-aaaaaaaaaaaa", ownership.interfaceGuid,
                                        ownership.pnpInstanceId),
           "generic or foreign WireGuard device identities are never accepted");
+        check(lc::ClassifyAdapterIdentity(ownership, tunnel, ownership.interfaceGuid, ownership.pnpInstanceId) ==
+                              lc::AdapterIdentity::Owned &&
+                        lc::ClassifyAdapterIdentity(ownership, tunnel, "{AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA}",
+                                                                  ownership.pnpInstanceId) == lc::AdapterIdentity::GuidChanged &&
+                        lc::ClassifyAdapterIdentity(ownership, tunnel, ownership.interfaceGuid, "ROOT\\WIREGUARD\\0043") ==
+                              lc::AdapterIdentity::PnpChanged &&
+                        lc::ClassifyAdapterIdentity(ownership, tunnel, "", "") == lc::AdapterIdentity::Unverified &&
+                        lc::MayRequestAdapterRemoval(lc::AdapterIdentity::Owned) &&
+                        !lc::MayRequestAdapterRemoval(lc::AdapterIdentity::GuidChanged) &&
+                        !lc::MayRequestAdapterRemoval(lc::AdapterIdentity::PnpChanged) &&
+                        !lc::MayRequestAdapterRemoval(lc::AdapterIdentity::Unverified),
+                  "cleanup permits device removal only for exact GUID/PnP ownership; changed or unknown identities fail closed");
+        lc::HelperResult changedPnp;
+        changedPnp.stage = lc::Stage::RemoveFailed;
+        changedPnp.cleanupIncomplete = true;
+        changedPnp.error = 1168;
+        changedPnp.residual = lc::Residual::AdapterRemovalPnpChanged;
+        check(lc::DecodeHelperResult(lc::EncodeHelperResult(changedPnp), decoded) &&
+                        decoded.residual == lc::Residual::AdapterRemovalPnpChanged &&
+                        contains(lc::HelperMessage(lc::EncodeHelperResult(changedPnp)), "Ownership is uncertain") &&
+                        contains(lc::HelperMessage(lc::EncodeHelperResult(changedPnp)), "did not remove the device"),
+                  "PnP identity drift reports actionable uncertainty and does not recommend blind cleanup retries");
+            const auto mismatch = lc::ClassifyAdapterRemovalFailure(
+                  ownership.interfaceGuid, ownership.pnpInstanceId, ownership.interfaceGuid, ownership.pnpInstanceId,
+                  1168, lc::AdapterPresence::Active, lc::RecordedDeviceState::Missing);
+            const auto guidDrift = lc::ClassifyAdapterRemovalFailure(
+                  ownership.interfaceGuid, ownership.pnpInstanceId, "{AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA}",
+                  ownership.pnpInstanceId, 1168, lc::AdapterPresence::Active, lc::RecordedDeviceState::Missing);
+            const auto pnpDrift = lc::ClassifyAdapterRemovalFailure(
+                  ownership.interfaceGuid, ownership.pnpInstanceId, ownership.interfaceGuid, "ROOT\\WIREGUARD\\0043",
+                  1168, lc::AdapterPresence::Active, lc::RecordedDeviceState::Missing);
+            const auto missingObservation = lc::ClassifyAdapterRemovalFailure(
+                  ownership.interfaceGuid, ownership.pnpInstanceId, ownership.interfaceGuid, ownership.pnpInstanceId,
+                  1168, lc::AdapterPresence::Active, lc::RecordedDeviceState::Unknown);
+            const auto phantom = lc::ClassifyAdapterRemovalFailure(
+                  ownership.interfaceGuid, ownership.pnpInstanceId, ownership.interfaceGuid, ownership.pnpInstanceId,
+                  1168, lc::AdapterPresence::Active, lc::RecordedDeviceState::NonPresent);
+            const auto noInterface = lc::ClassifyAdapterRemovalFailure(
+                  ownership.interfaceGuid, ownership.pnpInstanceId, ownership.interfaceGuid, ownership.pnpInstanceId,
+                  1168, lc::AdapterPresence::Absent, lc::RecordedDeviceState::Missing);
+            check(mismatch == lc::Residual::AdapterRemovalIdentityMismatch &&
+                          guidDrift == lc::Residual::AdapterRemovalGuidChanged &&
+                          pnpDrift == lc::Residual::AdapterRemovalPnpChanged &&
+                          missingObservation == lc::Residual::AdapterRemovalFailed &&
+                          phantom == lc::Residual::AdapterRemovalFailed &&
+                          noInterface == lc::Residual::AdapterRemovalFailed &&
+                          contains(mismatchMessage, "exact phantom-device lookup") &&
+                                contains(mismatchMessage, "preserve the session log and ownership record") &&
+                          !contains(mismatchMessage, "Try Disconnect or Connect again"),
+                    "1168 classification distinguishes identity drift, missing/phantom observations, and absent interfaces; unchanged ambiguity does not recommend retry");
+                        check(lc::MayReconcileMissingRecordedDevice(lc::AdapterIdentity::Owned, 1168,
+                                                            lc::AdapterPresence::Active, lc::RecordedDeviceState::Missing) &&
+                                                      !lc::MayReconcileMissingRecordedDevice(lc::AdapterIdentity::GuidChanged, 1168,
+                                                            lc::AdapterPresence::Active, lc::RecordedDeviceState::Missing) &&
+                                                      !lc::MayReconcileMissingRecordedDevice(lc::AdapterIdentity::PnpChanged, 1168,
+                                                            lc::AdapterPresence::Active, lc::RecordedDeviceState::Missing) &&
+                                                      !lc::MayReconcileMissingRecordedDevice(lc::AdapterIdentity::Unverified, 1168,
+                                                            lc::AdapterPresence::Active, lc::RecordedDeviceState::Missing) &&
+                                                      !lc::MayReconcileMissingRecordedDevice(lc::AdapterIdentity::Owned, 1168,
+                                                            lc::AdapterPresence::Active, lc::RecordedDeviceState::NonPresent) &&
+                                                      !lc::MayReconcileMissingRecordedDevice(lc::AdapterIdentity::Owned, 1168,
+                                                            lc::AdapterPresence::Unverified, lc::RecordedDeviceState::Missing) &&
+                                                      !lc::MayReconcileMissingRecordedDevice(lc::AdapterIdentity::Owned, 5,
+                                                            lc::AdapterPresence::Active, lc::RecordedDeviceState::Missing),
+                                          "missing-device reconciliation requires exact ownership, error 1168, active exact alias, and explicit recorded-PnP absence");
     auto pending = ownership;
     pending.complete = false;
     pending.interfaceGuid.clear();

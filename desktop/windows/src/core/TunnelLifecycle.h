@@ -39,8 +39,11 @@ enum class Residual : std::uint32_t {
     AdapterUnverified = 7,  // the service is gone but Windows could not enumerate network interfaces
     AdapterRemovalFailed = 8, // identity-checked Configuration Manager removal was refused or failed
     AdapterIdentityUnverified = 9, // exact adapter identity could not be correlated to the protected record
-    AdapterRemovalIdentityMismatch = 10, // exact recorded device is absent, while a same-alias interface remains
-    StaleOwnershipRecord = 11, // service, interface and recorded PnP device are all independently absent
+    AdapterRemovalIdentityMismatch = 10, // recorded PnP ID was not found while a matching live interface remains
+    AdapterRemovalPnpChanged = 11, // the live alias/GUID now resolves to a different PnP ID; ownership is uncertain
+    AdapterRemovalGuidChanged = 12, // the current interface GUID differs from the ownership journal
+    AdapterLuidChanged = 13, // the LUID associated with the recorded interface GUID changed
+    StaleOwnershipRecord = 14, // service, interface and recorded PnP device are all independently absent
 };
 
 struct HelperResult {
@@ -119,6 +122,17 @@ struct OwnershipRecord {
 bool ValidOwnershipRecord(const OwnershipRecord& record);
 bool MatchesOwnedAdapter(const OwnershipRecord& record, const std::string& tunnelName,
                          const std::string& interfaceGuid, const std::string& pnpInstanceId);
+enum class AdapterIdentity { Unverified, Owned, GuidChanged, PnpChanged };
+AdapterIdentity ClassifyAdapterIdentity(const OwnershipRecord& record, const std::string& tunnelName,
+                                        const std::string& interfaceGuid, const std::string& pnpInstanceId);
+// Interface LUID is diagnostic corroboration only, not an ownership or removal-authorization key.
+bool MayRequestAdapterRemoval(AdapterIdentity identity);
+bool MayReconcileMissingRecordedDevice(AdapterIdentity identity, std::uint32_t win32Error,
+                                       AdapterPresence interfacePresence, RecordedDeviceState pnpState);
+Residual ClassifyAdapterRemovalFailure(const std::string& recordedGuid, const std::string& recordedPnp,
+                                       const std::string& observedGuid, const std::string& observedPnp,
+                                       std::uint32_t win32Error, AdapterPresence interfacePresence,
+                                       RecordedDeviceState pnpState);
 
 // Portable connection-operation policy.  The UI supplies monotonic milliseconds and
 // performs the returned action; late results from another generation are ignored.

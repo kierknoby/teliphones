@@ -30,6 +30,8 @@ protected:
     afx_msg void OnVScroll(UINT code, UINT position, CScrollBar* scrollbar);
     afx_msg void OnSetFocus(CWnd* oldWindow);
     afx_msg BOOL OnMouseWheel(UINT flags, short delta, CPoint point);
+    BOOL PreTranslateMessage(MSG* message) override;
+    afx_msg LRESULT OnRevealFocusedControl(WPARAM, LPARAM);
     DECLARE_MESSAGE_MAP()
 
 private:
@@ -58,6 +60,7 @@ private:
     LONG scrollOffset_ = 0;
     int contentExtent_ = 0;
     int wheelRemainder_ = 0;
+    static constexpr UINT kRevealFocusMessage = WM_APP + 0x321;
     bool arranging_ = false;
     void ArrangePairDialog();
     LONG ScaleForDpi(LONG value) const;

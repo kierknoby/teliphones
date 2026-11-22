@@ -372,7 +372,27 @@ std::optional<lifecycle::OwnershipRecord> readOwnership(const std::string& tunne
 struct ObservedAdapter {
     std::string guid;
     std::string pnp;
+    NET_LUID luid{};
 };
+
+std::optional<std::string> pnpInstanceForGuid(const std::string& guidText) {
+    GUID guid{};
+    const std::wstring wideGuid = Widen(guidText);
+    if (CLSIDFromString(wideGuid.c_str(), &guid) != NOERROR) return std::nullopt;
+    wchar_t keyName[64]{};
+    if (!StringFromGUID2(guid, keyName, static_cast<int>(std::size(keyName)))) return std::nullopt;
+    const std::wstring key = L"SYSTEM\\CurrentControlSet\\Control\\Network\\{4D36E972-E325-11CE-BFC1-08002BE10318}\\" +
+                             std::wstring(keyName) + L"\\Connection";
+    HKEY opened = nullptr;
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, key.c_str(), 0, KEY_READ, &opened) != ERROR_SUCCESS) return std::nullopt;
+    wchar_t pnp[512]{};
+    DWORD type = 0, bytes = sizeof(pnp);
+    const auto status = RegQueryValueExW(opened, L"PnpInstanceID", nullptr, &type,
+                                         reinterpret_cast<BYTE*>(pnp), &bytes);
+    RegCloseKey(opened);
+    if (status != ERROR_SUCCESS || type != REG_SZ || pnp[0] == L'\\0') return std::nullopt;
+    return Narrow(pnp);
+}
 
 std::optional<ObservedAdapter> observeAdapter(const std::string& tunnelName) {
     PMIB_IF_TABLE2 table = nullptr;
@@ -383,17 +403,10 @@ std::optional<ObservedAdapter> observeAdapter(const std::string& tunnelName) {
         if (alias != table->Table[i].Alias || table->Table[i].OperStatus == IfOperStatusNotPresent) continue;
         wchar_t guid[64]{};
         if (!StringFromGUID2(table->Table[i].InterfaceGuid, guid, static_cast<int>(std::size(guid)))) return std::nullopt;
-        const std::wstring key = L"SYSTEM\\CurrentControlSet\\Control\\Network\\{4D36E972-E325-11CE-BFC1-08002BE10318}\\" +
-                                 std::wstring(guid) + L"\\Connection";
-        HKEY opened = nullptr;
-        if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, key.c_str(), 0, KEY_READ, &opened) != ERROR_SUCCESS) return std::nullopt;
-        wchar_t pnp[512]{};
-        DWORD type = 0, bytes = sizeof(pnp);
-        const auto status = RegQueryValueExW(opened, L"PnpInstanceID", nullptr, &type,
-                                             reinterpret_cast<BYTE*>(pnp), &bytes);
-        RegCloseKey(opened);
-        if (status != ERROR_SUCCESS || type != REG_SZ || pnp[0] == L'\0') return std::nullopt;
-        return ObservedAdapter{Narrow(guid), Narrow(pnp)};
+        const std::string guidText = Narrow(guid);
+        const auto pnp = pnpInstanceForGuid(guidText);
+        if (!pnp) return std::nullopt;
+        return ObservedAdapter{guidText, *pnp, table->Table[i].InterfaceLuid};
     }
     return std::nullopt;
 }
@@ -407,25 +420,44 @@ struct AdapterRemoval {
     std::wstring vetoName;
     std::string interfaceGuid;
     std::string pnpInstanceId;
+    std::string recordedGuid;
+    std::string recordedPnp;
+    NET_LUID interfaceLuid{};
 };
 
 AdapterRemoval removeVerifiedAdapter(const std::string& tunnelName) {
     const auto record = readOwnership(tunnelName);
     const auto observed = observeAdapter(tunnelName);
-    if (!record || !observed || !lifecycle::MatchesOwnedAdapter(*record, tunnelName, observed->guid, observed->pnp))
-        return {false, ERROR_ACCESS_DENIED, "identity_verification", CR_SUCCESS, PNP_VetoTypeUnknown, {}, {}, {}};
+    if (!record || !observed)
+        return {false, ERROR_ACCESS_DENIED, "identity_verification", CR_SUCCESS, PNP_VetoTypeUnknown, {}, {}, {},
+                record ? record->interfaceGuid : std::string(), record ? record->pnpInstanceId : std::string(), {}};
+    const auto identity = lifecycle::ClassifyAdapterIdentity(*record, tunnelName, observed->guid, observed->pnp);
+    if (!lifecycle::MayRequestAdapterRemoval(identity))
+        return {false, ERROR_ACCESS_DENIED, "identity_verification", CR_SUCCESS, PNP_VetoTypeUnknown, {}, observed->guid,
+                observed->pnp, record->interfaceGuid, record->pnpInstanceId, observed->luid};
     DEVINST device = 0;
-    std::wstring instance = Widen(observed->pnp);
-    const CONFIGRET located = CM_Locate_DevNodeW(&device, instance.data(), CM_LOCATE_DEVNODE_NORMAL);
-    if (located != CR_SUCCESS) return {true, CM_MapCrToWin32Err(located, ERROR_GEN_FAILURE), "CM_Locate_DevNodeW", located,
-                                       PNP_VetoTypeUnknown, {}, observed->guid, observed->pnp};
+    std::wstring instance = Widen(record->pnpInstanceId);
+    CONFIGRET located = CM_Locate_DevNodeW(&device, instance.data(), CM_LOCATE_DEVNODE_NORMAL);
+    const char* locateStage = "CM_Locate_DevNodeW";
+    // A service teardown can leave the exact owned devnode registered as a phantom while IP Helper
+    // still exposes its interface. Retry lookup in that explicit state, but only after the live
+    // alias→GUID→PnP chain above matched the protected ownership record. This never broadens the
+    // target beyond the exact recorded instance and does not touch unrelated WireGuard devices.
+    if (located == CR_NO_SUCH_DEVNODE) {
+        located = CM_Locate_DevNodeW(&device, instance.data(), CM_LOCATE_DEVNODE_PHANTOM);
+        locateStage = "CM_Locate_DevNodeW(PHANTOM)";
+    }
+    if (located != CR_SUCCESS) return {true, CM_MapCrToWin32Err(located, ERROR_GEN_FAILURE), locateStage, located,
+                                       PNP_VetoTypeUnknown, {}, observed->guid, observed->pnp,
+                                       record->interfaceGuid, record->pnpInstanceId, observed->luid};
     PNP_VETO_TYPE veto = PNP_VetoTypeUnknown;
     wchar_t vetoName[MAX_PATH]{};
     const CONFIGRET removed = CM_Query_And_Remove_SubTreeW(device, &veto, vetoName, static_cast<ULONG>(std::size(vetoName)),
                                                             CM_REMOVE_NO_RESTART);
     return {true, removed == CR_SUCCESS ? ERROR_SUCCESS : CM_MapCrToWin32Err(removed, ERROR_GEN_FAILURE),
             "CM_Query_And_Remove_SubTreeW", removed, veto,
-            removed == CR_SUCCESS ? std::wstring() : std::wstring(vetoName), observed->guid, observed->pnp};
+            removed == CR_SUCCESS ? std::wstring() : std::wstring(vetoName), observed->guid, observed->pnp,
+            record->interfaceGuid, record->pnpInstanceId, observed->luid};
 }
 
 std::string adapterRemovalDetail(const AdapterRemoval& removal) {
@@ -437,6 +469,9 @@ std::string adapterRemovalDetail(const AdapterRemoval& removal) {
     if (!removal.vetoName.empty()) detail << ", veto_name=" << Narrow(removal.vetoName);
     if (!removal.interfaceGuid.empty()) detail << ", interface_guid=" << removal.interfaceGuid;
     if (!removal.pnpInstanceId.empty()) detail << ", pnp_instance_id=" << removal.pnpInstanceId;
+    if (!removal.recordedGuid.empty()) detail << ", recorded_interface_guid=" << removal.recordedGuid;
+    if (!removal.recordedPnp.empty()) detail << ", recorded_pnp_instance_id=" << removal.recordedPnp;
+    if (removal.interfaceLuid.Value != 0) detail << ", interface_luid=" << removal.interfaceLuid.Value;
     return SanitizeDiagnosticDetail(detail.str());
 }
 
@@ -454,11 +489,19 @@ struct AdapterReadback {
     lifecycle::AdapterPresence interfacePresence = lifecycle::AdapterPresence::Unverified;
     lifecycle::RecordedDeviceState pnpState = lifecycle::RecordedDeviceState::Unknown;
     lifecycle::AdapterPresence combined = lifecycle::AdapterPresence::Unverified;
+    std::string observedGuid;
+    std::string observedPnp;
+    NET_LUID observedLuid{};
 };
 
 AdapterReadback readAdapterState(const std::string& tunnelName) {
     AdapterReadback result;
     result.interfacePresence = TunnelAdapterPresence(tunnelName);
+    if (const auto observed = observeAdapter(tunnelName)) {
+        result.observedGuid = observed->guid;
+        result.observedPnp = observed->pnp;
+        result.observedLuid = observed->luid;
+    }
     const auto record = readOwnership(tunnelName);
     if (!record || !record->complete) {
         result.combined = lifecycle::ReconcileAdapterPresence(result.interfacePresence, lifecycle::RecordedDeviceState::Unknown);
@@ -649,17 +692,19 @@ lifecycle::HelperResult removeOwnedTunnel(const WireGuardInstallation& wireguard
             outcome.cleanupIncomplete = true;
             if (!adapterRemoval.attempted) {
                 const auto readback = readAdapterState(tunnelName);
-                outcome.residual = readback.pnpState == lifecycle::RecordedDeviceState::Missing &&
-                    readback.interfacePresence == lifecycle::AdapterPresence::Active
-                    ? lifecycle::Residual::AdapterRemovalIdentityMismatch
-                    : lifecycle::Residual::AdapterIdentityUnverified;
+                const std::string& observedGuid = adapterRemoval.interfaceGuid.empty() ? readback.observedGuid : adapterRemoval.interfaceGuid;
+                const std::string& observedPnp = adapterRemoval.pnpInstanceId.empty() ? readback.observedPnp : adapterRemoval.pnpInstanceId;
+                outcome.residual = lifecycle::ClassifyAdapterRemovalFailure(
+                    adapterRemoval.recordedGuid, adapterRemoval.recordedPnp, observedGuid, observedPnp,
+                    adapterRemoval.error, readback.interfacePresence, readback.pnpState);
                 outcome.error = adapterRemoval.error;
             } else if (adapterRemovalError == ERROR_NOT_FOUND) {
                 const auto readback = readAdapterState(tunnelName);
-                outcome.residual = readback.pnpState == lifecycle::RecordedDeviceState::Missing &&
-                    readback.interfacePresence == lifecycle::AdapterPresence::Active
-                    ? lifecycle::Residual::AdapterRemovalIdentityMismatch
-                    : lifecycle::Residual::AdapterRemovalFailed;
+                const std::string& observedGuid = adapterRemoval.interfaceGuid.empty() ? readback.observedGuid : adapterRemoval.interfaceGuid;
+                const std::string& observedPnp = adapterRemoval.pnpInstanceId.empty() ? readback.observedPnp : adapterRemoval.pnpInstanceId;
+                outcome.residual = lifecycle::ClassifyAdapterRemovalFailure(
+                    adapterRemoval.recordedGuid, adapterRemoval.recordedPnp, observedGuid, observedPnp,
+                    adapterRemovalError, readback.interfacePresence, readback.pnpState);
                 outcome.error = adapterRemoval.error;
             } else if (adapterRemovalError != ERROR_SUCCESS) {
                 outcome.residual = lifecycle::Residual::AdapterRemovalFailed;
@@ -683,6 +728,10 @@ lifecycle::HelperResult removeOwnedTunnel(const WireGuardInstallation& wireguard
                            (adapterReadback.pnpState == lifecycle::RecordedDeviceState::Present ? "present" :
                             adapterReadback.pnpState == lifecycle::RecordedDeviceState::NonPresent ? "non_present" :
                             adapterReadback.pnpState == lifecycle::RecordedDeviceState::Missing ? "missing" : "unknown") +
+                          (adapterReadback.observedGuid.empty() ? std::string() : ", current_interface_guid=" + adapterReadback.observedGuid) +
+                          (adapterReadback.observedPnp.empty() ? std::string() : ", current_pnp_instance_id=" + adapterReadback.observedPnp) +
+                          (adapterReadback.observedLuid.Value == 0 ? std::string() : ", current_interface_luid=" +
+                              std::to_string(adapterReadback.observedLuid.Value)) +
                            ", service_readback=" + (tunnel_startup::Absent(status) ? "absent" : "present_or_unknown"));
             } catch (const std::exception&) {
                 // Diagnostic failure must not mask or alter the cleanup result.

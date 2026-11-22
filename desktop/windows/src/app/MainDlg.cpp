@@ -1167,6 +1167,11 @@ void CMainDlg::OnOpenGui() {
     try {
         tlp::win::OpenFreePbx(*profile, active_->sessionId, CurrentPreferences());
     } catch (const tlp::AppUnavailable& e) {
+        if (profile->kind == ProfileKind::Administrator && profile->pairing.guiUrl.rfind("https://", 0) == 0) {
+            ShowError(std::string(e.what()) +
+                " Secure HTTPS management does not fall back to the Windows default browser. Choose an installed Edge, Chrome, or Brave browser in Settings, or use Locate... to find the selected browser.");
+            return;
+        }
         std::string text = std::string(e.what()) +
                            "\n\nYes: use the Windows default browser from now on.\nNo: choose another browser in Settings.\nCancel: do nothing.";
         int answer = tlp::ui::ShowMessage(Widen(text).c_str(), MB_YESNOCANCEL | MB_ICONWARNING);
@@ -1829,20 +1834,6 @@ LRESULT CMainDlg::OnOperationDone(WPARAM, LPARAM lparam) {
                 SetState("Not connected", result->warning.empty()
                     ? "TELIPHONES runtime cleanup completed and no residual owned tunnel state was found."
                     : "TELIPHONES runtime cleanup completed. " + result->warning);
-                wchar_t executable[32768]{};
-                const DWORD length = GetModuleFileNameW(nullptr, executable, static_cast<DWORD>(std::size(executable)));
-                if (length > 0 && length < std::size(executable)) {
-                    const auto launched = reinterpret_cast<INT_PTR>(ShellExecuteW(nullptr, L"open", executable,
-                        L"--restart-wait", nullptr, SW_SHOWNORMAL));
-                    if (launched > 32) {
-                        LogEvent("recovery_restart", "info", "Controlled application restart launched after cleanup; the new process is waiting for this instance to exit.");
-                        closing_ = true;
-                        FinishClose();
-                        return 0;
-                    }
-                }
-                LogEvent("recovery_restart", "warning", "The controlled application restart could not be launched; cleanup succeeded and TELIPHONES remains disconnected.");
-                SetState("Not connected", "Recovery cleanup succeeded, but TELIPHONES could not start its controlled reset. The application remains disconnected; close and reopen TELIPHONES if its interface still appears stale.");
             }
             break;
         case OperationKind::Cleanup:

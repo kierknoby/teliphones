@@ -95,12 +95,14 @@ BEGIN_MESSAGE_MAP(CPairDlg, CAppearanceDialog)
     ON_WM_VSCROLL()
     ON_WM_MOUSEWHEEL()
     ON_WM_SETFOCUS()
+    ON_MESSAGE(WM_APP + 0x321, &CPairDlg::OnRevealFocusedControl)
 END_MESSAGE_MAP()
 
 CPairDlg::CPairDlg(const tlp::win::WireGuardInstallation& wireguard, CWnd* parent) : CAppearanceDialog(IDD_PAIR, parent), wireguard_(wireguard) {}
 
 BOOL CPairDlg::OnInitDialog() {
     CAppearanceDialog::OnInitDialog();
+    SetWindowText(L"Add my PBX");
     SetDlgItemText(IDC_PAIR_WORKSTATION, tlp::win::Widen(ComputerName()).c_str());
     SetDlgItemText(IDC_PAIR_SSHUSER, L"");
     auto* access = static_cast<CComboBox*>(GetDlgItem(IDC_PAIR_ACCESS));
@@ -280,6 +282,30 @@ void CPairDlg::OnSetFocus(CWnd* oldWindow) {
     const LONG viewportTop = ScaleForDpi(0);
     if (rect.top < viewportTop) ScrollPairContent(scrollOffset_ + rect.top - viewportTop);
     else if (rect.bottom > footer - 6) ScrollPairContent(scrollOffset_ + rect.bottom - footer + 6);
+}
+
+BOOL CPairDlg::PreTranslateMessage(MSG* message) {
+    const BOOL handled = CAppearanceDialog::PreTranslateMessage(message);
+    if (message->message == WM_KEYDOWN && message->wParam == VK_TAB)
+        PostMessage(kRevealFocusMessage);
+    return handled;
+}
+
+LRESULT CPairDlg::OnRevealFocusedControl(WPARAM, LPARAM) {
+    CWnd* focus = GetFocus();
+    if (!focus) return 0;
+    const auto found = std::find_if(contentControls_.begin(), contentControls_.end(),
+        [focus](const ContentControl& item) { return item.window == focus->GetSafeHwnd(); });
+    if (found == contentControls_.end()) return 0;
+    CRect client, rect;
+    GetClientRect(&client);
+    focus->GetWindowRect(&rect);
+    ScreenToClient(&rect);
+    const LONG top = ScaleForDpi(0);
+    const LONG bottom = FooterTop(client) - 6;
+    if (rect.top < top) ScrollPairContent(scrollOffset_ + rect.top - top);
+    else if (rect.bottom > bottom) ScrollPairContent(scrollOffset_ + rect.bottom - bottom);
+    return 0;
 }
 
 BOOL CPairDlg::OnMouseWheel(UINT flags, short delta, CPoint point) {

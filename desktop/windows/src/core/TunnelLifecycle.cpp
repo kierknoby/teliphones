@@ -81,8 +81,20 @@ std::string residualText(const HelperResult& result) {
                    "against the protected ownership record; TELIPHONES did not request device removal.";
         case Residual::AdapterRemovalIdentityMismatch:
             return " Configuration Manager no longer locates the exact recorded PnP instance (Windows error 1168), "
-                   "but IP Helper still reports a TELIPHONES interface. The interface was retained because its "
-                   "identity no longer matches the recorded device.";
+                   "but IP Helper still reports a TELIPHONES interface. TELIPHONES retained the interface because "
+                   "Windows' device and interface inventories disagree.";
+        case Residual::AdapterRemovalPnpChanged:
+            return " The current TELIPHONES alias and interface GUID resolve to a different PnP instance than the "
+                   "protected record. Ownership is uncertain; TELIPHONES did not remove the device or clear its "
+                   "record. Inspect the session diagnostics and Windows device inventory before retrying.";
+        case Residual::AdapterRemovalGuidChanged:
+            return " The current TELIPHONES alias resolves to an interface GUID different from the protected record. "
+                   "Ownership is uncertain; TELIPHONES did not remove the device or clear its record. Inspect the "
+                   "session diagnostics and Windows device inventory before retrying.";
+        case Residual::AdapterLuidChanged:
+            return " The interface LUID differs from the recorded diagnostic value. TELIPHONES did not use the LUID "
+                   "as ownership proof or request device removal; inspect the session diagnostics and Windows device "
+                   "inventory before retrying.";
         case Residual::StaleOwnershipRecord:
             return " The service, interface table and exact recorded PnP instance were independently absent; "
                    "TELIPHONES reconciled the stale ownership record without removing another device.";
@@ -104,8 +116,18 @@ std::string cleanupText(const HelperResult& result) {
     } else if (result.ownershipUnverified) {
         text += " TELIPHONES did not force it to stop because the service could not be verified as this TELIPHONES "
                 "tunnel. Check it with sc.exe qc before removing it.";
-    } else if (result.residual == Residual::AdapterOnly || result.residual == Residual::AdapterIdentityUnverified ||
-               result.residual == Residual::AdapterRemovalIdentityMismatch) {
+    } else if (result.residual == Residual::AdapterRemovalPnpChanged ||
+               result.residual == Residual::AdapterRemovalGuidChanged ||
+               result.residual == Residual::AdapterLuidChanged) {
+        text += " TELIPHONES failed closed and left the adapter and ownership record untouched. Do not retry until "
+                "you have inspected the session diagnostics and Windows device inventory.";
+    } else if (result.residual == Residual::AdapterRemovalIdentityMismatch) {
+        text += " Configuration Manager could not locate the exact PnP device, but Windows still reports the "
+            "ownership-matched interface. Recover will retry an exact phantom-device lookup and may reconcile "
+            "TELIPHONES records only after fresh service, GUID, PnP and device-presence checks. It will not force "
+            "remove an unidentified interface. If the mismatch persists, preserve the session log and ownership "
+            "record for administrator review; do not use Device Manager or pnputil.";
+    } else if (result.residual == Residual::AdapterOnly || result.residual == Residual::AdapterIdentityUnverified) {
         text += " Adapter release did not complete within the cleanup timeout. Try Disconnect or Connect again; "
                 "TELIPHONES rechecks the service and adapter before starting a new tunnel.";
     } else {
@@ -180,9 +202,40 @@ bool ValidOwnershipRecord(const OwnershipRecord& record) {
 
 bool MatchesOwnedAdapter(const OwnershipRecord& record, const std::string& tunnelName,
                          const std::string& interfaceGuid, const std::string& pnpInstanceId) {
-    return ValidOwnershipRecord(record) && record.complete && record.tunnelName == tunnelName &&
-           SameWindowsPath(record.interfaceGuid, interfaceGuid) &&
-           SameWindowsPath(record.pnpInstanceId, pnpInstanceId);
+    return ClassifyAdapterIdentity(record, tunnelName, interfaceGuid, pnpInstanceId) == AdapterIdentity::Owned;
+}
+
+AdapterIdentity ClassifyAdapterIdentity(const OwnershipRecord& record, const std::string& tunnelName,
+                                        const std::string& interfaceGuid, const std::string& pnpInstanceId) {
+    if (!ValidOwnershipRecord(record) || !record.complete || record.tunnelName != tunnelName ||
+        interfaceGuid.empty() || pnpInstanceId.empty()) return AdapterIdentity::Unverified;
+    if (!SameWindowsPath(record.interfaceGuid, interfaceGuid)) return AdapterIdentity::GuidChanged;
+    if (!SameWindowsPath(record.pnpInstanceId, pnpInstanceId)) return AdapterIdentity::PnpChanged;
+    return AdapterIdentity::Owned;
+}
+
+bool MayRequestAdapterRemoval(AdapterIdentity identity) {
+    return identity == AdapterIdentity::Owned;
+}
+
+bool MayReconcileMissingRecordedDevice(AdapterIdentity identity, std::uint32_t win32Error,
+                                       AdapterPresence interfacePresence, RecordedDeviceState pnpState) {
+    return identity == AdapterIdentity::Owned && win32Error == 1168 &&
+           interfacePresence == AdapterPresence::Active && pnpState == RecordedDeviceState::Missing;
+}
+
+Residual ClassifyAdapterRemovalFailure(const std::string& recordedGuid, const std::string& recordedPnp,
+                                       const std::string& observedGuid, const std::string& observedPnp,
+                                       std::uint32_t win32Error, AdapterPresence interfacePresence,
+                                       RecordedDeviceState pnpState) {
+    if (interfacePresence != AdapterPresence::Active) return Residual::AdapterRemovalFailed;
+    if (recordedGuid.empty() || recordedPnp.empty() || observedGuid.empty() || observedPnp.empty())
+        return Residual::AdapterIdentityUnverified;
+    if (!SameWindowsPath(recordedGuid, observedGuid)) return Residual::AdapterRemovalGuidChanged;
+    if (!SameWindowsPath(recordedPnp, observedPnp)) return Residual::AdapterRemovalPnpChanged;
+    if (MayReconcileMissingRecordedDevice(AdapterIdentity::Owned, win32Error, interfacePresence, pnpState))
+        return Residual::AdapterRemovalIdentityMismatch;
+    return Residual::AdapterRemovalFailed;
 }
 
 ConnectionOperation BeginConnection(std::uint64_t generation, std::uint64_t nowMs, std::uint32_t startupMs) {
