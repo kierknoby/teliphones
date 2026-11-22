@@ -700,9 +700,15 @@ class BuildLayoutTests(unittest.TestCase):
         self.assertIn('"--recover-runtime"', native)
         self.assertIn('"--recover-runtime"', (ROOT / "tests/ssh_native_host.cpp").read_text())
         self.assertIn("def pin_processes(pids):", native)
+        self.assertIn("GetProcessTimes", native)
+        self.assertIn("QueryFullProcessImageNameW", native)
+        self.assertIn("def surviving_owned_processes(processes):", native)
+        self.assertIn("def assert_owned_process_tree(root_pid, root_handle, processes):", native)
+        self.assertIn("predates its captured parent instance", native)
         crash = native.split("def crash_and_recover(", 1)[1].split("def fixture_preflight", 1)[0]
         self.assertIn("pinned = pin_processes(owned)", crash)
-        self.assertIn("WaitForSingleObject(handle, 0)", crash)
+        self.assertIn('WaitForSingleObject(item["handle"], 0)', crash)
+        self.assertIn("surviving_owned_processes(pinned)", crash)
         self.assertNotIn("process_in_snapshot(pid) for pid in owned", crash)
 
     def test_wireguard_nt_dependency_and_private_only_update_are_pinned(self):
@@ -941,7 +947,7 @@ function Get-FileHash { throw 'Regression: verifier must not depend on Get-FileH
         self.assertIn("def pin_processes(pids):", fixture)
         crash = fixture.split("def crash_and_recover(", 1)[1].split("def fixture_preflight", 1)[0]
         self.assertIn("pinned = pin_processes(owned)", crash)
-        self.assertIn("WaitForSingleObject(handle, 0)", crash)
+        self.assertIn('WaitForSingleObject(item["handle"], 0)', crash)
         self.assertNotIn("process_in_snapshot(pid) for pid in owned", crash)
 
     def test_system_process_inventory_never_opens_process_handles(self):
