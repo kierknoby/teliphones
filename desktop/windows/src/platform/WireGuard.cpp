@@ -390,7 +390,7 @@ std::optional<std::string> pnpInstanceForGuid(const std::string& guidText) {
     const auto status = RegQueryValueExW(opened, L"PnpInstanceID", nullptr, &type,
                                          reinterpret_cast<BYTE*>(pnp), &bytes);
     RegCloseKey(opened);
-    if (status != ERROR_SUCCESS || type != REG_SZ || pnp[0] == L'\\0') return std::nullopt;
+    if (status != ERROR_SUCCESS || type != REG_SZ || pnp[0] == L'\0') return std::nullopt;
     return Narrow(pnp);
 }
 

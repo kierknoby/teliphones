@@ -134,10 +134,10 @@ void CAppSettingsDlg::Arrange() {
     GetClientRect(&client);
     const int baseWidth = std::max(1, MulDiv(initialClientWidth_, layoutDpi_, initialDpi_));
     const auto scale = [&](int value) { return MulDiv(value, layoutDpi_, initialDpi_); };
-    int footerTop = client.bottom;
+    LONG footerTop = client.bottom;
     for (const auto& item : layoutControls_) if (item.footer && ::IsWindowVisible(item.window))
-        footerTop = std::min(footerTop, client.bottom - scale(initialClientHeight_ - item.original.top));
-    const int viewportBottom = std::max(0, footerTop - scale(8));
+        footerTop = std::min<LONG>(footerTop, client.bottom - scale(initialClientHeight_ - item.original.top));
+    const LONG viewportBottom = std::max<LONG>(0, footerTop - scale(8));
     int visibleExtent = 0;
     for (const auto& item : layoutControls_) if (!item.footer && ::IsWindowVisible(item.window))
         visibleExtent = std::max(visibleExtent, scale(item.original.bottom));
@@ -145,7 +145,8 @@ void CAppSettingsDlg::Arrange() {
     // this from visible controls so hidden wizard sections and a DPI round-trip
     // cannot inflate the scroll range.
     contentExtent_ = visibleExtent;
-    scrollOffset_ = std::clamp(scrollOffset_, 0, std::max(0, contentExtent_ - viewportBottom));
+    const LONG maxScroll = std::max<LONG>(0, static_cast<LONG>(contentExtent_) - viewportBottom);
+    scrollOffset_ = static_cast<int>(std::clamp<LONG>(scrollOffset_, 0, maxScroll));
     for (const auto& item : layoutControls_) {
         if (!::IsWindow(item.window)) continue;
         const int left = item.footer && item.rightAnchored
@@ -169,11 +170,13 @@ void CAppSettingsDlg::Arrange() {
 void CAppSettingsDlg::ScrollTo(int offset) {
     CRect client;
     GetClientRect(&client);
-    int footerTop = client.bottom;
+    LONG footerTop = client.bottom;
     for (const auto& item : layoutControls_) if (item.footer && ::IsWindowVisible(item.window))
-        footerTop = std::min(footerTop, client.bottom - MulDiv(initialClientHeight_ - item.original.top, layoutDpi_, initialDpi_));
+        footerTop = std::min<LONG>(footerTop, client.bottom - MulDiv(initialClientHeight_ - item.original.top, layoutDpi_, initialDpi_));
     const int margin = MulDiv(8, layoutDpi_, initialDpi_);
-    scrollOffset_ = std::clamp(offset, 0, std::max(0, contentExtent_ - std::max(0, footerTop - margin)));
+    const LONG viewportBottom = std::max<LONG>(0, footerTop - margin);
+    const LONG maxScroll = std::max<LONG>(0, static_cast<LONG>(contentExtent_) - viewportBottom);
+    scrollOffset_ = static_cast<int>(std::clamp<LONG>(offset, 0, maxScroll));
     Arrange();
 }
 
@@ -243,9 +246,9 @@ LRESULT CAppSettingsDlg::OnRevealFocusedControl(WPARAM, LPARAM) {
     focus->GetWindowRect(&rect);
     ScreenToClient(&rect);
     GetClientRect(&client);
-    int footerTop = client.bottom;
+    LONG footerTop = client.bottom;
     for (const auto& item : layoutControls_) if (item.footer && ::IsWindowVisible(item.window))
-        footerTop = std::min(footerTop, client.bottom - MulDiv(initialClientHeight_ - item.original.top, layoutDpi_, initialDpi_));
+        footerTop = std::min<LONG>(footerTop, client.bottom - MulDiv(initialClientHeight_ - item.original.top, layoutDpi_, initialDpi_));
     if (rect.top < 0) ScrollTo(scrollOffset_ + rect.top);
     else if (rect.bottom > footerTop - 8) ScrollTo(scrollOffset_ + rect.bottom - footerTop + 8);
     return 0;
