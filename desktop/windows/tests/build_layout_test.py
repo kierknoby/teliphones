@@ -1624,7 +1624,10 @@ endfunction()
         self.assertIn("LONG CPairDlg::ScaleForDpi(LONG value) const", source)
         self.assertIn("const int minimumGap = MulDiv(8, initialDpi_, 96);", source)
         native = (ROOT / "tests/pair_dialog_tests.cpp").read_text()
-        for required in ("scrolled pairing controls retain order within the content viewport",
+        for required in ("scrolled pairing control geometry: id=",
+                 "visibleRect=(",
+                 "belowViewport=",
+                 "previousVisibleId=",
                  "Save and Cancel remain pinned to the resized client bottom",
                          "initial Save and Cancel remain visible in client coordinates",
                          "resized Save and Cancel remain visible in client coordinates",
@@ -1634,6 +1637,9 @@ endfunction()
                  "Cancel remains within the resized client bounds"):
             self.assertIn(required, native)
         self.assertIn("rect.bottom <= viewportBottom", native)
+        self.assertIn("rect.bottom <= 0", native)
+        self.assertIn("GetComboBoxInfo", native)
+        self.assertIn("visibleRect.top < previousVisibleBottom", native)
         self.assertIn("rect.right <= resizedClient.right", native)
         self.assertIn("rect.bottom <= resizedClient.bottom", native)
 

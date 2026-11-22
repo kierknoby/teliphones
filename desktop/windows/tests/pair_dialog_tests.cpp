@@ -8,6 +8,7 @@
 #include "../src/platform/Win.h"
 
 #include <cstdio>
+#include <limits>
 #include <map>
 #include <stdexcept>
 #include <string>
@@ -144,6 +145,17 @@ void RunPairDialogTests(CWnd* parent) {
         dialog.ScreenToClient(&rect);
         return rect;
     };
+    const auto visibleControlRect = [&](int id) {
+        CRect rect = clientRect(id);
+        if (id == IDC_PAIR_ACCESS) {
+            COMBOBOXINFO info{sizeof(info)};
+            check(::GetComboBoxInfo(dialog.GetDlgItem(id)->GetSafeHwnd(), &info) != FALSE,
+                  "query pairing access combo face rectangle");
+            rect = info.rcItem;
+            dialog.ScreenToClient(&rect);
+        }
+        return rect;
+    };
     const auto assertFooterVisible = [&](const char* stage, int expectedOkGap, int expectedCancelGap) {
         CRect currentClient;
         dialog.GetClientRect(&currentClient);
@@ -209,21 +221,57 @@ void RunPairDialogTests(CWnd* parent) {
           resizedCancel.bottom <= resizedClient.bottom,
           "Cancel remains within the resized client bounds");
     const int viewportBottom = resizedOk.top - 6;
-    previousTop = -1;
+    dialog.GetScrollInfo(SB_VERT, &scrollInfo);
+    previousTop = std::numeric_limits<LONG>::min();
+    LONG previousBottom = std::numeric_limits<LONG>::min();
+    LONG previousVisibleBottom = std::numeric_limits<LONG>::min();
+    int previousVisibleId = 0;
     for (int id : ordered) {
-        CRect rect;
-        dialog.GetDlgItem(id)->GetWindowRect(&rect);
-        dialog.ScreenToClient(&rect);
+        const CRect rect = clientRect(id);
+        const CRect visibleRect = visibleControlRect(id);
+        const bool visible = dialog.GetDlgItem(id)->IsWindowVisible() != FALSE;
+        const bool aboveViewport = rect.bottom <= 0;
+        const bool intersectsViewport = rect.bottom > 0 && rect.top < viewportBottom;
+        const bool belowViewport = rect.top >= viewportBottom;
+        const auto failGeometry = [&]() {
+            throw std::runtime_error("scrolled pairing control geometry: id=" + std::to_string(id) +
+                " rect=(" + std::to_string(rect.left) + "," + std::to_string(rect.top) + "," +
+                std::to_string(rect.right) + "," + std::to_string(rect.bottom) + ") viewport=(0,0," +
+                std::to_string(resizedClient.right) + "," + std::to_string(viewportBottom) +
+                ") client=(0,0," + std::to_string(resizedClient.right) + "," +
+                std::to_string(resizedClient.bottom) + ") scroll=" + std::to_string(scrollInfo.nPos) +
+                "/" + std::to_string(std::max(0, scrollInfo.nMax - static_cast<int>(scrollInfo.nPage) + 1)) +
+                " dpi=" + std::to_string(GetDpiForWindow(dialog.GetSafeHwnd())) +
+                " aboveViewport=" + (aboveViewport ? "true" : "false") +
+                " intersectsViewport=" + (intersectsViewport ? "true" : "false") +
+                " belowViewport=" + (belowViewport ? "true" : "false") +
+                " visibleRect=(" + std::to_string(visibleRect.left) + "," + std::to_string(visibleRect.top) + "," +
+                std::to_string(visibleRect.right) + "," + std::to_string(visibleRect.bottom) + ")" +
+                " visible=" + (visible ? "true" : "false") +
+                " previousTop=" + std::to_string(previousTop) +
+                " previousBottom=" + std::to_string(previousBottom) +
+                " previousVisibleId=" + std::to_string(previousVisibleId) +
+                " previousVisibleBottom=" + std::to_string(previousVisibleBottom));
+        };
         if (id == IDOK) {
-            check(rect.left >= 0 && rect.top >= 0 && rect.right <= resizedClient.right &&
-                  rect.bottom <= resizedClient.bottom && rect.top > previousTop,
-                  "Save remains ordered within the resized client bounds");
+            if (!(rect.left >= 0 && rect.top >= 0 && rect.right <= resizedClient.right &&
+                  rect.bottom <= resizedClient.bottom && rect.top > previousTop)) failGeometry();
         } else {
-            check(rect.left >= 0 && rect.right <= resizedClient.right && rect.bottom <= viewportBottom &&
-                  rect.top > previousTop,
-                  "scrolled pairing controls retain order within the content viewport");
+            // Controls fully above the viewport are expected at the bottom scroll position.
+            // Any visible portion must be within the content viewport, not under the pinned footer.
+            const bool validVerticalPlacement = aboveViewport ||
+                (intersectsViewport && rect.bottom <= viewportBottom && !belowViewport);
+            if (!(rect.left >= 0 && rect.right <= resizedClient.right && rect.top > previousTop &&
+                  rect.bottom > rect.top && validVerticalPlacement)) failGeometry();
+            if (visible && visibleRect.bottom > 0 && visibleRect.top < viewportBottom) {
+                if (previousVisibleBottom != std::numeric_limits<LONG>::min() &&
+                    visibleRect.top < previousVisibleBottom) failGeometry();
+                previousVisibleBottom = visibleRect.bottom;
+                previousVisibleId = id;
+            }
         }
         previousTop = rect.top;
+        previousBottom = rect.bottom;
     }
     check(resizedOk.left >= 0 && resizedOk.right <= resizedClient.right &&
           resizedCancel.left >= 0 && resizedCancel.right <= resizedClient.right,
