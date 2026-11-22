@@ -157,25 +157,35 @@ void RunPairDialogTests(CWnd* parent) {
             check(::GetComboBoxInfo(dialog.GetDlgItem(id)->GetSafeHwnd(), &info) != FALSE,
                   "query pairing access combo face rectangle");
             rect = info.rcItem;
-            dialog.ScreenToClient(&rect);
+            ::MapWindowPoints(dialog.GetDlgItem(id)->GetSafeHwnd(), dialog.GetSafeHwnd(),
+                        reinterpret_cast<POINT*>(&rect), 2);
         }
         return rect;
     };
     const auto visibleControlRect = [&](int id) {
         const CRect rect = controlFaceRect(id);
+        if (!dialog.GetDlgItem(id)->IsWindowVisible())
+            return CRect(rect.left, rect.top, rect.left, rect.top);
         HRGN region = ::CreateRectRgn(0, 0, 0, 0);
         check(region != nullptr, "allocate pairing control visibility region");
         const int regionType = ::GetWindowRgn(dialog.GetDlgItem(id)->GetSafeHwnd(), region);
+        if (regionType == ERROR) {
+            // No custom region means the complete native window shape is visible.
+            ::DeleteObject(region);
+            return rect;
+        }
         RECT bounds{};
-        const int boundsType = regionType == ERROR ? ERROR : ::GetRgnBox(region, &bounds);
+        const int boundsType = ::GetRgnBox(region, &bounds);
         ::DeleteObject(region);
-        check(regionType != ERROR && boundsType != ERROR,
+        check(boundsType != ERROR,
               "query native clipping region for pairing content control");
         if (boundsType == NULLREGION) return CRect(rect.left, rect.top, rect.left, rect.top);
         CRect clipped(clientRect(id).left + bounds.left, clientRect(id).top + bounds.top,
                       clientRect(id).left + bounds.right, clientRect(id).top + bounds.bottom);
         return rect & clipped;
     };
+    check(access->IsWindowVisible() && !visibleControlRect(IDC_PAIR_ACCESS).IsRectEmpty(),
+          "access selector remains visible in the initial pairing state");
     const auto assertFooterVisible = [&](const char* stage, int expectedOkGap, int expectedCancelGap) {
         CRect currentClient;
         dialog.GetClientRect(&currentClient);
@@ -229,9 +239,13 @@ void RunPairDialogTests(CWnd* parent) {
     check(dialog.GetScrollInfo(SB_VERT, &scrollInfo) != FALSE && scrollInfo.nMax > 0 &&
           scrollInfo.nMax - static_cast<int>(scrollInfo.nPage) > 0,
           "small pairing dialogue exposes a scrollable content range");
+        check(access->IsWindowVisible() && !visibleControlRect(IDC_PAIR_ACCESS).IsRectEmpty(),
+            "access selector remains visible after resizing at the top scroll position");
     dialog.SendMessage(WM_VSCROLL, SB_BOTTOM);
     dialog.GetScrollInfo(SB_VERT, &scrollInfo);
     check(scrollInfo.nPos > 0, "pairing content scrolls to reveal its bottom controls");
+        check(visibleControlRect(IDC_PAIR_ACCESS).IsRectEmpty(),
+            "access selector is clipped when scrolled above the viewport");
     const CRect resizedOk = clientRect(IDOK);
     const CRect resizedCancel = clientRect(IDCANCEL);
     check(resizedClient.bottom - resizedOk.bottom == okBottomGap &&
@@ -373,6 +387,8 @@ void RunPairDialogTests(CWnd* parent) {
     const int dpiCancelGap = MulDiv(cancelBottomGap, 144, initialDpi);
     assertFooterVisible("DPI-scaled Save and Cancel remain visible in client coordinates",
                         dpiOkGap, dpiCancelGap);
+        check(access->IsWindowVisible() && !visibleControlRect(IDC_PAIR_ACCESS).IsRectEmpty(),
+                    "access selector remains visible after a DPI layout change");
         check(clientRect(IDOK).Height() == MulDiv(initialOk.Height(), 144, initialDpi) &&
                     clientRect(IDCANCEL).Height() == MulDiv(initialCancel.Height(), 144, initialDpi),
           "Save and Cancel heights scale with the simulated DPI");
@@ -385,6 +401,8 @@ void RunPairDialogTests(CWnd* parent) {
                         SWP_NOZORDER | SWP_NOACTIVATE);
     assertFooterVisible("restored-DPI Save and Cancel remain visible in client coordinates",
                         initialOkGap, initialCancelGap);
+        check(access->IsWindowVisible() && !visibleControlRect(IDC_PAIR_ACCESS).IsRectEmpty(),
+                    "access selector remains visible after restoring the original DPI");
     check(dialog.GetNextDlgTabItem(dialog.GetDlgItem(IDC_PAIR_WORKSTATION))->GetDlgCtrlID() == IDC_PAIR_ACCESS,
           "Tab moves from workstation to access before generation");
     check(dialog.GetNextDlgTabItem(dialog.GetDlgItem(IDC_PAIR_ACCESS))->GetDlgCtrlID() == IDC_PAIR_GENERATE,
@@ -425,6 +443,8 @@ void RunPairDialogTests(CWnd* parent) {
                        reinterpret_cast<LPARAM>(access->GetSafeHwnd()));
     check(!enabled(IDC_PAIR_COPY) && !enabled(IDOK) && text(dialog, IDC_PAIR_REQUEST).empty() &&
           text(dialog, IDC_PAIR_RESPONSE).empty() && credentials.empty(), "access change invalidates request and removes credential");
+        check(access->IsWindowVisible() && !visibleControlRect(IDC_PAIR_ACCESS).IsRectEmpty(),
+                    "access selector remains visible when pairing options invalidate a request");
     dialog.OnGenerate();
     const auto sshRequest = request(dialog);
     check(sshRequest.at("schema").asString() == "teliphones-pair-request/3" &&
