@@ -1629,24 +1629,27 @@ endfunction()
         self.assertIn("LONG CPairDlg::ScaleForDpi(LONG value) const", source)
         self.assertIn("const int minimumGap = MulDiv(8, initialDpi_, 96);", source)
         native = (ROOT / "tests/pair_dialog_tests.cpp").read_text()
-        for required in ("scrolled pairing control geometry: id=",
-                 "visibleRect=(",
-                 "belowViewport=",
-                 "previousVisibleId=",
+        for required in ("pairing control geometry: id=",
+             'assertScrollGeometry("top", 0)',
+             'assertScrollGeometry("intermediate", partialScroll)',
+             'assertScrollGeometry("maximum", maxScroll)',
+                 '" expectedVisible=("',
+             "intermediate scroll position exercises clipped partial visibility",
+             "keyboard focus scrolls the off-screen hostname into the clipped viewport",
                  "Save and Cancel remain pinned to the resized client bottom",
-                         "initial Save and Cancel remain visible in client coordinates",
-                         "resized Save and Cancel remain visible in client coordinates",
-                         "scrolled Save and Cancel remain visible in client coordinates",
+                     "initial Save and Cancel remain visible in client coordinates",
+                     "resized Save and Cancel remain visible in client coordinates",
+                         'assertFooterVisible(stage, okBottomGap, cancelBottomGap)',
                  "DPI-scaled Save and Cancel remain visible in client coordinates",
                  "restored-DPI Save and Cancel remain visible in client coordinates",
                  "Cancel remains within the resized client bounds"):
             self.assertIn(required, native)
-        self.assertIn("visibleRect.bottom <= viewportBottom", native)
-        self.assertIn("rect.bottom <= 0", native)
+        self.assertIn("visibleRect.bottom > viewport.bottom", native)
+        self.assertIn("rect.bottom <= viewport.top", native)
+        self.assertIn("rect.top >= viewport.bottom", native)
         self.assertIn("GetComboBoxInfo", native)
-        self.assertIn("visibleRect.top < previousVisibleBottom", native)
+        self.assertIn("visibleRect.top < priorVisibleBottom", native)
         self.assertIn("rect.right <= resizedClient.right", native)
-        self.assertIn("rect.bottom <= resizedClient.bottom", native)
 
     def test_settings_dialog_has_responsive_scroll_and_pinned_actions(self):
         source = (ROOT / "src/app/AppSettingsDlg.cpp").read_text()

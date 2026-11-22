@@ -149,7 +149,7 @@ void RunPairDialogTests(CWnd* parent) {
         dialog.ScreenToClient(&rect);
         return rect;
     };
-    const auto visibleControlRect = [&](int id) {
+    const auto controlFaceRect = [&](int id) {
         CRect rect = clientRect(id);
         if (id == IDC_PAIR_ACCESS) {
             COMBOBOXINFO info{sizeof(info)};
@@ -158,6 +158,10 @@ void RunPairDialogTests(CWnd* parent) {
             rect = info.rcItem;
             dialog.ScreenToClient(&rect);
         }
+        return rect;
+    };
+    const auto visibleControlRect = [&](int id) {
+        const CRect rect = controlFaceRect(id);
         HRGN region = ::CreateRectRgn(0, 0, 0, 0);
         check(region != nullptr, "allocate pairing control visibility region");
         const int regionType = ::GetWindowRgn(dialog.GetDlgItem(id)->GetSafeHwnd(), region);
@@ -235,72 +239,121 @@ void RunPairDialogTests(CWnd* parent) {
     check(resizedCancel.left >= 0 && resizedCancel.top >= 0 && resizedCancel.right <= resizedClient.right &&
           resizedCancel.bottom <= resizedClient.bottom,
           "Cancel remains within the resized client bounds");
-    const int initialScroll = scrollInfo.nPos;
-    for (int id : {IDC_PAIR_RESPONSE, IDC_PAIR_TLS_HOSTNAME, IDOK, IDCANCEL}) {
-        CWnd* control = dialog.GetDlgItem(id);
-        if (!control->IsWindowVisible() || !control->IsWindowEnabled()) continue;
-        ::SetFocus(control->GetSafeHwnd());
-        dialog.SendMessage(WM_APP + 0x321);
-        const CRect focusedRect = clientRect(id);
-        check(focusedRect.top >= 0 && focusedRect.bottom <= resizedClient.bottom,
-              "focused pairing control is scrolled into view within the dialog client");
-    }
-    dialog.SendMessage(WM_VSCROLL, SB_THUMBPOSITION, initialScroll);
     const int viewportBottom = resizedOk.top - 6;
-    dialog.GetScrollInfo(SB_VERT, &scrollInfo);
-    previousTop = std::numeric_limits<LONG>::min();
-    LONG previousBottom = std::numeric_limits<LONG>::min();
-    LONG previousVisibleBottom = std::numeric_limits<LONG>::min();
-    int previousVisibleId = 0;
-    for (int id : ordered) {
-        const CRect rect = clientRect(id);
-        const CRect visibleRect = visibleControlRect(id);
-        const bool visible = dialog.GetDlgItem(id)->IsWindowVisible() != FALSE;
-        const bool aboveViewport = rect.bottom <= 0;
-        const bool intersectsViewport = rect.bottom > 0 && rect.top < viewportBottom;
-        const bool belowViewport = rect.top >= viewportBottom;
-        const auto failGeometry = [&]() {
-            throw std::runtime_error("scrolled pairing control geometry: id=" + std::to_string(id) +
-                " rect=(" + std::to_string(rect.left) + "," + std::to_string(rect.top) + "," +
-                std::to_string(rect.right) + "," + std::to_string(rect.bottom) + ") viewport=(0,0," +
-                std::to_string(resizedClient.right) + "," + std::to_string(viewportBottom) +
-                ") client=(0,0," + std::to_string(resizedClient.right) + "," +
-                std::to_string(resizedClient.bottom) + ") scroll=" + std::to_string(scrollInfo.nPos) +
-                "/" + std::to_string(std::max(0, scrollInfo.nMax - static_cast<int>(scrollInfo.nPage) + 1)) +
-                " dpi=" + std::to_string(GetDpiForWindow(dialog.GetSafeHwnd())) +
-                " aboveViewport=" + (aboveViewport ? "true" : "false") +
-                " intersectsViewport=" + (intersectsViewport ? "true" : "false") +
-                " belowViewport=" + (belowViewport ? "true" : "false") +
-                " visibleRect=(" + std::to_string(visibleRect.left) + "," + std::to_string(visibleRect.top) + "," +
-                std::to_string(visibleRect.right) + "," + std::to_string(visibleRect.bottom) + ")" +
-                " visible=" + (visible ? "true" : "false") +
-                " previousTop=" + std::to_string(previousTop) +
-                " previousBottom=" + std::to_string(previousBottom) +
-                " previousVisibleId=" + std::to_string(previousVisibleId) +
-                " previousVisibleBottom=" + std::to_string(previousVisibleBottom));
-        };
-        if (id == IDOK) {
-            if (!(rect.left >= 0 && rect.top >= 0 && rect.right <= resizedClient.right &&
-                  rect.bottom <= resizedClient.bottom && rect.top > previousTop)) failGeometry();
-        } else {
-            // Controls fully above the viewport are expected at the bottom scroll position.
-            // A partially visible native child may retain a larger outer rectangle, but its
-            // actual window region must be clipped to the content viewport and fixed footer.
-            const bool validVerticalPlacement = aboveViewport ||
-                (intersectsViewport && !belowViewport && visibleRect.top >= 0 &&
-                 visibleRect.bottom <= viewportBottom);
-            if (!(rect.left >= 0 && rect.right <= resizedClient.right && rect.top > previousTop &&
-                  rect.bottom > rect.top && validVerticalPlacement)) failGeometry();
-            if (visible && visibleRect.bottom > 0 && visibleRect.top < viewportBottom) {
-                if (previousVisibleBottom != std::numeric_limits<LONG>::min() &&
-                    visibleRect.top < previousVisibleBottom) failGeometry();
-                previousVisibleBottom = visibleRect.bottom;
-                previousVisibleId = id;
+    const auto setScrollPosition = [&](int position) {
+        // WM_VSCROLL carries the thumb position in HIWORD(wParam), not lParam.
+        dialog.SendMessage(WM_VSCROLL, MAKEWPARAM(SB_THUMBPOSITION, position));
+        dialog.GetScrollInfo(SB_VERT, &scrollInfo);
+        check(scrollInfo.nPos == position, "pairing dialog reaches requested scroll position");
+    };
+    const auto assertScrollGeometry = [&](const char* stage, int expectedPosition) {
+        setScrollPosition(expectedPosition);
+        dialog.GetClientRect(&resizedClient);
+        const CRect viewport(0, 0, resizedClient.right, viewportBottom);
+        LONG priorTop = std::numeric_limits<LONG>::min();
+        LONG priorVisibleBottom = std::numeric_limits<LONG>::min();
+        int aboveCount = 0, belowCount = 0, partialCount = 0, containedCount = 0;
+        for (int id : ordered) {
+            const CRect rect = clientRect(id);
+            if (id == IDOK) {
+                if (!(rect.left >= 0 && rect.top >= 0 && rect.right <= resizedClient.right &&
+                      rect.bottom <= resizedClient.bottom && rect.top > priorTop &&
+                      dialog.GetDlgItem(id)->IsWindowVisible()))
+                    throw std::runtime_error(std::string(stage) + " fixed Save button must remain visible");
+                priorTop = rect.top;
+                continue;
             }
+            const CRect face = controlFaceRect(id);
+            const CRect visibleRect = visibleControlRect(id);
+            const bool above = rect.bottom <= viewport.top;
+            const bool below = rect.top >= viewport.bottom;
+            const bool intersects = !above && !below;
+            const bool partial = intersects && (rect.top < viewport.top || rect.bottom > viewport.bottom);
+            const bool visible = dialog.GetDlgItem(id)->IsWindowVisible() != FALSE;
+            CRect expectedVisible = face & viewport;
+            const bool regionMatches = expectedVisible.IsRectEmpty()
+                ? visibleRect.IsRectEmpty() : visibleRect == expectedVisible;
+            const auto failGeometry = [&]() {
+                throw std::runtime_error(std::string(stage) + " pairing control geometry: id=" +
+                    std::to_string(id) + " rect=(" + std::to_string(rect.left) + "," +
+                    std::to_string(rect.top) + "," + std::to_string(rect.right) + "," +
+                    std::to_string(rect.bottom) + ") viewport=(0,0," +
+                    std::to_string(resizedClient.right) + "," + std::to_string(viewportBottom) +
+                    ") scroll=" + std::to_string(scrollInfo.nPos) + "/" +
+                    std::to_string(std::max(0, scrollInfo.nMax - static_cast<int>(scrollInfo.nPage) + 1)) +
+                    " dpi=" + std::to_string(GetDpiForWindow(dialog.GetSafeHwnd())) +
+                    " aboveViewport=" + (above ? "true" : "false") +
+                    " intersectsViewport=" + (intersects ? "true" : "false") +
+                    " belowViewport=" + (below ? "true" : "false") +
+                    " expectedVisible=(" + std::to_string(expectedVisible.left) + "," +
+                    std::to_string(expectedVisible.top) + "," + std::to_string(expectedVisible.right) + "," +
+                    std::to_string(expectedVisible.bottom) + ") visibleRect=(" +
+                    std::to_string(visibleRect.left) + "," + std::to_string(visibleRect.top) + "," +
+                    std::to_string(visibleRect.right) + "," + std::to_string(visibleRect.bottom) +
+                    ") visible=" + (visible ? "true" : "false"));
+            };
+            if (!(rect.left >= 0 && rect.right <= resizedClient.right && rect.top > priorTop &&
+                rect.bottom > rect.top && regionMatches)) failGeometry();
+            if (above) {
+                ++aboveCount;
+                if (!visibleRect.IsRectEmpty()) failGeometry();
+            } else if (below) {
+                ++belowCount;
+                if (!visibleRect.IsRectEmpty()) failGeometry();
+            } else if (partial) {
+                ++partialCount;
+                if (visibleRect.top < viewport.top || visibleRect.bottom > viewport.bottom) failGeometry();
+            } else {
+                ++containedCount;
+                if (visible && visibleRect.IsRectEmpty()) failGeometry();
+            }
+            if (visible && !visibleRect.IsRectEmpty()) {
+                if (visibleRect.top < priorVisibleBottom) failGeometry();
+                priorVisibleBottom = visibleRect.bottom;
+            }
+            priorTop = rect.top;
         }
-        previousTop = rect.top;
-        previousBottom = rect.bottom;
-    }
+          if (expectedPosition == 0) {
+            check(belowCount > 0 && containedCount > 0,
+                "top scroll position includes below-viewport and visible controls");
+          } else if (expectedPosition >= scrollInfo.nMax - static_cast<int>(scrollInfo.nPage) + 1) {
+            check(aboveCount > 0 && containedCount > 0,
+                "maximum scroll position includes above-viewport and visible controls");
+          } else {
+            check(partialCount > 0, "intermediate scroll position exercises clipped partial visibility");
+          }
+        assertFooterVisible(stage, okBottomGap, cancelBottomGap);
+    };
+
+    SCROLLINFO currentScroll{sizeof(currentScroll), SIF_RANGE | SIF_PAGE | SIF_POS};
+    dialog.GetScrollInfo(SB_VERT, &currentScroll);
+    const int maxScroll = std::max(0, currentScroll.nMax - static_cast<int>(currentScroll.nPage) + 1);
+    setScrollPosition(0);
+    const CRect topHostname = clientRect(IDC_PAIR_TLS_HOSTNAME);
+    const int partialScroll = std::clamp(topHostname.top + topHostname.Height() / 2 - viewportBottom,
+                                         1, std::max(1, maxScroll - 1));
+    assertScrollGeometry("top", 0);
+        check(visibleControlRect(IDC_PAIR_TLS_HOSTNAME).IsRectEmpty(),
+            "hostname below the top viewport has no visible region");
+    assertScrollGeometry("intermediate", partialScroll);
+    assertScrollGeometry("maximum", maxScroll);
+        check(!visibleControlRect(IDC_PAIR_TLS_HOSTNAME).IsRectEmpty() &&
+            dialog.GetDlgItem(IDC_PAIR_TLS_HOSTNAME)->IsWindowVisible(),
+            "hostname clipped at the top becomes visible when scrolled into view");
+    check(!dialog.GetDlgItem(IDC_PAIR_SSHUSER)->IsWindowVisible(),
+          "unapproved SSH account remains hidden independently of scrolling");
+
+    setScrollPosition(0);
+    CWnd* hostname = dialog.GetDlgItem(IDC_PAIR_TLS_HOSTNAME);
+    ::SetFocus(hostname->GetSafeHwnd());
+    dialog.SendMessage(WM_APP + 0x321);
+    const CRect focusedHostname = clientRect(IDC_PAIR_TLS_HOSTNAME);
+    const CRect focusedHostnameVisible = visibleControlRect(IDC_PAIR_TLS_HOSTNAME);
+    dialog.GetScrollInfo(SB_VERT, &scrollInfo);
+    check(scrollInfo.nPos > 0 && focusedHostname.top >= 0 && focusedHostname.bottom <= viewportBottom &&
+          !focusedHostnameVisible.IsRectEmpty() && hostname->IsWindowVisible() &&
+          ::GetFocus() == hostname->GetSafeHwnd(),
+          "keyboard focus scrolls the off-screen hostname into the clipped viewport");
     check(resizedOk.left >= 0 && resizedOk.right <= resizedClient.right &&
           resizedCancel.left >= 0 && resizedCancel.right <= resizedClient.right,
           "pinned pairing buttons remain within the resized client bounds");
