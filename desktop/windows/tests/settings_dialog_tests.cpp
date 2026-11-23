@@ -188,7 +188,8 @@ void checkSettingsFooterWithinClient(CAppSettingsDlg& dialog, const char* stage)
     CRect client;
     dialog.GetClientRect(&client);
     const int minimumGap = MulDiv(8, GetDpiForWindow(dialog.GetSafeHwnd()), 96);
-    std::vector<CRect> visibleFooterRects;
+    struct FooterRect { int id; CRect rect; };
+    std::vector<FooterRect> visibleFooterRects;
     for (int id : {IDC_APPS_SKIP, IDC_APPS_ABOUT, IDOK, IDCANCEL}) {
         CWnd* control = dialog.GetDlgItem(id);
         if (!control || !control->IsWindowVisible()) continue;
@@ -200,13 +201,23 @@ void checkSettingsFooterWithinClient(CAppSettingsDlg& dialog, const char* stage)
                 " rect=" + formatSettingsRect(rect) + " client=" + formatSettingsRect(client) +
                 " requiredBottomGap=" + std::to_string(minimumGap));
         }
-        visibleFooterRects.push_back(rect);
+        visibleFooterRects.push_back({id, rect});
     }
     std::sort(visibleFooterRects.begin(), visibleFooterRects.end(),
-              [](const CRect& left, const CRect& right) { return left.left < right.left; });
+              [](const FooterRect& left, const FooterRect& right) { return left.rect.left < right.rect.left; });
     for (std::size_t i = 1; i < visibleFooterRects.size(); ++i)
-        checkSettings(visibleFooterRects[i].left - visibleFooterRects[i - 1].right >= minimumGap,
-                      "visible Settings footer buttons retain DPI-scaled horizontal spacing");
+        if (const LONG gap = visibleFooterRects[i].rect.left - visibleFooterRects[i - 1].rect.right; gap < 0) {
+            CRect client;
+            dialog.GetClientRect(&client);
+            throw std::runtime_error(std::string("Settings footer buttons overlap") +
+                ": stage=" + stage + " pair=" + settingsControlName(visibleFooterRects[i - 1].id) + "/" +
+                settingsControlName(visibleFooterRects[i].id) + " actualGap=" + std::to_string(gap) +
+                " requiredGap=0 leftRect=" + formatSettingsRect(visibleFooterRects[i - 1].rect) +
+                " rightRect=" + formatSettingsRect(visibleFooterRects[i].rect) +
+                " client=" + formatSettingsRect(client) + " clientWidth=" + std::to_string(client.Width()) +
+                " clientHeight=" + std::to_string(client.Height()) +
+                " dpi=" + std::to_string(GetDpiForWindow(dialog.GetSafeHwnd())));
+        }
 }
 
 }  // namespace
