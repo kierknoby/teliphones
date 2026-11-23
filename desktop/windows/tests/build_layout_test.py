@@ -1640,6 +1640,17 @@ endfunction()
         self.assertNotRegex(native, r"\breturn\s*\{\s*\}\s*;")
         self.assertIn("std::max<LONG>(0L, scrollInfo.nMax", native)
         self.assertIn("std::max<LONG>(\n        0L, currentScroll.nMax", native)
+        for property_check in (
+            "tab order after enabled Response must reach HTTPS hostname",
+            "initial pairing content must start at scroll position 0",
+            "initial HTTPS hostname region does not match viewport intersection",
+            "initial HTTPS hostname effective visibility mismatch",
+            "intermediate scroll must expose the expected hostname portion",
+            "focused hostname is not fully visible after reveal"):
+            self.assertIn(property_check, native)
+        self.assertIn("tab sequence mismatch (disabled controls omitted)", native)
+        self.assertIn("tab sequence mismatch after request generation", native)
+        self.assertNotIn("rect.bottom <= client.bottom", native)
         for required in ("pairing control geometry: id=",
                   "Save starts visibly disabled until a valid pairing response is entered",
                  "expected visible-disabled Save and visible-interactive Cancel",
@@ -1652,7 +1663,7 @@ endfunction()
              'assertScrollGeometry("maximum", maxScroll)',
                  '") expectedVisible=("',
              "intermediate scroll position exercises clipped partial visibility",
-             "keyboard focus scrolls the off-screen hostname into the clipped viewport",
+             "keyboard focus reveal did not scroll to the off-screen hostname",
                  "Save and Cancel remain pinned to the resized client bottom",
                      "initial Save and Cancel remain visible in client coordinates",
                      "resized Save and Cancel remain visible in client coordinates",

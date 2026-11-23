@@ -9,13 +9,16 @@
 
 #include <algorithm>
 #include <cstddef>
-#include <cstdint>
 #include <cstdio>
+#include <cstdint>
+#include <iterator>
 #include <limits>
 #include <map>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace {
 const std::string publicKey = std::string(42, 'A') + "E=";
@@ -163,6 +166,9 @@ void RunPairDialogTests(CWnd* parent) {
             dialog.ScreenToClient(&rect);
         }
         return rect;
+    };
+    const auto sameVisibleRect = [](const CRect& actual, const CRect& expected) {
+        return (actual.IsRectEmpty() && expected.IsRectEmpty()) || actual == expected;
     };
     const auto regionControlRect = [&](int id) {
         const CRect rect = controlFaceRect(id);
@@ -419,16 +425,69 @@ void RunPairDialogTests(CWnd* parent) {
     for (int id : ordered) {
         const CRect rect = clientRect(id);
         if (!(rect.left >= client.left && rect.top >= client.top && rect.top > previousTop &&
-              rect.right <= client.right && rect.bottom <= client.bottom)) {
+              rect.right <= client.right && rect.bottom > rect.top)) {
             fail("initial content order/bounds failure: previousTop=" + std::to_string(previousTop) +
                  " " + windowDiagnostics(id) + " dialogClient=(0,0," +
                  std::to_string(client.right) + "," + std::to_string(client.bottom) + ")");
         }
         previousTop = rect.top;
     }
-    check(clientRect(IDC_PAIR_TLS_HOSTNAME).top > previousTop &&
-          clientRect(IDC_PAIR_TLS_HOSTNAME).bottom <= client.bottom,
-          "HTTPS hostname follows the content tab order and remains within initial client bounds");
+    const CRect initialHostname = clientRect(IDC_PAIR_TLS_HOSTNAME);
+    if (initialHostname.left < client.left || initialHostname.right > client.right ||
+        initialHostname.top < 0 || initialHostname.bottom <= initialHostname.top ||
+        initialHostname.top <= previousTop) {
+        fail("initial HTTPS hostname geometry failed: rect=(" +
+             std::to_string(initialHostname.left) + "," + std::to_string(initialHostname.top) + "," +
+             std::to_string(initialHostname.right) + "," + std::to_string(initialHostname.bottom) +
+             ") previousContentTop=" + std::to_string(previousTop) + " client=(0,0," +
+             std::to_string(client.right) + "," + std::to_string(client.bottom) + ") " +
+             windowDiagnostics(IDC_PAIR_TLS_HOSTNAME));
+    }
+    SCROLLINFO initialScroll{sizeof(initialScroll), SIF_POS};
+    if (!dialog.GetScrollInfo(SB_VERT, &initialScroll) || initialScroll.nPos != 0) {
+        fail("initial pairing content must start at scroll position 0: actual=" +
+             std::to_string(initialScroll.nPos) + " " + windowDiagnostics(IDC_PAIR_TLS_HOSTNAME));
+    }
+    const CRect initialHostnameFace = controlFaceRect(IDC_PAIR_TLS_HOSTNAME);
+    const CRect initialHostnameClip = initialHostnameFace & initialViewport;
+    const CRect initialHostnameRegion = regionControlRect(IDC_PAIR_TLS_HOSTNAME);
+    const CRect initialHostnameVisible = visibleControlRect(IDC_PAIR_TLS_HOSTNAME);
+    const bool initialHostnameVisibleState =
+        dialog.GetDlgItem(IDC_PAIR_TLS_HOSTNAME)->IsWindowVisible() != FALSE;
+    const CRect expectedInitialHostnameVisible = initialHostnameVisibleState ? initialHostnameClip :
+        CRect(initialHostnameFace.left, initialHostnameFace.top,
+              initialHostnameFace.left, initialHostnameFace.top);
+    if (!sameVisibleRect(initialHostnameRegion, initialHostnameClip)) {
+        fail("initial HTTPS hostname region does not match viewport intersection: face=(" +
+             std::to_string(initialHostnameFace.left) + "," + std::to_string(initialHostnameFace.top) + "," +
+             std::to_string(initialHostnameFace.right) + "," + std::to_string(initialHostnameFace.bottom) +
+             ") viewport=(0,0," + std::to_string(initialViewport.right) + "," +
+             std::to_string(initialViewport.bottom) + ") expectedClip=(" +
+             std::to_string(initialHostnameClip.left) + "," + std::to_string(initialHostnameClip.top) + "," +
+             std::to_string(initialHostnameClip.right) + "," + std::to_string(initialHostnameClip.bottom) +
+             ") actualRegion=(" + std::to_string(initialHostnameRegion.left) + "," +
+             std::to_string(initialHostnameRegion.top) + "," + std::to_string(initialHostnameRegion.right) +
+             "," + std::to_string(initialHostnameRegion.bottom) + ") actualVisible=(" +
+             std::to_string(initialHostnameVisible.left) + "," + std::to_string(initialHostnameVisible.top) +
+             "," + std::to_string(initialHostnameVisible.right) + "," +
+             std::to_string(initialHostnameVisible.bottom) + ") isWindowVisible=" +
+             (initialHostnameVisibleState ? "true" : "false") + " " +
+             windowDiagnostics(IDC_PAIR_TLS_HOSTNAME));
+    }
+    if (!sameVisibleRect(initialHostnameVisible, expectedInitialHostnameVisible)) {
+        fail("initial HTTPS hostname effective visibility mismatch: face=(" +
+             std::to_string(initialHostnameFace.left) + "," + std::to_string(initialHostnameFace.top) + "," +
+             std::to_string(initialHostnameFace.right) + "," + std::to_string(initialHostnameFace.bottom) +
+             ") expectedVisible=(" + std::to_string(expectedInitialHostnameVisible.left) + "," +
+             std::to_string(expectedInitialHostnameVisible.top) + "," +
+             std::to_string(expectedInitialHostnameVisible.right) + "," +
+             std::to_string(expectedInitialHostnameVisible.bottom) + ") actualVisible=(" +
+             std::to_string(initialHostnameVisible.left) + "," +
+             std::to_string(initialHostnameVisible.top) + "," +
+             std::to_string(initialHostnameVisible.right) + "," +
+             std::to_string(initialHostnameVisible.bottom) + ") " +
+             windowDiagnostics(IDC_PAIR_TLS_HOSTNAME));
+    }
     CRect originalWindow;
     dialog.GetWindowRect(&originalWindow);
     const CRect originalOk = clientRect(IDOK);
@@ -529,7 +588,8 @@ void RunPairDialogTests(CWnd* parent) {
             const CRect expectedClip = face & viewport;
             const CRect expectedVisible = visible ? expectedClip :
                 CRect(face.left, face.top, face.left, face.top);
-            const bool regionMatches = clippedFace == expectedClip && visibleRect == expectedVisible;
+            const bool regionMatches = sameVisibleRect(clippedFace, expectedClip) &&
+                sameVisibleRect(visibleRect, expectedVisible);
             const auto failGeometry = [&]() {
                 throw std::runtime_error(std::string(stage) + " pairing control geometry: id=" +
                     std::to_string(id) + " rect=(" + std::to_string(rect.left) + "," +
@@ -603,12 +663,46 @@ void RunPairDialogTests(CWnd* parent) {
         topHostname.top + topHostname.Height() / 2 - viewportBottom,
         1L, std::max<LONG>(1L, static_cast<LONG>(maxScroll) - 1L)));
     assertScrollGeometry("top", 0);
-        check(visibleControlRect(IDC_PAIR_TLS_HOSTNAME).IsRectEmpty(),
-                    "hostname below the top viewport has no visible region");
+    if (topHostname.top >= viewportBottom && !visibleControlRect(IDC_PAIR_TLS_HOSTNAME).IsRectEmpty()) {
+        fail("hostname below the top viewport has visible pixels at scroll position 0: rect=(" +
+             std::to_string(topHostname.left) + "," + std::to_string(topHostname.top) + "," +
+             std::to_string(topHostname.right) + "," + std::to_string(topHostname.bottom) +
+             ") viewportBottom=" + std::to_string(viewportBottom) + " " +
+             windowDiagnostics(IDC_PAIR_TLS_HOSTNAME));
+    }
     assertScrollGeometry("intermediate", partialScroll);
+    const CRect intermediateHostname = clientRect(IDC_PAIR_TLS_HOSTNAME);
+    const CRect intermediateHostnameFace = controlFaceRect(IDC_PAIR_TLS_HOSTNAME);
+    const CRect intermediateHostnameExpected = intermediateHostnameFace &
+        CRect(0, 0, resizedClient.right, viewportBottom);
+    const CRect intermediateHostnameActual = visibleControlRect(IDC_PAIR_TLS_HOSTNAME);
+    if (intermediateHostname.top >= viewportBottom || intermediateHostnameExpected.IsRectEmpty() ||
+        !sameVisibleRect(intermediateHostnameActual, intermediateHostnameExpected)) {
+        fail("intermediate scroll must expose the expected hostname portion: rect=(" +
+             std::to_string(intermediateHostname.left) + "," + std::to_string(intermediateHostname.top) + "," +
+             std::to_string(intermediateHostname.right) + "," + std::to_string(intermediateHostname.bottom) +
+             ") expectedVisible=(" + std::to_string(intermediateHostnameExpected.left) + "," +
+             std::to_string(intermediateHostnameExpected.top) + "," +
+             std::to_string(intermediateHostnameExpected.right) + "," +
+             std::to_string(intermediateHostnameExpected.bottom) + ") actualVisible=(" +
+             std::to_string(intermediateHostnameActual.left) + "," +
+             std::to_string(intermediateHostnameActual.top) + "," +
+             std::to_string(intermediateHostnameActual.right) + "," +
+             std::to_string(intermediateHostnameActual.bottom) + ") " +
+             windowDiagnostics(IDC_PAIR_TLS_HOSTNAME));
+    }
     assertScrollGeometry("maximum", maxScroll);
     checkControlVisible(IDC_PAIR_TLS_HOSTNAME, "maximum scroll position",
                         CRect(0, 0, resizedClient.right, viewportBottom));
+    const CRect hostnameAtMaximum = clientRect(IDC_PAIR_TLS_HOSTNAME);
+    if (hostnameAtMaximum.top < 0 || hostnameAtMaximum.bottom > viewportBottom ||
+        visibleControlRect(IDC_PAIR_TLS_HOSTNAME) != controlFaceRect(IDC_PAIR_TLS_HOSTNAME)) {
+        fail("hostname geometry/clipping after maximum scroll failed: rect=(" +
+             std::to_string(hostnameAtMaximum.left) + "," + std::to_string(hostnameAtMaximum.top) + "," +
+             std::to_string(hostnameAtMaximum.right) + "," + std::to_string(hostnameAtMaximum.bottom) +
+             ") viewportBottom=" + std::to_string(viewportBottom) + " " +
+             windowDiagnostics(IDC_PAIR_TLS_HOSTNAME));
+    }
     check(!dialog.GetDlgItem(IDC_PAIR_SSHUSER)->IsWindowVisible(),
           "unapproved SSH account remains hidden independently of scrolling");
 
@@ -619,11 +713,27 @@ void RunPairDialogTests(CWnd* parent) {
     const CRect focusedHostname = clientRect(IDC_PAIR_TLS_HOSTNAME);
     const CRect focusedHostnameVisible = visibleControlRect(IDC_PAIR_TLS_HOSTNAME);
     dialog.GetScrollInfo(SB_VERT, &scrollInfo);
-    check(scrollInfo.nPos > 0 && focusedHostname.top >= 0 && focusedHostname.bottom <= viewportBottom &&
-            !focusedHostnameVisible.IsRectEmpty() && hostname->IsWindowVisible() &&
-            focusedHostnameVisible == controlFaceRect(IDC_PAIR_TLS_HOSTNAME) &&
-          ::GetFocus() == hostname->GetSafeHwnd(),
-          "keyboard focus scrolls the off-screen hostname into the clipped viewport");
+    if (scrollInfo.nPos <= 0)
+        fail("keyboard focus reveal did not scroll to the off-screen hostname: scroll=" +
+             std::to_string(scrollInfo.nPos) + " " + windowDiagnostics(IDC_PAIR_TLS_HOSTNAME));
+    if (focusedHostname.top < 0 || focusedHostname.bottom > viewportBottom)
+        fail("focused hostname geometry is outside content viewport: rect=(" +
+             std::to_string(focusedHostname.left) + "," + std::to_string(focusedHostname.top) + "," +
+             std::to_string(focusedHostname.right) + "," + std::to_string(focusedHostname.bottom) +
+             ") viewportBottom=" + std::to_string(viewportBottom) + " " +
+             windowDiagnostics(IDC_PAIR_TLS_HOSTNAME));
+    if (!hostname->IsWindowVisible() || focusedHostnameVisible.IsRectEmpty() ||
+        !sameVisibleRect(focusedHostnameVisible, controlFaceRect(IDC_PAIR_TLS_HOSTNAME)))
+        fail("focused hostname is not fully visible after reveal: visibleFace=(" +
+             std::to_string(focusedHostnameVisible.left) + "," +
+             std::to_string(focusedHostnameVisible.top) + "," +
+             std::to_string(focusedHostnameVisible.right) + "," +
+             std::to_string(focusedHostnameVisible.bottom) + ") " +
+             windowDiagnostics(IDC_PAIR_TLS_HOSTNAME));
+    if (::GetFocus() != hostname->GetSafeHwnd())
+        fail("keyboard focus was not retained by HTTPS hostname: focusHwnd=" +
+             std::to_string(reinterpret_cast<uintptr_t>(::GetFocus())) + " " +
+             windowDiagnostics(IDC_PAIR_TLS_HOSTNAME));
         assertFooterVisible("keyboard focus scrolling preserves Save and Cancel", okBottomGap, cancelBottomGap);
     check(resizedOk.left >= 0 && resizedOk.right <= resizedClient.right &&
           resizedCancel.left >= 0 && resizedCancel.right <= resizedClient.right,
@@ -660,13 +770,68 @@ void RunPairDialogTests(CWnd* parent) {
     CRect restoredClient;
     dialog.GetClientRect(&restoredClient);
     checkControlVisible(IDC_PAIR_ACCESS, "restored DPI", CRect(0, 0, restoredClient.right, clientRect(IDOK).top - 6));
-    check(dialog.GetNextDlgTabItem(dialog.GetDlgItem(IDC_PAIR_WORKSTATION))->GetDlgCtrlID() == IDC_PAIR_ACCESS,
-          "Tab moves from workstation to access before generation");
-    check(dialog.GetNextDlgTabItem(dialog.GetDlgItem(IDC_PAIR_ACCESS))->GetDlgCtrlID() == IDC_PAIR_GENERATE,
-          "Tab moves from access to Generate");
+    const auto tabSequenceFrom = [&](int startId) {
+        std::vector<int> sequence;
+        CWnd* start = dialog.GetDlgItem(startId);
+        CWnd* current = start;
+        std::set<int> visited;
+        while (current) {
+            const int id = current->GetDlgCtrlID();
+            if (!visited.insert(id).second) break;
+            sequence.push_back(id);
+            current = dialog.GetNextDlgTabItem(current);
+            if (current == start) break;
+        }
+        return sequence;
+    };
+    const auto nextTabId = [&](int fromId) {
+        CWnd* current = dialog.GetDlgItem(fromId);
+        CWnd* next = dialog.GetNextDlgTabItem(current);
+        return next ? next->GetDlgCtrlID() : 0;
+    };
+    if (nextTabId(IDC_PAIR_WORKSTATION) != IDC_PAIR_ACCESS)
+        fail("tab order after Workstation must reach Access: nextId=" +
+             std::to_string(nextTabId(IDC_PAIR_WORKSTATION)) + " " +
+             windowDiagnostics(IDC_PAIR_WORKSTATION) + " " + windowDiagnostics(IDC_PAIR_ACCESS));
+    if (nextTabId(IDC_PAIR_ACCESS) != IDC_PAIR_GENERATE)
+        fail("tab order after Access must reach Generate: nextId=" +
+             std::to_string(nextTabId(IDC_PAIR_ACCESS)) + " " +
+             windowDiagnostics(IDC_PAIR_ACCESS) + " " + windowDiagnostics(IDC_PAIR_GENERATE));
+    if (nextTabId(IDC_PAIR_TLS_HOSTNAME) != IDCANCEL)
+        fail("with disabled Save, tab order after HTTPS hostname must reach Cancel: nextId=" +
+             std::to_string(nextTabId(IDC_PAIR_TLS_HOSTNAME)) + " " +
+             windowDiagnostics(IDC_PAIR_TLS_HOSTNAME) + " " + windowDiagnostics(IDCANCEL));
+    const std::vector<int> expectedTabSequence = {
+        IDC_PAIR_WORKSTATION, IDC_PAIR_ACCESS, IDC_PAIR_GENERATE, IDC_PAIR_REQUEST,
+        IDC_PAIR_TLS_HOSTNAME, IDCANCEL};
+    const std::vector<int> actualTabSequence = tabSequenceFrom(IDC_PAIR_WORKSTATION);
+    if (actualTabSequence != expectedTabSequence) {
+        std::ostringstream detail;
+        detail << "tab sequence mismatch (disabled controls omitted): expected=";
+        for (int id : expectedTabSequence) detail << id << ',';
+        detail << " actual=";
+        for (int id : actualTabSequence) detail << id << ',';
+        fail(detail.str());
+    }
     dialog.SetDlgItemText(IDC_PAIR_WORKSTATION, L"ADMIN-PC");
     dialog.OnGenerate();
     check(enabled(IDC_PAIR_COPY) && enabled(IDC_PAIR_RESPONSE) && !enabled(IDOK), "generated request enables copy not save");
+    const std::vector<int> expectedGeneratedTabSequence = {
+        IDC_PAIR_WORKSTATION, IDC_PAIR_ACCESS, IDC_PAIR_GENERATE, IDC_PAIR_REQUEST,
+        IDC_PAIR_COPY, IDC_PAIR_RESPONSE, IDC_PAIR_TLS_HOSTNAME, IDCANCEL};
+    const std::vector<int> generatedTabSequence = tabSequenceFrom(IDC_PAIR_WORKSTATION);
+    if (generatedTabSequence != expectedGeneratedTabSequence) {
+        std::ostringstream detail;
+        detail << "tab sequence mismatch after request generation (disabled Save omitted): expected=";
+        for (int id : expectedGeneratedTabSequence) detail << id << ',';
+        detail << " actual=";
+        for (int id : generatedTabSequence) detail << id << ',';
+        fail(detail.str());
+    }
+    if (nextTabId(IDC_PAIR_RESPONSE) != IDC_PAIR_TLS_HOSTNAME)
+        fail("tab order after enabled Response must reach HTTPS hostname: nextId=" +
+             std::to_string(nextTabId(IDC_PAIR_RESPONSE)) + " " +
+             windowDiagnostics(IDC_PAIR_RESPONSE) + " " + windowDiagnostics(IDC_PAIR_TLS_HOSTNAME));
     const auto first = request(dialog);
     check(first.at("schema").asString() == "teliphones-pair-request/3" && sshGenerated == 0, "web request uses v3 and needs no SSH key");
     const auto approvedWeb = response(first, false);
