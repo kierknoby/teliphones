@@ -1636,6 +1636,12 @@ endfunction()
         self.assertIn("const int minimumGap = MulDiv(8, initialDpi_, 96);", source)
         native = (ROOT / "tests/pair_dialog_tests.cpp").read_text()
         for required in ("pairing control geometry: id=",
+                  "Save starts visibly disabled until a valid pairing response is entered",
+                 "expected visible-disabled Save and visible-interactive Cancel",
+                  "valid web pairing response enables Save",
+                  "valid SSH pairing response enables Save",
+                  "geometric overlap with footer id=",
+                 "input hit-test failed for id=",
              'assertScrollGeometry("top", 0)',
              'assertScrollGeometry("intermediate", partialScroll)',
              'assertScrollGeometry("maximum", maxScroll)',

@@ -8,6 +8,7 @@
 #include "../src/platform/Win.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <cstdio>
 #include <limits>
 #include <map>
@@ -232,38 +233,94 @@ void RunPairDialogTests(CWnd* parent) {
             if (current == ancestor) return true;
         return false;
     };
-    const auto isUnobscured = [&](int id) {
+    const auto hitTestSummary = [&](int id) {
         HWND hwnd = dialog.GetDlgItem(id)->GetSafeHwnd();
-        if (!::IsWindowVisible(hwnd) || !::IsWindowVisible(dialog.GetSafeHwnd())) return false;
         CRect bounds;
         dialog.GetDlgItem(id)->GetWindowRect(&bounds);
         const CPoint points[] = {
             CPoint(bounds.left + bounds.Width() / 2, bounds.top + bounds.Height() / 2),
             CPoint(bounds.left + 2, bounds.top + 2), CPoint(bounds.right - 3, bounds.top + 2),
             CPoint(bounds.left + 2, bounds.bottom - 3), CPoint(bounds.right - 3, bounds.bottom - 3)};
-        for (const CPoint& point : points) {
+        const auto pointText = [](const CPoint& point) {
+            return std::to_string(point.x) + "," + std::to_string(point.y);
+        };
+        std::ostringstream out;
+        for (size_t index = 0; index < std::size(points); ++index) {
+            const CPoint& point = points[index];
             HWND target = ::WindowFromPoint(point);
-            if (!target || !isDescendant(target, hwnd)) return false;
+            wchar_t className[128]{};
+            wchar_t targetText[256]{};
+            if (target) {
+                ::GetClassNameW(target, className, static_cast<int>(std::size(className)));
+                ::GetWindowTextW(target, targetText, static_cast<int>(std::size(targetText)));
+            }
+            if (index) out << "; ";
+            out << "[" << index << "]@(" << pointText(point) << ")->"
+                << (target ? tlp::win::Narrow(className) : "NULL") << " hwnd="
+                << reinterpret_cast<uintptr_t>(target) << " text='"
+                << (target ? tlp::win::Narrow(targetText) : "") << "' visible="
+                << (target && ::IsWindowVisible(target)) << " enabled="
+                << (target && ::IsWindowEnabled(target)) << " belongsToControl="
+                << (target && isDescendant(target, hwnd));
         }
-        return true;
+        return out.str();
     };
-    const auto isVisibleFaceHitTestable = [&](int id) {
-        const CRect face = visibleControlRect(id);
-        if (face.IsRectEmpty()) return false;
-        CRect screenFace = face;
-        ::MapWindowPoints(dialog.GetSafeHwnd(), nullptr, reinterpret_cast<POINT*>(&screenFace), 2);
+    const auto inputHitTestFailure = [&](int id) {
         const HWND hwnd = dialog.GetDlgItem(id)->GetSafeHwnd();
+        if (!::IsWindowVisible(hwnd) || !::IsWindowVisible(dialog.GetSafeHwnd()))
+            return std::string("control or dialog is not visible");
+        // WindowFromPoint skips disabled windows. Do not use its target to infer
+        // whether a disabled control is visually covered.
+        if (!::IsWindowEnabled(hwnd)) return std::string{};
+        CRect bounds;
+        dialog.GetDlgItem(id)->GetWindowRect(&bounds);
         const CPoint points[] = {
-            CPoint(screenFace.left + screenFace.Width() / 2, screenFace.top + screenFace.Height() / 2),
-            CPoint(screenFace.left + 1, screenFace.top + 1),
-            CPoint(screenFace.right - 2, screenFace.top + 1),
-            CPoint(screenFace.left + 1, screenFace.bottom - 2),
-            CPoint(screenFace.right - 2, screenFace.bottom - 2)};
-        for (const CPoint& point : points) {
+            CPoint(bounds.left + bounds.Width() / 2, bounds.top + bounds.Height() / 2),
+            CPoint(bounds.left + 2, bounds.top + 2), CPoint(bounds.right - 3, bounds.top + 2),
+            CPoint(bounds.left + 2, bounds.bottom - 3), CPoint(bounds.right - 3, bounds.bottom - 3)};
+        for (size_t index = 0; index < std::size(points); ++index) {
+            const CPoint& point = points[index];
             const HWND target = ::WindowFromPoint(point);
-            if (!target || !isDescendant(target, hwnd)) return false;
+            if (!target || !isDescendant(target, hwnd)) {
+                return std::string("point[") + std::to_string(index) + "] screen=(" +
+                    std::to_string(point.x) + "," + std::to_string(point.y) + ") hitHwnd=" +
+                    std::to_string(reinterpret_cast<uintptr_t>(target)) + " hitVisible=" +
+                    (target && ::IsWindowVisible(target) ? "true" : "false") + " hitEnabled=" +
+                    (target && ::IsWindowEnabled(target) ? "true" : "false") + " results={" +
+                    hitTestSummary(id) + "}";
+            }
         }
-        return true;
+        return {};
+    };
+    const auto assertEnabledControlHitTestable = [&](int id, const char* stage) {
+        const HWND hwnd = dialog.GetDlgItem(id)->GetSafeHwnd();
+        if (!::IsWindowEnabled(hwnd))
+            fail(std::string(stage) + ": expected enabled control id=" + std::to_string(id) +
+                 " " + windowDiagnostics(id));
+        const std::string hitFailure = inputHitTestFailure(id);
+        if (!hitFailure.empty())
+            fail(std::string(stage) + ": input hit-test failed for id=" + std::to_string(id) +
+                 " hit=" + hitFailure + " results={" + hitTestSummary(id) + "} " + windowDiagnostics(id));
+    };
+    const auto assertVisibleEnabledFooterPair = [&](const char* stage) {
+        check(dialog.GetDlgItem(IDOK)->IsWindowVisible() && dialog.GetDlgItem(IDCANCEL)->IsWindowVisible(),
+              "Save and Cancel remain visually visible after valid response");
+        assertEnabledControlHitTestable(IDOK, stage);
+        assertEnabledControlHitTestable(IDCANCEL, stage);
+    };
+    const auto assertSaveDisabledCancelAvailable = [&](const char* stage) {
+        CRect save;
+        dialog.GetDlgItem(IDOK)->GetWindowRect(&save);
+        const bool saveVisible = ::IsWindowVisible(dialog.GetDlgItem(IDOK)->GetSafeHwnd()) != FALSE;
+        const bool saveDisabled = !dialog.GetDlgItem(IDOK)->IsWindowEnabled();
+        const bool cancelVisible = ::IsWindowVisible(dialog.GetDlgItem(IDCANCEL)->GetSafeHwnd()) != FALSE;
+        const bool cancelEnabled = dialog.GetDlgItem(IDCANCEL)->IsWindowEnabled() != FALSE;
+        const std::string cancelHitFailure = inputHitTestFailure(IDCANCEL);
+        if (!saveVisible || !saveDisabled || !cancelVisible || !cancelEnabled || !cancelHitFailure.empty())
+            fail(std::string(stage) + ": expected visible-disabled Save and visible-interactive Cancel; save=" +
+                 windowDiagnostics(IDOK) + " saveHitTest={" + hitTestSummary(IDOK) + "} cancelHitTest={" +
+                 hitTestSummary(IDCANCEL) + "} cancelHitFailure=" + cancelHitFailure + " cancel=" +
+                 windowDiagnostics(IDCANCEL));
     };
     const auto controlFullyVisible = [&](int id, const CRect& viewport) {
         const HWND hwnd = dialog.GetDlgItem(id)->GetSafeHwnd();
@@ -272,8 +329,10 @@ void RunPairDialogTests(CWnd* parent) {
         return (bounds & viewport) == bounds && visibleControlRect(id) == controlFaceRect(id);
     };
     const auto checkControlVisible = [&](int id, const char* stage, const CRect& viewport) {
-        if (controlFullyVisible(id, viewport) && isUnobscured(id)) return;
-        fail(std::string(stage) + ": expected fully visible, hit-testable control; " + windowDiagnostics(id));
+        const std::string hitFailure = inputHitTestFailure(id);
+        if (controlFullyVisible(id, viewport) && hitFailure.empty()) return;
+        fail(std::string(stage) + ": expected fully visible, input-eligible control; hitTest=" +
+             (hitFailure.empty() ? "ok" : hitFailure) + " " + windowDiagnostics(id));
     };
     const CRect initialOk = clientRect(IDOK);
     const CRect initialCancel = clientRect(IDCANCEL);
@@ -291,21 +350,68 @@ void RunPairDialogTests(CWnd* parent) {
             currentClient.bottom - cancel.bottom == expectedCancelGap;
         const bool windowsVisible = ::IsWindowVisible(dialog.GetDlgItem(IDOK)->GetSafeHwnd()) &&
             ::IsWindowVisible(dialog.GetDlgItem(IDCANCEL)->GetSafeHwnd());
-        const bool unobscured = isUnobscured(IDOK) && isUnobscured(IDCANCEL);
-        if (!inside || !footerGaps || !windowsVisible || !unobscured) {
+        if (!inside || !footerGaps || !windowsVisible) {
             fail(std::string(stage) + ": footer bounds=" + (inside ? "ok" : "FAIL") +
                 " gaps=" + (footerGaps ? "ok" : "FAIL") + " visibility=" + (windowsVisible ? "ok" : "FAIL") +
-                " unobscured=" + (unobscured ? "ok" : "FAIL") +
                 " dpi=" + std::to_string(GetDpiForWindow(dialog.GetSafeHwnd())) +
                 " client=" + std::to_string(currentClient.Width()) + "x" + std::to_string(currentClient.Height()) +
+                " saveHitTest={" + hitTestSummary(IDOK) + "} cancelHitTest={" +
+                hitTestSummary(IDCANCEL) + "}" +
                 " save=" + windowDiagnostics(IDOK) + " cancel=" + windowDiagnostics(IDCANCEL));
+        }
+        for (int footerId : {IDOK, IDCANCEL}) {
+            const CRect footer = clientRect(footerId);
+            for (HWND sibling = ::GetWindow(dialog.GetSafeHwnd(), GW_CHILD); sibling;
+                 sibling = ::GetWindow(sibling, GW_HWNDNEXT)) {
+                const int siblingId = ::GetDlgCtrlID(sibling);
+                if (sibling == dialog.GetDlgItem(footerId)->GetSafeHwnd() ||
+                    !::IsWindowVisible(sibling)) continue;
+                wchar_t className[32]{};
+                ::GetClassNameW(sibling, className, static_cast<int>(std::size(className)));
+                if (std::wstring(className) == L"Button" &&
+                    (::GetWindowLongPtr(sibling, GWL_STYLE) & BS_TYPEMASK) == BS_GROUPBOX) continue;
+                CRect siblingRect;
+                ::GetWindowRect(sibling, &siblingRect);
+                dialog.ScreenToClient(&siblingRect);
+                HRGN siblingRegion = ::CreateRectRgn(0, 0, 0, 0);
+                check(siblingRegion != nullptr, "allocate footer overlap region");
+                const int regionType = ::GetWindowRgn(sibling, siblingRegion);
+                if (regionType != ERROR) {
+                    RECT regionBounds{};
+                    const int boundsType = ::GetRgnBox(siblingRegion, &regionBounds);
+                    ::DeleteObject(siblingRegion);
+                    check(boundsType != ERROR, "query sibling region for footer overlap check");
+                    if (boundsType == NULLREGION) siblingRect.SetRectEmpty();
+                    else siblingRect = CRect(siblingRect.left + regionBounds.left,
+                                             siblingRect.top + regionBounds.top,
+                                             siblingRect.left + regionBounds.right,
+                                             siblingRect.top + regionBounds.bottom);
+                } else {
+                    ::DeleteObject(siblingRegion);
+                }
+                CRect overlap;
+                if (!siblingRect.IsRectEmpty() && overlap.IntersectRect(footer, siblingRect) &&
+                    !overlap.IsRectEmpty()) {
+                    fail(std::string(stage) + ": geometric overlap with footer id=" +
+                         std::to_string(footerId) + " otherId=" + std::to_string(siblingId) +
+                         " overlap=(" + std::to_string(overlap.left) + "," +
+                         std::to_string(overlap.top) + "," + std::to_string(overlap.right) + "," +
+                         std::to_string(overlap.bottom) + ") otherHwnd=" +
+                         std::to_string(reinterpret_cast<uintptr_t>(sibling)) + " footer=" +
+                         windowDiagnostics(footerId) + " other=" +
+                         (siblingId >= 0 ? windowDiagnostics(siblingId) : std::string("non-dialog child")));
+                }
+            }
         }
         for (int id : {IDOK, IDCANCEL}) {
             if (!dialog.GetDlgItem(id)->IsWindowEnabled()) continue;
-            if (!isVisibleFaceHitTestable(id))
-                fail(std::string(stage) + ": enabled footer control is not hit-testable: " + windowDiagnostics(id));
+            assertEnabledControlHitTestable(id, stage);
         }
     };
+        assertSaveDisabledCancelAvailable("initial pairing state");
+        check(!dialog.GetDlgItem(IDOK)->IsWindowEnabled() &&
+            dialog.GetDlgItem(IDOK)->IsWindowVisible(),
+            "Save starts visibly disabled until a valid pairing response is entered");
     const int initialOkGap = client.bottom - initialOk.bottom;
     const int initialCancelGap = client.bottom - initialCancel.bottom;
     assertFooterVisible("initial Save and Cancel remain visible in client coordinates", initialOkGap, initialCancelGap);
@@ -366,9 +472,6 @@ void RunPairDialogTests(CWnd* parent) {
         setScrollPosition(expectedPosition);
         dialog.GetClientRect(&resizedClient);
         const CRect viewport(0, 0, resizedClient.right, viewportBottom);
-        if (!isUnobscured(IDOK) || !isUnobscured(IDCANCEL))
-            fail(std::string(stage) + ": fixed Save/Cancel are not hit-test accessible; save=" +
-                 windowDiagnostics(IDOK) + " cancel=" + windowDiagnostics(IDCANCEL));
         const CRect saveRect = clientRect(IDOK);
         const CRect cancelRect = clientRect(IDCANCEL);
         for (HWND child = ::GetWindow(dialog.GetSafeHwnd(), GW_CHILD); child;
@@ -578,18 +681,23 @@ void RunPairDialogTests(CWnd* parent) {
     auto wrongNonce = first.at("nonce").asString();
     wrongNonce[0] = wrongNonce[0] == 'A' ? 'B' : 'A';
     replaceResponse(dialog, changeResponse(approvedWeb, "nonce", wrongNonce));
+    assertSaveDisabledCancelAvailable("unbound response disables Save");
     check(!enabled(IDOK), "unbound web approval disables save");
     replaceResponse(dialog, approvedWeb.substr(0, 60));
+    assertSaveDisabledCancelAvailable("incomplete response disables Save");
     check(!enabled(IDOK), "incomplete web approval disables save");
     replaceResponse(dialog, response(first, true));
     check(!enabled(IDOK) && !dialog.GetDlgItem(IDC_PAIR_SSHUSER)->IsWindowVisible(),
           "web-only request cannot acquire an unenrolled SSH approval");
     replaceResponse(dialog, "invalid response");
+    assertSaveDisabledCancelAvailable("invalid response disables Save");
     check(!enabled(IDOK), "invalid response disables save");
     replaceResponse(dialog, "");
+    assertSaveDisabledCancelAvailable("empty response disables Save");
     check(!enabled(IDOK), "empty response disables save");
     replaceResponse(dialog, approvedWeb);
     check(enabled(IDOK), "corrected web response re-enables save");
+    assertVisibleEnabledFooterPair("valid web pairing response enables Save");
     access->SetCurSel(1);
     dialog.SendMessage(WM_COMMAND, MAKEWPARAM(IDC_PAIR_ACCESS, CBN_SELCHANGE),
                        reinterpret_cast<LPARAM>(access->GetSafeHwnd()));
@@ -613,6 +721,7 @@ void RunPairDialogTests(CWnd* parent) {
     replaceResponse(dialog, response(sshRequest, true));
     check(enabled(IDOK) && text(dialog, IDC_PAIR_SSHUSER) == "administrator" &&
           dialog.GetDlgItem(IDC_PAIR_SSHUSER)->IsWindowVisible(), "validated PBX response populates approved account");
+    assertVisibleEnabledFooterPair("valid SSH pairing response enables Save");
     replaceResponse(dialog, changeResponse(response(sshRequest, true), "ssh_user", ""));
     check(!enabled(IDOK) && !dialog.GetDlgItem(IDC_PAIR_SSHUSER)->IsWindowVisible(), "invalid approved account hides field and blocks save");
     replaceResponse(dialog, changeResponse(response(sshRequest, true), "ssh_user", nullptr, true));
