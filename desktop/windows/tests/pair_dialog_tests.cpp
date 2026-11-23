@@ -365,6 +365,12 @@ void RunPairDialogTests(CWnd* parent) {
     const auto assertFooterVisible = [&](const char* stage, int expectedOkGap, int expectedCancelGap) {
         CRect currentClient;
         dialog.GetClientRect(&currentClient);
+        MONITORINFO monitor{sizeof(monitor)};
+        const bool monitorAvailable = ::GetMonitorInfoW(
+            ::MonitorFromWindow(dialog.GetSafeHwnd(), MONITOR_DEFAULTTONEAREST), &monitor) != FALSE;
+        const CRect workArea(monitor.rcWork);
+        CRect window;
+        dialog.GetWindowRect(&window);
         const CRect ok = clientRect(IDOK);
         const CRect cancel = clientRect(IDCANCEL);
         const bool inside = ok.left >= 0 && ok.top >= 0 && ok.right <= currentClient.right &&
@@ -374,9 +380,13 @@ void RunPairDialogTests(CWnd* parent) {
             currentClient.bottom - cancel.bottom == expectedCancelGap;
         const bool windowsVisible = ::IsWindowVisible(dialog.GetDlgItem(IDOK)->GetSafeHwnd()) &&
             ::IsWindowVisible(dialog.GetDlgItem(IDCANCEL)->GetSafeHwnd());
-        if (!inside || !footerGaps || !windowsVisible) {
+        const bool withinWorkArea = monitorAvailable && window.left >= workArea.left &&
+            window.top >= workArea.top && window.right <= workArea.right && window.bottom <= workArea.bottom;
+        if (!inside || !footerGaps || !windowsVisible || !withinWorkArea) {
             fail(std::string(stage) + ": footer bounds=" + (inside ? "ok" : "FAIL") +
                 " gaps=" + (footerGaps ? "ok" : "FAIL") + " visibility=" + (windowsVisible ? "ok" : "FAIL") +
+                " workArea=" + (withinWorkArea ? "ok" : "FAIL") +
+                " windowScreen=" + formatRect(window) + " monitorWorkArea=" + formatRect(workArea) +
                 " dpi=" + std::to_string(GetDpiForWindow(dialog.GetSafeHwnd())) +
                 " client=" + std::to_string(currentClient.Width()) + "x" + std::to_string(currentClient.Height()) +
                 " saveHitTest={" + hitTestSummary(IDOK) + "} cancelHitTest={" +
@@ -761,10 +771,22 @@ void RunPairDialogTests(CWnd* parent) {
     dialog.SetWindowPos(nullptr, originalWindow.left, originalWindow.top,
                         originalWindow.Width(), originalWindow.Height(),
                         SWP_NOZORDER | SWP_NOACTIVATE);
-    RECT dpiBounds{originalWindow.left, originalWindow.top,
-                   originalWindow.left + MulDiv(originalWindow.Width(), 144, initialDpi),
-                   originalWindow.top + MulDiv(originalWindow.Height(), 144, initialDpi)};
+    MONITORINFO dpiMonitor{sizeof(dpiMonitor)};
+    check(::GetMonitorInfoW(::MonitorFromWindow(dialog.GetSafeHwnd(), MONITOR_DEFAULTTONEAREST),
+                            &dpiMonitor) != FALSE,
+          "query monitor work area for simulated DPI layout");
+    const CRect dpiWorkArea(dpiMonitor.rcWork);
+    const int dpiWidth = std::min(MulDiv(originalWindow.Width(), 144, initialDpi), dpiWorkArea.Width());
+    const int dpiHeight = std::min(MulDiv(originalWindow.Height(), 144, initialDpi), dpiWorkArea.Height());
+    const int dpiLeft = std::clamp(originalWindow.left, dpiWorkArea.left, dpiWorkArea.right - dpiWidth);
+    const int dpiTop = std::clamp(originalWindow.top, dpiWorkArea.top, dpiWorkArea.bottom - dpiHeight);
+    RECT dpiBounds{dpiLeft, dpiTop, dpiLeft + dpiWidth, dpiTop + dpiHeight};
     dialog.SendMessage(WM_DPICHANGED, MAKELONG(144, 144), reinterpret_cast<LPARAM>(&dpiBounds));
+    CRect dpiWindow;
+    dialog.GetWindowRect(&dpiWindow);
+    check(dpiWindow.left >= dpiWorkArea.left && dpiWindow.top >= dpiWorkArea.top &&
+          dpiWindow.right <= dpiWorkArea.right && dpiWindow.bottom <= dpiWorkArea.bottom,
+          "simulated DPI dialogue remains inside the actual monitor work area");
     const int dpiOkGap = MulDiv(okBottomGap, 144, initialDpi);
     const int dpiCancelGap = MulDiv(cancelBottomGap, 144, initialDpi);
     assertFooterVisible("DPI-scaled Save and Cancel remain visible in client coordinates",

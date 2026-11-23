@@ -237,8 +237,23 @@ LONG CPairDlg::ScaledContentExtent() const {
 LRESULT CPairDlg::OnDpiChanged(WPARAM dpi, LPARAM rectangle) {
     layoutDpi_ = std::max(1, static_cast<int>(HIWORD(dpi)));
     const RECT& suggested = *reinterpret_cast<const RECT*>(rectangle);
-    SetWindowPos(nullptr, suggested.left, suggested.top, suggested.right - suggested.left,
-        suggested.bottom - suggested.top, SWP_NOZORDER | SWP_NOACTIVATE);
+    RECT bounds = suggested;
+    MONITORINFO monitor{};
+    monitor.cbSize = sizeof(monitor);
+    if (GetMonitorInfoW(MonitorFromRect(&suggested, MONITOR_DEFAULTTONEAREST), &monitor)) {
+        const int width = static_cast<int>(std::min<LONG>(bounds.right - bounds.left,
+                                                          monitor.rcWork.right - monitor.rcWork.left));
+        const int height = static_cast<int>(std::min<LONG>(bounds.bottom - bounds.top,
+                                                           monitor.rcWork.bottom - monitor.rcWork.top));
+        bounds.left = static_cast<LONG>(std::clamp<LONG>(bounds.left, monitor.rcWork.left,
+                                                         monitor.rcWork.right - width));
+        bounds.top = static_cast<LONG>(std::clamp<LONG>(bounds.top, monitor.rcWork.top,
+                                                        monitor.rcWork.bottom - height));
+        bounds.right = bounds.left + width;
+        bounds.bottom = bounds.top + height;
+    }
+    SetWindowPos(nullptr, bounds.left, bounds.top, bounds.right - bounds.left,
+        bounds.bottom - bounds.top, SWP_NOZORDER | SWP_NOACTIVATE);
     ArrangePairDialog();
     return 0;
 }

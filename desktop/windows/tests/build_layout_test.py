@@ -1633,6 +1633,9 @@ endfunction()
         self.assertIn("LONG CPairDlg::FooterTop(const CRect& client) const", source)
         self.assertIn("LONG CPairDlg::ScaledContentExtent() const", source)
         self.assertIn("LONG CPairDlg::ScaleForDpi(LONG value) const", source)
+        dpi_handler = source.split("LRESULT CPairDlg::OnDpiChanged", 1)[1].split("LRESULT CPairDlg::OnDpiLayout", 1)[0]
+        self.assertIn("MonitorFromRect(&suggested, MONITOR_DEFAULTTONEAREST)", dpi_handler)
+        self.assertIn("monitor.rcWork", dpi_handler)
         self.assertIn("const int minimumGap = MulDiv(8, initialDpi_, 96);", source)
         native = (ROOT / "tests/pair_dialog_tests.cpp").read_text()
         self.assertIn("set(CMAKE_CXX_STANDARD 17)", (ROOT / "CMakeLists.txt").read_text())
@@ -1654,6 +1657,8 @@ endfunction()
         for required in ("pairing control geometry: id=",
                   "Save starts visibly disabled until a valid pairing response is entered",
                  "expected visible-disabled Save and visible-interactive Cancel",
+                 "monitorWorkArea=",
+                 "simulated DPI dialogue remains inside the actual monitor work area",
                   "valid web pairing response enables Save",
                   "valid SSH pairing response enables Save",
                   "geometric overlap with footer id=",
