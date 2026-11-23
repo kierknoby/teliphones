@@ -237,10 +237,23 @@ void RunSettingsDialogTests(CWnd* parent) {
     checkNoSettingsOverlap(dialog, "initial");
 
     CWnd* browser = dialog.GetDlgItem(IDC_APPS_BROWSER);
-    checkSettings(dialog.GetNextDlgTabItem(browser)->GetDlgCtrlID() == IDC_APPS_LOCATE_BROWSER,
-                  "keyboard order reaches Locate Browser after browser selection");
-    checkSettings(dialog.GetNextDlgTabItem(dialog.GetDlgItem(IDC_APPS_LOCATE_BROWSER))->GetDlgCtrlID() == IDC_APPS_TERMINAL,
-                  "keyboard order proceeds from browser location to terminal selection");
+    CWnd* terminal = dialog.GetDlgItem(IDC_APPS_TERMINAL);
+    checkSettings(terminal->IsWindowVisible() && !terminal->IsWindowEnabled(),
+                  "terminal selection is visible but disabled when no terminal is detected");
+    std::vector<int> tabSequence;
+    CWnd* current = browser;
+    for (std::size_t count = 0; current && count < 32; ++count) {
+        if (current == browser && !tabSequence.empty()) break;
+        tabSequence.push_back(current->GetDlgCtrlID());
+        current = dialog.GetNextDlgTabItem(current);
+    }
+    const std::vector<int> expectedTabSequence = {
+        IDC_APPS_BROWSER, IDC_APPS_LOCATE_BROWSER, IDC_APPS_LOCATE_TERMINAL,
+        IDC_APPEARANCE, IDC_CONNECT_INSTALL, IDC_CONNECT_CHECK, IDC_CONNECT_NOT_NOW,
+        IDC_APPS_ABOUT, IDOK, IDCANCEL
+    };
+    checkSettings(tabSequence == expectedTabSequence,
+                  "Settings keyboard order skips the disabled terminal selection and includes intervening controls");
 
     const CRect originalWindow = window;
     dialog.SetWindowPos(nullptr, window.left, window.top, window.Width() - 80, window.Height() - 150,
