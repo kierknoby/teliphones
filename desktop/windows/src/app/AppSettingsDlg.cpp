@@ -139,7 +139,7 @@ void CAppSettingsDlg::Arrange() {
     const int baseWidth = std::max(1, MulDiv(initialClientWidth_, layoutDpi_, initialDpi_));
     const auto scale = [&](int value) { return MulDiv(value, layoutDpi_, initialDpi_); };
     const LONG footerTop = FooterTop(client);
-    const LONG viewportBottom = std::max<LONG>(0, footerTop - scale(8));
+    const LONG viewportBottom = std::max<LONG>(0, footerTop - MulDiv(8, layoutDpi_, 96));
     int visibleExtent = 0;
     for (const auto& item : layoutControls_) if (!item.footer && ::IsWindowVisible(item.window))
         visibleExtent = std::max(visibleExtent, scale(item.original.bottom));
@@ -152,7 +152,7 @@ void CAppSettingsDlg::Arrange() {
     for (const auto& item : layoutControls_) {
         if (!::IsWindow(item.window)) continue;
         const int right = item.footer && item.rightAnchored
-            ? client.right - std::max(scale(8), scale(initialClientWidth_ - item.original.right))
+            ? client.right - std::max(MulDiv(8, layoutDpi_, 96), scale(initialClientWidth_ - item.original.right))
             : MulDiv(item.original.right, client.Width(), baseWidth);
         const int left = item.footer && item.rightAnchored
             ? right - scale(item.original.Width()) : MulDiv(item.original.left, client.Width(), baseWidth);
@@ -168,6 +168,14 @@ void CAppSettingsDlg::Arrange() {
     info.nPos = scrollOffset_;
     SetScrollInfo(SB_VERT, &info, TRUE);
     arranging_ = false;
+
+    // Showing the vertical scrollbar can shrink the client width. That may
+    // happen while SetScrollInfo is called, after footer positions were based
+    // on the wider client rectangle. Re-layout once against the settled client
+    // dimensions so right-anchored actions retain their margin.
+    CRect settledClient;
+    GetClientRect(&settledClient);
+    if (settledClient.Width() != client.Width() || settledClient.Height() != client.Height()) Arrange();
 }
 
 int CAppSettingsDlg::FooterBottomGap(const LayoutControl& item) const {
@@ -190,7 +198,7 @@ void CAppSettingsDlg::ScrollTo(int offset) {
     CRect client;
     GetClientRect(&client);
     const LONG footerTop = FooterTop(client);
-    const int margin = MulDiv(8, layoutDpi_, initialDpi_);
+    const int margin = MulDiv(8, layoutDpi_, 96);
     const LONG viewportBottom = std::max<LONG>(0, footerTop - margin);
     const LONG maxScroll = std::max<LONG>(0, static_cast<LONG>(contentExtent_) - viewportBottom);
     scrollOffset_ = static_cast<int>(std::clamp<LONG>(offset, 0, maxScroll));

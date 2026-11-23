@@ -188,17 +188,25 @@ void checkSettingsFooterWithinClient(CAppSettingsDlg& dialog, const char* stage)
     CRect client;
     dialog.GetClientRect(&client);
     const int minimumGap = MulDiv(8, GetDpiForWindow(dialog.GetSafeHwnd()), 96);
+    std::vector<CRect> visibleFooterRects;
     for (int id : {IDC_APPS_SKIP, IDC_APPS_ABOUT, IDOK, IDCANCEL}) {
         CWnd* control = dialog.GetDlgItem(id);
         if (!control || !control->IsWindowVisible()) continue;
         const CRect rect = settingsControlRect(dialog, id);
-        if (rect.left >= 0 && rect.top >= 0 && rect.right <= client.right &&
-            client.bottom - rect.bottom >= minimumGap) continue;
-        throw std::runtime_error(std::string("Settings footer remains inside client with spacing") +
-            ": stage=" + stage + " control=" + settingsControlName(id) +
-            " rect=" + formatSettingsRect(rect) + " client=" + formatSettingsRect(client) +
-            " requiredBottomGap=" + std::to_string(minimumGap));
+        if (rect.left < 0 || rect.top < 0 || rect.right > client.right - minimumGap ||
+            client.bottom - rect.bottom < minimumGap) {
+            throw std::runtime_error(std::string("Settings footer remains inside client with spacing") +
+                ": stage=" + stage + " control=" + settingsControlName(id) +
+                " rect=" + formatSettingsRect(rect) + " client=" + formatSettingsRect(client) +
+                " requiredBottomGap=" + std::to_string(minimumGap));
+        }
+        visibleFooterRects.push_back(rect);
     }
+    std::sort(visibleFooterRects.begin(), visibleFooterRects.end(),
+              [](const CRect& left, const CRect& right) { return left.left < right.left; });
+    for (std::size_t i = 1; i < visibleFooterRects.size(); ++i)
+        checkSettings(visibleFooterRects[i].left - visibleFooterRects[i - 1].right >= minimumGap,
+                      "visible Settings footer buttons retain DPI-scaled horizontal spacing");
 }
 
 }  // namespace
