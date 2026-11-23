@@ -153,19 +153,40 @@ void RunPairDialogTests(CWnd* parent) {
     const auto clientRect = [&](int id) {
         CRect rect;
         dialog.GetDlgItem(id)->GetWindowRect(&rect);
-        dialog.ScreenToClient(&rect);
+        ::MapWindowPoints(nullptr, dialog.GetSafeHwnd(), reinterpret_cast<POINT*>(&rect), 2);
         return rect;
     };
+    const auto formatRect = [](const RECT& rect) {
+        return std::string("(") + std::to_string(rect.left) + "," + std::to_string(rect.top) + "," +
+            std::to_string(rect.right) + "," + std::to_string(rect.bottom) + ")";
+    };
     const auto controlFaceRect = [&](int id) {
-        CRect rect = clientRect(id);
-        if (id == IDC_PAIR_ACCESS) {
-            COMBOBOXINFO info{sizeof(info)};
-            check(::GetComboBoxInfo(dialog.GetDlgItem(id)->GetSafeHwnd(), &info) != FALSE,
-                  "query pairing access combo face rectangle");
-            rect = info.rcItem;
-            dialog.ScreenToClient(&rect);
+        const HWND control = dialog.GetDlgItem(id)->GetSafeHwnd();
+        const CRect actualControl = clientRect(id);
+        if (id != IDC_PAIR_ACCESS) return actualControl;
+
+        COMBOBOXINFO info{sizeof(info)};
+        if (!::GetComboBoxInfo(control, &info))
+            throw std::runtime_error("query pairing access combo face rectangle failed: control=" +
+                 std::to_string(reinterpret_cast<uintptr_t>(control)) + " actualControl=" +
+                 formatRect(actualControl));
+
+        // COMBOBOXINFO::rcItem is relative to the combo's client origin.
+        // Map from the combo client space into the containing dialog client space.
+        const HWND source = control;
+        const HWND destination = dialog.GetSafeHwnd();
+        RECT mapped = info.rcItem;
+        ::MapWindowPoints(source, destination, reinterpret_cast<POINT*>(&mapped), 2);
+        const CRect face(mapped);
+        CRect contained;
+        if (face.IsRectEmpty() || !contained.IntersectRect(face, actualControl) || contained != face) {
+            throw std::runtime_error("pairing access combo face conversion is outside its containing control: rawRcItem=" +
+                 formatRect(info.rcItem) + " sourceHwnd=" +
+                 std::to_string(reinterpret_cast<uintptr_t>(source)) + "(combo client) destinationHwnd=" +
+                 std::to_string(reinterpret_cast<uintptr_t>(destination)) + " mappedFace=" +
+                 formatRect(mapped) + " actualControl=" + formatRect(actualControl));
         }
-        return rect;
+        return face;
     };
     const auto sameVisibleRect = [](const CRect& actual, const CRect& expected) {
         return (actual.IsRectEmpty() && expected.IsRectEmpty()) || actual == expected;
@@ -210,10 +231,6 @@ void RunPairDialogTests(CWnd* parent) {
         RECT regionBounds{};
         const int boundsType = regionType == ERROR ? ERROR : ::GetRgnBox(region, &regionBounds);
         if (region) ::DeleteObject(region);
-        const auto formatRect = [](const RECT& rect) {
-            return std::string("(") + std::to_string(rect.left) + "," + std::to_string(rect.top) + "," +
-                std::to_string(rect.right) + "," + std::to_string(rect.bottom) + ")";
-        };
         CString controlText;
         dialog.GetDlgItemText(id, controlText);
         std::ostringstream out;

@@ -5,6 +5,7 @@
 #include "../src/platform/WireGuardInstaller.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <cstdio>
 #include <iterator>
 #include <stdexcept>
@@ -18,16 +19,36 @@ void checkSettings(bool condition, const char* message) {
 }
 
 CRect settingsControlRect(CAppSettingsDlg& dialog, int id) {
-    CRect rect;
-    dialog.GetDlgItem(id)->GetWindowRect(&rect);
+    const HWND control = dialog.GetDlgItem(id)->GetSafeHwnd();
+    CRect actualControl;
+    ::GetWindowRect(control, &actualControl);
+    ::MapWindowPoints(nullptr, dialog.GetSafeHwnd(), reinterpret_cast<POINT*>(&actualControl), 2);
     if (id == IDC_APPS_BROWSER || id == IDC_APPS_TERMINAL || id == IDC_APPEARANCE) {
         COMBOBOXINFO info{sizeof(info)};
-        checkSettings(GetComboBoxInfo(dialog.GetDlgItem(id)->GetSafeHwnd(), &info) != FALSE,
-                      "query visible face of Settings combo box");
-        rect = info.rcItem;
+        if (!::GetComboBoxInfo(control, &info))
+            throw std::runtime_error("query visible face of Settings combo box failed");
+        // COMBOBOXINFO::rcItem is relative to the combo's client origin.
+        // Map from the combo client space into the containing dialog client space.
+        const HWND source = control;
+        const HWND destination = dialog.GetSafeHwnd();
+        RECT mapped = info.rcItem;
+        ::MapWindowPoints(source, destination, reinterpret_cast<POINT*>(&mapped), 2);
+        const CRect face(mapped);
+        CRect contained;
+        if (face.IsRectEmpty() || !contained.IntersectRect(face, actualControl) || contained != face) {
+            const auto formatRect = [](const RECT& value) {
+                return std::string("(") + std::to_string(value.left) + "," + std::to_string(value.top) + "," +
+                    std::to_string(value.right) + "," + std::to_string(value.bottom) + ")";
+            };
+            throw std::runtime_error("Settings combo face conversion is outside its containing control: rawRcItem=" +
+                formatRect(info.rcItem) + " sourceHwnd=" +
+                std::to_string(reinterpret_cast<uintptr_t>(source)) + "(combo client) destinationHwnd=" +
+                std::to_string(reinterpret_cast<uintptr_t>(destination)) + " mappedFace=" +
+                formatRect(mapped) + " actualControl=" + formatRect(actualControl));
+        }
+        return face;
     }
-    dialog.ScreenToClient(&rect);
-    return rect;
+    return actualControl;
 }
 
 bool intersects(const CRect& left, const CRect& right) {
