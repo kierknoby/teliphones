@@ -8,6 +8,7 @@
 #include "../src/platform/Win.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <limits>
@@ -245,7 +246,7 @@ void RunPairDialogTests(CWnd* parent) {
             return std::to_string(point.x) + "," + std::to_string(point.y);
         };
         std::ostringstream out;
-        for (size_t index = 0; index < std::size(points); ++index) {
+        for (std::size_t index = 0; index < std::size(points); ++index) {
             const CPoint& point = points[index];
             HWND target = ::WindowFromPoint(point);
             wchar_t className[128]{};
@@ -278,7 +279,7 @@ void RunPairDialogTests(CWnd* parent) {
             CPoint(bounds.left + bounds.Width() / 2, bounds.top + bounds.Height() / 2),
             CPoint(bounds.left + 2, bounds.top + 2), CPoint(bounds.right - 3, bounds.top + 2),
             CPoint(bounds.left + 2, bounds.bottom - 3), CPoint(bounds.right - 3, bounds.bottom - 3)};
-        for (size_t index = 0; index < std::size(points); ++index) {
+        for (std::size_t index = 0; index < std::size(points); ++index) {
             const CPoint& point = points[index];
             const HWND target = ::WindowFromPoint(point);
             if (!target || !isDescendant(target, hwnd)) {
@@ -290,7 +291,7 @@ void RunPairDialogTests(CWnd* parent) {
                     hitTestSummary(id) + "}";
             }
         }
-        return {};
+        return std::string{};
     };
     const auto assertEnabledControlHitTestable = [&](int id, const char* stage) {
         const HWND hwnd = dialog.GetDlgItem(id)->GetSafeHwnd();
@@ -536,7 +537,7 @@ void RunPairDialogTests(CWnd* parent) {
                     std::to_string(rect.bottom) + ") viewport=(0,0," +
                     std::to_string(resizedClient.right) + "," + std::to_string(viewportBottom) +
                     ") scroll=" + std::to_string(scrollInfo.nPos) + "/" +
-                    std::to_string(std::max(0, scrollInfo.nMax - static_cast<int>(scrollInfo.nPage) + 1)) +
+                    std::to_string(std::max<LONG>(0L, scrollInfo.nMax - static_cast<int>(scrollInfo.nPage) + 1)) +
                     " dpi=" + std::to_string(GetDpiForWindow(dialog.GetSafeHwnd())) +
                     " aboveViewport=" + (above ? "true" : "false") +
                     " intersectsViewport=" + (intersects ? "true" : "false") +
@@ -591,7 +592,8 @@ void RunPairDialogTests(CWnd* parent) {
 
     SCROLLINFO currentScroll{sizeof(currentScroll), SIF_RANGE | SIF_PAGE | SIF_POS};
     dialog.GetScrollInfo(SB_VERT, &currentScroll);
-    const int maxScroll = std::max(0, currentScroll.nMax - static_cast<int>(currentScroll.nPage) + 1);
+    const int maxScroll = static_cast<int>(std::max<LONG>(
+        0L, currentScroll.nMax - static_cast<int>(currentScroll.nPage) + 1));
     setScrollPosition(0);
     checkControlVisible(IDC_PAIR_ACCESS, "resized dialog at top scroll position", resizedViewport);
     assertFooterVisible("resized dialog at top scroll position", okBottomGap, cancelBottomGap);

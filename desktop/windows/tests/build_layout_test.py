@@ -1635,6 +1635,11 @@ endfunction()
         self.assertIn("LONG CPairDlg::ScaleForDpi(LONG value) const", source)
         self.assertIn("const int minimumGap = MulDiv(8, initialDpi_, 96);", source)
         native = (ROOT / "tests/pair_dialog_tests.cpp").read_text()
+        self.assertIn("set(CMAKE_CXX_STANDARD 17)", (ROOT / "CMakeLists.txt").read_text())
+        self.assertIn("return std::string{};", native)
+        self.assertNotRegex(native, r"\breturn\s*\{\s*\}\s*;")
+        self.assertIn("std::max<LONG>(0L, scrollInfo.nMax", native)
+        self.assertIn("std::max<LONG>(\n        0L, currentScroll.nMax", native)
         for required in ("pairing control geometry: id=",
                   "Save starts visibly disabled until a valid pairing response is entered",
                  "expected visible-disabled Save and visible-interactive Cancel",
