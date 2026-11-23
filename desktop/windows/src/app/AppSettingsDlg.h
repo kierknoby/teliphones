@@ -62,6 +62,7 @@ protected:
     DECLARE_MESSAGE_MAP()
 
 private:
+    struct LayoutControl { HWND window = nullptr; CRect original; bool footer = false; bool rightAnchored = false; };
     void Detect();
     void Fill(tlp::AppKind kind, const std::string& selected);
     std::string Selection(tlp::AppKind kind) const;
@@ -73,6 +74,8 @@ private:
     void GetStarted(StartAction action);
     void Arrange();
     void ScrollTo(int offset);
+    int FooterBottomGap(const LayoutControl& item) const;
+    LONG FooterTop(const CRect& client) const;
 
     Mode mode_;
     std::optional<tlp::Preferences> stored_;
@@ -87,7 +90,6 @@ private:
     bool installing_ = false;
     tlp::win::WireGuardInstallation wireguard_;
     std::thread installer_;
-    struct LayoutControl { HWND window = nullptr; CRect original; bool footer = false; bool rightAnchored = false; };
     std::vector<LayoutControl> layoutControls_;
     int initialClientWidth_ = 0;
     int initialClientHeight_ = 0;

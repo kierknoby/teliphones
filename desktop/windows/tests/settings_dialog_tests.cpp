@@ -184,6 +184,23 @@ void checkNoSettingsOverlap(CAppSettingsDlg& dialog, const char* stage) {
     }
 }
 
+void checkSettingsFooterWithinClient(CAppSettingsDlg& dialog, const char* stage) {
+    CRect client;
+    dialog.GetClientRect(&client);
+    const int minimumGap = MulDiv(8, GetDpiForWindow(dialog.GetSafeHwnd()), 96);
+    for (int id : {IDC_APPS_SKIP, IDC_APPS_ABOUT, IDOK, IDCANCEL}) {
+        CWnd* control = dialog.GetDlgItem(id);
+        if (!control || !control->IsWindowVisible()) continue;
+        const CRect rect = settingsControlRect(dialog, id);
+        if (rect.left >= 0 && rect.top >= 0 && rect.right <= client.right &&
+            client.bottom - rect.bottom >= minimumGap) continue;
+        throw std::runtime_error(std::string("Settings footer remains inside client with spacing") +
+            ": stage=" + stage + " control=" + settingsControlName(id) +
+            " rect=" + formatSettingsRect(rect) + " client=" + formatSettingsRect(client) +
+            " requiredBottomGap=" + std::to_string(minimumGap));
+    }
+}
+
 }  // namespace
 
 // Test-only replacements: exercise the production Settings dialog without
@@ -216,6 +233,7 @@ void RunSettingsDialogTests(CWnd* parent) {
     CRect work(monitor.rcWork);
     checkSettings(window.left >= work.left && window.top >= work.top && window.right <= work.right && window.bottom <= work.bottom,
                   "initial Settings window fits the monitor work area");
+    checkSettingsFooterWithinClient(dialog, "initial");
     checkNoSettingsOverlap(dialog, "initial");
 
     CWnd* browser = dialog.GetDlgItem(IDC_APPS_BROWSER);
@@ -228,6 +246,7 @@ void RunSettingsDialogTests(CWnd* parent) {
     dialog.SetWindowPos(nullptr, window.left, window.top, window.Width() - 80, window.Height() - 150,
                         SWP_NOZORDER | SWP_NOACTIVATE);
     dialog.GetClientRect(&client);
+    checkSettingsFooterWithinClient(dialog, "compact-resize");
     SCROLLINFO scroll{sizeof(scroll), SIF_RANGE | SIF_PAGE | SIF_POS};
     checkSettings(dialog.GetScrollInfo(SB_VERT, &scroll) != FALSE && scroll.nMax > 0 &&
                   scroll.nMax - static_cast<int>(scroll.nPage) > 0,
@@ -246,6 +265,7 @@ void RunSettingsDialogTests(CWnd* parent) {
     checkSettings(client.bottom - saveAfter.bottom == saveBottomGap &&
                   client.bottom - cancelAfter.bottom == cancelBottomGap,
                   "Settings footer remains pinned while content scrolls");
+    checkSettingsFooterWithinClient(dialog, "compact-maximum-scroll");
     checkNoSettingsOverlap(dialog, "compact-maximum-scroll");
 
     dialog.SendMessage(WM_VSCROLL, SB_TOP);
@@ -270,6 +290,7 @@ void RunSettingsDialogTests(CWnd* parent) {
                    originalWindow.top + MulDiv(originalWindow.Height(), 144, 96)};
     dialog.SendMessage(WM_DPICHANGED, MAKELONG(144, 144), reinterpret_cast<LPARAM>(&dpiBounds));
     dialog.GetClientRect(&client);
+    checkSettingsFooterWithinClient(dialog, "dpi-144");
     checkNoSettingsOverlap(dialog, "dpi-144");
     checkSettings(settingsControlRect(dialog, IDOK).bottom <= client.bottom &&
                   settingsControlRect(dialog, IDCANCEL).bottom <= client.bottom,
@@ -279,6 +300,7 @@ void RunSettingsDialogTests(CWnd* parent) {
     dialog.SendMessage(WM_DPICHANGED, MAKELONG(96, 96), reinterpret_cast<LPARAM>(&restoredBounds));
     dialog.SetWindowPos(nullptr, originalWindow.left, originalWindow.top, originalWindow.Width(), originalWindow.Height(),
                         SWP_NOZORDER | SWP_NOACTIVATE);
+    checkSettingsFooterWithinClient(dialog, "dpi-96-restored");
     checkNoSettingsOverlap(dialog, "dpi-96-restored");
     dialog.DestroyWindow();
     std::puts("Native Settings dialogue tests: PASS (production MFC controls, compact geometry, keyboard order, resize and scroll)");
