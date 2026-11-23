@@ -1639,7 +1639,7 @@ endfunction()
              'assertScrollGeometry("top", 0)',
              'assertScrollGeometry("intermediate", partialScroll)',
              'assertScrollGeometry("maximum", maxScroll)',
-                 '" expectedVisible=("',
+                 '") expectedVisible=("',
              "intermediate scroll position exercises clipped partial visibility",
              "keyboard focus scrolls the off-screen hostname into the clipped viewport",
                  "Save and Cancel remain pinned to the resized client bottom",

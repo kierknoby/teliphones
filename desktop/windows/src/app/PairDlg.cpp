@@ -61,7 +61,17 @@ void CopyText(HWND owner, const std::string& text) {
     CloseClipboard();
 }
 
-void ClipChildToViewport(HWND window, const CRect& child, LONG viewportTop, LONG viewportBottom) {
+void ClipChildToViewport(CWnd* parent, HWND window, LONG viewportTop, LONG viewportBottom) {
+    CRect child;
+    ::GetWindowRect(window, &child);
+    parent->ScreenToClient(&child);
+    if (child.top >= viewportTop && child.bottom <= viewportBottom) {
+        // A full-size custom region can interfere with native controls such as
+        // combo boxes. Leave fully visible controls with their normal window shape.
+        SetWindowRgn(window, nullptr, TRUE);
+        return;
+    }
+
     const int top = static_cast<int>(std::clamp<LONG>(viewportTop - child.top, 0, child.Height()));
     const int bottom = static_cast<int>(std::clamp<LONG>(viewportBottom - child.top, 0, child.Height()));
     HRGN region = CreateRectRgn(0, top, std::max(0, child.Width()), std::max(top, bottom));
@@ -185,7 +195,7 @@ void CPairDlg::ArrangePairDialog() {
             const LONG bottom = ScaleForDpi(item.original.bottom) - scrollOffset_;
             ::SetWindowPos(item.window, nullptr, left, top, right - left, bottom - top,
                 SWP_NOZORDER | SWP_NOACTIVATE);
-            ClipChildToViewport(item.window, CRect(left, top, right, bottom), 0, viewportBottom);
+            ClipChildToViewport(this, item.window, 0, viewportBottom);
         }
     }
     for (const auto& item : footerControls_) {
@@ -353,6 +363,7 @@ bool CPairDlg::InvalidateRequest() {
     SetDlgItemText(IDC_PAIR_SSHUSER, L"");
     GetDlgItem(IDC_PAIR_SSHUSER)->ShowWindow(SW_HIDE);
     GetDlgItem(IDC_PAIR_SSHLABEL)->ShowWindow(SW_HIDE);
+    ArrangePairDialog();
     return DiscardKey();
 }
 
@@ -385,6 +396,7 @@ void CPairDlg::OnResponseChanged() {
     SetDlgItemText(IDC_PAIR_SSHUSER, L"");
     GetDlgItem(IDC_PAIR_SSHUSER)->ShowWindow(SW_HIDE);
     GetDlgItem(IDC_PAIR_SSHLABEL)->ShowWindow(SW_HIDE);
+    ArrangePairDialog();
     if (!RequestCurrent()) return;
     if (GetEdit(this, IDC_PAIR_RESPONSE).empty()) {
         SetDlgItemText(IDC_PAIR_STATUS, L"Copy the generated request to FreePBX, then paste its response here.");
@@ -407,6 +419,7 @@ void CPairDlg::OnResponseChanged() {
             SetEdit(this, IDC_PAIR_SSHUSER, pairing.sshUser);
             GetDlgItem(IDC_PAIR_SSHUSER)->ShowWindow(SW_SHOW);
             GetDlgItem(IDC_PAIR_SSHLABEL)->ShowWindow(SW_SHOW);
+            ArrangePairDialog();
         }
         if (!pairing.managementHostnameSupplied || !pairing.managementHostname.empty()) {
             SetDlgItemText(IDC_PAIR_STATUS, pairing.ssh

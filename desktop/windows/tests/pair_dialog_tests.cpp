@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <limits>
 #include <map>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 
@@ -139,7 +140,7 @@ void RunPairDialogTests(CWnd* parent) {
     auto* access = static_cast<CComboBox*>(dialog.GetDlgItem(IDC_PAIR_ACCESS));
     check(access->GetCurSel() == 0, "initial access web-only");
     const int ordered[] = {IDC_PAIR_WORKSTATION, IDC_PAIR_ACCESS, IDC_PAIR_GENERATE, IDC_PAIR_REQUEST,
-                           IDC_PAIR_COPY, IDC_PAIR_RESPONSE, IDC_PAIR_SSHUSER, IDOK};
+                           IDC_PAIR_COPY, IDC_PAIR_RESPONSE, IDC_PAIR_SSHUSER};
     int previousTop = -1;
     CRect client;
     dialog.GetClientRect(client);
@@ -157,15 +158,12 @@ void RunPairDialogTests(CWnd* parent) {
             check(::GetComboBoxInfo(dialog.GetDlgItem(id)->GetSafeHwnd(), &info) != FALSE,
                   "query pairing access combo face rectangle");
             rect = info.rcItem;
-            ::MapWindowPoints(dialog.GetDlgItem(id)->GetSafeHwnd(), dialog.GetSafeHwnd(),
-                        reinterpret_cast<POINT*>(&rect), 2);
+            dialog.ScreenToClient(&rect);
         }
         return rect;
     };
-    const auto visibleControlRect = [&](int id) {
+    const auto regionControlRect = [&](int id) {
         const CRect rect = controlFaceRect(id);
-        if (!dialog.GetDlgItem(id)->IsWindowVisible())
-            return CRect(rect.left, rect.top, rect.left, rect.top);
         HRGN region = ::CreateRectRgn(0, 0, 0, 0);
         check(region != nullptr, "allocate pairing control visibility region");
         const int regionType = ::GetWindowRgn(dialog.GetDlgItem(id)->GetSafeHwnd(), region);
@@ -184,27 +182,130 @@ void RunPairDialogTests(CWnd* parent) {
                       clientRect(id).left + bounds.right, clientRect(id).top + bounds.bottom);
         return rect & clipped;
     };
-    check(access->IsWindowVisible() && !visibleControlRect(IDC_PAIR_ACCESS).IsRectEmpty(),
-          "access selector remains visible in the initial pairing state");
+    const auto visibleControlRect = [&](int id) {
+        const HWND hwnd = dialog.GetDlgItem(id)->GetSafeHwnd();
+        if (!::IsWindowVisible(dialog.GetSafeHwnd()) || !::IsWindowVisible(hwnd)) {
+            const CRect face = controlFaceRect(id);
+            return CRect(face.left, face.top, face.left, face.top);
+        }
+        return regionControlRect(id);
+    };
+    const auto windowDiagnostics = [&](int id) {
+        CRect windowRect, clientRectValue;
+        dialog.GetDlgItem(id)->GetWindowRect(&windowRect);
+        dialog.GetDlgItem(id)->GetClientRect(&clientRectValue);
+        const HWND hwnd = dialog.GetDlgItem(id)->GetSafeHwnd();
+        const HWND parentHwnd = ::GetParent(hwnd);
+        const HWND ownerHwnd = ::GetWindow(hwnd, GW_OWNER);
+        HRGN region = ::CreateRectRgn(0, 0, 0, 0);
+        const int regionType = region ? ::GetWindowRgn(hwnd, region) : ERROR;
+        RECT regionBounds{};
+        const int boundsType = regionType == ERROR ? ERROR : ::GetRgnBox(region, &regionBounds);
+        if (region) ::DeleteObject(region);
+        const auto formatRect = [](const RECT& rect) {
+            return std::string("(") + std::to_string(rect.left) + "," + std::to_string(rect.top) + "," +
+                std::to_string(rect.right) + "," + std::to_string(rect.bottom) + ")";
+        };
+        CString controlText;
+        dialog.GetDlgItemText(id, controlText);
+        std::ostringstream out;
+        out << "id=" << id << " text='" << tlp::win::Narrow(std::wstring(controlText.GetString())) << "'"
+            << " windowScreen=" << formatRect(windowRect) << " windowClient=" << formatRect(clientRectValue)
+            << " faceDialog=" << formatRect(controlFaceRect(id))
+            << " visibleFaceDialog=" << formatRect(visibleControlRect(id))
+            << " styleVisible=" << ((::GetWindowLongPtr(hwnd, GWL_STYLE) & WS_VISIBLE) != 0)
+            << " IsWindowVisible=" << (::IsWindowVisible(hwnd) != FALSE)
+            << " enabled=" << (::IsWindowEnabled(hwnd) != FALSE)
+            << " parent=" << parentHwnd << " parentVisible=" << (::IsWindowVisible(parentHwnd) != FALSE)
+            << " owner=" << ownerHwnd << " ownerVisible=" << (ownerHwnd && ::IsWindowVisible(ownerHwnd))
+            << " dialog=" << dialog.GetSafeHwnd() << " dialogVisible=" << (::IsWindowVisible(dialog.GetSafeHwnd()) != FALSE)
+            << " regionType=" << regionType << " regionBoundsType=" << boundsType
+            << " regionLocal=" << formatRect(regionBounds);
+        for (HWND ancestor = parentHwnd; ancestor; ancestor = ::GetParent(ancestor))
+            out << " ancestor=" << ancestor << ":visible=" << (::IsWindowVisible(ancestor) != FALSE)
+                << ":enabled=" << (::IsWindowEnabled(ancestor) != FALSE);
+        return out.str();
+    };
+    const auto fail = [](const std::string& message) -> void { throw std::runtime_error(message); };
+    const auto isDescendant = [](HWND child, HWND ancestor) {
+        for (HWND current = child; current; current = ::GetParent(current))
+            if (current == ancestor) return true;
+        return false;
+    };
+    const auto isUnobscured = [&](int id) {
+        HWND hwnd = dialog.GetDlgItem(id)->GetSafeHwnd();
+        if (!::IsWindowVisible(hwnd) || !::IsWindowVisible(dialog.GetSafeHwnd())) return false;
+        CRect bounds;
+        dialog.GetDlgItem(id)->GetWindowRect(&bounds);
+        const CPoint points[] = {
+            CPoint(bounds.left + bounds.Width() / 2, bounds.top + bounds.Height() / 2),
+            CPoint(bounds.left + 2, bounds.top + 2), CPoint(bounds.right - 3, bounds.top + 2),
+            CPoint(bounds.left + 2, bounds.bottom - 3), CPoint(bounds.right - 3, bounds.bottom - 3)};
+        for (const CPoint& point : points) {
+            HWND target = ::WindowFromPoint(point);
+            if (!target || !isDescendant(target, hwnd)) return false;
+        }
+        return true;
+    };
+    const auto isVisibleFaceHitTestable = [&](int id) {
+        const CRect face = visibleControlRect(id);
+        if (face.IsRectEmpty()) return false;
+        CRect screenFace = face;
+        ::MapWindowPoints(dialog.GetSafeHwnd(), nullptr, reinterpret_cast<POINT*>(&screenFace), 2);
+        const HWND hwnd = dialog.GetDlgItem(id)->GetSafeHwnd();
+        const CPoint points[] = {
+            CPoint(screenFace.left + screenFace.Width() / 2, screenFace.top + screenFace.Height() / 2),
+            CPoint(screenFace.left + 1, screenFace.top + 1),
+            CPoint(screenFace.right - 2, screenFace.top + 1),
+            CPoint(screenFace.left + 1, screenFace.bottom - 2),
+            CPoint(screenFace.right - 2, screenFace.bottom - 2)};
+        for (const CPoint& point : points) {
+            const HWND target = ::WindowFromPoint(point);
+            if (!target || !isDescendant(target, hwnd)) return false;
+        }
+        return true;
+    };
+    const auto controlFullyVisible = [&](int id, const CRect& viewport) {
+        const HWND hwnd = dialog.GetDlgItem(id)->GetSafeHwnd();
+        if (!::IsWindowVisible(dialog.GetSafeHwnd()) || !::IsWindowVisible(hwnd)) return false;
+        const CRect bounds = clientRect(id);
+        return (bounds & viewport) == bounds && visibleControlRect(id) == controlFaceRect(id);
+    };
+    const auto checkControlVisible = [&](int id, const char* stage, const CRect& viewport) {
+        if (controlFullyVisible(id, viewport) && isUnobscured(id)) return;
+        fail(std::string(stage) + ": expected fully visible, hit-testable control; " + windowDiagnostics(id));
+    };
+    const CRect initialOk = clientRect(IDOK);
+    const CRect initialCancel = clientRect(IDCANCEL);
+    const CRect initialViewport(0, 0, client.right, initialOk.top - 6);
+    checkControlVisible(IDC_PAIR_ACCESS, "initial pairing state", initialViewport);
     const auto assertFooterVisible = [&](const char* stage, int expectedOkGap, int expectedCancelGap) {
         CRect currentClient;
         dialog.GetClientRect(&currentClient);
         const CRect ok = clientRect(IDOK);
         const CRect cancel = clientRect(IDCANCEL);
-        check(ok.left >= 0 && ok.top >= 0 && ok.right <= currentClient.right && ok.bottom <= currentClient.bottom &&
-              cancel.left >= 0 && cancel.top >= 0 && cancel.right <= currentClient.right && cancel.bottom <= currentClient.bottom,
-              (std::string(stage) + ": dpi=" + std::to_string(GetDpiForWindow(dialog.GetSafeHwnd())) +
-               " save=(" + std::to_string(ok.left) + "," + std::to_string(ok.top) + "," +
-               std::to_string(ok.right) + "," + std::to_string(ok.bottom) + ") cancel=(" +
-               std::to_string(cancel.left) + "," + std::to_string(cancel.top) + "," +
-               std::to_string(cancel.right) + "," + std::to_string(cancel.bottom) + ") client=(0,0," +
-               std::to_string(currentClient.right) + "," + std::to_string(currentClient.bottom) + ")").c_str());
-        check(currentClient.bottom - ok.bottom == expectedOkGap &&
-              currentClient.bottom - cancel.bottom == expectedCancelGap,
-              "Save and Cancel preserve their client-bottom gaps");
+        const bool inside = ok.left >= 0 && ok.top >= 0 && ok.right <= currentClient.right &&
+            ok.bottom <= currentClient.bottom && cancel.left >= 0 && cancel.top >= 0 &&
+            cancel.right <= currentClient.right && cancel.bottom <= currentClient.bottom;
+        const bool footerGaps = currentClient.bottom - ok.bottom == expectedOkGap &&
+            currentClient.bottom - cancel.bottom == expectedCancelGap;
+        const bool windowsVisible = ::IsWindowVisible(dialog.GetDlgItem(IDOK)->GetSafeHwnd()) &&
+            ::IsWindowVisible(dialog.GetDlgItem(IDCANCEL)->GetSafeHwnd());
+        const bool unobscured = isUnobscured(IDOK) && isUnobscured(IDCANCEL);
+        if (!inside || !footerGaps || !windowsVisible || !unobscured) {
+            fail(std::string(stage) + ": footer bounds=" + (inside ? "ok" : "FAIL") +
+                " gaps=" + (footerGaps ? "ok" : "FAIL") + " visibility=" + (windowsVisible ? "ok" : "FAIL") +
+                " unobscured=" + (unobscured ? "ok" : "FAIL") +
+                " dpi=" + std::to_string(GetDpiForWindow(dialog.GetSafeHwnd())) +
+                " client=" + std::to_string(currentClient.Width()) + "x" + std::to_string(currentClient.Height()) +
+                " save=" + windowDiagnostics(IDOK) + " cancel=" + windowDiagnostics(IDCANCEL));
+        }
+        for (int id : {IDOK, IDCANCEL}) {
+            if (!dialog.GetDlgItem(id)->IsWindowEnabled()) continue;
+            if (!isVisibleFaceHitTestable(id))
+                fail(std::string(stage) + ": enabled footer control is not hit-testable: " + windowDiagnostics(id));
+        }
     };
-    const CRect initialOk = clientRect(IDOK);
-    const CRect initialCancel = clientRect(IDCANCEL);
     const int initialOkGap = client.bottom - initialOk.bottom;
     const int initialCancelGap = client.bottom - initialCancel.bottom;
     assertFooterVisible("initial Save and Cancel remain visible in client coordinates", initialOkGap, initialCancelGap);
@@ -212,14 +313,15 @@ void RunPairDialogTests(CWnd* parent) {
         const CRect rect = clientRect(id);
         if (!(rect.left >= client.left && rect.top >= client.top && rect.top > previousTop &&
               rect.right <= client.right && rect.bottom <= client.bottom)) {
-            throw std::runtime_error("pairing control order and client bounds: id=" + std::to_string(id) +
-                " rect=(" + std::to_string(rect.left) + "," + std::to_string(rect.top) + "," +
-                std::to_string(rect.right) + "," + std::to_string(rect.bottom) + ") client=(0,0," +
-                std::to_string(client.right) + "," + std::to_string(client.bottom) + ") previousTop=" +
-                std::to_string(previousTop));
+            fail("initial content order/bounds failure: previousTop=" + std::to_string(previousTop) +
+                 " " + windowDiagnostics(id) + " dialogClient=(0,0," +
+                 std::to_string(client.right) + "," + std::to_string(client.bottom) + ")");
         }
         previousTop = rect.top;
     }
+    check(clientRect(IDC_PAIR_TLS_HOSTNAME).top > previousTop &&
+          clientRect(IDC_PAIR_TLS_HOSTNAME).bottom <= client.bottom,
+          "HTTPS hostname follows the content tab order and remains within initial client bounds");
     CRect originalWindow;
     dialog.GetWindowRect(&originalWindow);
     const CRect originalOk = clientRect(IDOK);
@@ -239,15 +341,14 @@ void RunPairDialogTests(CWnd* parent) {
     check(dialog.GetScrollInfo(SB_VERT, &scrollInfo) != FALSE && scrollInfo.nMax > 0 &&
           scrollInfo.nMax - static_cast<int>(scrollInfo.nPage) > 0,
           "small pairing dialogue exposes a scrollable content range");
-        check(access->IsWindowVisible() && !visibleControlRect(IDC_PAIR_ACCESS).IsRectEmpty(),
-            "access selector remains visible after resizing at the top scroll position");
+    const CRect resizedOk = clientRect(IDOK);
+    const CRect resizedCancel = clientRect(IDCANCEL);
+    const CRect resizedViewport(0, 0, resizedClient.right, resizedOk.top - 6);
     dialog.SendMessage(WM_VSCROLL, SB_BOTTOM);
     dialog.GetScrollInfo(SB_VERT, &scrollInfo);
     check(scrollInfo.nPos > 0, "pairing content scrolls to reveal its bottom controls");
         check(visibleControlRect(IDC_PAIR_ACCESS).IsRectEmpty(),
-            "access selector is clipped when scrolled above the viewport");
-    const CRect resizedOk = clientRect(IDOK);
-    const CRect resizedCancel = clientRect(IDCANCEL);
+                    "access selector is clipped when scrolling to the bottom");
     check(resizedClient.bottom - resizedOk.bottom == okBottomGap &&
           resizedClient.bottom - resizedCancel.bottom == cancelBottomGap,
           "Save and Cancel remain pinned to the resized client bottom");
@@ -265,29 +366,66 @@ void RunPairDialogTests(CWnd* parent) {
         setScrollPosition(expectedPosition);
         dialog.GetClientRect(&resizedClient);
         const CRect viewport(0, 0, resizedClient.right, viewportBottom);
+        if (!isUnobscured(IDOK) || !isUnobscured(IDCANCEL))
+            fail(std::string(stage) + ": fixed Save/Cancel are not hit-test accessible; save=" +
+                 windowDiagnostics(IDOK) + " cancel=" + windowDiagnostics(IDCANCEL));
+        const CRect saveRect = clientRect(IDOK);
+        const CRect cancelRect = clientRect(IDCANCEL);
+        for (HWND child = ::GetWindow(dialog.GetSafeHwnd(), GW_CHILD); child;
+             child = ::GetWindow(child, GW_HWNDNEXT)) {
+            const int id = ::GetDlgCtrlID(child);
+            if (id == IDOK || id == IDCANCEL || !::IsWindowVisible(child)) continue;
+            wchar_t className[32]{};
+            ::GetClassNameW(child, className, static_cast<int>(std::size(className)));
+            if (std::wstring(className) == L"Button" &&
+                (::GetWindowLongPtr(child, GWL_STYLE) & BS_TYPEMASK) == BS_GROUPBOX) continue;
+            CRect childRect;
+            ::GetWindowRect(child, &childRect);
+            dialog.ScreenToClient(&childRect);
+            HRGN childRegion = ::CreateRectRgn(0, 0, 0, 0);
+            check(childRegion != nullptr, "allocate child overlap region");
+            const int regionType = ::GetWindowRgn(child, childRegion);
+            CRect effective = childRect;
+            if (regionType != ERROR) {
+                RECT bounds{};
+                const int boundsType = ::GetRgnBox(childRegion, &bounds);
+                check(boundsType != ERROR, "query content control region before footer overlap check");
+                if (boundsType == NULLREGION) effective.SetRectEmpty();
+                else effective = CRect(childRect.left + bounds.left, childRect.top + bounds.top,
+                                       childRect.left + bounds.right, childRect.top + bounds.bottom);
+            }
+            ::DeleteObject(childRegion);
+            const auto overlapsFooter = [&](const CRect& footer) {
+                CRect overlap;
+                return !effective.IsRectEmpty() && overlap.IntersectRect(effective, footer) &&
+                    !overlap.IsRectEmpty();
+            };
+            if (overlapsFooter(saveRect) || overlapsFooter(cancelRect)) {
+                fail(std::string(stage) + ": scrollable control overlaps fixed footer: " +
+                     windowDiagnostics(id) + " save=" + std::to_string(saveRect.left) + "," +
+                     std::to_string(saveRect.top) + "," + std::to_string(saveRect.right) + "," +
+                     std::to_string(saveRect.bottom) + " cancel=" + std::to_string(cancelRect.left) + "," +
+                     std::to_string(cancelRect.top) + "," + std::to_string(cancelRect.right) + "," +
+                     std::to_string(cancelRect.bottom));
+            }
+        }
         LONG priorTop = std::numeric_limits<LONG>::min();
         LONG priorVisibleBottom = std::numeric_limits<LONG>::min();
         int aboveCount = 0, belowCount = 0, partialCount = 0, containedCount = 0;
         for (int id : ordered) {
             const CRect rect = clientRect(id);
-            if (id == IDOK) {
-                if (!(rect.left >= 0 && rect.top >= 0 && rect.right <= resizedClient.right &&
-                      rect.bottom <= resizedClient.bottom && rect.top > priorTop &&
-                      dialog.GetDlgItem(id)->IsWindowVisible()))
-                    throw std::runtime_error(std::string(stage) + " fixed Save button must remain visible");
-                priorTop = rect.top;
-                continue;
-            }
             const CRect face = controlFaceRect(id);
+            const CRect clippedFace = regionControlRect(id);
             const CRect visibleRect = visibleControlRect(id);
             const bool above = rect.bottom <= viewport.top;
             const bool below = rect.top >= viewport.bottom;
             const bool intersects = !above && !below;
             const bool partial = intersects && (rect.top < viewport.top || rect.bottom > viewport.bottom);
             const bool visible = dialog.GetDlgItem(id)->IsWindowVisible() != FALSE;
-            CRect expectedVisible = face & viewport;
-            const bool regionMatches = expectedVisible.IsRectEmpty()
-                ? visibleRect.IsRectEmpty() : visibleRect == expectedVisible;
+            const CRect expectedClip = face & viewport;
+            const CRect expectedVisible = visible ? expectedClip :
+                CRect(face.left, face.top, face.left, face.top);
+            const bool regionMatches = clippedFace == expectedClip && visibleRect == expectedVisible;
             const auto failGeometry = [&]() {
                 throw std::runtime_error(std::string(stage) + " pairing control geometry: id=" +
                     std::to_string(id) + " rect=(" + std::to_string(rect.left) + "," +
@@ -300,12 +438,19 @@ void RunPairDialogTests(CWnd* parent) {
                     " aboveViewport=" + (above ? "true" : "false") +
                     " intersectsViewport=" + (intersects ? "true" : "false") +
                     " belowViewport=" + (below ? "true" : "false") +
-                    " expectedVisible=(" + std::to_string(expectedVisible.left) + "," +
+                    " expectedClip=(" + std::to_string(expectedClip.left) + "," +
+                    std::to_string(expectedClip.top) + "," + std::to_string(expectedClip.right) + "," +
+                    std::to_string(expectedClip.bottom) + ") clippedFace=(" +
+                    std::to_string(clippedFace.left) + "," + std::to_string(clippedFace.top) + "," +
+                    std::to_string(clippedFace.right) + "," + std::to_string(clippedFace.bottom) +
+                    ") expectedVisible=(" + std::to_string(expectedVisible.left) + "," +
                     std::to_string(expectedVisible.top) + "," + std::to_string(expectedVisible.right) + "," +
                     std::to_string(expectedVisible.bottom) + ") visibleRect=(" +
                     std::to_string(visibleRect.left) + "," + std::to_string(visibleRect.top) + "," +
                     std::to_string(visibleRect.right) + "," + std::to_string(visibleRect.bottom) +
-                    ") visible=" + (visible ? "true" : "false"));
+                    ") visible=" + (visible ? "true" : "false") +
+                    " enabled=" + (dialog.GetDlgItem(id)->IsWindowEnabled() ? "true" : "false") +
+                    " " + windowDiagnostics(id));
             };
             if (!(rect.left >= 0 && rect.right <= resizedClient.right && rect.top > priorTop &&
                 rect.bottom > rect.top && regionMatches)) failGeometry();
@@ -317,7 +462,8 @@ void RunPairDialogTests(CWnd* parent) {
                 if (!visibleRect.IsRectEmpty()) failGeometry();
             } else if (partial) {
                 ++partialCount;
-                if (visibleRect.top < viewport.top || visibleRect.bottom > viewport.bottom) failGeometry();
+                if (visible && (visibleRect.IsRectEmpty() || visibleRect.top < viewport.top ||
+                    visibleRect.bottom > viewport.bottom)) failGeometry();
             } else {
                 ++containedCount;
                 if (visible && visibleRect.IsRectEmpty()) failGeometry();
@@ -328,15 +474,15 @@ void RunPairDialogTests(CWnd* parent) {
             }
             priorTop = rect.top;
         }
-          if (expectedPosition == 0) {
+        if (expectedPosition == 0) {
             check(belowCount > 0 && containedCount > 0,
                 "top scroll position includes below-viewport and visible controls");
-          } else if (expectedPosition >= scrollInfo.nMax - static_cast<int>(scrollInfo.nPage) + 1) {
+        } else if (expectedPosition >= scrollInfo.nMax - static_cast<int>(scrollInfo.nPage) + 1) {
             check(aboveCount > 0 && containedCount > 0,
                 "maximum scroll position includes above-viewport and visible controls");
-          } else {
+        } else {
             check(partialCount > 0, "intermediate scroll position exercises clipped partial visibility");
-          }
+        }
         assertFooterVisible(stage, okBottomGap, cancelBottomGap);
     };
 
@@ -344,18 +490,20 @@ void RunPairDialogTests(CWnd* parent) {
     dialog.GetScrollInfo(SB_VERT, &currentScroll);
     const int maxScroll = std::max(0, currentScroll.nMax - static_cast<int>(currentScroll.nPage) + 1);
     setScrollPosition(0);
+    checkControlVisible(IDC_PAIR_ACCESS, "resized dialog at top scroll position", resizedViewport);
+    assertFooterVisible("resized dialog at top scroll position", okBottomGap, cancelBottomGap);
+    checkControlVisible(IDC_PAIR_ACCESS, "top scroll position", CRect(0, 0, resizedClient.right, viewportBottom));
     const CRect topHostname = clientRect(IDC_PAIR_TLS_HOSTNAME);
     const int partialScroll = static_cast<int>(std::clamp<LONG>(
         topHostname.top + topHostname.Height() / 2 - viewportBottom,
         1L, std::max<LONG>(1L, static_cast<LONG>(maxScroll) - 1L)));
     assertScrollGeometry("top", 0);
         check(visibleControlRect(IDC_PAIR_TLS_HOSTNAME).IsRectEmpty(),
-            "hostname below the top viewport has no visible region");
+                    "hostname below the top viewport has no visible region");
     assertScrollGeometry("intermediate", partialScroll);
     assertScrollGeometry("maximum", maxScroll);
-        check(!visibleControlRect(IDC_PAIR_TLS_HOSTNAME).IsRectEmpty() &&
-            dialog.GetDlgItem(IDC_PAIR_TLS_HOSTNAME)->IsWindowVisible(),
-            "hostname clipped at the top becomes visible when scrolled into view");
+    checkControlVisible(IDC_PAIR_TLS_HOSTNAME, "maximum scroll position",
+                        CRect(0, 0, resizedClient.right, viewportBottom));
     check(!dialog.GetDlgItem(IDC_PAIR_SSHUSER)->IsWindowVisible(),
           "unapproved SSH account remains hidden independently of scrolling");
 
@@ -367,9 +515,11 @@ void RunPairDialogTests(CWnd* parent) {
     const CRect focusedHostnameVisible = visibleControlRect(IDC_PAIR_TLS_HOSTNAME);
     dialog.GetScrollInfo(SB_VERT, &scrollInfo);
     check(scrollInfo.nPos > 0 && focusedHostname.top >= 0 && focusedHostname.bottom <= viewportBottom &&
-          !focusedHostnameVisible.IsRectEmpty() && hostname->IsWindowVisible() &&
+            !focusedHostnameVisible.IsRectEmpty() && hostname->IsWindowVisible() &&
+            focusedHostnameVisible == controlFaceRect(IDC_PAIR_TLS_HOSTNAME) &&
           ::GetFocus() == hostname->GetSafeHwnd(),
           "keyboard focus scrolls the off-screen hostname into the clipped viewport");
+        assertFooterVisible("keyboard focus scrolling preserves Save and Cancel", okBottomGap, cancelBottomGap);
     check(resizedOk.left >= 0 && resizedOk.right <= resizedClient.right &&
           resizedCancel.left >= 0 && resizedCancel.right <= resizedClient.right,
           "pinned pairing buttons remain within the resized client bounds");
@@ -387,10 +537,11 @@ void RunPairDialogTests(CWnd* parent) {
     const int dpiCancelGap = MulDiv(cancelBottomGap, 144, initialDpi);
     assertFooterVisible("DPI-scaled Save and Cancel remain visible in client coordinates",
                         dpiOkGap, dpiCancelGap);
-        check(access->IsWindowVisible() && !visibleControlRect(IDC_PAIR_ACCESS).IsRectEmpty(),
-                    "access selector remains visible after a DPI layout change");
+    CRect dpiClient;
+    dialog.GetClientRect(&dpiClient);
+    checkControlVisible(IDC_PAIR_ACCESS, "144-DPI layout", CRect(0, 0, dpiClient.right, clientRect(IDOK).top - 6));
         check(clientRect(IDOK).Height() == MulDiv(initialOk.Height(), 144, initialDpi) &&
-                    clientRect(IDCANCEL).Height() == MulDiv(initialCancel.Height(), 144, initialDpi),
+            clientRect(IDCANCEL).Height() == MulDiv(initialCancel.Height(), 144, initialDpi),
           "Save and Cancel heights scale with the simulated DPI");
     RECT restoredBounds{originalWindow.left, originalWindow.top,
                         originalWindow.right, originalWindow.bottom};
@@ -401,8 +552,9 @@ void RunPairDialogTests(CWnd* parent) {
                         SWP_NOZORDER | SWP_NOACTIVATE);
     assertFooterVisible("restored-DPI Save and Cancel remain visible in client coordinates",
                         initialOkGap, initialCancelGap);
-        check(access->IsWindowVisible() && !visibleControlRect(IDC_PAIR_ACCESS).IsRectEmpty(),
-                    "access selector remains visible after restoring the original DPI");
+    CRect restoredClient;
+    dialog.GetClientRect(&restoredClient);
+    checkControlVisible(IDC_PAIR_ACCESS, "restored DPI", CRect(0, 0, restoredClient.right, clientRect(IDOK).top - 6));
     check(dialog.GetNextDlgTabItem(dialog.GetDlgItem(IDC_PAIR_WORKSTATION))->GetDlgCtrlID() == IDC_PAIR_ACCESS,
           "Tab moves from workstation to access before generation");
     check(dialog.GetNextDlgTabItem(dialog.GetDlgItem(IDC_PAIR_ACCESS))->GetDlgCtrlID() == IDC_PAIR_GENERATE,
@@ -443,8 +595,7 @@ void RunPairDialogTests(CWnd* parent) {
                        reinterpret_cast<LPARAM>(access->GetSafeHwnd()));
     check(!enabled(IDC_PAIR_COPY) && !enabled(IDOK) && text(dialog, IDC_PAIR_REQUEST).empty() &&
           text(dialog, IDC_PAIR_RESPONSE).empty() && credentials.empty(), "access change invalidates request and removes credential");
-        check(access->IsWindowVisible() && !visibleControlRect(IDC_PAIR_ACCESS).IsRectEmpty(),
-                    "access selector remains visible when pairing options invalidate a request");
+        checkControlVisible(IDC_PAIR_ACCESS, "access option changed", initialViewport);
     dialog.OnGenerate();
     const auto sshRequest = request(dialog);
     check(sshRequest.at("schema").asString() == "teliphones-pair-request/3" &&
