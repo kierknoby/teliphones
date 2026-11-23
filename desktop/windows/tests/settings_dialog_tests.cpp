@@ -56,7 +56,82 @@ bool intersects(const CRect& left, const CRect& right) {
     return overlap.IntersectRect(left, right) != FALSE && !overlap.IsRectEmpty();
 }
 
-void checkNoSettingsOverlap(CAppSettingsDlg& dialog) {
+const char* settingsControlName(int id) {
+    switch (id) {
+        case IDC_APPS_HEADING: return "IDC_APPS_HEADING";
+        case IDC_APPS_INTRO: return "IDC_APPS_INTRO";
+        case IDC_APPS_BROWSER_LABEL: return "IDC_APPS_BROWSER_LABEL";
+        case IDC_APPS_BROWSER: return "IDC_APPS_BROWSER";
+        case IDC_APPS_LOCATE_BROWSER: return "IDC_APPS_LOCATE_BROWSER";
+        case IDC_APPS_TERMINAL_LABEL: return "IDC_APPS_TERMINAL_LABEL";
+        case IDC_APPS_TERMINAL: return "IDC_APPS_TERMINAL";
+        case IDC_APPS_LOCATE_TERMINAL: return "IDC_APPS_LOCATE_TERMINAL";
+        case IDC_APPS_STATUS: return "IDC_APPS_STATUS";
+        case IDC_APPS_NOTE: return "IDC_APPS_NOTE";
+        case IDC_APPEARANCE_LABEL: return "IDC_APPEARANCE_LABEL";
+        case IDC_APPEARANCE: return "IDC_APPEARANCE";
+        case IDC_CONNECT_STATUS: return "IDC_CONNECT_STATUS";
+        case IDC_CONNECT_INSTALL: return "IDC_CONNECT_INSTALL";
+        case IDC_CONNECT_CHECK: return "IDC_CONNECT_CHECK";
+        case IDC_CONNECT_NOT_NOW: return "IDC_CONNECT_NOT_NOW";
+        case IDC_CONNECT_PASSWORD: return "IDC_CONNECT_PASSWORD";
+        case IDC_PASSWORD_LOCK_NOW: return "IDC_PASSWORD_LOCK_NOW";
+        case IDC_SETUP_PBX: return "IDC_SETUP_PBX";
+        case IDC_SETUP_SUPPORT: return "IDC_SETUP_SUPPORT";
+        case IDC_APPS_SKIP: return "IDC_APPS_SKIP";
+        case IDC_APPS_ABOUT: return "IDC_APPS_ABOUT";
+        case IDOK: return "IDOK";
+        case IDCANCEL: return "IDCANCEL";
+        default: return "unknown Settings control";
+    }
+}
+
+std::string formatSettingsRect(const RECT& rect) {
+    return "(" + std::to_string(rect.left) + "," + std::to_string(rect.top) + "," +
+        std::to_string(rect.right) + "," + std::to_string(rect.bottom) + ")";
+}
+
+void checkSettingsControlBounds(CAppSettingsDlg& dialog, const char* stage, int id,
+                                const CRect& testedRect, const CRect& visibleRect, const CRect& client,
+                                LONG footerTop, bool footer) {
+    const bool withinBounds = testedRect.left >= 0 && testedRect.right <= client.right &&
+        testedRect.top >= 0 && testedRect.bottom <= client.bottom;
+    if (withinBounds) return;
+
+    CWnd* control = dialog.GetDlgItem(id);
+    CRect fullRect;
+    control->GetWindowRect(&fullRect);
+    dialog.ScreenToClient(&fullRect);
+    CRect viewport(0, 0, client.right, footer ? client.bottom : std::max<LONG>(0, footerTop - 4));
+    CRect effectivePortion;
+    effectivePortion.IntersectRect(visibleRect, viewport);
+    std::string footerGeometry;
+    for (int footerId : {IDC_APPS_SKIP, IDC_APPS_ABOUT, IDOK, IDCANCEL}) {
+        CWnd* footerControl = dialog.GetDlgItem(footerId);
+        if (!footerControl || !footerControl->IsWindowVisible()) continue;
+        CRect footerRect = settingsControlRect(dialog, footerId);
+        footerGeometry += (footerGeometry.empty() ? "" : ";") + std::string(settingsControlName(footerId)) + "=" +
+            formatSettingsRect(footerRect);
+    }
+    CRect regionBounds(0, 0, 0, 0);
+    HRGN region = ::CreateRectRgn(0, 0, 0, 0);
+    const int regionType = ::GetWindowRgn(control->GetSafeHwnd(), region);
+    if (regionType != ERROR) ::GetRgnBox(region, &regionBounds);
+    ::DeleteObject(region);
+
+    throw std::runtime_error(std::string("visible Settings control portion remains within the content viewport or footer") +
+        ": stage=" + stage + " control=" + settingsControlName(id) + " id=" + std::to_string(id) +
+        " fullControl=" + formatSettingsRect(fullRect) + " testedGeometry=" + formatSettingsRect(testedRect) +
+        " effectiveViewportPortion=" + formatSettingsRect(effectivePortion) +
+        " parentHwnd=" + std::to_string(reinterpret_cast<uintptr_t>(::GetParent(control->GetSafeHwnd()))) +
+        " viewport=" + formatSettingsRect(viewport) + " client=" + formatSettingsRect(client) +
+        " footerTop=" + std::to_string(footerTop) + " footerRects={" + footerGeometry + "} footer=" + (footer ? "true" : "false") +
+        " visible=" + (::IsWindowVisible(control->GetSafeHwnd()) ? "true" : "false") +
+        " windowRegionType=" + std::to_string(regionType) +
+        " windowRegionBounds(local)=" + formatSettingsRect(regionBounds));
+}
+
+void checkNoSettingsOverlap(CAppSettingsDlg& dialog, const char* stage) {
     const int controls[] = {
         IDC_APPS_HEADING, IDC_APPS_INTRO, IDC_APPS_BROWSER_LABEL, IDC_APPS_BROWSER,
         IDC_APPS_LOCATE_BROWSER, IDC_APPS_TERMINAL_LABEL, IDC_APPS_TERMINAL,
@@ -92,9 +167,8 @@ void checkNoSettingsOverlap(CAppSettingsDlg& dialog) {
             firstRect.bottom = std::min<LONG>(firstRect.bottom, footerTop - 4);
             if (firstRect.bottom <= firstRect.top) continue;
         }
-        checkSettings(firstRect.left >= 0 && firstRect.right <= client.right && firstRect.top >= 0 &&
-                      firstRect.bottom <= client.bottom,
-                      "visible Settings control portion remains within the content viewport or footer");
+        checkSettingsControlBounds(dialog, stage, controls[i], firstRect, settingsControlRect(dialog, controls[i]),
+                                   client, footerTop, isFooter(controls[i]));
         for (std::size_t j = i + 1; j < std::size(controls); ++j) {
             CWnd* second = dialog.GetDlgItem(controls[j]);
             if (!second || !second->IsWindowVisible()) continue;
@@ -142,7 +216,7 @@ void RunSettingsDialogTests(CWnd* parent) {
     CRect work(monitor.rcWork);
     checkSettings(window.left >= work.left && window.top >= work.top && window.right <= work.right && window.bottom <= work.bottom,
                   "initial Settings window fits the monitor work area");
-    checkNoSettingsOverlap(dialog);
+    checkNoSettingsOverlap(dialog, "initial");
 
     CWnd* browser = dialog.GetDlgItem(IDC_APPS_BROWSER);
     checkSettings(dialog.GetNextDlgTabItem(browser)->GetDlgCtrlID() == IDC_APPS_LOCATE_BROWSER,
@@ -172,9 +246,23 @@ void RunSettingsDialogTests(CWnd* parent) {
     checkSettings(client.bottom - saveAfter.bottom == saveBottomGap &&
                   client.bottom - cancelAfter.bottom == cancelBottomGap,
                   "Settings footer remains pinned while content scrolls");
-    checkNoSettingsOverlap(dialog);
+    checkNoSettingsOverlap(dialog, "compact-maximum-scroll");
 
     dialog.SendMessage(WM_VSCROLL, SB_TOP);
+    CWnd* focusTarget = dialog.GetDlgItem(IDC_CONNECT_CHECK);
+    focusTarget->SetFocus();
+    // PreTranslateMessage posts this same reveal request after Tab navigation.
+    dialog.SendMessage(WM_APP + 0x322);
+    CRect focusRect = settingsControlRect(dialog, IDC_CONNECT_CHECK);
+    LONG footerTop = client.bottom;
+    for (int id : {IDC_APPS_SKIP, IDC_APPS_ABOUT, IDOK, IDCANCEL}) {
+        CWnd* footer = dialog.GetDlgItem(id);
+        if (footer && footer->IsWindowVisible()) footerTop = std::min<LONG>(footerTop, settingsControlRect(dialog, id).top);
+    }
+    checkSettings(focusRect.top >= 0 && focusRect.bottom <= footerTop - 8,
+                  "Tab focus reveal scrolls Settings control fully above the fixed footer");
+    checkNoSettingsOverlap(dialog, "compact-focus-reveal");
+
     dialog.SetWindowPos(nullptr, originalWindow.left, originalWindow.top, originalWindow.Width(), originalWindow.Height(),
                         SWP_NOZORDER | SWP_NOACTIVATE);
     RECT dpiBounds{originalWindow.left, originalWindow.top,
@@ -182,7 +270,7 @@ void RunSettingsDialogTests(CWnd* parent) {
                    originalWindow.top + MulDiv(originalWindow.Height(), 144, 96)};
     dialog.SendMessage(WM_DPICHANGED, MAKELONG(144, 144), reinterpret_cast<LPARAM>(&dpiBounds));
     dialog.GetClientRect(&client);
-    checkNoSettingsOverlap(dialog);
+    checkNoSettingsOverlap(dialog, "dpi-144");
     checkSettings(settingsControlRect(dialog, IDOK).bottom <= client.bottom &&
                   settingsControlRect(dialog, IDCANCEL).bottom <= client.bottom,
                   "DPI-scaled Settings footer remains visible");
@@ -191,7 +279,7 @@ void RunSettingsDialogTests(CWnd* parent) {
     dialog.SendMessage(WM_DPICHANGED, MAKELONG(96, 96), reinterpret_cast<LPARAM>(&restoredBounds));
     dialog.SetWindowPos(nullptr, originalWindow.left, originalWindow.top, originalWindow.Width(), originalWindow.Height(),
                         SWP_NOZORDER | SWP_NOACTIVATE);
-    checkNoSettingsOverlap(dialog);
+    checkNoSettingsOverlap(dialog, "dpi-96-restored");
     dialog.DestroyWindow();
     std::puts("Native Settings dialogue tests: PASS (production MFC controls, compact geometry, keyboard order, resize and scroll)");
 }
