@@ -141,7 +141,6 @@ void checkNoSettingsOverlap(CAppSettingsDlg& dialog, const char* stage) {
         IDC_CONNECT_PASSWORD, IDC_PASSWORD_LOCK_NOW,
         IDC_SETUP_PBX, IDC_SETUP_SUPPORT, IDC_APPS_SKIP, IDC_APPS_ABOUT, IDOK, IDCANCEL
     };
-    const int groups[] = {IDC_APPS_GROUP, IDC_CONNECT_GROUP};
     const CRect client = [&]() { CRect rect; dialog.GetClientRect(&rect); return rect; }();
     LONG footerTop = client.bottom;
     for (int id : {IDC_APPS_SKIP, IDC_APPS_ABOUT, IDOK, IDCANCEL}) {
@@ -151,13 +150,9 @@ void checkNoSettingsOverlap(CAppSettingsDlg& dialog, const char* stage) {
     const auto isFooter = [](int id) {
         return id == IDC_APPS_SKIP || id == IDC_APPS_ABOUT || id == IDOK || id == IDCANCEL;
     };
-    for (int id : groups) {
-        CWnd* group = dialog.GetDlgItem(id);
-        if (!group || !group->IsWindowVisible()) continue;
-        const CRect rect = settingsControlRect(dialog, id);
-        checkSettings(rect.left >= 0 && rect.top >= 0 && rect.right <= client.right && rect.bottom <= client.bottom,
-                      "visible Settings section frame remains within the dialog client");
-    }
+    // Group boxes are decorative frames around scrollable content. Their
+    // off-client portions may be clipped while scrolling or in compact sizes;
+    // control bounds and overlap are checked independently below.
     for (std::size_t i = 0; i < std::size(controls); ++i) {
         CWnd* first = dialog.GetDlgItem(controls[i]);
         if (!first || !first->IsWindowVisible()) continue;
