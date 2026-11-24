@@ -27,6 +27,7 @@ struct AppInfo {
 
 constexpr const char* kWindowsDefaultBrowser = "windows-default";
 constexpr const char* kPreferencesSchema = "teliphones-desktop-preferences/1";
+constexpr const char* kConsoleDefault = "console-default";
 
 // Catalogue in display order. The Windows default browser is always first and always available.
 const std::vector<AppInfo>& KnownApps(AppKind kind);
@@ -51,6 +52,7 @@ struct Preferences {
     Appearance appearance = Appearance::System;
     std::string browser;    // catalogue id; empty when never chosen
     std::string terminal;   // catalogue id; empty when never chosen
+    std::string managedSshTerminal;  // My PBXs only: "console-default" or "external"
     std::map<std::string, std::string> locations;  // user-located executables (for example portable PuTTY), by id
     std::string setup;      // "completed" or "skipped"; empty when the welcome dialog has not been finished
 };
@@ -66,6 +68,7 @@ std::vector<std::string> AvailableApps(AppKind kind, const DetectedApps& detecte
 // detected terminal, else empty.
 std::string DefaultBrowser(const DetectedApps& browsers);
 std::string DefaultTerminal(const DetectedApps& terminals);
+std::string DefaultManagedSshTerminal();
 
 // The welcome dialog appears until it is completed or explicitly skipped.
 bool NeedsFirstRun(const std::optional<Preferences>& stored);

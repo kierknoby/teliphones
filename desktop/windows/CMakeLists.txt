@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.16)
 project(TeliphonesDesktopCore C CXX)
 
 # Portable core and its tests only. The Windows application itself is built with TELIPHONES.sln (Visual Studio + MFC).
+# Use an out-of-source build directory such as /tmp/teliphones-windows-portable-build.
+# Native Windows CMake targets in CI keep their build trees under desktop/windows/build/.
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 

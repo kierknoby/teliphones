@@ -49,6 +49,10 @@ public:
     TerminalCell CellAt(int row, int column) const;
     TerminalCell ScrollbackCellAt(std::size_t row, int column) const;
     std::string TextAll() const;
+    std::string TextAllForCopy() const;
+    bool IsAlternateScreen() const noexcept { return alternateScreen_; }
+    std::u32string LogicalLineAt(int row) const;
+    bool IsSoftWrapped(int row) const;
     void Cursor(int& row, int& column, bool& visible) const;
     int Columns() const noexcept { return columns_; }
     int Rows() const noexcept { return rows_; }
@@ -65,6 +69,7 @@ private:
     static void OutputCallback(const char* bytes, std::size_t size, void* user);
     static TerminalCell ConvertCell(const VTermScreenCell& cell, const VTermScreen* screen);
     static std::string EncodeUtf8(const std::u32string& text);
+    void TrackAlternateScreenMode(const std::string& bytes);
 
     VTerm* terminal_ = nullptr;
     VTermScreen* screen_ = nullptr;
@@ -72,11 +77,14 @@ private:
     Output output_;
     std::string pendingUtf8_;
     std::deque<std::vector<TerminalCell>> scrollback_;
+    std::deque<bool> scrollbackWrapped_;
     int columns_;
     int rows_;
     int cursorRow_ = 0;
     int cursorColumn_ = 0;
     bool cursorVisible_ = true;
+    bool alternateScreen_ = false;
+    std::string pendingCsi_;
 };
 
 }  // namespace tlp

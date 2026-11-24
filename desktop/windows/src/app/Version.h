@@ -6,6 +6,10 @@
 #define TELIPHONES_VERSION_PATCH 0
 #define TELIPHONES_VERSION_BUILD 0
 
+// The build component is an explicitly assigned product/build revision.
+// Git SHA, CI run number and local build date are not substitutions for it.
+#define TELIPHONES_VERSION_BUILD_IS_ASSIGNED 0
+
 #define TELIPHONES_STRINGIFY_IMPL(value) #value
 #define TELIPHONES_STRINGIFY(value) TELIPHONES_STRINGIFY_IMPL(value)
 #define TELIPHONES_VERSION_BASE \

@@ -14,6 +14,8 @@ public:
     virtual void Resize(int columns, int rows) = 0;
     virtual bool IsAuthenticated() = 0;
     virtual bool IsAlive() = 0;
+    virtual bool IsFinished() = 0;
+    virtual bool WasReplaced() const = 0;
     virtual void Disconnect() = 0;
 };
 

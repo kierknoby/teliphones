@@ -1234,10 +1234,13 @@ void testLaunchers() {
       auto cancelled = PreferencesAfterFirstRun(FirstRunOutcome::Cancelled, "chrome", "putty", browsers, terminals, std::nullopt);
     check(!cancelled, "cancelling first run stores nothing");
     auto skipped = PreferencesAfterFirstRun(FirstRunOutcome::Skipped, "", "", browsers, terminals, std::nullopt);
-    check(skipped && skipped->browser == "chrome" && skipped->terminal == "powershell" && skipped->setup == "skipped" && !NeedsFirstRun(skipped),
+      check(skipped && skipped->browser == "chrome" && skipped->terminal == "powershell" &&
+                    skipped->managedSshTerminal == kConsoleDefault && skipped->setup == "skipped" && !NeedsFirstRun(skipped),
           "skipping first run stores the defaults and is not asked again");
       auto saved = PreferencesAfterFirstRun(FirstRunOutcome::Saved, "chrome", "putty", browsers, terminals, std::nullopt);
-      check(saved && saved->browser == "chrome" && saved->terminal == "putty" && saved->setup == "completed" && !NeedsFirstRun(saved), "first-run choices saved");
+      check(saved && saved->browser == "chrome" && saved->terminal == "putty" &&
+                saved->managedSshTerminal == kConsoleDefault && saved->setup == "completed" && !NeedsFirstRun(saved),
+            "first-run choices include Console (Default)");
       check(throws([&] { PreferencesAfterFirstRun(FirstRunOutcome::Saved, "firefox", "putty", allBrowsers, terminals, std::nullopt); }) &&
                     throws([&] { PreferencesAfterFirstRun(FirstRunOutcome::Saved, "vivaldi", "putty", allBrowsers, terminals, std::nullopt); }),
               "unsupported browsers cannot be saved as the secure HTTPS preference");
@@ -1258,8 +1261,19 @@ void testLaunchers() {
 
     // Persistence: exact round trip and strict parsing.
     Preferences restored = ParsePreferences(SerializePreferences(located));
-      check(restored.browser == "chrome" && restored.terminal == "putty" && restored.setup == "completed" && restored.locations == located.locations,
+        check(restored.browser == "chrome" && restored.terminal == "putty" && restored.setup == "completed" &&
+                        restored.managedSshTerminal == kConsoleDefault && restored.locations == located.locations,
           "preferences round trip");
+      Preferences olderFormat = ParsePreferences(
+            "{\"schema\":\"teliphones-desktop-preferences/1\",\"browser\":\"chrome\",\"terminal\":\"putty\","
+            "\"locations\":{},\"setup\":\"completed\",\"appearance\":\"dark\"}");
+      check(olderFormat.managedSshTerminal.empty() &&
+                    EffectivePreferences(olderFormat, browsers, terminals).managedSshTerminal == "external",
+              "existing preference files without the new field retain the legacy external terminal choice");
+      Preferences skippedOlder = olderFormat;
+      skippedOlder.setup = "skipped";
+      check(EffectivePreferences(skippedOlder, browsers, terminals).managedSshTerminal == kConsoleDefault,
+            "skipped first-run preferences use the new Console default when the setting is absent");
     check(ParsePreferences(SerializePreferences(Preferences())).browser.empty(), "empty preferences round trip");
       check(ParsePreferences("{\"schema\":\"teliphones-desktop-preferences/1\",\"browser\":\"future-browser\",\"terminal\":\"cmd\",\"locations\":{},"
                                        "\"setup\":\"completed\"}")
@@ -1273,19 +1287,35 @@ void testLaunchers() {
         "{\"schema\":\"teliphones-desktop-preferences/1\",\"browser\":\"\",\"terminal\":\"\",\"locations\":{},\"setup\":\"\",\"pbx\":\"x\"}",
         "{\"schema\":\"teliphones-desktop-preferences/1\",\"browser\":\"Chrome.exe\",\"terminal\":\"\",\"locations\":{},\"setup\":\"\"}",
         "{\"schema\":\"teliphones-desktop-preferences/1\",\"browser\":\"\",\"terminal\":\"\",\"locations\":{},\"setup\":\"later\"}",
+      "{\"schema\":\"teliphones-desktop-preferences/1\",\"browser\":\"\",\"terminal\":\"\",\"managedSshTerminal\":\"putty\",\"locations\":{},\"setup\":\"\"}",
         "{\"schema\":\"teliphones-desktop-preferences/1\",\"browser\":\"\",\"terminal\":\"\",\"locations\":{\"putty\":\"C:\\\\x\\\\calc.exe\"},\"setup\":\"\"}",
         "{\"schema\":\"teliphones-desktop-preferences/1\",\"browser\":\"\",\"terminal\":\"\",\"locations\":{\"putty\":\"putty.exe\"},\"setup\":\"\"}",
         "{\"schema\":\"teliphones-desktop-preferences/1\",\"browser\":\"\",\"terminal\":\"\",\"locations\":{\"evil\":\"C:\\\\x\\\\putty.exe\"},\"setup\":\"\"}",
     };
     for (const auto& text : badPreferences) check(throws([&] { ParsePreferences(text); }), "invalid preferences rejected");
+    Preferences invalidManagedTerminal;
+    invalidManagedTerminal.managedSshTerminal = "putty";
+    check(throws([&] { SerializePreferences(invalidManagedTerminal); }),
+          "invalid managed SSH terminal choice cannot be serialized");
 
     // Effective preferences never substitute another application for a missing one.
     check(EffectivePreferences(std::nullopt, browsers, terminals).browser == "chrome", "defaults apply before first run");
+      check(DefaultManagedSshTerminal() == kConsoleDefault &&
+                    EffectivePreferences(std::nullopt, browsers, terminals).managedSshTerminal == kConsoleDefault,
+              "new installations default managed My PBXs SSH to Console (Default)");
+      Preferences preservedExternal;
+      preservedExternal.setup = "completed";
+      preservedExternal.managedSshTerminal = "external";
+      check(EffectivePreferences(preservedExternal, browsers, terminals).managedSshTerminal == "external",
+              "explicit external terminal choice persists");
     Preferences edge;
     edge.browser = "edge";
     edge.terminal = "windows-terminal";
+      edge.setup = "completed";
     Preferences effective = EffectivePreferences(edge, browsers, terminals);
-    check(effective.browser == "edge" && effective.terminal == "windows-terminal", "missing selections are kept, not replaced");
+      check(effective.browser == "edge" && effective.terminal == "windows-terminal" &&
+                    effective.managedSshTerminal == "external",
+              "existing completed preference files preserve external SSH behavior until the user changes it");
     check(unavailable([&] { ResolveApp(AppKind::Browser, "edge", browsers); }, AppKind::Browser, "edge"), "uninstalled browser reported");
     check(unavailable([&] { ResolveApp(AppKind::Terminal, "windows-terminal", terminals); }, AppKind::Terminal, "windows-terminal"),
           "uninstalled terminal reported");
@@ -1545,6 +1575,31 @@ void testAppearance() {
 void testTunnelLifecycle() {
     namespace lc = tlp::tunnel_lifecycle;
     auto contains = [](const std::string& text, const char* part) { return text.find(part) != std::string::npos; };
+
+      using Recovery = lc::RecoveryState;
+      using RecoveryEvent = lc::RecoveryEvent;
+      check(lc::TransitionRecoveryState(Recovery::Clear, RecoveryEvent::StartupClean) == Recovery::Clear &&
+                    lc::TransitionRecoveryState(Recovery::Clear, RecoveryEvent::StartupResidual) == Recovery::Required &&
+                    lc::TransitionRecoveryState(Recovery::InProgress, RecoveryEvent::StartupResidual) == Recovery::Failed,
+              "startup clean stays clear and residual ownership requires recovery");
+      check(lc::TransitionRecoveryState(Recovery::Required, RecoveryEvent::RecoveryStarted) == Recovery::InProgress &&
+                    lc::TransitionRecoveryState(Recovery::Failed, RecoveryEvent::RecoveryStarted) == Recovery::InProgress &&
+                    lc::TransitionRecoveryState(Recovery::InProgress, RecoveryEvent::RecoveryStarted) == Recovery::InProgress,
+              "recovery retry enters progress only from a recoverable state");
+      check(lc::TransitionRecoveryState(Recovery::InProgress, RecoveryEvent::RecoveryFailed) == Recovery::Failed &&
+                    lc::TransitionRecoveryState(Recovery::Failed, RecoveryEvent::StartupClean) == Recovery::Failed &&
+                    lc::TransitionRecoveryState(Recovery::Required, RecoveryEvent::StartupClean) == Recovery::Required,
+              "failed or unresolved recovery cannot be cleared by a routine startup-clean observation");
+      check(lc::TransitionRecoveryState(Recovery::InProgress, RecoveryEvent::Reconciled) == Recovery::Clear &&
+                    lc::TransitionRecoveryState(Recovery::Failed, RecoveryEvent::Reconciled) == Recovery::Clear,
+              "only explicit full reconciliation clears recovery state");
+      check(lc::RecoveryActionEnabled(Recovery::Required, false) && lc::RecoveryActionEnabled(Recovery::Failed, false) &&
+                    !lc::RecoveryActionEnabled(Recovery::Clear, false) && !lc::RecoveryActionEnabled(Recovery::InProgress, false) &&
+                    !lc::RecoveryActionEnabled(Recovery::Required, true),
+              "Recover action is enabled only for idle required or failed states");
+      check(!lc::RecoveryWarningVisible(Recovery::Clear) && lc::RecoveryWarningVisible(Recovery::InProgress) &&
+                    lc::RecoveryWarningVisible(Recovery::Required) && lc::RecoveryWarningVisible(Recovery::Failed),
+              "recovery warning remains visible while required, in progress, or failed");
 
     // The reported failure: startup stalled in START_PENDING, the official uninstall could not stop it and its
     // wireguard.exe process ignored termination. The original stage and every cleanup fact must survive.

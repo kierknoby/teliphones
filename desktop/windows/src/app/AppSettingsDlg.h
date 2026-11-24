@@ -11,6 +11,20 @@
 #include "../core/WireGuardSetup.h"
 #include "../platform/WireGuard.h"
 
+class CAppSettingsDlg;
+
+class CSettingsViewport : public CWnd {
+public:
+    void SetOwner(CAppSettingsDlg* owner) { owner_ = owner; }
+    void OnVScroll(UINT code, UINT position, CScrollBar* bar);
+
+protected:
+    DECLARE_MESSAGE_MAP()
+
+private:
+    CAppSettingsDlg* owner_ = nullptr;
+};
+
 // One dialog, one storage mechanism: shown as "Welcome to TELIPHONES" on first run and as Settings afterwards.
 // Preferences are saved to the current Windows user's local application data before the dialog closes.
 class CAppSettingsDlg : public CAppearanceDialog {
@@ -30,6 +44,12 @@ public:
     std::optional<tlp::Profile> connectProfile;
     bool connectionActive = false;
     bool lockNow = false;
+
+    CWnd* GetDlgItem(int id) const {
+        CWnd* direct = CDialogEx::GetDlgItem(id);
+        return direct ? direct : viewport_ ? viewport_->GetDlgItem(id) : nullptr;
+    }
+    void OnVScroll(UINT code, UINT position, CScrollBar* bar);
 
 protected:
     void DoDataExchange(CDataExchange* exchange) override;
@@ -52,7 +72,6 @@ protected:
     afx_msg LRESULT OnSetupProgress(WPARAM, LPARAM);
     afx_msg LRESULT OnSetupDone(WPARAM, LPARAM);
     afx_msg void OnSize(UINT type, int width, int height);
-    afx_msg void OnVScroll(UINT code, UINT position, CScrollBar* bar);
     afx_msg BOOL OnMouseWheel(UINT flags, short delta, CPoint point);
     afx_msg LRESULT OnDpiChanged(WPARAM dpi, LPARAM rectangle);
     afx_msg LRESULT OnDpiLayout(WPARAM, LPARAM);
@@ -63,9 +82,11 @@ protected:
 
 private:
     struct LayoutControl { HWND window = nullptr; CRect original; bool footer = false; bool rightAnchored = false; };
+    struct SectionFrame { int id = 0; HWND window = nullptr; };
     void Detect();
     void Fill(tlp::AppKind kind, const std::string& selected);
     std::string Selection(tlp::AppKind kind) const;
+    std::string ManagedSshSelection() const;
     void Locate(tlp::AppKind kind);
     void UpdateStatus();
     bool Store(const tlp::Preferences& candidate);
@@ -74,6 +95,7 @@ private:
     void GetStarted(StartAction action);
     void Arrange();
     void ScrollTo(int offset);
+    void RevealFocusedControl();
     int FooterBottomGap(const LayoutControl& item) const;
     LONG FooterTop(const CRect& client) const;
 
@@ -86,13 +108,20 @@ private:
     std::vector<std::string> terminalIds_;
     CComboBox browser_;
     CComboBox terminal_;
+    CComboBox managedSshTerminal_;
+    CSettingsViewport* viewport_ = nullptr;
     int step_ = 1;
     bool installing_ = false;
     tlp::win::WireGuardInstallation wireguard_;
     std::thread installer_;
     std::vector<LayoutControl> layoutControls_;
+    std::vector<LayoutControl> footerControls_;
+    std::vector<SectionFrame> sectionFrames_;
     int initialClientWidth_ = 0;
     int initialClientHeight_ = 0;
+    int initialViewportWidth_ = 0;
+    int initialViewportLeft_ = 0;
+    int initialViewportTop_ = 0;
     int initialDpi_ = 96;
     int layoutDpi_ = 96;
     int contentExtent_ = 0;

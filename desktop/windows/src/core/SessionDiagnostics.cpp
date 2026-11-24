@@ -43,7 +43,7 @@ bool eventValid(const std::string& value) {
     static const std::vector<std::string> events{
         "startup", "shutdown", "pairing_saved", "profile_removed", "connection_attempt", "tunnel_started",
         "connection_failed", "disconnect_requested", "tunnel_removed", "disconnect_failed", "authorization_expired",
-        "ssh_requested", "ssh_failed", "ssh_launched", "ssh_runtime_cleanup_incomplete",
+        "ssh_requested", "ssh_failed", "ssh_launched", "ssh_console_started", "ssh_runtime_cleanup_incomplete",
         "ssh_console_failed", "ssh_ended", "ssh_teardown_failed", "ssh_cleanup_failed", "ssh_local_cleanup_failed",
         "session_release_warning", "shutdown_teardown_failed", "shutdown_with_residual_tunnel", "residual_tunnels_found",
         "connection_deadline", "obsolete_connection_result", "shutdown_cleanup_deferred", "shutdown_with_recovery_state",

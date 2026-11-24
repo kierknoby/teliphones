@@ -133,11 +133,15 @@ bool IsShellSafeToken(const std::string& text) {
 }
 
 std::string SerializePreferences(const Preferences& preferences) {
+    if (!preferences.managedSshTerminal.empty() && preferences.managedSshTerminal != kConsoleDefault &&
+        preferences.managedSshTerminal != "external")
+        throw Error("Invalid managed SSH terminal preference.");
     json::Value::Object locations;
     for (const auto& location : preferences.locations) locations[location.first] = location.second;
     json::Value::Object object{{"schema", kPreferencesSchema},
                                {"browser", preferences.browser},
                                {"terminal", preferences.terminal},
+                               {"managedSshTerminal", preferences.managedSshTerminal},
                                {"locations", json::Value(locations)},
                                {"setup", preferences.setup},
                                {"appearance", AppearanceName(preferences.appearance)}};
@@ -146,8 +150,14 @@ std::string SerializePreferences(const Preferences& preferences) {
 
 Preferences ParsePreferences(const std::string& text) {
     json::Value value = json::Parse(text, 64 * 1024);
-    if (value.has("appearance")) {
+    const bool hasAppearance = value.has("appearance");
+    const bool hasManagedSshTerminal = value.has("managedSshTerminal");
+    if (hasAppearance && hasManagedSshTerminal) {
+        json::RequireExactKeys(value, {"schema", "browser", "terminal", "managedSshTerminal", "locations", "setup", "appearance"}, "TELIPHONES preferences");
+    } else if (hasAppearance) {
         json::RequireExactKeys(value, {"schema", "browser", "terminal", "locations", "setup", "appearance"}, "TELIPHONES preferences");
+    } else if (hasManagedSshTerminal) {
+        json::RequireExactKeys(value, {"schema", "browser", "terminal", "managedSshTerminal", "locations", "setup"}, "TELIPHONES preferences");
     } else {
         json::RequireExactKeys(value, {"schema", "browser", "terminal", "locations", "setup"}, "TELIPHONES preferences");
     }
@@ -156,10 +166,14 @@ Preferences ParsePreferences(const std::string& text) {
     if (value.has("appearance")) preferences.appearance = ParseAppearance(value.at("appearance").asString());
     preferences.browser = value.at("browser").asString();
     preferences.terminal = value.at("terminal").asString();
+    if (hasManagedSshTerminal) preferences.managedSshTerminal = value.at("managedSshTerminal").asString();
     preferences.setup = value.at("setup").asString();
     for (const std::string* id : {&preferences.browser, &preferences.terminal}) {
         if (!id->empty() && !IsAppId(*id)) throw Error("Invalid application in TELIPHONES preferences.");
     }
+    if (!preferences.managedSshTerminal.empty() && preferences.managedSshTerminal != kConsoleDefault &&
+        preferences.managedSshTerminal != "external")
+        throw Error("Invalid managed SSH terminal preference.");
     if (!preferences.setup.empty() && preferences.setup != "completed" && preferences.setup != "skipped") {
         throw Error("Invalid setup state in TELIPHONES preferences.");
     }
@@ -194,6 +208,8 @@ std::string DefaultTerminal(const DetectedApps& terminals) {
     return available.empty() ? std::string() : available.front();
 }
 
+std::string DefaultManagedSshTerminal() { return kConsoleDefault; }
+
 bool NeedsFirstRun(const std::optional<Preferences>& stored) { return !stored || stored->setup.empty(); }
 
 std::optional<Preferences> PreferencesAfterFirstRun(FirstRunOutcome outcome, const std::string& browser, const std::string& terminal,
@@ -204,6 +220,7 @@ std::optional<Preferences> PreferencesAfterFirstRun(FirstRunOutcome outcome, con
     if (outcome == FirstRunOutcome::Skipped) {
         preferences.browser = DefaultBrowser(browsers);
         preferences.terminal = DefaultTerminal(terminals);
+        preferences.managedSshTerminal = DefaultManagedSshTerminal();
         preferences.setup = "skipped";
         return preferences;
     }
@@ -217,6 +234,7 @@ std::optional<Preferences> PreferencesAfterFirstRun(FirstRunOutcome outcome, con
     }
     preferences.browser = browser;
     preferences.terminal = terminal;
+    preferences.managedSshTerminal = DefaultManagedSshTerminal();
     preferences.setup = "completed";
     return preferences;
 }
@@ -225,6 +243,9 @@ Preferences EffectivePreferences(const std::optional<Preferences>& stored, const
     Preferences preferences = stored.value_or(Preferences());
     if (preferences.browser.empty()) preferences.browser = DefaultBrowser(browsers);
     if (preferences.terminal.empty()) preferences.terminal = DefaultTerminal(terminals);
+    if (preferences.managedSshTerminal.empty()) {
+        preferences.managedSshTerminal = stored && stored->setup == "completed" ? "external" : DefaultManagedSshTerminal();
+    }
     return preferences;
 }
 

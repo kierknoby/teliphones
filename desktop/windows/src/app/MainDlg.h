@@ -17,6 +17,8 @@
 #include "ConnectionHealthDlg.h"
 #include "DesktopLayout.h"
 
+namespace tlp::win { class ManagedSshConsole; }
+
 class CMainDlg : public CAppearanceDialog {
 public:
     explicit CMainDlg(CWnd* parent = nullptr);
@@ -101,6 +103,7 @@ private:
     void StartDisconnect(const std::string& reason);
     void FinishClose();
     void RemoveStaleTunnels();
+    void SetRecoveryState(tlp::tunnel_lifecycle::RecoveryState state, const std::string& guidance = "");
     bool RequireWireGuard();
     void RefreshWireGuard();
     tlp::Preferences CurrentPreferences();
@@ -109,6 +112,7 @@ private:
     void RefreshHealth();
     void LogEvent(const std::string& event, const std::string& severity, const std::string& detail,
                   const std::string& diagnosticId = "", const std::string& attemptId = "");
+    void ShowManagedSshConsole(const tlp::Profile& profile, std::shared_ptr<tlp::win::ManagedSshConsole> console);
 
     CListCtrl list_;
     CDesktopLayout layout_;
@@ -135,6 +139,7 @@ private:
     bool sourcesRequestPending_ = false;
     UINT_PTR generation_ = 0;
     bool closing_ = false;
+    tlp::tunnel_lifecycle::RecoveryState recoveryState_ = tlp::tunnel_lifecycle::RecoveryState::Clear;
     std::uint64_t closeDeadlineTickMs_ = 0;
     std::uint64_t lastTelemetryTickMs_ = 0;
     void* networkWatch_ = nullptr;

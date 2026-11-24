@@ -173,6 +173,30 @@ bool MayClearActiveRecovery(bool activeContext, bool ownershipValid, bool comple
            interfacePresence == AdapterPresence::Absent && pnpState == RecordedDeviceState::Missing;
 }
 
+RecoveryState TransitionRecoveryState(RecoveryState current, RecoveryEvent event) {
+    switch (event) {
+        case RecoveryEvent::StartupResidual:
+        case RecoveryEvent::CleanupFailed:
+            return current == RecoveryState::InProgress ? RecoveryState::Failed : RecoveryState::Required;
+        case RecoveryEvent::RecoveryFailed: return RecoveryState::Failed;
+        case RecoveryEvent::StartupClean:
+            return current == RecoveryState::Clear ? RecoveryState::Clear : current;
+        case RecoveryEvent::Reconciled: return RecoveryState::Clear;
+        case RecoveryEvent::RecoveryStarted:
+            return current == RecoveryState::Required || current == RecoveryState::Failed
+                ? RecoveryState::InProgress : current;
+    }
+    return current;
+}
+
+bool RecoveryActionEnabled(RecoveryState state, bool operationBusy) {
+    return !operationBusy && (state == RecoveryState::Required || state == RecoveryState::Failed);
+}
+
+bool RecoveryWarningVisible(RecoveryState state) {
+    return state == RecoveryState::Required || state == RecoveryState::InProgress || state == RecoveryState::Failed;
+}
+
 bool IsRecordedPnpMissing(bool pnpObservationKnown, bool pnpPresent) {
     return pnpObservationKnown && !pnpPresent;
 }

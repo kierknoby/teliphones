@@ -18,6 +18,7 @@
 #include <atomic>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <thread>
 
 namespace tlp::win {
@@ -229,7 +230,9 @@ std::string receive(HANDLE pipe) {
 }
 struct Session final : ManagedSshConsole {
     std::string profile;
+    std::string replacementKey;
     std::string diagnosticId;
+    bool embedded = false;
     Handle job{CreateJobObjectW(nullptr, nullptr)};
     Handle helper;
     Handle ssh;
@@ -243,6 +246,7 @@ struct Session final : ManagedSshConsole {
     std::wstring directory;
     std::wstring sshLog;
     std::atomic<bool> authenticationConfirmed{false};
+    std::atomic<bool> replaced{false};
     std::mutex controlMutex;
     std::int64_t expiry = 0;
     std::string ReadAvailable() override {
@@ -312,10 +316,22 @@ struct Session final : ManagedSshConsole {
                WaitForSingleObject(helper.get(), 0) == WAIT_TIMEOUT &&
                WaitForSingleObject(ssh.get(), 0) == WAIT_TIMEOUT;
     }
+    bool IsFinished() override {
+        if (!finished.get() || WaitForSingleObject(finished.get(), 0) == WAIT_OBJECT_0) return true;
+        if (!IsAlive()) {
+            if (stop.get()) SetEvent(stop.get());
+            if (job.get() && !TerminateJobObject(job.get(), 1) && GetLastError() != ERROR_ACCESS_DENIED)
+                ThrowLastError("Unable to stop the ended SSH console");
+        }
+        return false;
+    }
+    bool WasReplaced() const override { return replaced.load(); }
     void Disconnect() override {
         if (stop.get()) SetEvent(stop.get());
         if (job.get() && !TerminateJobObject(job.get(), 1) && GetLastError() != ERROR_ACCESS_DENIED)
             ThrowLastError("Unable to stop the owned SSH console");
+        if (finished.get() && WaitForSingleObject(finished.get(), 30000) != WAIT_OBJECT_0)
+            throw Error("The owned SSH console did not finish cleanup before the deadline.");
     }
     void removePublicArtifacts() {
         if (directory.empty()) return;
@@ -341,12 +357,39 @@ struct Session final : ManagedSshConsole {
 struct SessionRegistry {
     std::mutex mutex;
     std::vector<std::shared_ptr<Session>> sessions;
+    std::set<std::string> startingConsoles;
 };
 SessionRegistry& sessionRegistry() {
     // Workers may finish during CRT shutdown; OS process teardown owns the final Job handles.
     static auto* registry = new SessionRegistry;
     return *registry;
 }
+class ConsoleStartReservation final {
+public:
+    explicit ConsoleStartReservation(const std::string& replacementKey) : profile_(replacementKey) {
+        auto& registry = sessionRegistry();
+        std::lock_guard<std::mutex> guard(registry.mutex);
+        if (!registry.startingConsoles.insert(profile_).second)
+            throw Error("A managed Console session for this PBX profile is already starting.");
+    }
+    ~ConsoleStartReservation() {
+        if (!active_) return;
+        auto& registry = sessionRegistry();
+        std::lock_guard<std::mutex> guard(registry.mutex);
+        registry.startingConsoles.erase(profile_);
+    }
+    void Release() {
+        auto& registry = sessionRegistry();
+        std::lock_guard<std::mutex> guard(registry.mutex);
+        registry.startingConsoles.erase(profile_);
+        active_ = false;
+    }
+    ConsoleStartReservation(const ConsoleStartReservation&) = delete;
+    ConsoleStartReservation& operator=(const ConsoleStartReservation&) = delete;
+private:
+    std::string profile_;
+    bool active_ = true;
+};
 }
 
 std::string GenerateWorkstationSshIdentity(const Profile& profile) {
@@ -415,8 +458,31 @@ std::shared_ptr<Session> startManagedSsh(const Profile& profile, const Preferenc
     if (ssh.empty()) throw Error("Windows OpenSSH Client is required for managed SSH. Install the Windows optional feature.");
     auto state = std::make_shared<Session>();
     state->profile = profile.id;
+    state->embedded = embedded;
+    state->replacementKey = profile.id;
     state->diagnosticId = "ws-" + profile.pairing.workstationId;
     state->expiry = profile.pairing.expiresAt;
+    // A replacement is strictly scoped to this local TELIPHONES profile and to
+    // its managed Console. External terminals and other PBX profiles are never
+    // terminated by opening a Console here.
+    std::unique_ptr<ConsoleStartReservation> consoleReservation;
+    if (embedded) {
+        consoleReservation = std::make_unique<ConsoleStartReservation>(state->replacementKey);
+        auto& registry = sessionRegistry();
+        std::vector<std::shared_ptr<Session>> existing;
+        {
+            std::lock_guard<std::mutex> guard(registry.mutex);
+            for (const auto& session : registry.sessions) {
+                if (session->embedded && session->replacementKey == state->replacementKey) existing.push_back(session);
+            }
+        }
+        for (const auto& session : existing) {
+            session->replaced.store(true);
+            session->Disconnect();
+            if (WaitForSingleObject(session->finished.get(), 30000) != WAIT_OBJECT_0)
+                throw Error("The previous managed Console session did not finish cleanup.");
+        }
+    }
     if (!state->job.get() || !state->stop.get() || !state->finished.get()) ThrowLastError("Unable to create SSH lifetime controls");
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
     limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION;
@@ -575,6 +641,7 @@ std::shared_ptr<Session> startManagedSsh(const Profile& profile, const Preferenc
         std::lock_guard<std::mutex> guard(registry.mutex);
         registry.sessions.push_back(state);
     }
+    if (consoleReservation) consoleReservation->Release();
     const auto authenticationDeadline = UnixNow() + 30;
     try { std::thread([state, authenticationDeadline] {
         HANDLE waits[]{state->stop.get(), state->helper.get(), state->ssh.get()};

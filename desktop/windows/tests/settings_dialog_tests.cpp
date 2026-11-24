@@ -215,6 +215,44 @@ void checkSettingsFooterWithinClient(CAppSettingsDlg& dialog, const char* stage)
         }
 }
 
+void checkSettingsViewportGeometry(CAppSettingsDlg& dialog, const char* stage) {
+    CWnd* viewport = dialog.GetDlgItem(IDC_SETTINGS_VIEWPORT);
+    if (!viewport) throw std::runtime_error("Settings owns a dedicated content viewport");
+    CRect client, viewportRect;
+    dialog.GetClientRect(&client);
+    viewport->GetWindowRect(&viewportRect);
+    dialog.ScreenToClient(&viewportRect);
+    CRect viewportClient;
+    viewport->GetClientRect(&viewportClient);
+    if (!(viewportRect.left >= 0 && viewportRect.right <= client.right && viewportRect.top >= 0))
+        throw std::runtime_error(std::string("Settings viewport remains within the parent client at ") + stage);
+    const int expectedPage = viewportClient.Height();
+    SCROLLINFO scroll{sizeof(scroll), SIF_RANGE | SIF_PAGE | SIF_POS};
+    viewport->GetScrollInfo(SB_VERT, &scroll);
+    if (scroll.nMax >= static_cast<int>(scroll.nPage) && static_cast<int>(scroll.nPage) != expectedPage)
+        throw std::runtime_error(std::string("Settings scroll page matches actual viewport height at ") + stage);
+    if ((GetWindowLongPtrW(viewport->GetSafeHwnd(), GWL_STYLE) & WS_VSCROLL) == 0)
+        throw std::runtime_error(std::string("Settings viewport owns a visible vertical scrollbar at ") + stage);
+    for (int id : {IDC_APPS_HEADING, IDC_APPS_INTRO, IDC_APPS_BROWSER, IDC_CONNECT_STATUS,
+                   IDC_CONNECT_CHECK, IDC_CONNECT_PASSWORD}) {
+        CWnd* control = dialog.GetDlgItem(id);
+        if (!control || !control->IsWindowVisible()) continue;
+        if (::GetParent(control->GetSafeHwnd()) != viewport->GetSafeHwnd())
+            throw std::runtime_error(std::string("scrollable Settings control is a viewport child at ") + stage +
+                                     ": id=" + std::to_string(id));
+    }
+    if (dialog.GetDlgItem(IDC_APPS_GROUP)->IsWindowVisible()) {
+        CRect frame;
+        dialog.GetDlgItem(IDC_APPS_GROUP)->GetWindowRect(&frame);
+        ::MapWindowPoints(nullptr, viewport->GetSafeHwnd(), reinterpret_cast<POINT*>(&frame), 2);
+        CRect control;
+        dialog.GetDlgItem(IDC_APPS_BROWSER_LABEL)->GetWindowRect(&control);
+        ::MapWindowPoints(nullptr, viewport->GetSafeHwnd(), reinterpret_cast<POINT*>(&control), 2);
+        if (control.left < frame.left || control.right > frame.right || control.top < frame.top || control.bottom > frame.bottom)
+            throw std::runtime_error(std::string("Applications frame encloses content at ") + stage);
+    }
+}
+
 }  // namespace
 
 // Test-only replacements: exercise the production Settings dialog without
@@ -248,6 +286,7 @@ void RunSettingsDialogTests(CWnd* parent) {
     checkSettings(window.left >= work.left && window.top >= work.top && window.right <= work.right && window.bottom <= work.bottom,
                   "initial Settings window fits the monitor work area");
     checkSettingsFooterWithinClient(dialog, "initial");
+    checkSettingsViewportGeometry(dialog, "initial");
     checkNoSettingsOverlap(dialog, "initial");
 
     CWnd* browser = dialog.GetDlgItem(IDC_APPS_BROWSER);
@@ -274,8 +313,10 @@ void RunSettingsDialogTests(CWnd* parent) {
                         SWP_NOZORDER | SWP_NOACTIVATE);
     dialog.GetClientRect(&client);
     checkSettingsFooterWithinClient(dialog, "compact-resize");
+    checkSettingsViewportGeometry(dialog, "compact-resize");
     SCROLLINFO scroll{sizeof(scroll), SIF_RANGE | SIF_PAGE | SIF_POS};
-    checkSettings(dialog.GetScrollInfo(SB_VERT, &scroll) != FALSE && scroll.nMax > 0 &&
+    CWnd* viewport = dialog.GetDlgItem(IDC_SETTINGS_VIEWPORT);
+    checkSettings(viewport->GetScrollInfo(SB_VERT, &scroll) != FALSE && scroll.nMax > 0 &&
                   scroll.nMax - static_cast<int>(scroll.nPage) > 0,
                   "small Settings window exposes a vertical scroll range");
     const CRect saveBefore = settingsControlRect(dialog, IDOK);
@@ -285,7 +326,7 @@ void RunSettingsDialogTests(CWnd* parent) {
                   "Save and Cancel remain visible in the reduced Settings window");
     const int saveBottomGap = client.bottom - saveBefore.bottom;
     const int cancelBottomGap = client.bottom - cancelBefore.bottom;
-    dialog.SendMessage(WM_VSCROLL, SB_BOTTOM);
+    viewport->SendMessage(WM_VSCROLL, SB_BOTTOM);
     dialog.GetClientRect(&client);
     const CRect saveAfter = settingsControlRect(dialog, IDOK);
     const CRect cancelAfter = settingsControlRect(dialog, IDCANCEL);
@@ -293,9 +334,10 @@ void RunSettingsDialogTests(CWnd* parent) {
                   client.bottom - cancelAfter.bottom == cancelBottomGap,
                   "Settings footer remains pinned while content scrolls");
     checkSettingsFooterWithinClient(dialog, "compact-maximum-scroll");
+    checkSettingsViewportGeometry(dialog, "compact-maximum-scroll");
     checkNoSettingsOverlap(dialog, "compact-maximum-scroll");
 
-    dialog.SendMessage(WM_VSCROLL, SB_TOP);
+    viewport->SendMessage(WM_VSCROLL, SB_TOP);
     CWnd* focusTarget = dialog.GetDlgItem(IDC_CONNECT_CHECK);
     focusTarget->SetFocus();
     // PreTranslateMessage posts this same reveal request after Tab navigation.
@@ -318,6 +360,7 @@ void RunSettingsDialogTests(CWnd* parent) {
     dialog.SendMessage(WM_DPICHANGED, MAKELONG(144, 144), reinterpret_cast<LPARAM>(&dpiBounds));
     dialog.GetClientRect(&client);
     checkSettingsFooterWithinClient(dialog, "dpi-144");
+    checkSettingsViewportGeometry(dialog, "dpi-144");
     checkNoSettingsOverlap(dialog, "dpi-144");
     checkSettings(settingsControlRect(dialog, IDOK).bottom <= client.bottom &&
                   settingsControlRect(dialog, IDCANCEL).bottom <= client.bottom,

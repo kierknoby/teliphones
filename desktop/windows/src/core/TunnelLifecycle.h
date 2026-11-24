@@ -103,6 +103,11 @@ bool MayClearIncompleteOwnershipRecord(bool ownershipValid, bool recordComplete,
 // are independently absent. Missing/invalid ownership evidence is not proof of absence.
 bool MayClearActiveRecovery(bool activeContext, bool ownershipValid, bool completeRecord, bool serviceAbsent,
                             AdapterPresence interfacePresence, RecordedDeviceState pnpState);
+enum class RecoveryState { Clear, Required, InProgress, Failed };
+enum class RecoveryEvent { StartupResidual, StartupClean, CleanupFailed, RecoveryStarted, RecoveryFailed, Reconciled };
+RecoveryState TransitionRecoveryState(RecoveryState current, RecoveryEvent event);
+bool RecoveryActionEnabled(RecoveryState state, bool operationBusy);
+bool RecoveryWarningVisible(RecoveryState state);
 // Transitional compatibility predicate for recorded PnP readback; true only for an explicit Missing result.
 bool IsRecordedPnpMissing(bool pnpObservationKnown, bool pnpPresent);
 

@@ -33,8 +33,8 @@ int main() {
     terminal.Feed("\x1b[2;3H");
     terminal.Feed("\x1b[31mR");
     const auto red = terminal.CellAt(1, 2);
-    check(red.text == U"R" && ((red.foreground >> 16) & 0xff) > 150 && (red.foreground & 0xffff) == 0,
-          "cursor positioning and ANSI indexed colour are rendered");
+        check(red.text == U"R" && red.foreground == 0xff6b73,
+            "cursor positioning and Console ANSI indexed colour are rendered");
     terminal.Feed("\x1b[0m\x1b[2J\x1b[H");
     check(terminal.CellAt(0, 0).text.empty(), "screen erase clears cells");
 
@@ -42,6 +42,13 @@ int main() {
     terminal.Feed(std::string("\x82\xac", 2));
     check(terminal.CellAt(0, 0).text == U"€", "UTF-8 characters may span output chunks");
     check(terminal.TextAll().find("€") != std::string::npos, "copy-all text preserves UTF-8 characters");
+
+    tlp::TerminalEmulator palette(20, 2, [](const std::string&) {});
+    palette.Feed("\x1b[31mR\x1b[32mG\x1b[34mB");
+    check(palette.CellAt(0, 0).foreground == 0xff6b73 &&
+              palette.CellAt(0, 1).foreground == 0xa8e38c &&
+              palette.CellAt(0, 2).foreground == 0x75c7ff,
+          "ANSI base colors follow the Console palette");
 
     struct Utf8Case {
         std::string bytes;
@@ -103,15 +110,45 @@ int main() {
     check(scrolling.TextAll().find("one") != std::string::npos &&
           scrolling.TextAll().find("four") != std::string::npos,
           "copy-all text includes history and the current screen");
+        check(scrolling.TextAllForCopy().find("one\ntwo\nthree\nfour") != std::string::npos,
+            "Copy All preserves explicit hard line breaks in scrollback and the live screen");
     scrolling.ClearScrollback();
     check(scrolling.ScrollbackRows() == 0, "clear-all can discard retained history");
+
+        tlp::TerminalEmulator wrapped(5, 3, [](const std::string&) {});
+        wrapped.Feed("abcdefghij");
+          check(wrapped.TextAllForCopy().find("abcdefghij") != std::string::npos &&
+              wrapped.TextAllForCopy().find("abcde\nfghij") == std::string::npos,
+            "Copy All joins rows that libvterm marks as soft-wrapped");
+        for (int index = 0; index < 33000; ++index) wrapped.Feed("\r\n.");
+        check(wrapped.ScrollbackRows() == 32767, "terminal scrollback is capped at the original 32,767 rows");
+
+        tlp::TerminalEmulator hardAndSoft(5, 3, [](const std::string&) {});
+        hardAndSoft.Feed("abcdef\r\nxy");
+        const auto copiedMixed = hardAndSoft.TextAllForCopy();
+        check(copiedMixed.find("abcdef\nxy") != std::string::npos,
+            "Copy All retains hard line breaks after joining preceding soft-wrapped rows");
 
     tlp::TerminalEmulator fullscreen(10, 3, [](const std::string&) {});
     fullscreen.Feed("shell");
     fullscreen.Feed("\x1b[?1049h\x1b[Hvim");
-    check(fullscreen.CellAt(0, 0).text == U"v", "alternate-screen applications receive an isolated VT screen");
+        check(fullscreen.CellAt(0, 0).text == U"v" && fullscreen.IsAlternateScreen(),
+            "alternate-screen applications receive an isolated VT screen and expose buffer state");
     fullscreen.Feed("\x1b[?1049l");
-    check(fullscreen.CellAt(0, 0).text == U"s", "leaving the alternate screen restores the shell screen");
+        check(fullscreen.CellAt(0, 0).text == U"s" && !fullscreen.IsAlternateScreen(),
+            "leaving the alternate screen restores the shell screen and buffer state");
+    tlp::TerminalEmulator fragmentedMode(12, 2, [](const std::string&) {});
+    fragmentedMode.Feed("\x1b[?104");
+    fragmentedMode.Feed("9h");
+    check(fragmentedMode.IsAlternateScreen(), "alternate-screen mode is detected across fragmented SSH reads");
+    fragmentedMode.Feed("\x1b[?47;1049l");
+    check(!fragmentedMode.IsAlternateScreen(), "combined DEC mode resets exit the alternate screen");
+    tlp::TerminalEmulator alternateCopy(12, 2, [](const std::string&) {});
+    alternateCopy.Feed("normal history\r\n");
+    alternateCopy.Feed("\x1b[?1049h\x1b[Halt-screen");
+    check(alternateCopy.TextAllForCopy().find("alt-screen") != std::string::npos &&
+              alternateCopy.TextAllForCopy().find("normal history") == std::string::npos,
+          "Copy All reads the active alternate buffer rather than unrelated normal-buffer history");
 
     std::cout << "VT terminal emulator tests passed.\n";
 }

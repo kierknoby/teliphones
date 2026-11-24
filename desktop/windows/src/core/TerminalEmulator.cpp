@@ -6,7 +6,7 @@
 
 namespace tlp {
 namespace {
-constexpr std::size_t kMaximumScrollbackRows = 10000;
+constexpr std::size_t kMaximumScrollbackRows = 32767;
 
 std::uint32_t colorValue(const VTermColor& value, const VTermScreen* screen) {
     VTermColor color = value;
@@ -68,9 +68,20 @@ TerminalEmulator::TerminalEmulator(int columns, int rows, Output output)
     vterm_screen_set_damage_merge(screen_, VTERM_DAMAGE_ROW);
     vterm_screen_enable_altscreen(screen_, 1);
     VTermColor foreground{}, background{};
-    vterm_color_rgb(&foreground, 208, 208, 208);
-    vterm_color_rgb(&background, 16, 16, 16);
+    vterm_color_rgb(&foreground, 244, 244, 244);
+    vterm_color_rgb(&background, 10, 10, 10);
     vterm_state_set_default_colors(state_, &foreground, &background);
+    static constexpr std::uint32_t palette[] = {
+        0x000000, 0xff6b73, 0xa8e38c, 0xffd479,
+        0x75c7ff, 0xdc8cff, 0x68d7e3, 0xffffff,
+    };
+    for (int index = 0; index < 8; ++index) {
+        VTermColor color{};
+        const auto value = palette[index];
+        vterm_color_rgb(&color, static_cast<std::uint8_t>(value >> 16),
+                        static_cast<std::uint8_t>(value >> 8), static_cast<std::uint8_t>(value));
+        vterm_state_set_palette_color(state_, index, &color);
+    }
     vterm_screen_reset(screen_, 1);
 }
 
@@ -79,6 +90,7 @@ TerminalEmulator::~TerminalEmulator() {
 }
 
 void TerminalEmulator::Feed(const std::string& bytes) {
+    TrackAlternateScreenMode(bytes);
     pendingUtf8_.append(bytes);
     const auto completeSize = incompleteUtf8Suffix(pendingUtf8_);
     std::size_t offset = 0;
@@ -89,6 +101,49 @@ void TerminalEmulator::Feed(const std::string& bytes) {
     }
     pendingUtf8_.erase(0, completeSize);
     vterm_screen_flush_damage(screen_);
+}
+
+void TerminalEmulator::TrackAlternateScreenMode(const std::string& bytes) {
+    for (unsigned char byte : bytes) {
+        if (pendingCsi_.empty()) {
+            if (byte == 0x1b) pendingCsi_ = "\x1b";
+            continue;
+        }
+        pendingCsi_.push_back(static_cast<char>(byte));
+        if (pendingCsi_.size() == 2 && pendingCsi_[1] == 'c') {
+            alternateScreen_ = false;
+            pendingCsi_.clear();
+            continue;
+        }
+        if (pendingCsi_.size() > 64) {
+            pendingCsi_.clear();
+            continue;
+        }
+        if (pendingCsi_.size() == 2 && pendingCsi_[1] != '[') {
+            pendingCsi_.clear();
+            continue;
+        }
+        if (pendingCsi_.size() < 3 || byte < 0x40 || byte > 0x7e) continue;
+        if (pendingCsi_.back() != 'h' && pendingCsi_.back() != 'l') {
+            pendingCsi_.clear();
+            continue;
+        }
+        const bool enabled = pendingCsi_.back() == 'h';
+        if ((pendingCsi_.back() == 'h' || pendingCsi_.back() == 'l') && pendingCsi_[2] == '?') {
+            bool tracksAlternateScreen = false;
+            std::size_t start = 3;
+            while (start < pendingCsi_.size() - 1) {
+                const auto end = pendingCsi_.find(';', start);
+                const auto stop = end == std::string::npos ? pendingCsi_.size() - 1 : end;
+                const auto mode = pendingCsi_.substr(start, stop - start);
+                tracksAlternateScreen = tracksAlternateScreen || mode == "47" || mode == "1047" || mode == "1049";
+                if (end == std::string::npos) break;
+                start = end + 1;
+            }
+            if (tracksAlternateScreen) alternateScreen_ = enabled;
+        }
+        pendingCsi_.clear();
+    }
 }
 
 void TerminalEmulator::Resize(int columns, int rows) {
@@ -114,6 +169,7 @@ void TerminalEmulator::Paste(const std::u32string& text) {
 
 void TerminalEmulator::ClearScrollback() {
     scrollback_.clear();
+    scrollbackWrapped_.clear();
 }
 
 TerminalCell TerminalEmulator::CellAt(int row, int column) const {
@@ -151,12 +207,65 @@ std::string TerminalEmulator::TextAll() const {
     return result;
 }
 
+std::string TerminalEmulator::TextAllForCopy() const {
+    std::string result;
+    const auto appendRow = [&result](const auto& cellAt, int columns, bool wrapped) {
+        std::u32string line;
+        for (int column = 0; column < columns; ++column) {
+            const auto cell = cellAt(column);
+            if (cell.wideContinuation) continue;
+            line += cell.text.empty() ? U" " : cell.text;
+        }
+        while (!line.empty() && line.back() == U' ') line.pop_back();
+        result += EncodeUtf8(line);
+        if (!wrapped) result += '\n';
+    };
+    const std::size_t historyRows = alternateScreen_ ? 0 : scrollback_.size();
+    for (std::size_t row = 0; row < historyRows; ++row) {
+        bool nextContinues = row + 1 < scrollbackWrapped_.size() && scrollbackWrapped_[row + 1];
+        if (row + 1 == historyRows && rows_ > 0) {
+            nextContinues = !alternateScreen_ && IsSoftWrapped(0);
+        }
+        appendRow([this, row](int column) { return ScrollbackCellAt(row, column); }, columns_,
+                  nextContinues);
+    }
+    for (int row = 0; row < rows_; ++row) {
+        const bool wrapped = row + 1 < rows_ && IsSoftWrapped(row + 1);
+        appendRow([this, row](int column) { return CellAt(row, column); }, columns_, wrapped);
+    }
+    while (!result.empty() && result.back() == '\n') result.pop_back();
+    return result;
+}
+
 void TerminalEmulator::Cursor(int& row, int& column, bool& visible) const {
     VTermPos cursor{};
     vterm_state_get_cursorpos(state_, &cursor);
     row = cursor.row;
     column = cursor.col;
     visible = cursorVisible_;
+}
+
+bool TerminalEmulator::IsSoftWrapped(int row) const {
+    if (row < 0 || row >= rows_) return false;
+    const auto* info = vterm_state_get_lineinfo(state_, row);
+    return info && info->continuation;
+}
+
+std::u32string TerminalEmulator::LogicalLineAt(int row) const {
+    if (row < 0 || row >= rows_) return {};
+    int first = row;
+    while (first > 0 && IsSoftWrapped(first)) --first;
+    std::u32string result;
+    for (int current = first; current < rows_; ++current) {
+        for (int column = 0; column < columns_; ++column) {
+            const auto cell = CellAt(current, column);
+            if (cell.wideContinuation) continue;
+            result += cell.text.empty() ? U" " : cell.text;
+        }
+        if (current + 1 >= rows_ || !IsSoftWrapped(current + 1)) break;
+    }
+    while (!result.empty() && result.back() == U' ') result.pop_back();
+    return result;
 }
 
 int TerminalEmulator::Damage(VTermRect, void*) { return 1; }
@@ -179,8 +288,13 @@ int TerminalEmulator::PushLine(int columns, const VTermScreenCell* cells, void* 
     std::vector<TerminalCell> line;
     line.reserve(static_cast<std::size_t>(columns));
     for (int column = 0; column < columns; ++column) line.push_back(ConvertCell(cells[column], self->screen_));
-    if (self->scrollback_.size() == kMaximumScrollbackRows) self->scrollback_.pop_front();
+    if (self->scrollback_.size() == kMaximumScrollbackRows) {
+        self->scrollback_.pop_front();
+        self->scrollbackWrapped_.pop_front();
+    }
     self->scrollback_.push_back(std::move(line));
+    const auto* lineInfo = vterm_state_get_lineinfo(self->state_, 0);
+    self->scrollbackWrapped_.push_back(lineInfo && lineInfo->continuation);
     return 1;
 }
 int TerminalEmulator::PopLine(int columns, VTermScreenCell* cells, void* user) {
@@ -188,6 +302,7 @@ int TerminalEmulator::PopLine(int columns, VTermScreenCell* cells, void* user) {
     if (self->scrollback_.empty()) return 0;
     const auto line = std::move(self->scrollback_.back());
     self->scrollback_.pop_back();
+    if (!self->scrollbackWrapped_.empty()) self->scrollbackWrapped_.pop_back();
     for (int column = 0; column < columns; ++column) {
         const auto& cell = static_cast<std::size_t>(column) < line.size() ? line[static_cast<std::size_t>(column)] : TerminalCell{};
         VTermScreenCell value{};
@@ -206,7 +321,8 @@ int TerminalEmulator::PopLine(int columns, VTermScreenCell* cells, void* user) {
     return 1;
 }
 int TerminalEmulator::ClearScrollbackCallback(void* user) {
-    static_cast<TerminalEmulator*>(user)->ClearScrollback();
+    auto* self = static_cast<TerminalEmulator*>(user);
+    self->ClearScrollback();
     return 1;
 }
 void TerminalEmulator::OutputCallback(const char* bytes, std::size_t size, void* user) {
