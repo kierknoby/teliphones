@@ -854,7 +854,12 @@ class WindowsSshTests(unittest.TestCase):
     def stop(process):
         if process.poll() is None:
             process.kill()
-            process.wait(timeout=10)
+        try:
+            process.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            if process.poll() is None:
+                process.kill()
+            process.communicate(timeout=10)
 
     def go(self, host):
         host.stdin.write("go\n")

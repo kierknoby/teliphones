@@ -26,6 +26,12 @@ struct Handle {
     HANDLE value;
     ~Handle() { if (value && value != INVALID_HANDLE_VALUE) CloseHandle(value); }
 };
+void publishFixtureFile(const std::wstring& path, const std::string& data, const wchar_t* sddl) {
+    const auto temporary = path + L".tmp";
+    tlp::win::WriteNewFile(temporary, data, sddl);
+    if (!MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+        FixtureWin32Error("Fixture publish file");
+}
 std::wstring acl() {
     Handle token{nullptr};
     if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token.value)) throw tlp::Error("Token query failed.");
@@ -140,7 +146,7 @@ int fixtureServer(char** argv) {
         FixtureWin32Error("Fixture AssignProcessToJobObject(sshd)", error);
     }
     const auto pid = std::to_string(process.dwProcessId);
-    tlp::win::WriteNewFile(wide(argv[6]), pid, L"D:P(A;;FA;;;SY)(A;;FA;;;BA)");
+    publishFixtureFile(wide(argv[6]), pid, L"D:P(A;;FA;;;SY)(A;;FA;;;BA)");
     if (ResumeThread(thread.value) == static_cast<DWORD>(-1))
         FixtureWin32Error("Fixture ResumeThread(sshd)");
     const auto deadline = GetTickCount64() + 600000;
@@ -162,8 +168,8 @@ int fixtureServer(char** argv) {
         if (!QueryInformationJobObject(job.value, JobObjectBasicAccountingInformation, &accounting, sizeof(accounting), nullptr))
             FixtureWin32Error("Fixture QueryInformationJobObject(active processes)");
         if (accounting.ActiveProcesses == 0) {
-            tlp::win::WriteNewFile(wide(argv[6]) + L".stopped", "Job process count: 0\n",
-                                   L"D:P(A;;FA;;;SY)(A;;FA;;;BA)");
+            publishFixtureFile(wide(argv[6]) + L".stopped", "Job process count: 0\n",
+                               L"D:P(A;;FA;;;SY)(A;;FA;;;BA)");
             return 0;
         }
         Sleep(100);
